@@ -82,7 +82,22 @@ static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
 }
 
 // Interpreter fallback for one instruction. Returns non-zero (and sets g->pc) when the block must exit.
+static void count_op(JitOpCounts* t, u32 inst) {
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
+    // A-form float and paired-single instructions keep a register in the upper extended bits: count by xo5.
+    if ((op == 63 && xo5 >= 18) || (op == 4 && ((xo5 >= 10 && xo5 <= 15) || xo5 == 18 || xo5 == 20 || xo5 == 21 || xo5 >= 23)))
+        xo = xo5;
+    t->primary[op]++;
+    if (op == 31) t->x31[xo]++;
+    else if (op == 19) t->x19[xo]++;
+    else if (op == 63) t->x63[xo]++;
+    else if (op == 59) t->x59[xo5]++;
+    else if (op == 4) t->x4[xo]++;
+}
+
 static u32 jit_interp(Gekko* g, u32 pc, u32 inst) {
+    g_jit->stats.fallbacksRun++;
+    count_op(&g_jit->stats.fallbackRun, inst);
     bool stop;
     u32 npc = gekko_interp_one(g, pc, inst, &stop);
     if (npc != pc + 4 || stop) { g->pc = npc; return 1; }
@@ -642,16 +657,6 @@ static bool compile_int(Cg* c, u32 inst) {
     return false;
 }
 
-static void count_fallback(Jit* j, u32 inst) {
-    u32 op = inst >> 26;
-    j->stats.fallbackPrimary[op]++;
-    if (op == 31) j->stats.fallback31[(inst >> 1) & 0x3FF]++;
-    else if (op == 19) j->stats.fallback19[(inst >> 1) & 0x3FF]++;
-    else if (op == 63) j->stats.fallback63[(inst >> 1) & 0x3FF]++;
-    else if (op == 59) j->stats.fallback59[(inst >> 1) & 0x1F]++;
-    else if (op == 4) j->stats.fallback4[(inst >> 1) & 0x3FF]++;
-}
-
 // Compiles the block starting at guest PC `pc`; NULL when the code is not in RAM or the cache is full.
 static BlockFn compile_block(Jit* j, u32 pc) {
     Gekko* g = j->g;
@@ -693,7 +698,7 @@ static BlockFn compile_block(Jit* j, u32 pc) {
             }
             continue;
         }
-        count_fallback(j, inst);
+        count_op(&j->stats.fallback, inst);
         emit_fallback(c, inst);
         if (is_branch(inst) || ends_block(inst)) {
             // The interpreter ran it; continue at whatever PC it left.
@@ -773,6 +778,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
+        j->stats.instrsRun += n;
         // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
             j->stats.pollSkips++;
@@ -837,6 +843,40 @@ void jit_invalidate(Jit* j, u32 pa) {
 
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }
 
+// The 16 most frequent opcodes in `t`, with a mnemonic from the disassembler.
+static void print_top(const JitOpCounts* t, const char* title, void (*print)(const char* line)) {
+    static JitOpCounts c;
+    c = *t;
+    char line[160], dis[64];
+    snprintf(line, sizeof line, "  %s:", title);
+    print(line);
+    for (int k = 0; k < 16; k++) {
+        u32 best = 0, which = 0, group = 0;
+        for (u32 i = 0; i < 64; i++) if (i != 31 && i != 19 && i != 63 && i != 59 && i != 4 && c.primary[i] > best) { best = c.primary[i]; which = i; group = 0; }
+        for (u32 i = 0; i < 1024; i++) {
+            if (c.x31[i] > best) { best = c.x31[i]; which = i; group = 31; }
+            if (c.x19[i] > best) { best = c.x19[i]; which = i; group = 19; }
+            if (c.x63[i] > best) { best = c.x63[i]; which = i; group = 63; }
+            if (c.x4[i] > best) { best = c.x4[i]; which = i; group = 4; }
+        }
+        for (u32 i = 0; i < 32; i++) if (c.x59[i] > best) { best = c.x59[i]; which = i; group = 59; }
+        if (!best) break;
+        u32 inst = group ? (group << 26) | (which << 1) : which << 26;
+        gekko_disasm(0, inst, dis, sizeof dis);
+        char* sp = strchr(dis, ' ');
+        if (sp) *sp = 0;
+        if (group) snprintf(line, sizeof line, "    op %u xo %u %-10s %u", group, which, dis, best);
+        else snprintf(line, sizeof line, "    op %u %-10s %u", which, dis, best);
+        print(line);
+        if (!group) c.primary[which] = 0;
+        else if (group == 31) c.x31[which] = 0;
+        else if (group == 19) c.x19[which] = 0;
+        else if (group == 63) c.x63[which] = 0;
+        else if (group == 4) c.x4[which] = 0;
+        else c.x59[which] = 0;
+    }
+}
+
 void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
     char line[160];
     const JitStats* s = &j->stats;
@@ -848,28 +888,10 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
     print(line);
-    // The most frequent compiled-but-interpreted instructions (static counts: one per compiled occurrence).
-    for (int k = 0; k < 12; k++) {
-        u32 best = 0, which = 0, group = 0;
-        for (u32 i = 0; i < 64; i++) if (i != 31 && i != 19 && i != 63 && i != 59 && i != 4 && s->fallbackPrimary[i] > best) { best = s->fallbackPrimary[i]; which = i; group = 0; }
-        for (u32 i = 0; i < 1024; i++) {
-            if (s->fallback31[i] > best) { best = s->fallback31[i]; which = i; group = 31; }
-            if (s->fallback19[i] > best) { best = s->fallback19[i]; which = i; group = 19; }
-            if (s->fallback63[i] > best) { best = s->fallback63[i]; which = i; group = 63; }
-            if (s->fallback4[i] > best) { best = s->fallback4[i]; which = i; group = 4; }
-        }
-        for (u32 i = 0; i < 32; i++) if (s->fallback59[i] > best) { best = s->fallback59[i]; which = i; group = 59; }
-        if (!best) break;
-        if (group) snprintf(line, sizeof line, "  fallback op %u xo %u: %u", group, which, best);
-        else snprintf(line, sizeof line, "  fallback op %u: %u", which, best);
-        print(line);
-        JitStats* m = (JitStats*)s;  // clear the printed entry to find the next one
-        if (!group) m->fallbackPrimary[which] = 0;
-        else if (group == 31) m->fallback31[which] = 0;
-        else if (group == 19) m->fallback19[which] = 0;
-        else if (group == 63) m->fallback63[which] = 0;
-        else if (group == 4) m->fallback4[which] = 0;
-        else m->fallback59[which] = 0;
-    }
+    snprintf(line, sizeof line, "JIT: %llu instructions run, %llu interpreted (%.1f%%)", (unsigned long long)s->instrsRun,
+             (unsigned long long)s->fallbacksRun, s->instrsRun ? 100.0 * (double)s->fallbacksRun / (double)s->instrsRun : 0.0);
+    print(line);
+    print_top(&s->fallback, "compiled-but-interpreted (static)", print);
+    print_top(&s->fallbackRun, "interpreted at run time (dynamic)", print);
 }
 #endif

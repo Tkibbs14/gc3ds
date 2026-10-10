@@ -8,8 +8,9 @@
 //
 // EFB. A 512x256 RGBA8 texture with a D24S8 depth buffer in VRAM: the GameCube's 640x528 EFB scaled by 0.625 x 0.5,
 // so a 640x480 frame lands 1:1 on the 400x240 top screen. Rows past 512 (PAL 528-line EFBs) are cut. Vertices are
-// transformed on the CPU by the reference code (gx/xform.c) and folded into PICA clip space so the hardware clips
-// them (GX viewport and depth range included); culling is done on the CPU with the reference renderer's rule.
+// transformed on the CPU by gx/vfast.c (checked against the reference gx/xform.c) straight into PICA clip space, so
+// the hardware clips them (GX viewport and depth range included); culling is done on the CPU with the reference
+// renderer's rule. Consecutive draws with the same GPU state are batched into one C3D_DrawArrays.
 //
 // Copies. EFB -> XFB copies the render target into one of three XFB textures tagged with the destination address;
 // present shows the one the VI is scanning out ("virtual XFB": the XFB in RAM is not written). EFB -> texture renders
@@ -24,7 +25,7 @@
 #include <stdlib.h>
 #include "../../sys/system.h"
 #include "../tev_pica.h"
-#include "../xform.h"
+#include "../vfast.h"
 #include "gxpass_shbin.h"
 #include "pica.h"
 
@@ -48,7 +49,6 @@
     GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
     GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
 
-typedef struct { float pos[4]; u8 col[4]; float tc[3][2]; } PVert;  // gxpass.v.pica inputs v0-v4
 
 typedef struct {         // a texture decoded from RAM
     u32 addr, fmt, w, h, tlutAddr, tlutFmt, dataHash, tlutHash, texVersion, tlutVersion, lastUse, bytes;
@@ -88,6 +88,11 @@ static struct {
     PicaTev tev;
     PTex* lastHit[8];  // per GX texture map: the entry its last lookup found
     u32 approxSeen, queued;  // queued: GX queue entries added this frame
+    // Draw batching: GX draws whose state key matches the open batch append their triangles to it, and one
+    // C3D_DrawArrays covers them all (Twilight Princess sends thousands of 4-6 vertex draws per field).
+    bool batchOpen;
+    u32 batchFirst, batchKeyLen, batchKey[96];
+    VSel sel;
 } g;
 
 static u8 g_morton[64];
@@ -98,6 +103,12 @@ static u32* g_scratch;
 static u32 g_scratchCap;
 
 // ---- frames ----
+// Issues the open batch's triangles; call before anything changes GPU state or submits.
+static void flush_batch(void) {
+    if (g.batchOpen && g.arenaUsed > g.batchFirst) C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
+    g.batchOpen = false;
+}
+
 static void flush_arena(void) {
     if (g.arenaUsed > g.arenaFlushed)
         GSPGPU_FlushDataCache(g.arena + g.arenaFlushed, (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
@@ -118,6 +129,7 @@ static void begin_frame(void) {
     g.frame = true;
     g.frameNo++;
     g.arenaUsed = g.arenaFlushed = g.queued = 0;
+    g.batchOpen = false;
     for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
     g.nGrave = 0;
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
@@ -140,6 +152,7 @@ static void begin_frame(void) {
 
 static void end_frame(void) {
     if (!g.frame) return;
+    flush_batch();
     flush_arena();
     C3D_FrameEnd(GX_CMDLIST_FLUSH);
     g.frame = false;
@@ -150,6 +163,7 @@ static void end_frame(void) {
 // queued many splits and transfers (several emulated fields between presents) is submitted early.
 static void split(u32 transfers) {
     begin_frame();
+    flush_batch();
     if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { end_frame(); begin_frame(); }
     flush_arena();
     C3D_FrameSplit(GX_CMDLIST_FLUSH);
@@ -353,19 +367,26 @@ static void apply_tev(const PicaTev* t) {
     C3D_TexEnvBufColor(t->bufColor);
 }
 
-// Recompiles the TEV program only when a register it depends on changed.
-static void update_tev(const GXCore* gx) {
-    u32 k[72], n = 0;
+// The registers the TEV program depends on (65 words).
+static u32 tev_key(const GXCore* gx, u32* k) {
+    u32 n = 0;
     k[n++] = gx->bp[0x00];
     for (u32 r = 0x28; r <= 0x2F; r++) k[n++] = gx->bp[r];
     for (u32 r = 0xC0; r <= 0xDF; r++) k[n++] = gx->bp[r];
     for (u32 r = 0xF6; r <= 0xFD; r++) k[n++] = gx->bp[r];
     for (u32 i = 0; i < 4; i++) { k[n++] = gx->tevLo[i]; k[n++] = gx->tevHi[i]; k[n++] = gx->kLo[i]; k[n++] = gx->kHi[i]; }
+    return n;
+}
+
+// Recompiles the TEV program only when a register it depends on changed.
+static void update_tev(const GXCore* gx) {
+    u32 k[72], n = tev_key(gx, k);
     if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
     memcpy(g.tevKey, k, n * 4);
     tev_pica_compile(gx, &g.tev);
     if (g.tev.approx) note_approx(g.tev.approx);
     apply_tev(&g.tev);
+    g.sel = (VSel){ g.tev.rasChan, g.tev.numTex, { g.tev.texCoord[0], g.tev.texCoord[1], g.tev.texCoord[2] } };
     g.tevValid = true;
 }
 
@@ -425,31 +446,6 @@ static void apply_frag(const GXCore* gx) {
 }
 
 // ---- vertices ----
-typedef struct { float kx, ky, wd, ht, xo, yo, zr, fz; } Viewport;
-
-static float xf_f(const GXCore* gx, u32 a) { float f; memcpy(&f, &gx->xf[a], 4); return f; }
-
-static void viewport(const GXCore* gx, Viewport* vp) {
-    vp->kx = SX * 2.0f / TW; vp->ky = SY * 2.0f / TH;
-    vp->wd = xf_f(gx, 0x101A); vp->ht = xf_f(gx, 0x101B); vp->zr = xf_f(gx, 0x101C);
-    vp->xo = xf_f(gx, 0x101D) - 342.0f; vp->yo = xf_f(gx, 0x101E) - 342.0f; vp->fz = xf_f(gx, 0x101F);
-}
-
-static u8 c8(float v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v + 0.5f); }
-
-static void attribs(const SVert* v, PVert* o) {
-    const float* c = v->col[g.tev.rasChan & 1];
-    o->col[0] = c8(c[0]); o->col[1] = c8(c[1]); o->col[2] = c8(c[2]); o->col[3] = c8(c[3]);
-    for (u32 i = 0; i < PICA_TEXUNITS; i++) {
-        const float* t = v->tex[g.tev.texCoord[i] & 7];
-        float iq = i < g.tev.numTex && t[2] != 0 ? 1.0f / t[2] : 1.0f;
-        o->tc[i][0] = t[0] * iq;
-        o->tc[i][1] = t[1] * iq;
-    }
-}
-
-// GX clip space -> PICA clip space. EFB position times w is linear in the clip coordinates, so the viewport, the
-// EFB scale and the depth range fold in before the divide and the hardware clips correctly.
 // Z textures (BP 0xF4 bias, 0xF5 bits 0-1 texel format U8/U16/U24, bits 2-3 op: 1 add, 2 replace) give each pixel
 // a depth taken from the last texture the TEV sampled. The PICA cannot write depth from a texture, but games use
 // them mostly with uniform textures: Twilight Princess resets its depth buffer every frame with ~650 quads that
@@ -499,64 +495,78 @@ static void apply_ztex(System* s, const GXCore* gx, u32 count) {
     }
 }
 
-static void to_pica(const Viewport* vp, const SVert* v, PVert* o) {
-    float w = v->w, ex = v->x * vp->wd + vp->xo * w, ey = v->y * vp->ht + vp->yo * w;
-    o->pos[0] = ex * vp->kx - w;
-    o->pos[1] = FLIP_Y ? w - ey * vp->ky : ey * vp->ky - w;
-    o->pos[2] = -(v->z * vp->zr + vp->fz * w) * (1.0f / 16777216.0f);
-    o->pos[3] = w;
-    attribs(v, o);
-}
-
 // A vertex given in EFB screen space (lines and points, expanded on the CPU).
-static void to_pica_screen(const Viewport* vp, const SVert* v, float sx, float sy, PVert* o) {
-    o->pos[0] = sx * vp->kx - 1.0f;
-    o->pos[1] = FLIP_Y ? 1.0f - sy * vp->ky : sy * vp->ky - 1.0f;
+static void to_pica_screen(const VFold* f, const SVert* v, float sx, float sy, PVert* o) {
+    o->pos[0] = sx * f->kx - 1.0f;
+    o->pos[1] = FLIP_Y ? 1.0f - sy * f->ky : sy * f->ky - 1.0f;
     o->pos[2] = -v->sz * (1.0f / 16777216.0f);
     o->pos[3] = 1.0f;
-    attribs(v, o);
+    vfast_attribs(&g.sel, v, o);
 }
 
 static u32 g_cull;
+static float (*g_nd)[2];  // NDC x, y per vertex for culling (w > 0 only)
 
+// Culling with the reference renderer's rule: only triangles entirely in front of the eye, by screen-space winding
+// (NDC is EFB pixels scaled by positive factors, mirrored in y when FLIP_Y).
 static void tri(u32 a, u32 b, u32 c) {
-    const SVert *va = &g_sv[a], *vb = &g_sv[b], *vc = &g_sv[c];
     if (g_cull == 3) return;
-    if (va->w > 0 && vb->w > 0 && vc->w > 0) {
-        float area = (vb->sx - va->sx) * (vc->sy - va->sy) - (vc->sx - va->sx) * (vb->sy - va->sy);
+    const PVert *va = &g_pv[a], *vb = &g_pv[b], *vc = &g_pv[c];
+    if (g_cull && va->pos[3] > 0 && vb->pos[3] > 0 && vc->pos[3] > 0) {
+        const float *na = g_nd[a], *nb = g_nd[b], *nc = g_nd[c];
+        float area = (nb[0] - na[0]) * (nc[1] - na[1]) - (nc[0] - na[0]) * (nb[1] - na[1]);
+        if (FLIP_Y) area = -area;
         if (area == 0 || (g_cull == 1 && area < 0) || (g_cull == 2 && area > 0)) return;
     }
     PVert* o = g.arena + g.arenaUsed;
-    o[0] = g_pv[a]; o[1] = g_pv[b]; o[2] = g_pv[c];
+    o[0] = *va; o[1] = *vb; o[2] = *vc;
     g.arenaUsed += 3;
 }
 
-static void quad_screen(const Viewport* vp, const SVert* a, const SVert* b, const float xy[4][2]) {
+static void quad_screen(const VFold* f, const SVert* a, const SVert* b, const float xy[4][2]) {
     PVert q[4];
-    for (int i = 0; i < 4; i++) to_pica_screen(vp, i == 1 || i == 2 ? b : a, xy[i][0], xy[i][1], &q[i]);
+    for (int i = 0; i < 4; i++) to_pica_screen(f, i == 1 || i == 2 ? b : a, xy[i][0], xy[i][1], &q[i]);
     PVert* o = g.arena + g.arenaUsed;
     o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[0]; o[4] = q[2]; o[5] = q[3];
     g.arenaUsed += 6;
 }
 
 // Lines and points as screen-space quads, sized like the reference renderer (BP 0x22, sixths of a pixel).
-static void line(const GXCore* gx, const Viewport* vp, const SVert* a, const SVert* b) {
+static void line(const GXCore* gx, const VFold* f, const SVert* a, const SVert* b) {
     if (a->w <= 0 || b->w <= 0) return;
     float hw = (float)(gx->bp[0x22] & 0xFF) / 12.0f;
     bool horiz = fabsf(b->sx - a->sx) >= fabsf(b->sy - a->sy);
     float xy[4][2] = { { a->sx, a->sy }, { b->sx, b->sy }, { b->sx, b->sy }, { a->sx, a->sy } };
     for (int i = 0; i < 4; i++) { float d = i < 2 ? -hw : hw; if (horiz) xy[i][1] += d; else xy[i][0] += d; }
-    quad_screen(vp, a, b, xy);
+    quad_screen(f, a, b, xy);
 }
 
-static void point(const GXCore* gx, const Viewport* vp, const SVert* p) {
+static void point(const GXCore* gx, const VFold* f, const SVert* p) {
     if (p->w <= 0) return;
     float h = (float)((gx->bp[0x22] >> 8) & 0xFF) / 12.0f;
     float xy[4][2] = { { p->sx - h, p->sy - h }, { p->sx + h, p->sy - h }, { p->sx + h, p->sy + h }, { p->sx - h, p->sy + h } };
-    quad_screen(vp, p, p, xy);
+    quad_screen(f, p, p, xy);
 }
 
 enum { PRIM_QUADS = 0, PRIM_QUADS2 = 1, PRIM_TRIS = 2, PRIM_STRIP = 3, PRIM_FAN = 4, PRIM_LINES = 5, PRIM_LSTRIP = 6, PRIM_POINTS = 7 };
+
+// Everything a draw's GPU state depends on: TEV, fragment state, the used texture maps' registers, and what decides
+// whether a texture is re-read from RAM. Draws with equal keys share a batch.
+static u32 batch_key(const GXCore* gx, u32* k) {
+    u32 n = tev_key(gx, k);
+    k[n++] = gx->bp[0x40]; k[n++] = gx->bp[0x41]; k[n++] = gx->bp[0x43] & 7; k[n++] = gx->bp[0xF3];
+    k[n++] = gx->bp[0x20]; k[n++] = gx->bp[0x21];
+    k[n++] = g.xfbSeq; k[n++] = gx->tlutVersion;
+    return n;
+}
+
+static void tex_key(const GXCore* gx, u32* k, u32* n) {
+    for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) {
+        u32 map = g.tev.texMap[i] & 7, hi = map >= 4 ? 0x20 : 0, m = map & 3;
+        k[(*n)++] = gx->bp[0x80 + m + hi]; k[(*n)++] = gx->bp[0x88 + m + hi];
+        k[(*n)++] = gx->bp[0x94 + m + hi]; k[(*n)++] = gx->bp[0x98 + m + hi];
+    }
+}
 
 static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
@@ -566,46 +576,76 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         if (sv) g_sv = sv;
         PVert* pv = realloc(g_pv, count * sizeof *pv);
         if (pv) g_pv = pv;
-        if (!sv || !pv) return;
+        float (*nd)[2] = realloc(g_nd, count * sizeof *nd);
+        if (nd) g_nd = nd;
+        if (!sv || !pv || !nd) return;
         g_vcap = count;
     }
     begin_frame();
-    update_tev(gx);
+    u32 frameBefore = g.frameNo;  // looking up textures can also start a frame (texture graveyard full)
+    // The open batch's key holds the TEV words first, so the used texture maps (from the compiled TEV) are only
+    // compared once the TEV is known to be the same.
+    u32 key[96], kn = batch_key(gx, key);
+    bool same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
+    if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
-    u64 t0 = prof_begin();
-    for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
-    prof_end(PROF_GXTEX, t0);
-    t0 = prof_begin();
-    Viewport vp;
-    viewport(gx, &vp);
-    for (u32 i = 0; i < count; i++) {
-        GXVertex dv;
-        gx_decode_vertex(s, gx, vat, raw + i * vsize, &dv);
-        gx_transform(gx, &dv, &g_sv[i]);
-        gx_to_screen(gx, &g_sv[i]);
-        to_pica(&vp, &g_sv[i], &g_pv[i]);
-    }
-    apply_ztex(s, gx, count);
-    prof_end(PROF_GXVTX, t0);
-    u32 maxVerts = prim >= PRIM_LINES ? count * 6 : count * 3;
-    u32 frameBefore = g.frameNo;
-    if (!need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
-    if (g.frameNo != frameBefore) {  // a new frame resets citro3d's state tracking; textures stay live
+    if (!same) {
+        flush_batch();
         update_tev(gx);
-        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) {
-            PTex* p = NULL;
-            for (u32 j = 0; j < MAX_TEX; j++) if (&g.tex[j].tex == tex[i]) p = &g.tex[j];
-            if (p) p->lastUse = g.frameNo;
-        }
+        kn = batch_key(gx, key);
+        tex_key(gx, key, &kn);
+        u64 t0 = prof_begin();
+        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+        prof_end(PROF_GXTEX, t0);
     }
-    apply_frag(gx);
-    // Only the units the combiners read are bound; the others keep whatever they had, which nothing samples.
-    // - Never bind NULL: citro3d 1.7.1 reads the texture's type through it, a data abort on hardware. Azahar does not
-    //   fault on reads near address 0, so it hid this.
-    // - Binding a placeholder to unused units 1 and 2 crashed Azahar itself (2026-10-10).
-    for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
-    g_cull = (gx->bp[0x00] >> 14) & 3;
-    u32 first = g.arenaUsed;
+    u64 t0 = prof_begin();
+    VFold f;
+    vfold_init(gx, SX * 2.0f / TW, SY * 2.0f / TH, FLIP_Y, &f);
+    bool lines = prim >= PRIM_LINES;
+    if (lines) {
+        for (u32 i = 0; i < count; i++) {
+            GXVertex dv;
+            gx_decode_vertex(s, gx, vat, raw + i * vsize, &dv);
+            gx_transform(gx, &dv, &g_sv[i]);
+            gx_to_screen(gx, &g_sv[i]);
+        }
+    } else {
+        vfast_run(s, gx, vat, &f, &g.sel, raw, count, vsize, g_pv);
+        apply_ztex(s, gx, count);
+        g_cull = (gx->bp[0x00] >> 14) & 3;
+        if (g_cull == 1 || g_cull == 2)
+            for (u32 i = 0; i < count; i++) {
+                float w = g_pv[i].pos[3], iw = w > 0 ? 1.0f / w : 0;
+                g_nd[i][0] = g_pv[i].pos[0] * iw; g_nd[i][1] = g_pv[i].pos[1] * iw;
+            }
+    }
+    prof_end(PROF_GXVTX, t0);
+    u32 maxVerts = lines ? count * 6 : count * 3;
+    if (!need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
+    if (g.frameNo != frameBefore || !same) {
+        if (g.frameNo != frameBefore) {  // a new frame resets citro3d's state tracking; textures stay live
+            update_tev(gx);
+            if (same) {  // textures were not looked up for this draw: do it now
+                for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+            } else {
+                for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) {
+                    PTex* p = NULL;
+                    for (u32 j = 0; j < MAX_TEX; j++) if (&g.tex[j].tex == tex[i]) p = &g.tex[j];
+                    if (p) p->lastUse = g.frameNo;
+                }
+            }
+        }
+        apply_frag(gx);
+        // Only the units the combiners read are bound; the others keep whatever they had, which nothing samples.
+        // - Never bind NULL: citro3d 1.7.1 reads the texture's type through it, a data abort on hardware. Azahar does
+        //   not fault on reads near address 0, so it hid this.
+        // - Binding a placeholder to unused units 1 and 2 crashed Azahar itself (2026-10-10).
+        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
+        g.batchOpen = true;
+        g.batchFirst = g.arenaUsed;
+        memcpy(g.batchKey, key, kn * 4);
+        g.batchKeyLen = kn;
+    }
     switch (prim) {
     case PRIM_QUADS: case PRIM_QUADS2:
         for (u32 i = 0; i + 3 < count; i += 4) { tri(i, i + 1, i + 2); tri(i, i + 2, i + 3); }
@@ -613,17 +653,17 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) tri(i, i + 1, i + 2); break;
     case PRIM_STRIP: for (u32 i = 0; i + 2 < count; i++) { if (i & 1) tri(i + 1, i, i + 2); else tri(i, i + 1, i + 2); } break;
     case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) tri(0, i, i + 1); break;
-    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) line(gx, &vp, &g_sv[i], &g_sv[i + 1]); break;
-    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) line(gx, &vp, &g_sv[i], &g_sv[i + 1]); break;
-    case PRIM_POINTS: for (u32 i = 0; i < count; i++) point(gx, &vp, &g_sv[i]); break;
+    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) line(gx, &f, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) line(gx, &f, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_POINTS: for (u32 i = 0; i < count; i++) point(gx, &f, &g_sv[i]); break;
     default: break;
     }
-    if (g.arenaUsed > first) C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)(g.arenaUsed - first));
 }
 
 // ---- EFB copies and clears ----
 // Fixed-function state for a full-target textured quad (copies and present).
 static void quad_state(C3D_Tex* src, bool linear) {
+    flush_batch();
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_ColorLogicOp(GPU_LOGICOP_COPY);
@@ -801,6 +841,7 @@ bool pica_present(System* s, u32 xfbAddr) {
     }
     if (!show) return false;
     if (!need(6)) return true;
+    flush_batch();
     C3D_FrameDrawOn(g.screen);
     quad_state(&show->tex, true);
     C3D_TexEnv* e = C3D_GetTexEnv(0);

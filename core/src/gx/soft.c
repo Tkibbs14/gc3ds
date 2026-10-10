@@ -11,6 +11,7 @@
 #include "gx.h"
 #include "xform.h"
 #include "tev_pica_sim.h"
+#include "vfast.h"
 
 // --pica-tev: TEV computed the way the 3DS backend does it (tev_pica_compile + the PICA combiner model), to see in
 // whole frames what the translation's approximations do. Compiled once per draw.
@@ -540,6 +541,91 @@ static void draw_point(System* s, GXCore* gx, const SVert* p) {
     raster_quad(s, gx, q);
 }
 
+// VFAST_CHECK: every triangle draw also goes through the 3DS backend's fast vertex path (vfast.c), compared with
+// the reference vertices folded the same way. Draws past the tolerances are listed (the first 20) and totals are
+// printed at exit.
+static struct { u64 draws, verts, bad; double pos, z, tc; int col; } g_vchk;
+
+static void vchk_report(void) {
+    fprintf(stderr, "VFAST_CHECK: %llu draws, %llu vertices, %llu draws over tolerance; max error pos %.3g z %.3g "
+            "tc %.3g col %d\n", (unsigned long long)g_vchk.draws, (unsigned long long)g_vchk.verts,
+            (unsigned long long)g_vchk.bad, g_vchk.pos, g_vchk.z, g_vchk.tc, g_vchk.col);
+}
+
+static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const SVert* v) {
+    if (prim >= PRIM_LINES) return;
+    if (!g_vchk.draws) atexit(vchk_report);
+    PicaTev pt;
+    tev_pica_compile(gx, &pt);
+    VSel sel = { pt.rasChan, pt.numTex, { pt.texCoord[0], pt.texCoord[1], pt.texCoord[2] } };
+    VFold f;
+    vfold_init(gx, (400.0f / 640.0f) * 2.0f / 512.0f, (240.0f / 480.0f) * 2.0f / 256.0f, false, &f);
+    PVert* fast = malloc(sizeof(PVert) * count);
+    if (!fast) return;
+    vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, fast);
+    u32 numGens = gx->xf[0x103F] & 15;
+    double ep = 0, ez = 0, et = 0;
+    int ec = 0;
+    for (u32 i = 0; i < count; i++) {
+        PVert r;
+        vfast_ref(&f, &sel, &v[i], &r);
+        double w = fabs(r.pos[3]) > 1 ? fabs(r.pos[3]) : 1;
+        for (int k = 0; k < 4; k++) {
+            double d = fabs((double)fast[i].pos[k] - r.pos[k]) / w;
+            if (k == 2) ez = d > ez ? d : ez; else ep = d > ep ? d : ep;
+        }
+        for (int k = 0; k < 4; k++) { int d = abs((int)fast[i].col[k] - (int)r.col[k]); ec = d > ec ? d : ec; }
+        for (u32 u = 0; u < sel.numTex && u < 3; u++) {
+            if ((sel.texCoord[u] & 7) >= numGens) continue;
+            for (int k = 0; k < 2; k++) {
+                double m = fabs(r.tc[u][k]) > 1 ? fabs(r.tc[u][k]) : 1;
+                double d = fabs((double)fast[i].tc[u][k] - r.tc[u][k]) / m;
+                if (d > et || d != d) et = d != d ? 1e30 : d;
+            }
+        }
+    }
+    g_vchk.draws++;
+    g_vchk.verts += count;
+    if (ep > g_vchk.pos) g_vchk.pos = ep;
+    if (ez > g_vchk.z) g_vchk.z = ez;
+    if (et > g_vchk.tc) g_vchk.tc = et;
+    if (ec > g_vchk.col) g_vchk.col = ec;
+    if (ep > 2e-4 || ez > 1e-5 || et > 1e-3 || ec > 1) {
+        // Which side is off: both against the position computed in double.
+        double rp = 0, fp = 0;
+        for (u32 i = 0; i < count; i++) {
+            GXVertex dv;
+            gx_decode_vertex(s, gx, vat, raw + i * vsize, &dv);
+            u32 pm = (u32)dv.pnmtx * 4;
+            double p[3], cl[4], t[4];
+            for (int r = 0; r < 3; r++)
+                p[r] = (double)xf_f(gx, pm + 4 * r) * dv.pos[0] + (double)xf_f(gx, pm + 4 * r + 1) * dv.pos[1] +
+                       (double)xf_f(gx, pm + 4 * r + 2) * dv.pos[2] + xf_f(gx, pm + 4 * r + 3);
+            double a = xf_f(gx, 0x1020), b = xf_f(gx, 0x1021), c = xf_f(gx, 0x1022), d = xf_f(gx, 0x1023), e = xf_f(gx, 0x1024), ff = xf_f(gx, 0x1025);
+            if (gx->xf[0x1026] == 0) { cl[0] = a * p[0] + b * p[2]; cl[1] = c * p[1] + d * p[2]; cl[2] = e * p[2] + ff; cl[3] = -p[2]; }
+            else { cl[0] = a * p[0] + b; cl[1] = c * p[1] + d; cl[2] = e * p[2] + ff; cl[3] = 1; }
+            t[0] = (cl[0] * f.wd + (double)f.xo * cl[3]) * f.kx - cl[3];
+            t[1] = (cl[1] * f.ht + (double)f.yo * cl[3]) * f.ky - cl[3];
+            t[2] = -(cl[2] * f.zr + (double)f.fz * cl[3]) / 16777216.0;
+            t[3] = cl[3];
+            PVert r;
+            vfast_ref(&f, &sel, &v[i], &r);
+            double w = fabs(t[3]) > 1 ? fabs(t[3]) : 1;
+            for (int k = 0; k < 4; k++) {
+                double dr = fabs(r.pos[k] - t[k]) / w, df = fabs(fast[i].pos[k] - t[k]) / w;
+                rp = dr > rp ? dr : rp; fp = df > fp ? df : fp;
+            }
+        }
+        if (g_vchk.bad < 20) fprintf(stderr, "  vs double: reference %.3g fast %.3g\n", rp, fp);
+        if (g_vchk.bad++ < 20)
+            fprintf(stderr, "VFAST draw %llu prim %u n %u vat %u: pos %.3g z %.3g tc %.3g col %d | vcd %08x %08x chans %u "
+                    "gens %u ras %u tex %u (%u %u %u) proj %u\n", (unsigned long long)gx->draws, prim, count, vat, ep, ez, et,
+                    ec, gx->cp[0x50], gx->cp[0x60], gx->xf[0x1009] & 3, numGens, sel.rasChan, sel.numTex, sel.texCoord[0],
+                    sel.texCoord[1], sel.texCoord[2], gx->xf[0x1026]);
+    }
+    free(fast);
+}
+
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
@@ -572,6 +658,9 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         gx_transform(gx, &dv, &v[i]);
         gx_to_screen(gx, &v[i]);
     }
+    static int vchk = -1;
+    if (vchk < 0) vchk = getenv("VFAST_CHECK") != NULL;
+    if (vchk) vfast_check(s, gx, prim, vat, raw, count, vsize, v);
     if (gx->traceDraws)
         emu_log(LOG_GX, "draw prim %u x%u vat %u zmode %02x blend %04x tev %u gens %u chans %u v0 %.1f,%.1f,%.0f w %.3g "
                 "v1 %.1f,%.1f,%.0f sc %06x %06x %06x vp %.0f %.0f %.0f %.0f | cenv %06x aenv %06x atest %06x tref %06x "

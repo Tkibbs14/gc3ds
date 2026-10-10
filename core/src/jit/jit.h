@@ -9,12 +9,17 @@
 
 typedef struct Jit Jit;
 
+// Instructions left to the interpreter, by primary opcode and by extended opcode for groups 31 / 19 / 63 / 59 / 4.
+typedef struct {
+    u32 primary[64], x31[1024], x19[1024], x63[1024], x59[32], x4[1024];
+} JitOpCounts;
+
 typedef struct {
     u64 blocksCompiled, blocksRun, instrsCompiled, instrsNative, flushes;
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
-    u32 fallbackPrimary[64];   // compiled instructions left to the interpreter, by primary opcode
-    u32 fallback31[1024];      // ... and by extended opcode for groups 31 / 19 / 63 / 59 / 4
-    u32 fallback19[1024], fallback63[1024], fallback59[32], fallback4[1024];
+    u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
+    JitOpCounts fallback;      // static: one per compiled occurrence
+    JitOpCounts fallbackRun;   // dynamic: one per execution
 } JitStats;
 
 // ram/ramSize: host view of physical RAM starting at physical 0 (for the fast memory path).
