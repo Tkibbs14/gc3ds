@@ -76,9 +76,19 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   vertex path costs about 7.5 µs per vertex on the ARM11.
 - **Guest code alone caps the title scene near 5–6%.** The likely cause is float and paired-single code falling back
   to the interpreter one instruction at a time; check the JIT's dynamic fallback count first.
-- **TP's title scene makes a Z copy each frame** (fmt 11, 608x448 to 304x224, then a downscale chain at 0x0064f040)
-  for its haze. Depth copies now sample the depth buffer as a texture. The build with this was not yet seen on the
-  2DS: before it, the title scene was washed pink/white, because white depth means maximum haze.
+- **The pink/white title screen: found and fixed, but not yet seen on the 2DS.**
+  - **Cause:** TP resets its depth buffer every frame with ~650 quads that replace depth from a uniform 4x4 Z texture.
+    The PICA backend ignored Z textures, so every later draw failed the depth test. Uniform Z textures now set the
+    vertex depth (`apply_ztex` in pica.c).
+  - TP also makes a Z copy each frame for its haze; depth copies sample the depth buffer as a texture.
+- **Checking the 3DS translation on the PC:**
+  - `soft.c --pica-tev` renders with the TEV -> PICA translation (`tev_pica_sim.c`).
+  - `core/tools/tp_tevcheck.sh N` logs the TEV programs that differ from the reference.
+  - `MASK=hex` limits the PICA path to draws with those approximation flags.
+  - `tp_ztex.sh A B` lists Z-texture draws.
+  - Result: the TP title frame with every draw through the PICA model is recognisable, but its haze/bloom
+    composite is stronger than it should be. Four TEV programs differ, with approximation flags REGS 40, RANGE 10,
+    STAGES+TEXUNITS 03 and BIAS 80; they are the next targets for `tev_pica.c`.
 - **Tools:**
   - `core/tools/tp_frame.sh N` renders TP field N on the PC.
   - `tp_copies.sh A B` lists TP's EFB copies.
