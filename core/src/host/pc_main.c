@@ -107,6 +107,18 @@ int main(int argc, char** argv) {
     double wall = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
 
     save_frame(&sys, &fe, "last");
+    // Where the program is and what it might be waiting for.
+    Gekko* g = &sys.cpu;
+    fprintf(stderr, "msr=%08x lr=%08x ctr=%08x r3=%08x r4=%08x  PI intsr=%08x intmr=%08x  VI DI0=%04x%04x TFBL=%04x%04x BFBL=%04x%04x HSW=%04x VTR=%04x line=%u\n",
+            g->msr, g->lr, g->ctr, g->gpr[3], g->gpr[4], sys.pi.intsr, sys.pi.intmr, sys.vi.regs[0x30 / 2],
+            sys.vi.regs[0x32 / 2], sys.vi.regs[0x1C / 2], sys.vi.regs[0x1E / 2], sys.vi.regs[0x24 / 2], sys.vi.regs[0x26 / 2], sys.vi.regs[0x48 / 2], sys.vi.regs[0], sys.vi.line);
+    for (u32 a = g->pc - 16; a <= g->pc + 16; a += 4) {
+        u32 pa;
+        if (!gekko_translate_data(g, a, &pa) || pa + 4 > PA_MEM1_END) continue;
+        char dis[96];
+        gekko_disasm(a, mem1_read32(&sys, pa), dis, sizeof dis);
+        fprintf(stderr, "%s %08x  %s\n", a == g->pc ? ">" : " ", a, dis);
+    }
     fprintf(stderr, "ran %.2f emulated s (%llu cycles, %u fields) in %.2f s wall: %.1f MIPS; pc=%08x; GX bytes %llu\n",
             (double)sys.cpu.cycles / GEKKO_HZ, (unsigned long long)sys.cpu.cycles, fe.fields, wall,
             (double)sys.cpu.cycles / wall / 1e6, sys.cpu.pc, (unsigned long long)sys.gx.bytesReceived);

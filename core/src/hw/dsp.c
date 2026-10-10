@@ -95,7 +95,14 @@ void dsp_write16(System* s, u32 off, u16 v) {
         break;
     case DSP_CR: {
         u16 keep = d->cr & CR_W1C & ~(v & CR_W1C);
+        bool wasHalted = d->cr & CR_HALT;
         d->cr = (u16)(keep | (v & ~CR_W1C & ~CR_RES));
+        if (wasHalted && !(d->cr & CR_HALT)) {
+            // Released from halt: the boot microcode runs and announces itself with a mail (libogc's DSP
+            // bootstrap waits for any mail with the top bit set).
+            d->mailboxDspHi = 0x8071;
+            d->mailboxDspLo = 0xFEED;
+        }
         if (v & CR_RES) {
             // A DSP reset boots the ROM, which mails 0x8071FEED to say it is ready for microcode.
             d->mailboxDspHi = 0x8071;

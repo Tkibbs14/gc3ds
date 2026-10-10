@@ -46,7 +46,7 @@ void vi_reset(System* s) {
     s->vi.line = 1;
     s->vi.regs[VI_VISEL / 2] = 0;                      // composite cable, NTSC
     s->vi.regs[VI_VTR / 2] = (240u << 4) | 6;           // 240 active lines per field, as the IPL leaves it
-    s->vi.regs[VI_HSW / 2] = (40u << 10) | 40;          // 640 pixels wide, stride 640
+    s->vi.regs[VI_HSW / 2] = (40u << 8) | 80;           // 640 pixels wide, field stride two lines
     sched_add(s, sys_now(s) + CYCLES_PER_LINE, line_event, 0);
 }
 
@@ -79,8 +79,9 @@ bool vi_get_xfb(System* s, u32* pa, u32* bottom, u32* width, u32* height, u32* s
     u32 activeLines = (s->vi.regs[VI_VTR / 2] >> 4) & 0x3FF;
     *pa = s->vi.xfbLatched;
     *bottom = fb_addr(reg32(s, VI_BFBL));
-    *width = ((hsw >> 10) & 0x3F) * 16;
-    *stride = (hsw & 0x3FF) * 32;  // bytes per line of the field
+    // Picture configuration: bits 8-14 words per line (16-pixel units), bits 0-7 field stride (32-byte units).
+    *width = ((hsw >> 8) & 0x7F) * 16;
+    *stride = (hsw & 0xFF) * 32;
     *height = activeLines * 2;     // interlaced frame (two fields)
     if (*width == 0) *width = 640;
     return *pa != 0 && *pa < PA_MEM1_END;
