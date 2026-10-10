@@ -1,9 +1,10 @@
 // JIT host services on the 3DS: executable memory through svcControlProcessMemory (Luma3DS allows RWX for
-// homebrew) and cache maintenance through Luma3DS's kernel-extension SVCs:
-//   0x91 svcFlushDataCacheRange(addr, len)            (L2 included)
-//   0x93 svcInvalidateInstructionCacheRange(addr, len)
-// (numbers from Luma3DS sysmodules/rosalina/source/csvc.s). An earlier version ran its own cache routine in kernel
-// mode through svcBackdoor; a kernel-mode prefetch abort followed on hardware (2026-10-10), so it is not used.
+// homebrew) and cache maintenance that never hands our virtual addresses to another core:
+//   svcFlushProcessDataCache(process, addr, len)  - official SVC, resolved in our own process
+//   svc 0x94 svcInvalidateEntireInstructionCache  - Luma3DS kernel extension (sysmodules/rosalina/source/csvc.s)
+// History (New 2DS XL, 2026-10-10): running our own cache routine through svcBackdoor ended in a kernel prefetch
+// abort; Luma's ranged SVCs 0x91/0x93 ended in a data abort in gsp on core 1 at our JIT buffer address (the range
+// operation reached a core running another process). Neither is used.
 #include <3ds.h>
 #define GC3DS_HOST_TYPES
 #include <malloc.h>
@@ -11,14 +12,8 @@
 
 static Handle g_proc;
 
-static void __attribute__((naked, noinline)) luma_flush_dcache_range(void* addr, u32 len) {
-    (void)addr; (void)len;
-    __asm__ volatile("svc 0x91\n\tbx lr\n");
-}
-
-static void __attribute__((naked, noinline)) luma_invalidate_icache_range(void* addr, u32 len) {
-    (void)addr; (void)len;
-    __asm__ volatile("svc 0x93\n\tbx lr\n");
+static void __attribute__((naked, noinline)) luma_invalidate_entire_icache(void) {
+    __asm__ volatile("svc 0x94\n\tbx lr\n");
 }
 
 void* jit_host_alloc_exec(u32 bytes) {
@@ -32,6 +27,6 @@ void* jit_host_alloc_exec(u32 bytes) {
 }
 
 void jit_host_sync_icache(void* start, u32 bytes) {
-    luma_flush_dcache_range(start, bytes);
-    luma_invalidate_icache_range(start, bytes);
+    svcFlushProcessDataCache(g_proc, (u32)start, bytes);
+    luma_invalidate_entire_icache();
 }
