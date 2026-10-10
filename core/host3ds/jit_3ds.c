@@ -1,6 +1,9 @@
 // JIT host services on the 3DS: executable memory through svcControlProcessMemory (Luma3DS allows RWX for
-// homebrew) and cache maintenance through svcFlushProcessDataCache plus a kernel-mode instruction-cache
-// invalidate (svcBackdoor). gcbench measured both on a New 2DS XL: stale code without the sync, 2.8 us per sync.
+// homebrew) and cache maintenance through Luma3DS's kernel-extension SVCs:
+//   0x91 svcFlushDataCacheRange(addr, len)            (L2 included)
+//   0x93 svcInvalidateInstructionCacheRange(addr, len)
+// (numbers from Luma3DS sysmodules/rosalina/source/csvc.s). An earlier version ran its own cache routine in kernel
+// mode through svcBackdoor; a kernel-mode prefetch abort followed on hardware (2026-10-10), so it is not used.
 #include <3ds.h>
 #define GC3DS_HOST_TYPES
 #include <malloc.h>
@@ -8,16 +11,14 @@
 
 static Handle g_proc;
 
-static s32 kernel_sync_icache(void) {
-    __asm__ volatile(
-        "mov r0, #0\n"
-        "mcr p15, 0, r0, c7, c10, 0\n"  // clean entire data cache
-        "mcr p15, 0, r0, c7, c10, 4\n"  // drain write buffer
-        "mcr p15, 0, r0, c7, c5, 0\n"   // invalidate entire instruction cache
-        "mcr p15, 0, r0, c7, c5, 6\n"   // flush branch target cache
-        "mcr p15, 0, r0, c7, c5, 4\n"   // flush prefetch buffer
-        ::: "r0", "memory");
-    return 0;
+static void __attribute__((naked, noinline)) luma_flush_dcache_range(void* addr, u32 len) {
+    (void)addr; (void)len;
+    __asm__ volatile("svc 0x91\n\tbx lr\n");
+}
+
+static void __attribute__((naked, noinline)) luma_invalidate_icache_range(void* addr, u32 len) {
+    (void)addr; (void)len;
+    __asm__ volatile("svc 0x93\n\tbx lr\n");
 }
 
 void* jit_host_alloc_exec(u32 bytes) {
@@ -31,6 +32,6 @@ void* jit_host_alloc_exec(u32 bytes) {
 }
 
 void jit_host_sync_icache(void* start, u32 bytes) {
-    svcFlushProcessDataCache(g_proc, (u32)start, bytes);
-    svcBackdoor(kernel_sync_icache);
+    luma_flush_dcache_range(start, bytes);
+    luma_invalidate_icache_range(start, bytes);
 }
