@@ -26,3 +26,4 @@ core/host3ds/*.3dsx
 core/host3ds/*.elf
 core/host3ds/*.smdh
 core/host3ds/*.map
+core/build-arm/
