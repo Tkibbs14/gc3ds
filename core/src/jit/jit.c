@@ -27,7 +27,7 @@
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
 
 typedef u32 (*BlockFn)(Gekko* g);
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; } Entry;
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; } Entry;
 
 struct Jit {
     Gekko* g;
@@ -732,8 +732,13 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!en->fn || en->pc != pc || en->msrBits != msrBits) {
             BlockFn fn = compile(j, pc);
             if (!fn) break;
+            u32 pa;
             en->pc = pc; en->msrBits = msrBits; en->fn = fn;
+            en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
+                       ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
         }
+        // Idle loop ("b ." with interrupts on): nothing can change until the next event, so use up the budget.
+        if (en->idle && (g->msr & MSR_EE)) { total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1); break; }
         u32 n = en->fn(g);
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin

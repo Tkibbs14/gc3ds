@@ -284,6 +284,16 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             }
             if (p->fetchHost) inst = gk_ld32(p->fetchHost + (pc & GK_BLK_MASK));
             else inst = g->bus->fetch(g->bus->ctx, p->fetchPa | (pc & GK_BLK_MASK));
+            // Idle loop: "b ." with interrupts enabled can only be left by an interrupt, and nothing changes until
+            // the next scheduled event or decrementer edge, so time jumps there instead of spinning.
+            if (inst == 0x48000000u && (g->msr & MSR_EE)) {
+                s64 skip = g->downcount;
+                if ((s64)(limit - g->cycles) < skip) skip = (s64)(limit - g->cycles);
+                if (skip < 1) skip = 1;
+                g->cycles += (u64)skip;
+                g->downcount -= skip;
+                break;
+            }
             p->curPc = pc;
             p->npc = pc + 4;
             gk_prim[inst >> 26](g, inst);
