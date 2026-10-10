@@ -49,11 +49,20 @@ static u8* load_file(const char* path, size_t* size) {
 
 static inline u8 clamp8(int v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-// One field of the XFB (YUYV, 640 wide) scaled to the 400x240 top screen. The top framebuffer is stored rotated:
-// column-major, 240 pixels per column, BGR8.
-static void present(System* s, void* user) {
-    (void)user;
+static volatile bool g_frameReady;
+
+// VI field callback: only notes that a new field is out. Presenting happens in the main loop, at most once per
+// 3DS refresh (presenting every emulated field flooded the GPU service when emulation ran ahead of real time).
+static void on_field(System* s, void* user) {
+    (void)s; (void)user;
     g_fields++;
+    g_frameReady = true;
+}
+
+// The latest XFB field (YUYV, 640 wide) scaled to the 400x240 top screen. The top framebuffer is stored rotated:
+// column-major, 240 pixels per column, BGR8.
+static void present(System* s) {
+    g_frameReady = false;
     u32 top, bottom, w, h, stride;
     if (!vi_get_xfb(s, &top, &bottom, &w, &h, &stride) || w == 0) return;
     u16 fbW, fbH;
@@ -149,14 +158,26 @@ static void run(const char* path) {
     free(dol);
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     g_fields = 0;
-    u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles;
+    u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
     u32 fieldsLast = 0;
     while (aptMainLoop()) {
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
         sys_run(&g_sys, CYCLES_PER_FIELD);
         if (g_sys.stopRequested) { printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc); break; }
+        // Pace to real time: when emulation is ahead, present and wait for the next 3DS refresh; when behind,
+        // present at most once per refresh and keep going.
         u64 now = svcGetSystemTick();
+        double emulated = (double)(g_sys.cpu.cycles - cyc0) / GEKKO_HZ, real = (double)(now - t0) / SYSCLOCK_ARM11;
+        if (emulated > real) {
+            if (g_frameReady) present(&g_sys);
+            gspWaitForVBlank();
+            tPresent = svcGetSystemTick();
+        } else if (g_frameReady && now - tPresent > SYSCLOCK_ARM11 / 60) {
+            present(&g_sys);
+            tPresent = now;
+        }
+        now = svcGetSystemTick();
         if (now - tLast > SYSCLOCK_ARM11) {  // once a second
             double secs = (double)(now - tLast) / SYSCLOCK_ARM11;
             double mips = (double)(g_sys.cpu.cycles - cycLast) / secs / 1e6;
@@ -185,7 +206,7 @@ int main(void) {
     scan_dir("sdmc:/gc3ds");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
     gx_soft_attach(&g_sys);
-    g_sys.on_field = present;
+    g_sys.on_field = on_field;
     g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 4u << 20);
     if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; }
     // romfs:/autorun.txt (test builds) names a program to start without the menu.
