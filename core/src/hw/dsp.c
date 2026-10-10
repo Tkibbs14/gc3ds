@@ -1,5 +1,5 @@
-// DSP interface: mailboxes, control register, ARAM DMA and audio DMA. The DSP itself is not executed yet (no
-// microcode HLE); its boot handshake is answered so that software waiting on it can continue.
+// DSP interface: mailboxes, control register, ARAM DMA and audio DMA. The DSP itself is not executed: its boot ROM
+// and microcode are emulated at the mail level in dsp_hle.c.
 #include "../sys/system.h"
 
 enum {
@@ -59,13 +59,18 @@ void dsp_reset(System* s) {
     s->dsp.cr = CR_DSPRESET;
 }
 
+void dsp_raise_int(System* s) {
+    s->dsp.cr |= CR_DSPINT;
+    update_irq(s);
+}
+
 u16 dsp_read16(System* s, u32 off) {
     DSPState* d = &s->dsp;
     switch (off) {
     case DSP_MBOX_IN_H: return d->mailboxCpuHi;
     case DSP_MBOX_IN_L: return d->mailboxCpuLo;
-    case DSP_MBOX_OUT_H: return d->mailboxDspHi;
-    case DSP_MBOX_OUT_L: { u16 v = d->mailboxDspLo; d->mailboxDspHi &= 0x7FFF; return v; }  // reading low acknowledges
+    case DSP_MBOX_OUT_H: return (u16)(dsphle_peek_mail(s) >> 16);
+    case DSP_MBOX_OUT_L: return (u16)dsphle_pop_mail(s);  // reading the low half takes the mail
     case DSP_CR: return d->cr;
     case AR_SIZE: return d->aramSize;
     case AR_MODE: return 1;     // ARAM initialised
@@ -91,24 +96,18 @@ void dsp_write16(System* s, u32 off, u16 v) {
     case DSP_MBOX_IN_H: d->mailboxCpuHi = v; break;
     case DSP_MBOX_IN_L:
         d->mailboxCpuLo = v;
-        emu_log(LOG_DSP, "mail to DSP: %04x%04x\n", d->mailboxCpuHi, v);
+        // The DSP takes the mail at once; clearing bit 15 tells the CPU the mailbox is free again.
+        dsphle_cpu_mail(s, ((u32)d->mailboxCpuHi << 16) | v);
+        d->mailboxCpuHi &= 0x7FFF;
         break;
     case DSP_CR: {
         u16 keep = d->cr & CR_W1C & ~(v & CR_W1C);
         bool wasHalted = d->cr & CR_HALT;
         d->cr = (u16)(keep | (v & ~CR_W1C & ~CR_RES));
-        if (wasHalted && !(d->cr & CR_HALT)) {
-            // Released from halt: the boot microcode runs and announces itself with a mail (libogc's DSP
-            // bootstrap waits for any mail with the top bit set).
-            d->mailboxDspHi = 0x8071;
-            d->mailboxDspLo = 0xFEED;
-        }
-        if (v & CR_RES) {
-            // A DSP reset boots the ROM, which mails 0x8071FEED to say it is ready for microcode.
-            d->mailboxDspHi = 0x8071;
-            d->mailboxDspLo = 0xFEED;
-            d->cr &= ~CR_DSPRESET;
-        }
+        // A reset boots the ROM, which mails 0x8071FEED to say it is ready for microcode. Leaving halt with no
+        // microcode loaded does the same (the OS's audio init and libogc's DSP bootstrap wait for that mail).
+        if (v & CR_RES) { dsphle_reset(s); d->cr &= ~CR_DSPRESET; }
+        else if (wasHalted && !(d->cr & CR_HALT) && d->hle.ucode <= DSP_UC_ROM) dsphle_reset(s);
         update_irq(s);
         break;
     }
@@ -173,32 +172,4 @@ void ai_write32(System* s, u32 off, u32 v) {
     case AI_SCNT: break;
     case AI_IT: s->ai.interruptTiming = v; break;
     }
-}
-
-// ---- disc interface: no disc in the drive yet; commands complete with an error ----
-enum { DI_SR = 0x00, DI_CVR = 0x04, DI_CR = 0x1C, DI_CFG = 0x24 };
-
-void di_reset(System* s) {
-    memset(&s->di, 0, sizeof s->di);
-    s->di.regs[DI_CVR / 4] = 0;  // cover closed
-}
-
-u32 di_read32(System* s, u32 off) { return off < 0x40 ? s->di.regs[off / 4] : 0; }
-
-void di_write32(System* s, u32 off, u32 v) {
-    if (off >= 0x40) return;
-    if (off == DI_SR) {
-        u32 clear = v & ((1u << 2) | (1u << 4) | (1u << 6));  // DEINT, TCINT, BRKINT are write-one-to-clear
-        s->di.regs[0] = (s->di.regs[0] & ~clear & ((1u << 2) | (1u << 4) | (1u << 6))) | (v & ~((1u << 2) | (1u << 4) | (1u << 6)));
-    } else {
-        s->di.regs[off / 4] = v;
-    }
-    if (off == DI_CR && (v & 1)) {
-        emu_log(LOG_DI, "DI command %08x (no disc)\n", s->di.regs[2]);
-        s->di.regs[DI_CR / 4] &= ~1u;
-        s->di.regs[0] |= 1u << 2;  // device error
-    }
-    u32 sr = s->di.regs[0];
-    bool irq = ((sr & (1u << 2)) && (sr & (1u << 1))) || ((sr & (1u << 4)) && (sr & (1u << 3)));
-    if (irq) pi_raise(s, PI_INT_DI); else pi_clear(s, PI_INT_DI);
 }

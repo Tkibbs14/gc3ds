@@ -33,6 +33,7 @@ typedef struct {
     u32 intsr, intmr;
     u32 fifoBase, fifoEnd, fifoWrite;  // CPU-side GP FIFO (0x0C, 0x10, 0x14)
     u32 resetCode;
+    bool resetWritten;
 } PIState;
 
 typedef struct {
@@ -64,16 +65,39 @@ typedef struct {
     u8 stick[4][6];            // main X/Y, C X/Y, L, R
 } SIState;
 
+// High-level emulation of the DSP's microcode (src/hw/dsp_hle.c): which program runs and its mail state.
+#define DSP_MAILQ 64
+typedef struct {
+    u32 q[DSP_MAILQ];                 // DSP -> CPU mails not yet read
+    bool qIrq[DSP_MAILQ];             // raise the DSP interrupt when this mail becomes readable
+    u32 qHead, qCount;
+    u32 lastMail;                     // what the CPU-side mailbox shows when the queue is empty
+    int ucode;                        // DspUcode
+    u32 ucodeHash;                    // Ector hash of the uploaded IRAM image (as Dolphin's ucode table keys it)
+    u32 romParam;                     // ROM boot loader: header mail awaiting its parameter
+    u32 bootRam, bootIram, bootLen, bootDmem, bootPc;
+    // Zelda-family microcode (Twilight Princess, Wind Waker, Sunshine, Pikmin...)
+    int zState;                       // ZeldaMailState
+    u32 zExpect;                      // words still to come for the command being written
+    u32 zCmd[256], zCmdRd, zCmdWr;    // command ring buffer (words)
+    u32 zPending;                     // complete commands not yet executed
+    bool zCanExec;
+    u32 zVoicesPerFrame, zFramesReq, zFrame, zVoice, zSyncMax;
+    bool zRendering;
+    u32 uploadStep, upload[10];       // MAIL_NEW_UCODE: ten words describing the next microcode
+    bool uploading;
+    u32 mailsIn, mailsOut;            // statistics
+} DSPHle;
+
 typedef struct {
     u16 mailboxCpuHi, mailboxCpuLo;   // CPU -> DSP
-    u16 mailboxDspHi, mailboxDspLo;   // DSP -> CPU
     u16 cr;                           // DSPCR
     u32 aramDmaMm, aramDmaAr, aramDmaCnt;
     u32 aiDmaStart, aiDmaLen;
     u16 aiDmaBlocksLeft;
     u16 aramSize;
     u8* aram;                         // 16 MB auxiliary RAM
-    int bootState;                    // HLE of the DSP's boot handshake
+    DSPHle hle;
 } DSPState;
 
 typedef struct {
@@ -82,7 +106,13 @@ typedef struct {
 } AIState;
 
 typedef struct {
-    u32 regs[16];
+    u32 sr, cvr, cmd[3], mar, len, cr, imm, cfg;
+    int state;                 // drive state (DriveState in di.c)
+    u32 error;                 // last error, returned by REQUEST ERROR
+    bool busy;
+    u32 pendingSr;             // status bit (TCINT/DEINT) the running command completes with
+    bool audioEnabled;
+    u64 reads, bytesRead;
 } DIState;
 
 typedef struct {
@@ -105,6 +135,9 @@ struct System {
     AIState ai;
     DIState di;
     GXState gx;
+    struct Disc* disc;         // the disc in the drive, or NULL (owned by the frontend)
+    u32 fixedRtc;              // real-time clock at reset, seconds since 2000 (0: the host clock)
+    void (*on_efb_copy)(System* s, void* user, u32 ctl);  // debug: called before each EFB copy executes
     Event events[MAX_EVENTS];
     u64 nextEvent;
     // Frontend hooks.
@@ -112,10 +145,16 @@ struct System {
     void* user;
     bool stopRequested;
     u32 unknownMmioCount;
+    // icbi: code at physical pa may have changed (the JIT drops compiled blocks there).
+    void (*icbiHook)(void* ctx, u32 pa);
+    void* icbiCtx;
 };
 
 bool sys_init(System* s);
 void sys_free(System* s);
+// Development save states (savestate.c): only valid for the build that wrote them. Call between sys_run calls.
+bool sys_save_state(System* s, const char* path);
+bool sys_load_state(System* s, const char* path);
 void sys_reset(System* s);
 // Runs the machine until `cycles` CPU cycles have elapsed or a stop is requested.
 void sys_run(System* s, u64 cycles);
@@ -145,6 +184,16 @@ void gp_fifo_write(System* s, const u8* data, u32 len);  // bytes in console (bi
 
 void vi_reset(System* s); void exi_reset(System* s); void si_reset(System* s); void dsp_reset(System* s);
 void ai_reset(System* s); void di_reset(System* s); void gx_reset(System* s);
+void di_reset_drive(System* s);  // PI reset-code DI bit pulsed
+
+// DSP microcode HLE (dsp_hle.c), driven by dsp.c.
+enum { DSP_UC_NONE, DSP_UC_ROM, DSP_UC_ZELDA, DSP_UC_UNKNOWN };
+void dsphle_reset(System* s);                  // DSP reset: the boot ROM runs and greets the CPU
+void dsphle_cpu_mail(System* s, u32 mail);     // a complete CPU -> DSP mail
+bool dsphle_mail_pending(System* s);
+u32 dsphle_peek_mail(System* s);               // DSP -> CPU mailbox as the CPU sees it (bit 31 = unread)
+u32 dsphle_pop_mail(System* s);                // the CPU read the low half
+void dsp_raise_int(System* s);                 // the DSP sets DSPCR.DSPINT
 
 // VI helpers for the frontend.
 // Top/bottom field framebuffer addresses, pixel width, frame height (both fields) and field line stride in bytes.

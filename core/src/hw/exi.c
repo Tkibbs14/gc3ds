@@ -110,7 +110,7 @@ void exi_reset(System* s) {
     memset(&s->exi, 0, sizeof s->exi);
     s->exi.ch[0].csr = CSR_ROMDIS;  // the IPL disables ROM decryption before handing over
     // Seconds since 2000-01-01 (the GameCube epoch), from the host clock.
-    s->exi.rtc = (u32)(time(NULL) - 946684800);
+    s->exi.rtc = s->fixedRtc ? s->fixedRtc : (u32)(time(NULL) - 946684800);
     u8* sr = s->exi.sram;
     sr[0x11] = 0x00;  // video mode: NTSC, no progressive
     sr[0x12] = 0x00;  // language: English

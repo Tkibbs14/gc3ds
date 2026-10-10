@@ -11,6 +11,15 @@ void gx_reset(System* s) {
 
 u16 cp_read16(System* s, u32 off) {
     if (off == 0x00) return 0x0C;  // status: GP read idle, command idle
+    // The GP executes FIFO data as it arrives, so its FIFO is always drained: the read and write pointers both sit
+    // at the CPU write pointer and the read-write distance is 0 (CP 0x30 distance, 0x34 write, 0x38 read pointer;
+    // low half first).
+    u32 wp = s->pi.fifoWrite & 0x03FFFFFF;
+    switch (off) {
+    case 0x30: case 0x32: return 0;
+    case 0x34: case 0x38: return (u16)wp;
+    case 0x36: case 0x3A: return (u16)(wp >> 16);
+    }
     return off < 0x80 ? s->gx.cpRegs[off / 2] : 0;
 }
 

@@ -2,7 +2,8 @@
 // Covers: XF position/normal transform, projection, viewport, per-vertex lighting (diffuse, distance/angle
 // attenuation), regular texgen, triangle rasterisation with perspective-correct attributes and a depth buffer,
 // TEV colour/alpha combiners (all inputs, konst, swap tables, compare modes), texture sampling (nearest/bilinear,
-// wrap modes, TLUTs), alpha test and blending. Not yet: fog, indirect textures, lines/points, Z textures.
+// wrap modes, TLUTs), indirect texturing, alpha test, Z textures, fog, blending, lines and points (as quads). Not yet:
+// range fog, mipmaps (level 0 only), clipping (triangles crossing the eye plane are dropped).
 #include <math.h>
 #include <stdlib.h>
 #include "../sys/system.h"
@@ -133,7 +134,7 @@ static void transform(System* s, const GXCore* gx, const GXVertex* v, SVert* o) 
 }
 
 // ---- texture sampling ----
-typedef struct { u32 addr, fmt, w, h, tlutAddr, tlutFmt, tlutVersion; u32* pix; } TexCache;
+typedef struct { u32 addr, fmt, w, h, tlutAddr, tlutFmt, tlutVersion, texVersion; u32* pix; } TexCache;
 static TexCache g_tex[8];
 
 static const u32* fetch_texture(System* s, const GXCore* gx, u32 map, u32* w, u32* h, u32* mode) {
@@ -145,10 +146,10 @@ static const u32* fetch_texture(System* s, const GXCore* gx, u32 map, u32* w, u3
     *w = tw; *h = th;
     TexCache* c = &g_tex[map];
     u32 tlutAddr = (tlut & 0x3FF) << 9, tlutFmt = (tlut >> 10) & 3;
-    // Cached per texture map while nothing it depends on changed. (Texture data rewritten in place is not detected
-    // yet; the reference renderer favours correctness on simple programs over that case.)
+    // Cached per texture map while nothing it depends on changed. Texture data rewritten in place is caught at the
+    // next frame or EFB copy (texVersion), not within a frame.
     if (c->pix && c->addr == addr && c->fmt == fmt && c->w == tw && c->h == th && c->tlutAddr == tlutAddr &&
-        c->tlutFmt == tlutFmt && c->tlutVersion == gx->tlutVersion)
+        c->tlutFmt == tlutFmt && c->tlutVersion == gx->tlutVersion && c->texVersion == gx->texVersion)
         return c->pix;
     u32 bytes = gx_texture_size(fmt, tw, th);
     if (addr + bytes > PA_MEM1_END) return NULL;
@@ -158,6 +159,7 @@ static const u32* fetch_texture(System* s, const GXCore* gx, u32 map, u32* w, u3
     gx_decode_texture(s->mem1 + addr, fmt, tw, th, gx->tmem + (tlutAddr & 0xFFFFF), tlutFmt, c->pix);
     c->addr = addr; c->fmt = fmt; c->w = tw; c->h = th; c->tlutAddr = tlutAddr; c->tlutFmt = tlutFmt;
     c->tlutVersion = gx->tlutVersion;
+    c->texVersion = gx->texVersion;
     return c->pix;
 }
 
@@ -223,6 +225,83 @@ static bool tev_stage_compare(u32 mode, bool eq, const float a[4], const float b
 
 static s32 sext11(u32 v) { return ((s32)(v << 21)) >> 21; }
 
+// Texel of the last stage that sampled a texture (after its swap table): the Z-texture unit reads it.
+static float g_lastTex[4];
+
+// ---- indirect texturing ----
+// Coordinates here are texels in 1/128 units (S17.7), as the hardware's texture coordinate path keeps them; texels
+// per normalised unit come from the setup unit's per-coordinate size (BP 0x30 + 2n: S size - 1, 0x31 + 2n: T size - 1),
+// which GXLoadTexObj sets to the texture's size. BP 0x27: per indirect stage, map (3 bits) and coordinate (3 bits);
+// 0x25/0x26: per indirect stage S/T shift (4 bits each); 0x06-0x0E: three 2x3 matrices, S0.10 elements, 6-bit scale
+// split over the three registers; 0x10 + stage: the TEV stage's indirect command. Semantics as YAGCD BP 0x10/0x27 and
+// Dolphin's software renderer (Tev.cpp, read for reference).
+static float su_size(const GXCore* gx, u32 coord, int axis) { return (float)((gx->bp[0x30 + 2 * coord + axis] & 0xFFFF) + 1); }
+
+static int ind_wrap(int v, u32 mode) {
+    if (!mode || mode > 6) return v;
+    if (mode == 6) return 0;
+    return v & (((256 >> (mode - 1)) << 7) - 1);  // 256, 128, 64, 32, 16 texels
+}
+
+static void tex_dims(const GXCore* gx, u32 map, u32* w, u32* h) {
+    u32 img0 = gx->bp[0x88 + (map & 3) + (map >= 4 ? 0x20 : 0)];
+    *w = (img0 & 0x3FF) + 1;
+    *h = ((img0 >> 10) & 0x3FF) + 1;
+}
+
+// Samples the indirect textures for this pixel: out[i] = texel of indirect stage i (RGBA, 0-255).
+static void sample_indirect(System* s, const GXCore* gx, const float tc[8][2], u32 numInd, float out[4][4]) {
+    u32 iref = gx->bp[0x27];
+    for (u32 i = 0; i < numInd; i++) {
+        u32 map = (iref >> (6 * i)) & 7, coord = (iref >> (6 * i + 3)) & 7;
+        u32 sc = gx->bp[0x25 + i / 2] >> ((i & 1) * 8), ss = sc & 15, ts = (sc >> 4) & 15;
+        u32 w, h;
+        tex_dims(gx, map, &w, &h);
+        float u = tc[coord][0] * su_size(gx, coord, 0) / (float)(1u << ss) / (float)w;
+        float v = tc[coord][1] * su_size(gx, coord, 1) / (float)(1u << ts) / (float)h;
+        sample(s, gx, map, u, v, out[i]);
+    }
+}
+
+// One TEV stage's indirect command: turns the regular coordinate (normalised) into the coordinate it samples with,
+// carrying the running coordinate for "add previous". Returns the bump alpha.
+static u32 indirect_coord(const GXCore* gx, u32 cmd, u32 texcoord, const float tc[8][2], float ind[4][4], int prev[2],
+                          float outUv[2]) {
+    u32 bt = cmd & 3, fmt = (cmd >> 2) & 3, bias = (cmd >> 4) & 7, bs = (cmd >> 7) & 3, mid = (cmd >> 9) & 15;
+    u32 sw = (cmd >> 13) & 7, tw = (cmd >> 16) & 7;
+    bool addPrev = (cmd >> 20) & 1;
+    float sS = su_size(gx, texcoord, 0), sT = su_size(gx, texcoord, 1);
+    int S = (int)floorf(tc[texcoord][0] * sS * 128.0f), T = (int)floorf(tc[texcoord][1] * sT * 128.0f);
+    // Texel components: S offset from alpha, T from blue, U from green; the bits below the offset field are bump alpha.
+    int raw[3] = { (int)ind[bt][3], (int)ind[bt][2], (int)ind[bt][1] };
+    static const u8 shifts[4] = { 0, 3, 4, 5 };
+    u32 alphaBump = bs ? (u32)raw[bs - 1] : 0;
+    alphaBump = fmt == 0 ? alphaBump & 0xF8 : (alphaBump << (8 - shifts[fmt])) & 0xFF;
+    int biasValue = fmt == 0 ? -128 : 1, ic[3];
+    for (int k = 0; k < 3; k++) ic[k] = (raw[k] >> shifts[fmt]) + ((bias >> k) & 1 ? biasValue : 0);
+    int t0 = 0, t1 = 0;
+    u32 index = mid & 3, type = mid >> 2;
+    if (index) {
+        u32 a = gx->bp[0x06 + 3 * (index - 1)], b = gx->bp[0x07 + 3 * (index - 1)], c = gx->bp[0x08 + 3 * (index - 1)];
+        int scale = (int)(((a >> 22) & 3) | (((b >> 22) & 3) << 2) | (((c >> 22) & 3) << 4));
+        if (type == 0) {
+            t0 = (sext11(a) * ic[0] + sext11(b) * ic[1] + sext11(c) * ic[2]) >> 3;
+            t1 = (sext11(a >> 11) * ic[0] + sext11(b >> 11) * ic[1] + sext11(c >> 11) * ic[2]) >> 3;
+        } else {
+            int k = type == 1 ? ic[0] : ic[1];
+            t0 = S * k / 256;
+            t1 = T * k / 256;
+        }
+        int shift = 17 - scale;
+        if (shift >= 0) { t0 >>= shift; t1 >>= shift; } else { t0 *= 1 << -shift; t1 *= 1 << -shift; }
+    }
+    int ns = ind_wrap(S, sw) + t0, nt = ind_wrap(T, tw) + t1;
+    if (addPrev) { prev[0] += ns; prev[1] += nt; } else { prev[0] = ns; prev[1] = nt; }
+    outUv[0] = (float)prev[0] / 128.0f / sS;
+    outUv[1] = (float)prev[1] / 128.0f / sT;
+    return alphaBump;
+}
+
 static void run_tev(System* s, const GXCore* gx, const float ras[2][4], const float tc[8][2], float out[4]) {
     u32 gen = gx->bp[0x00];
     u32 stages = ((gen >> 10) & 15) + 1;
@@ -237,13 +316,31 @@ static void run_tev(System* s, const GXCore* gx, const float ras[2][4], const fl
         konst[r][0] = (float)(lo & 0xFF); konst[r][3] = (float)((lo >> 12) & 0xFF);
         konst[r][2] = (float)(hi & 0xFF); konst[r][1] = (float)((hi >> 12) & 0xFF);
     }
+    // Indirect texturing is evaluated only when some stage has an indirect command, so plain draws keep exact
+    // floating-point coordinates.
+    u32 numInd = (gen >> 16) & 7;
+    bool anyInd = false;
+    for (u32 st = 0; st < stages; st++) if (gx->bp[0x10 + st] & 0x1FFFFF) anyInd = true;
+    float ind[4][4];
+    int prevUv[2] = { 0, 0 };
+    if (anyInd) {
+        memset(ind, 0, sizeof ind);
+        sample_indirect(s, gx, tc, numInd < 4 ? numInd : 4, ind);
+    }
     for (u32 st = 0; st < stages; st++) {
         u32 tref = gx->bp[0x28 + st / 2] >> ((st & 1) * 12);
         u32 texmap = tref & 7, texcoord = (tref >> 3) & 7, chan = (tref >> 7) & 7;
         bool texEn = (tref >> 6) & 1;
         float tex[4] = { 255, 255, 255, 255 }, rasc[4] = { 0, 0, 0, 0 };
-        if (texEn) sample(s, gx, texmap, tc[texcoord][0], tc[texcoord][1], tex);
+        float uv[2] = { tc[texcoord][0], tc[texcoord][1] };
+        u32 bump = 0;
+        if (anyInd) bump = indirect_coord(gx, gx->bp[0x10 + st] & 0x1FFFFF, texcoord, tc, ind, prevUv, uv);
+        if (texEn) sample(s, gx, texmap, uv[0], uv[1], tex);
         if (chan < 2) memcpy(rasc, ras[chan], sizeof rasc);
+        else if (chan == 5 || chan == 6) {  // bump alpha (6: normalised to 0-255)
+            float b = (float)(chan == 5 ? bump : bump | (bump >> 5));
+            rasc[0] = rasc[1] = rasc[2] = rasc[3] = b;
+        }
         u32 ksel = gx->bp[0xF6 + st / 2];
         u32 kc = (ksel >> (4 + (st & 1) * 10)) & 31, ka = (ksel >> (9 + (st & 1) * 10)) & 31;
         u32 cenv = gx->bp[0xC0 + 2 * st], aenv = gx->bp[0xC1 + 2 * st];
@@ -258,6 +355,7 @@ static void run_tev(System* s, const GXCore* gx, const float ras[2][4], const fl
             sel = c < 2 ? (t0 >> (2 * c)) & 3 : (t1 >> (2 * (c - 2))) & 3;
             ts[c] = tex[sel];
         }
+        if (texEn) memcpy(g_lastTex, ts, sizeof ts);
         // Colour combiner inputs.
         float cin[4][3];
         for (int i = 0; i < 4; i++) {
@@ -376,11 +474,61 @@ static void write_pixel(GXCore* gx, int x, int y, float z, const float c[4]) {
     *px = rgb | al;
 }
 
+// ---- fog ----
+// BP 0xEE: A as a 20-bit float (sign 19, exponent 11-18, mantissa 0-10); 0xEF: B magnitude; 0xF0: B shift;
+// 0xF1: C (same float layout), bit 20 orthographic, bits 21-23 function (2 linear, 4 exp, 5 exp2, 6 backward exp,
+// 7 backward exp2); 0xF2: colour. Eye depth: A * 2^24 / (B - (Zs >> shift)) for perspective, A * Zs / 2^24 for ortho;
+// fog = clamp(depth - C), shaped by the function, blended in 8-bit steps. Sources: YAGCD BP 0xEE-0xF2; Dolphin's
+// pixel shader generator (formulae read for reference). Range adjustment (BP 0xE8-0xED) is not applied.
+typedef struct { u32 fn; bool ortho; float a, c; u32 bmag, bshift; float color[3]; } Fog;
+
+static float fog_float(u32 v) {
+    u32 bits = ((v >> 19) & 1) << 31 | ((v >> 11) & 0xFF) << 23 | (v & 0x7FF) << 12;
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+
+static void setup_fog(const GXCore* gx, Fog* f) {
+    u32 p3 = gx->bp[0xF1];
+    f->fn = (p3 >> 21) & 7;
+    if (f->fn < 2 || f->fn == 3) { f->fn = 0; return; }
+    f->ortho = (p3 >> 20) & 1;
+    f->a = fog_float(gx->bp[0xEE]);
+    f->c = fog_float(p3);
+    f->bmag = gx->bp[0xEF] & 0xFFFFFF;
+    f->bshift = gx->bp[0xF0] & 0x1F;
+    u32 col = gx->bp[0xF2];
+    f->color[0] = (float)((col >> 16) & 0xFF); f->color[1] = (float)((col >> 8) & 0xFF); f->color[2] = (float)(col & 0xFF);
+}
+
+static void apply_fog(const Fog* f, float z, float out[4]) {
+    u32 zs = (u32)(z < 0 ? 0 : z > 16777215.0f ? 16777215.0f : z);
+    float ze;
+    if (f->ortho) ze = f->a * ((float)zs / 16777216.0f);
+    else {
+        float den = (float)f->bmag - (float)(zs >> f->bshift);
+        ze = den != 0 ? f->a * 16777216.0f / den : 0;
+    }
+    float v = ze - f->c;
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    switch (f->fn) {
+    case 4: v = 1.0f - exp2f(-8.0f * v); break;
+    case 5: v = 1.0f - exp2f(-8.0f * v * v); break;
+    case 6: v = exp2f(-8.0f * (1.0f - v)); break;
+    case 7: v = 1.0f - v; v = exp2f(-8.0f * v * v); break;
+    default: break;
+    }
+    int k = (int)(v * 256.0f + 0.5f);
+    for (int i = 0; i < 3; i++) out[i] = (out[i] * (float)(256 - k) + f->color[i] * (float)k) / 256.0f;
+}
+
 // ---- triangle rasterisation ----
+static bool g_noCull;
 static void raster_tri(System* s, GXCore* gx, const SVert* v0, const SVert* v1, const SVert* v2) {
     float area = (v1->sx - v0->sx) * (v2->sy - v0->sy) - (v2->sx - v0->sx) * (v1->sy - v0->sy);
     if (area == 0) return;
-    u32 cull = (gx->bp[0x00] >> 14) & 3;  // 0 none, 1 back, 2 front, 3 all
+    u32 cull = g_noCull ? 0 : (gx->bp[0x00] >> 14) & 3;  // 0 none, 1 back, 2 front, 3 all
     if (cull == 3 || (cull == 1 && area < 0) || (cull == 2 && area > 0)) return;
     // Scissor (BP 0x20 top-left, 0x21 bottom-right; both offset by 342).
     int sx0 = (int)((gx->bp[0x20] >> 12) & 0x7FF) - 342, sy0 = (int)(gx->bp[0x20] & 0x7FF) - 342;
@@ -397,6 +545,8 @@ static void raster_tri(System* s, GXCore* gx, const SVert* v0, const SVert* v1, 
     x1 = x1 >= EFB_W ? EFB_W - 1 : x1;
     y1 = y1 >= EFB_H ? EFB_H - 1 : y1;
     u32 numGens = gx->xf[0x103F] & 15;
+    Fog fog;
+    setup_fog(gx, &fog);
     float iw0 = 1.0f / v0->w, iw1 = 1.0f / v1->w, iw2 = 1.0f / v2->w;
     for (int y = y0; y <= y1; y++) {
         for (int x = x0; x <= x1; x++) {
@@ -418,6 +568,22 @@ static void raster_tri(System* s, GXCore* gx, const SVert* v0, const SVert* v1, 
             }
             float out[4];
             run_tev(s, gx, ras, tc, out);
+            u32 ztexMode = gx->bp[0xF5];
+            if ((ztexMode >> 2) & 3) {
+                // Z texture (BP 0xF4 bias, 0xF5 bits 0-1 texel format, 2-3 op): depth from the last stage's texel, as
+                // U8 (alpha), U16 (alpha:red, big-endian like IA8 / Z16 textures) or U24 (red:green:blue), plus the
+                // bias, added to (op 1) or replacing (op 2) the rasterised depth. Source: YAGCD BP 0xF4/0xF5, Dolphin.
+                u32 r = (u32)g_lastTex[0], g = (u32)g_lastTex[1], b = (u32)g_lastTex[2], a = (u32)g_lastTex[3];
+                u32 zt = gx->bp[0xF4] & 0xFFFFFF;
+                switch (ztexMode & 3) {
+                case 0: zt += a; break;
+                case 1: zt += (a << 8) | r; break;
+                default: zt += (r << 16) | (g << 8) | b; break;
+                }
+                if (((ztexMode >> 2) & 3) == 1) zt += (u32)(z < 0 ? 0 : z > 16777215.0f ? 16777215.0f : z);
+                z = (float)(zt & 0xFFFFFF);
+            }
+            if (fog.fn) apply_fog(&fog, z, out);
             write_pixel(gx, x, y, z, out);
         }
     }
@@ -432,6 +598,36 @@ static void to_screen(const GXCore* gx, SVert* v) {
     v->sz = v->z * iw * zr + fz;
 }
 
+// Lines and points are drawn as screen-space quads. BP 0x22 (SU_LPSIZE): bits 0-7 line width and 8-15 point size, in
+// sixths of a pixel. A line is widened vertically when it is more horizontal than vertical, else horizontally (as the
+// setup unit does). Texture-coordinate offsets across the quad (BP 0x22 bits 16-21) are not applied.
+static void raster_quad(System* s, GXCore* gx, SVert q[4]) {
+    g_noCull = true;  // lines and points are never culled
+    raster_tri(s, gx, &q[0], &q[1], &q[2]);
+    raster_tri(s, gx, &q[0], &q[2], &q[3]);
+    g_noCull = false;
+}
+
+static void draw_line(System* s, GXCore* gx, const SVert* a, const SVert* b) {
+    if (a->w <= 0 || b->w <= 0) return;
+    float hw = (float)(gx->bp[0x22] & 0xFF) / 12.0f;
+    bool horiz = fabsf(b->sx - a->sx) >= fabsf(b->sy - a->sy);
+    SVert q[4] = { *a, *b, *b, *a };
+    for (int i = 0; i < 4; i++) {
+        float d = i < 2 ? -hw : hw;
+        if (horiz) q[i].sy += d; else q[i].sx += d;
+    }
+    raster_quad(s, gx, q);
+}
+
+static void draw_point(System* s, GXCore* gx, const SVert* p) {
+    if (p->w <= 0) return;
+    float h = (float)((gx->bp[0x22] >> 8) & 0xFF) / 12.0f;
+    SVert q[4] = { *p, *p, *p, *p };
+    q[0].sx -= h; q[0].sy -= h; q[1].sx += h; q[1].sy -= h; q[2].sx += h; q[2].sy += h; q[3].sx -= h; q[3].sy += h;
+    raster_quad(s, gx, q);
+}
+
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
@@ -443,6 +639,16 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         transform(s, gx, &dv, &v[i]);
         to_screen(gx, &v[i]);
     }
+    if (gx->traceDraws)
+        emu_log(LOG_GX, "draw prim %u x%u vat %u zmode %02x blend %04x tev %u gens %u chans %u v0 %.1f,%.1f,%.0f w %.3g "
+                "v1 %.1f,%.1f,%.0f sc %06x %06x %06x vp %.0f %.0f %.0f %.0f | cenv %06x aenv %06x atest %06x tref %06x "
+                "ksel %06x tex0 %06x %06x ind %06x %06x | z' %.9g zr %g fz %g proj %u %g %g\n",
+                prim, count, vat, gx->bp[0x40] & 0x1F, gx->bp[0x41] & 0xFFFF, ((gx->bp[0x00] >> 10) & 15) + 1,
+                gx->xf[0x103F] & 15, gx->xf[0x1009] & 3, v[0].sx, v[0].sy, v[0].sz, v[0].w,
+                count > 1 ? v[1].sx : 0.f, count > 1 ? v[1].sy : 0.f, count > 1 ? v[1].sz : 0.f, gx->bp[0x20], gx->bp[0x21],
+                gx->bp[0x59], xf_f(gx, 0x101A), xf_f(gx, 0x101B), xf_f(gx, 0x101D), xf_f(gx, 0x101E), gx->bp[0xC0],
+                gx->bp[0xC1], gx->bp[0xF3], gx->bp[0x28], gx->bp[0xF6], gx->bp[0x88], gx->bp[0x80], gx->bp[0x10], gx->bp[0x27],
+                v[0].z, xf_f(gx, 0x101C), xf_f(gx, 0x101F), gx->xf[0x1026], xf_f(gx, 0x1024), xf_f(gx, 0x1025));
     // Triangles with a vertex behind the eye are dropped (no clipping yet).
     #define TRI(a, b, c) do { if (v[a].w > 0 && v[b].w > 0 && v[c].w > 0) raster_tri(s, gx, &v[a], &v[b], &v[c]); } while (0)
     switch (prim) {
@@ -452,7 +658,10 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) TRI(i, i + 1, i + 2); break;
     case PRIM_STRIP: for (u32 i = 0; i + 2 < count; i++) { if (i & 1) TRI(i + 1, i, i + 2); else TRI(i, i + 1, i + 2); } break;
     case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) TRI(0, i, i + 1); break;
-    default: break;  // lines and points: not yet
+    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) draw_line(s, gx, &v[i], &v[i + 1]); break;
+    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) draw_line(s, gx, &v[i], &v[i + 1]); break;
+    case PRIM_POINTS: for (u32 i = 0; i < count; i++) draw_point(s, gx, &v[i]); break;
+    default: break;
     }
     #undef TRI
     free(v);

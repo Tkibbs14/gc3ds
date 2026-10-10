@@ -31,6 +31,12 @@ typedef struct {
     u32* efbZ;           // 24-bit depth
     const GXBackend* backend;
     void* backendCtx;
+    u32 texVersion;      // incremented when texture memory in RAM may have changed (EFB copies, each frame);
+                         // texture caches re-read RAM when it moves
+    u64 efbCopies;       // EFB -> texture copies executed
+    u64 primCount[8];    // draws per primitive type (quads, quads2, tris, strip, fan, lines, line strip, points)
+    u32 bpNonZero[8];    // bit per BP register ever written with a non-zero value (feature-use diagnostics)
+    bool traceDraws;     // debug: backends log every draw (LOG_GX)
 } GXCore;
 
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.

@@ -31,6 +31,7 @@ static void line_event(System* s, u64 now, u32 arg) {
         v->fieldStart = now;
         u32 tfbl = reg32(s, VI_TFBL);
         v->xfbLatched = (tfbl & (1u << 28)) ? (tfbl & 0xFFFFFF) << 5 : (tfbl & 0xFFFFFF);
+        emu_log(LOG_VI, "field %u shows XFB %08x\n", v->field, v->xfbLatched);
         if (s->on_field) s->on_field(s, s->user);
     }
     // A display interrupt fires when the beam reaches its programmed line (vertical count, 1-based).

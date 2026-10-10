@@ -94,7 +94,109 @@ static void pe_token(System* s, u32 token, bool irq) {
 
 static u8 clamp8(int v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-// EFB -> XFB copy (YUYV) or EFB -> texture (not yet), optionally clearing the source rectangle afterwards.
+// ---- EFB -> texture copy ----
+// BP 0x52 (copy control): bit 9 half-size box filter, bit 11 clear, bit 14 to XFB, bit 15 intensity (YUV) formats,
+// bits 3-6 the target format, stored rotated: format = (field >> 1) | ((field & 1) << 3). BP 0x4D: destination stride
+// in 32-byte units per row of tiles. Depth is copied instead of colour when the EFB format (BP 0x43 bits 0-2) is 3
+// (Z24 copy mode). Sources: YAGCD 5.11 (BP registers), Dolphin's BPMemory.h field layout (read for reference).
+enum { CF_R4 = 0, CF_R8_ALIAS = 1, CF_RA4 = 2, CF_RA8 = 3, CF_RGB565 = 4, CF_RGB5A3 = 5, CF_RGBA8 = 6, CF_A8 = 7,
+       CF_R8 = 8, CF_G8 = 9, CF_B8 = 10, CF_RG8 = 11, CF_GB8 = 12 };
+
+// Source texel (RGBA8 0xRRGGBBAA, or depth in the low 24 bits) at output position x, y.
+static u32 efb_src(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h, u32 x, u32 y, bool half, bool depth, bool noAlpha) {
+    const u32* buf = depth ? gx->efbZ : gx->efb;
+    u32 sx = half ? x * 2 : x, sy = half ? y * 2 : y;
+    if (sx >= w) sx = w - 1;
+    if (sy >= h) sy = h - 1;
+    u32 c;
+    if (!half || depth) {
+        c = buf[(y0 + sy) * EFB_W + x0 + sx];
+    } else {  // 2x2 box filter
+        u32 acc[4] = { 0, 0, 0, 0 };
+        for (u32 j = 0; j < 2; j++)
+            for (u32 i = 0; i < 2; i++) {
+                u32 xx = sx + i < w ? sx + i : w - 1, yy = sy + j < h ? sy + j : h - 1;
+                u32 p = buf[(y0 + yy) * EFB_W + x0 + xx];
+                for (int k = 0; k < 4; k++) acc[k] += (p >> (24 - 8 * k)) & 0xFF;
+            }
+        c = ((acc[0] / 4) << 24) | ((acc[1] / 4) << 16) | ((acc[2] / 4) << 8) | (acc[3] / 4);
+    }
+    if (!depth && noAlpha) c |= 0xFF;
+    return c;
+}
+
+static u32 lum(u32 c) {  // BT.601 studio-range luma, as the copy unit's intensity formats use
+    u32 r = c >> 24, g = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF;
+    return (66 * r + 129 * g + 25 * b + 128) / 256 + 16;
+}
+
+static void efb_copy_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    u32 field = (ctl >> 3) & 15, fmt = (field >> 1) | ((field & 1) << 3);
+    bool half = (ctl >> 9) & 1, intensity = (ctl >> 15) & 1;
+    u32 efbFmt = gx->bp[0x43] & 7;
+    bool depth = efbFmt == 3, noAlpha = efbFmt != 1;  // RGBA6_Z24 (1) is the only colour format with alpha
+    u32 ow = half ? (w + 1) / 2 : w, oh = half ? (h + 1) / 2 : h;
+    u32 bw, bh, bytes;
+    bool bpp4 = fmt == CF_R4, bpp8 = fmt == CF_R8_ALIAS || fmt == CF_RA4 || fmt == CF_A8 || (fmt >= CF_R8 && fmt <= CF_B8);
+    if (bpp4) { bw = 8; bh = 8; bytes = 32; } else if (bpp8) { bw = 8; bh = 4; bytes = 32; }
+    else { bw = 4; bh = 4; bytes = fmt == CF_RGBA8 ? 64 : 32; }
+    u32 stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5;
+    u32 tilesX = (ow + bw - 1) / bw, tilesY = (oh + bh - 1) / bh;
+    if (!stride) stride = tilesX * bytes;
+    gx->efbCopies++;
+    gx->texVersion++;
+    emu_log(LOG_GX, "EFB copy to texture %08x fmt %u%s%s %ux%u -> %ux%u\n", dest, fmt, intensity ? " (I)" : "",
+            depth ? " (Z)" : "", w, h, ow, oh);
+    for (u32 ty = 0; ty < tilesY; ty++) {
+        for (u32 tx = 0; tx < tilesX; tx++) {
+            u32 at = dest + ty * stride + tx * bytes;
+            if (at + bytes > PA_MEM1_END) return;
+            u8* o = s->mem1 + at;
+            memset(o, 0, bytes);
+            for (u32 py = 0; py < bh; py++) {
+                for (u32 px = 0; px < bw; px++) {
+                    u32 x = tx * bw + px, y = ty * bh + py, i = py * bw + px;
+                    u32 c = efb_src(gx, x0, y0, w, h, x < ow ? x : ow - 1, y < oh ? y : oh - 1, half, depth, noAlpha);
+                    u32 r, g, b, a;
+                    if (depth) {  // Z24: high, middle and low bytes play R, G, B
+                        r = (c >> 16) & 0xFF; g = (c >> 8) & 0xFF; b = c & 0xFF; a = 0xFF;
+                    } else {
+                        r = c >> 24; g = (c >> 16) & 0xFF; b = (c >> 8) & 0xFF; a = c & 0xFF;
+                        if (intensity && fmt <= CF_RA8) r = g = b = lum(c);
+                    }
+                    switch (fmt) {
+                    case CF_R4: o[i / 2] |= (u8)((r >> 4) << ((i & 1) ? 0 : 4)); break;
+                    case CF_R8_ALIAS: case CF_R8: o[i] = (u8)r; break;
+                    case CF_G8: o[i] = (u8)g; break;
+                    case CF_B8: o[i] = (u8)b; break;
+                    case CF_A8: o[i] = (u8)a; break;
+                    case CF_RA4: o[i] = (u8)(((a >> 4) << 4) | (r >> 4)); break;
+                    case CF_RA8: o[2 * i] = (u8)a; o[2 * i + 1] = (u8)r; break;
+                    // Two-channel formats store their second-named channel first, like IA8 stores A before I
+                    // (byte order as Dolphin's encoders produce it: RA8 = A,R; RG8 = G,R; GB8 = B,G).
+                    case CF_RG8: o[2 * i] = (u8)g; o[2 * i + 1] = (u8)r; break;
+                    case CF_GB8: o[2 * i] = (u8)b; o[2 * i + 1] = (u8)g; break;
+                    case CF_RGB565: {
+                        u32 v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+                        o[2 * i] = (u8)(v >> 8); o[2 * i + 1] = (u8)v;
+                        break;
+                    }
+                    case CF_RGB5A3: {
+                        u32 v = a >= 0xE0 ? 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+                                          : ((a >> 5) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+                        o[2 * i] = (u8)(v >> 8); o[2 * i + 1] = (u8)v;
+                        break;
+                    }
+                    case CF_RGBA8: o[2 * i] = (u8)a; o[2 * i + 1] = (u8)r; o[32 + 2 * i] = (u8)g; o[32 + 2 * i + 1] = (u8)b; break;
+                    default: break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// EFB -> XFB copy (YUYV) or EFB -> texture, optionally clearing the source rectangle afterwards.
 static void efb_copy(System* s, GXCore* gx, u32 ctl) {
     u32 tl = gx->bp[BP_EFB_TL], wh = gx->bp[BP_EFB_WH];
     u32 x0 = tl & 0x3FF, y0 = (tl >> 10) & 0x3FF, w = (wh & 0x3FF) + 1, h = ((wh >> 10) & 0x3FF) + 1;
@@ -103,6 +205,8 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
     if (x0 + w > EFB_W) w = EFB_W - x0;
     if (y0 + h > EFB_H) h = EFB_H - y0;
     if (toXfb) {
+        emu_log(LOG_GX, "EFB copy to XFB %08x %ux%u from %u,%u (%llu draws so far)\n", dest, w, h, x0, y0,
+                (unsigned long long)gx->draws);
         for (u32 y = 0; y < h; y++) {
             u32 row = dest + y * stride;
             if (row + w * 2 > PA_MEM1_END) break;
@@ -119,8 +223,9 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
                 o[0] = clamp8(yy[0]); o[1] = clamp8(u / 2); o[2] = clamp8(yy[1]); o[3] = clamp8(v / 2);
             }
         }
+        gx->texVersion++;  // a new frame: textures in RAM may have been replaced since the last one
     } else {
-        emu_log(LOG_GX, "EFB copy to texture %08x %ux%u (not implemented)\n", dest, w, h);
+        efb_copy_texture(s, gx, ctl, x0, y0, w, h, dest);
     }
     if (clear) {
         u32 ar = gx->bp[BP_CLEAR_AR], gb = gx->bp[BP_CLEAR_GB];
@@ -135,6 +240,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     u32 mask = gx->bpMask;
     if (reg != BP_MASK) gx->bpMask = 0xFFFFFF;
     gx->bp[reg] = (gx->bp[reg] & ~mask) | (val & mask);
+    if (gx->bp[reg]) gx->bpNonZero[reg >> 5] |= 1u << (reg & 31);
     if (reg >= 0xE0 && reg <= 0xE7) {
         u32 v = gx->bp[reg], i = (reg - 0xE0) / 2;
         bool konst = (v >> 23) & 1;
@@ -152,7 +258,10 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_PE_DONE: pe_finish(s); break;
     case BP_PE_TOKEN: pe_token(s, val & 0xFFFF, false); break;
     case BP_PE_TOKEN_INT: pe_token(s, val & 0xFFFF, true); break;
-    case BP_COPY_EXEC: efb_copy(s, gx, val); break;
+    case BP_COPY_EXEC:
+        if (s->on_efb_copy) s->on_efb_copy(s, s->user, val);
+        efb_copy(s, gx, val);
+        break;
     }
 }
 
@@ -176,6 +285,7 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         if (avail < total) return 0;
         gx->draws++;
         gx->vertices += count;
+        gx->primCount[(op >> 3) & 7]++;
         if (gx->backend && count) gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, vat, p + 3, count, vsize);
         return total;
     }

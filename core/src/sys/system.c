@@ -167,7 +167,10 @@ static void bus_dcbz(void* ctx, u32 pa) {
     u8* p = bus_host_ptr(ctx, pa & ~31u, 32);
     if (p) memset(p, 0, 32);
 }
-static void bus_cache_op(void* ctx, int op, u32 pa) { (void)ctx; (void)op; (void)pa; }  // no cache model yet (JIT will care about icbi)
+// No data cache model; instruction-cache invalidation is forwarded to the JIT (code at pa may have changed).
+static void bus_cache_op(void* ctx, int op, u32 pa) {
+    if (op == CACHE_ICBI && S->icbiHook) S->icbiHook(S->icbiCtx, pa);
+}
 static void bus_lc_dma(void* ctx, bool toRam, u32 ramPa, u32 cachePa, u32 len) {
     u8* r = bus_host_ptr(ctx, ramPa, len);
     u8* c = bus_host_ptr(ctx, cachePa, len);
@@ -241,7 +244,11 @@ void pi_write32(System* s, u32 off, u32 v) {
     case 0x10: s->pi.fifoEnd = v & 0x03FFFFE0; break;
     case 0x14: s->pi.fifoWrite = v & 0x03FFFFE0; break;
     case 0x18: break;  // FIFO reset
-    case 0x24: s->pi.resetCode = v; if (v & 1) {} break;
+    case 0x24:  // reset control: bit 2 low holds the disc drive in reset (DVDLowReset pulses it)
+        if (s->pi.resetWritten && !(s->pi.resetCode & 4) && (v & 4)) di_reset_drive(s);
+        s->pi.resetCode = v;
+        s->pi.resetWritten = true;
+        break;
     default: emu_log(LOG_HW, "PI write %03x = %08x\n", off, v); break;
     }
 }
