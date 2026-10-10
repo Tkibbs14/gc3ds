@@ -340,6 +340,10 @@ int main(int argc, char** argv) {
     fprintf(stderr, "ran %.2f emulated s (%llu cycles, %u fields) in %.2f s wall: %.1f MIPS; pc=%08x; GX bytes %llu\n",
             (double)sys.cpu.cycles / GEKKO_HZ, (unsigned long long)sys.cpu.cycles, fe.fields, wall,
             emu * GEKKO_HZ / wall / 1e6, sys.cpu.pc, (unsigned long long)sys.gx.bytesReceived);
+    u64 skips, skipped;
+    gekko_poll_stats(&sys.cpu, &skips, &skipped);
+    if (skips) fprintf(stderr, "polling-loop skips: %llu, %.1f%% of emulated time\n", (unsigned long long)skips,
+                       100.0 * (double)skipped / (double)sys.cpu.cycles);
     sys_free(&sys);
     if (isDisc || discPath) disc_close(&disc);
     free(dol);

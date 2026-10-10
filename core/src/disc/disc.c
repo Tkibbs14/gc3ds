@@ -15,7 +15,9 @@ static bool read_at(Disc* d, u64 offset, void* dst, u32 len) {
     if (offset >= d->size) { memset(out, 0, len); return true; }
     u32 have = offset + len > d->size ? (u32)(d->size - offset) : len;
     FILE* f = d->file;
-    if (fseek(f, (long)offset, SEEK_SET) != 0 || fread(out, 1, have, f) != have) return false;
+    if (d->pos != offset && fseek(f, (long)offset, SEEK_SET) != 0) { d->pos = ~0ull; return false; }
+    if (fread(out, 1, have, f) != have) { d->pos = ~0ull; return false; }
+    d->pos = offset + have;
     if (have < len) memset(out + have, 0, len - have);
     return true;
 }
@@ -41,8 +43,12 @@ bool disc_open(Disc* d, const char* path, char* err, size_t errLen) {
     FILE* f = fopen(path, "rb");
     if (!f) { snprintf(err, errLen, "cannot open %s", path); return false; }
     d->file = f;
+    // No stdio buffer: game reads are large and each would otherwise refill it after the seek (on the 3DS that
+    // was 13% of the time while Twilight Princess loaded).
+    setvbuf(f, NULL, _IONBF, 0);
     fseek(f, 0, SEEK_END);
     long end = ftell(f);
+    d->pos = ~0ull;
     d->size = end > 0 ? (u64)end : 0;
     if (!disc_read(d, 0, d->header, sizeof d->header) || !disc_read(d, 0x440, d->bi2, sizeof d->bi2)) {
         snprintf(err, errLen, "read error");

@@ -64,6 +64,7 @@ void gekko_reset(Gekko* g) {
     u32 compat = p->compat;
     GekkoJitFn jit = p->jit;  // an attached JIT stays attached across resets (it drops its own blocks)
     void* jitCtx = p->jitCtx;
+    u32 pollRam = p->pollRam;  // so does the polling-loop setting
     memset(g->gpr, 0, sizeof g->gpr);
     memset(g->fpr, 0, sizeof g->fpr);
     memset(g->sr, 0, sizeof g->sr);
@@ -81,6 +82,7 @@ void gekko_reset(Gekko* g) {
     p->compat = compat;
     p->jit = jit;
     p->jitCtx = jitCtx;
+    p->pollRam = pollRam;
     p->fetchBlk = 0xFFFFFFFFu;
     g->bus = bus;
     gk_map_init(g);
@@ -136,6 +138,87 @@ void gekko_stop(Gekko* g) {
 }
 
 bool gekko_translate_data(Gekko* g, u32 ea, u32* pa) { return gk_translate(g, ea, false, true, pa, false); }
+
+// ---- polling loops ----
+// A short loop that only loads, compares and branches back to its start computes the same thing every time round
+// until memory changes, which, with interrupts on and RAM-only loads, happens only at an interrupt or a scheduled
+// event: time can jump there instead of spinning (Twilight Princess spends most of its loading time in one such
+// loop, 0x80341144: lwz / cmpli / bc). Allowed body: lwz/lhz/lha/lbz (D-form), cmp/cmpl/cmpi/cmpli, andi.,
+// rlwinm, ori. A register written in the body must not be read before it is written there (otherwise a value
+// carries from one round to the next, as in a counter); the closing b/bc must target the start and not touch CTR
+// or LR.
+static bool fetch_word(Gekko* g, u32 ea, u32* inst) {
+    u32 pa;
+    if (!gk_translate(g, ea, false, false, &pa, false)) return false;
+    *inst = g->bus->fetch(g->bus->ctx, pa);
+    return true;
+}
+
+static bool is_poll_load(u32 op) { return op == 32 || op == 34 || op == 40 || op == 42; }
+
+u32 gekko_poll_loop_len(Gekko* g, u32 start) {
+    u32 code[GK_POLL_MAX];
+    u32 n = 0;
+    for (; n < GK_POLL_MAX; n++) {
+        if (!fetch_word(g, start + 4 * n, &code[n])) return 0;
+        u32 op = code[n] >> 26;
+        if (op == 16 || op == 18) break;
+    }
+    if (n == 0 || n == GK_POLL_MAX) return 0;
+    u32 br = code[n], op = br >> 26;
+    if (br & 3) return 0;  // AA or LK set
+    s32 disp = op == 18 ? ((s32)(br << 6) >> 6) & ~3 : (s32)(s16)(br & 0xFFFC);
+    if (start + 4 * n + (u32)disp != start) return 0;
+    if (op == 16 && !((br >> 21) & 4)) return 0;  // decrements CTR
+    // reads[i] / writes[i]: GPR masks per body instruction.
+    u32 reads[GK_POLL_MAX], writes[GK_POLL_MAX], allW = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 in = code[i], o = in >> 26, rd = (in >> 21) & 31, ra = (in >> 16) & 31, rb = (in >> 11) & 31;
+        reads[i] = writes[i] = 0;
+        if (is_poll_load(o)) { if (ra) reads[i] = 1u << ra; writes[i] = 1u << rd; }
+        else if (o == 10 || o == 11) reads[i] = 1u << ra;
+        else if (o == 31 && (((in >> 1) & 0x3FF) == 0 || ((in >> 1) & 0x3FF) == 32)) reads[i] = (1u << ra) | (1u << rb);
+        else if (o == 28 || o == 21 || o == 24) { reads[i] = 1u << rd; writes[i] = 1u << ra; }
+        else return 0;
+        allW |= writes[i];
+    }
+    u32 w = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (reads[i] & allW & ~w) return 0;  // read before this round wrote it
+        w |= writes[i];
+    }
+    return n + 1;
+}
+
+void gekko_poll_stats(Gekko* g, u64* skips, u64* cycles) { *skips = GKP(g)->pollSkips; *cycles = GKP(g)->pollSkipped; }
+
+void gekko_set_poll_ram(Gekko* g, u32 ramSize) {
+    GkPriv* p = GKP(g);
+    p->pollRam = ramSize;
+    memset(p->pollLen, 0, sizeof p->pollLen);
+}
+
+// Cached gekko_poll_loop_len for the interpreter (code is not expected to change under a polling loop).
+static u32 poll_len_cached(Gekko* g, u32 start) {
+    GkPriv* p = GKP(g);
+    u32 k = (start >> 2) & 63;
+    if (p->pollLen[k] && p->pollPc[k] == start) return p->pollLen[k] - 1;
+    u32 n = gekko_poll_loop_len(g, start);
+    p->pollPc[k] = start;
+    p->pollLen[k] = n + 1;
+    return n;
+}
+
+bool gekko_poll_loop_ram(Gekko* g, u32 start, u32 len, u32 ramSize) {
+    for (u32 i = 0; i + 1 < len; i++) {
+        u32 in, pa;
+        if (!fetch_word(g, start + 4 * i, &in)) return false;
+        if (!is_poll_load(in >> 26)) continue;
+        u32 ra = (in >> 16) & 31, ea = (ra ? g->gpr[ra] : 0) + (u32)(s32)(s16)in;
+        if (!gk_translate(g, ea, false, true, &pa, false) || pa >= ramSize) return false;
+    }
+    return true;
+}
 
 // ---- SPRs ----
 static void lc_dma(Gekko* g) {
@@ -299,6 +382,18 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             gk_prim[inst >> 26](g, inst);
             g->pc = p->npc;
             g->cycles++;
+            // A taken branch back to the start of a polling loop: jump time to the next event, as for "b .".
+            if (p->pollRam && g->pc < pc && pc - g->pc < 4 * GK_POLL_MAX && ((inst >> 26) == 16 || (inst >> 26) == 18) &&
+                (g->msr & MSR_EE)) {
+                u32 n = poll_len_cached(g, g->pc);
+                if (n && g->pc + 4 * (n - 1) == pc && gekko_poll_loop_ram(g, g->pc, n, p->pollRam)) {
+                    s64 skip = g->downcount;
+                    if ((s64)(limit - g->cycles) < skip) skip = (s64)(limit - g->cycles);
+                    if (skip > 0) { g->cycles += (u64)skip; g->downcount -= skip; p->pollSkipped += (u64)skip; }
+                    p->pollSkips++;
+                    break;
+                }
+            }
             if (--g->downcount <= 0 || p->brk || g->cycles >= limit) break;
         }
         check_dec_edge(g);

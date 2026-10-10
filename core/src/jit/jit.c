@@ -30,7 +30,7 @@ typedef u32 (*BlockFn)(Gekko* g);
 // Every compiled block stays reachable until the code cache is flushed: entries live in a pool, chained per hash
 // bucket (a direct-mapped table evicted and recompiled colliding blocks, e.g. a real-mode exception handler at
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u32 next; } Entry;
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll; u32 next; } Entry;  // poll: polling-loop length or 0
 #define MAX_ENTRIES (1u << 16)
 #define NO_ENTRY 0xFFFFFFFFu
 
@@ -749,6 +749,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->pc = pc; en->msrBits = msrBits; en->fn = fn;
     en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
                ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
+    en->poll = (u8)gekko_poll_loop_len(g, pc);
     en->next = *head;
     *head = idx;
     return en;
@@ -772,6 +773,12 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
+        // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
+        if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
+            j->stats.pollSkips++;
+            if ((s64)total < budget) total = (u32)budget;
+            break;
+        }
         GkPriv* p = GKP(g);
         if (p->brk || p->stopReq) break;
     }

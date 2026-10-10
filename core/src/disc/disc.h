@@ -8,7 +8,8 @@
 #include "../common.h"
 
 typedef struct Disc {
-    void* file;            // FILE*
+    void* file;            // FILE*, unbuffered: each read is one host read
+    u64 pos;               // file position after the last read (reads in sequence skip the seek), ~0 when unknown
     u64 size;              // bytes in the image file
     u8 header[0x440];      // boot.bin: disc ID, title, DOL/FST offsets
     u8 bi2[0x2000];        // bi2.bin at 0x440: debug monitor / simulated memory / region settings

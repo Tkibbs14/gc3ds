@@ -68,6 +68,10 @@ typedef struct GkPriv {
 
     GekkoJitFn jit;  // optional block executor (see gekko_set_jit)
     void* jitCtx;
+
+    u32 pollRam;     // RAM size for polling-loop skips (gekko_set_poll_ram); 0 = off
+    u32 pollPc[64], pollLen[64];  // loop start -> gekko_poll_loop_len + 1 (0 = not yet checked), direct-mapped
+    u64 pollSkips, pollSkipped;   // interpreter skips and the cycles they jumped
 } GkPriv;
 
 #define GKP(g) ((GkPriv*)(g)->priv)

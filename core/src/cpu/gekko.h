@@ -93,6 +93,15 @@ void gekko_set_spr(Gekko* g, u32 spr, u32 v);       // as mtspr would write it (
 void gekko_set_msr(Gekko* g, u32 msr);
 // Virtual-to-physical translation as the data side sees it; false if no BAT matches (with translation on).
 bool gekko_translate_data(Gekko* g, u32 ea, u32* pa);
+// Polling loops (see gekko.c): the length in instructions (2-GK_POLL_MAX) of the load/compare/branch-back loop that
+// starts at `start`, or 0; and whether every load in it currently reads RAM below ramSize (not hardware registers,
+// which can change without an event).
+#define GK_POLL_MAX 8
+u32 gekko_poll_loop_len(Gekko* g, u32 start);
+bool gekko_poll_loop_ram(Gekko* g, u32 start, u32 len, u32 ramSize);
+// Enables polling-loop skips in the interpreter for loops whose loads read RAM below ramSize (0 turns them off).
+void gekko_set_poll_ram(Gekko* g, u32 ramSize);
+void gekko_poll_stats(Gekko* g, u64* skips, u64* cycles);  // interpreter polling-loop skips so far
 // Optional JIT: called by gekko_run before each instruction it would interpret. It runs compiled code from g->pc
 // for up to about `budget` cycles, leaves g->pc at the next instruction, and returns the number of instructions it
 // executed (0 = let the interpreter execute the instruction at g->pc). Interrupts are taken between calls.

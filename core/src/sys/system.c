@@ -275,6 +275,7 @@ bool sys_init(System* s) {
         .fetch = bus_fetch, .host_ptr = bus_host_ptr, .dcbz = bus_dcbz, .cache_op = bus_cache_op, .lc_dma = bus_lc_dma,
     };
     if (!gekko_init(&s->cpu, &s->bus)) return false;
+    gekko_set_poll_ram(&s->cpu, MEM1_SIZE);
     sys_reset(s);
     return true;
 }

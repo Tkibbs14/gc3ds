@@ -236,7 +236,9 @@ static void run(const char* path) {
                 printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
                 printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
                 printf("draws/s %5.0f", (double)(g_sys.gx.core.draws - drawsLast) / secs);
-                if (g_jit && g_useJit) printf("  JIT flushes %llu", (unsigned long long)jit_stats(g_jit)->flushes);
+                if (g_jit && g_useJit)
+                    printf("  flushes %llu  polls %llu", (unsigned long long)jit_stats(g_jit)->flushes,
+                           (unsigned long long)jit_stats(g_jit)->pollSkips);
                 printf("   \n");
             }
             memset(g_hostProf, 0, sizeof g_hostProf);
