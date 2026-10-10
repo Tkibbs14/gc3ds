@@ -545,7 +545,7 @@ static void raster_tri(System* s, GXCore* gx, const SVert* v0, const SVert* v1, 
     x1 = x1 >= EFB_W ? EFB_W - 1 : x1;
     y1 = y1 >= EFB_H ? EFB_H - 1 : y1;
     u32 numGens = gx->xf[0x103F] & 15;
-    Fog fog;
+    Fog fog = { 0 };
     setup_fog(gx, &fog);
     float iw0 = 1.0f / v0->w, iw1 = 1.0f / v1->w, iw2 = 1.0f / v2->w;
     for (int y = y0; y <= y1; y++) {

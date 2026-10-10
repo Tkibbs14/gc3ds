@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/boot/boot.h"
+#include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
 #include "../src/jit/jit.h"
 
@@ -14,7 +15,7 @@
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
 
 static System g_sys;
-static char g_files[MAX_FILES][256];
+static char g_files[MAX_FILES][320];
 static int g_nFiles;
 static u32 g_fields;
 static Jit* g_jit;
@@ -28,7 +29,8 @@ static void scan_dir(const char* dir) {
     struct dirent* e;
     while ((e = readdir(d)) && g_nFiles < MAX_FILES) {
         size_t n = strlen(e->d_name);
-        if (n > 4 && strcasecmp(e->d_name + n - 4, ".dol") == 0)
+        const char* ext = n > 4 ? e->d_name + n - 4 : "";
+        if (!strcasecmp(ext, ".dol") || !strcasecmp(ext, ".iso") || !strcasecmp(ext, ".gcm"))
             snprintf(g_files[g_nFiles++], sizeof g_files[0], "%s/%s", dir, e->d_name);
     }
     closedir(d);
@@ -124,7 +126,7 @@ static int pick(void) {
         consoleClear();
         printf("gc3ds - A run, Y JIT on/off, START quit\n");
         printf("CPU: %s\n\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
-        if (!g_nFiles) printf("No .dol files in romfs:/dols or sdmc:/gc3ds\n");
+        if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
         int first = sel > 20 ? sel - 20 : 0;
         for (int i = first; i < g_nFiles && i < first + 24; i++) {
             const char* name = strrchr(g_files[i], '/');
@@ -144,18 +146,33 @@ static int pick(void) {
     }
 }
 
+static Disc g_disc;
+
+static bool is_disc(const char* path) {
+    size_t n = strlen(path);
+    return n > 4 && (!strcasecmp(path + n - 4, ".iso") || !strcasecmp(path + n - 4, ".gcm"));
+}
+
 static void run(const char* path) {
-    size_t size;
-    u8* dol = load_file(path, &size);
-    consoleClear();
-    if (!dol) { printf("cannot read %s\n", path); return; }
+    size_t size = 0;
+    u8* dol = NULL;
     char err[256];
+    consoleClear();
+    if (g_disc.file) disc_close(&g_disc);
+    if (is_disc(path)) {
+        printf("opening disc...\n");
+        if (!disc_open(&g_disc, path, err, sizeof err)) { printf("disc: %s\n", err); return; }
+    } else {
+        dol = load_file(path, &size);
+        if (!dol) { printf("cannot read %s\n", path); return; }
+    }
     if (g_jit) {
         jit_invalidate_all(g_jit);
         if (g_useJit) jit_attach(g_jit); else gekko_set_jit(&g_sys.cpu, NULL, NULL);
     }
-    if (!boot_dol(&g_sys, dol, size, err, sizeof err)) { printf("boot failed: %s\n", err); free(dol); return; }
+    bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
     free(dol);
+    if (!booted) { printf("boot failed: %s\n", err); return; }
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
@@ -204,6 +221,7 @@ int main(void) {
     romfsInit();
     scan_dir("romfs:/dols");
     scan_dir("sdmc:/gc3ds");
+    scan_dir("sdmc:/gc3ds/games");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
     gx_soft_attach(&g_sys);
     g_sys.on_field = on_field;
