@@ -62,6 +62,8 @@ void gekko_reset(Gekko* g) {
     GkPriv* p = GKP(g);
     const GekkoBus* bus = g->bus;
     u32 compat = p->compat;
+    GekkoJitFn jit = p->jit;  // an attached JIT stays attached across resets (it drops its own blocks)
+    void* jitCtx = p->jitCtx;
     memset(g->gpr, 0, sizeof g->gpr);
     memset(g->fpr, 0, sizeof g->fpr);
     memset(g->sr, 0, sizeof g->sr);
@@ -77,6 +79,8 @@ void gekko_reset(Gekko* g) {
     g->spr[SPR_PVR] = GEKKO_PVR;
     memset(p, 0, sizeof *p);
     p->compat = compat;
+    p->jit = jit;
+    p->jitCtx = jitCtx;
     p->fetchBlk = 0xFFFFFFFFu;
     g->bus = bus;
     gk_map_init(g);
@@ -231,6 +235,21 @@ static bool fetch_refill(Gekko* g, u32 pc) {
     return true;
 }
 
+void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx) {
+    GKP(g)->jit = fn;
+    GKP(g)->jitCtx = ctx;
+}
+
+u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop) {
+    GkPriv* p = GKP(g);
+    p->brk = false;  // report only what this instruction causes (callers leave compiled code whenever brk is set)
+    p->curPc = pc;
+    p->npc = pc + 4;
+    gk_prim[inst >> 26](g, inst);
+    *stop = p->brk || p->stopReq;
+    return p->npc;
+}
+
 u32 gekko_run(Gekko* g, u32 cycles) {
     GkPriv* p = GKP(g);
     u64 start = g->cycles;
@@ -242,6 +261,19 @@ u32 gekko_run(Gekko* g, u32 cycles) {
         take_interrupts(g);
         u64 limit = p->nextDecEdge;
         for (;;) {
+            if (p->jit) {
+                // The JIT runs compiled blocks starting at g->pc, at most `budget` cycles' worth (a block may run up
+                // to one block past it), and returns how many instructions it executed; 0 means "interpret this one".
+                s64 budget = g->downcount;
+                if ((s64)(limit - g->cycles) < budget) budget = (s64)(limit - g->cycles);
+                u32 n = p->jit(g, budget, p->jitCtx);
+                if (n) {
+                    g->cycles += n;
+                    g->downcount -= n;
+                    if (g->downcount <= 0 || p->brk || p->stopReq || g->cycles >= limit) break;
+                    continue;
+                }
+            }
             u32 pc = g->pc;
             u32 inst;
             if ((pc >> GK_BLK_SHIFT) != p->fetchBlk && !fetch_refill(g, pc)) {

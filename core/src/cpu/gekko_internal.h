@@ -65,6 +65,9 @@ typedef struct GkPriv {
     u32 fetchPa;     // physical base of that block
 
     u32 compat;      // GK_COMPAT_* (0 in the emulator)
+
+    GekkoJitFn jit;  // optional block executor (see gekko_set_jit)
+    void* jitCtx;
 } GkPriv;
 
 #define GKP(g) ((GkPriv*)(g)->priv)

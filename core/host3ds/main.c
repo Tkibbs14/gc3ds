@@ -8,6 +8,7 @@
 #include <string.h>
 #include "../src/boot/boot.h"
 #include "../src/gx/gx.h"
+#include "../src/jit/jit.h"
 
 #define MAX_FILES 64
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
@@ -16,6 +17,10 @@ static System g_sys;
 static char g_files[MAX_FILES][256];
 static int g_nFiles;
 static u32 g_fields;
+static Jit* g_jit;
+static bool g_useJit = true;
+
+static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 static void scan_dir(const char* dir) {
     DIR* d = opendir(dir);
@@ -108,7 +113,8 @@ static int pick(void) {
     int sel = 0;
     for (;;) {
         consoleClear();
-        printf("gc3ds - pick a program (A run, START quit)\n\n");
+        printf("gc3ds - A run, Y JIT on/off, START quit\n");
+        printf("CPU: %s\n\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
         if (!g_nFiles) printf("No .dol files in romfs:/dols or sdmc:/gc3ds\n");
         int first = sel > 20 ? sel - 20 : 0;
         for (int i = first; i < g_nFiles && i < first + 24; i++) {
@@ -121,6 +127,7 @@ static int pick(void) {
             u32 d = hidKeysDown();
             if (d & KEY_START) return -1;
             if ((d & KEY_A) && g_nFiles) return sel;
+            if ((d & KEY_Y) && g_jit) { g_useJit = !g_useJit; break; }
             if ((d & KEY_DDOWN) && sel + 1 < g_nFiles) { sel++; break; }
             if ((d & KEY_DUP) && sel > 0) { sel--; break; }
             gspWaitForVBlank();
@@ -134,6 +141,10 @@ static void run(const char* path) {
     consoleClear();
     if (!dol) { printf("cannot read %s\n", path); return; }
     char err[256];
+    if (g_jit) {
+        jit_invalidate_all(g_jit);
+        if (g_useJit) jit_attach(g_jit); else gekko_set_jit(&g_sys.cpu, NULL, NULL);
+    }
     if (!boot_dol(&g_sys, dol, size, err, sizeof err)) { printf("boot failed: %s\n", err); free(dol); return; }
     free(dol);
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
@@ -152,6 +163,11 @@ static void run(const char* path) {
             double fps = (g_fields - fieldsLast) / secs;
             printf("\x1b[5;0H%6.2f MIPS  %5.2f fields/s  (%4.1f%% speed)   \n", mips, fps, 100.0 * mips / 486.0);
             printf("emulated %.1f s, real %.1f s     \n", (double)g_sys.cpu.cycles / GEKKO_HZ, (double)(now - t0) / SYSCLOCK_ARM11);
+            if (g_jit && g_useJit) {
+                const JitStats* js = jit_stats(g_jit);
+                printf("JIT %llu blocks, %.1f%% native   \n", (unsigned long long)js->blocksCompiled,
+                       js->instrsCompiled ? 100.0 * (double)js->instrsNative / (double)js->instrsCompiled : 0.0);
+            }
             tLast = now; cycLast = g_sys.cpu.cycles; fieldsLast = g_fields;
         }
     }
@@ -170,6 +186,8 @@ int main(void) {
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
     gx_soft_attach(&g_sys);
     g_sys.on_field = present;
+    g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 4u << 20);
+    if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; }
     // romfs:/autorun.txt (test builds) names a program to start without the menu.
     FILE* ar = fopen("romfs:/autorun.txt", "r");
     if (ar) {

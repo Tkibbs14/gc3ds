@@ -93,6 +93,15 @@ void gekko_set_spr(Gekko* g, u32 spr, u32 v);       // as mtspr would write it (
 void gekko_set_msr(Gekko* g, u32 msr);
 // Virtual-to-physical translation as the data side sees it; false if no BAT matches (with translation on).
 bool gekko_translate_data(Gekko* g, u32 ea, u32* pa);
+// Optional JIT: called by gekko_run before each instruction it would interpret. It runs compiled code from g->pc
+// for up to about `budget` cycles, leaves g->pc at the next instruction, and returns the number of instructions it
+// executed (0 = let the interpreter execute the instruction at g->pc). Interrupts are taken between calls.
+typedef u32 (*GekkoJitFn)(Gekko* g, s64 budget, void* ctx);
+void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx);
+// Interpreter access for a JIT's fallback path: execute the single instruction `inst` located at `pc` with the
+// interpreter. Returns the next PC (pc + 4 unless it branched or raised an exception); sets *stop when execution
+// must leave compiled code (interrupt-relevant state changed, or a stop was requested).
+u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop);
 // Debug: disassemble one instruction into buf (for traces and error messages).
 void gekko_disasm(u32 pc, u32 inst, char* buf, size_t len);
 
