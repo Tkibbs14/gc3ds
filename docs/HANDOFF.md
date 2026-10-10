@@ -26,7 +26,9 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - Interpreter verified against qemu-ppc (`core/tests/cpu/run_tests.sh`).
   - JIT level 1 (`core/src/jit`): integer, load/store and branches native, the rest falls back per instruction.
     Verified by the differential fuzzer under qemu-arm (`core/tests/jit/run_jit_fuzz.sh`).
-  - Idle `b .` loops are skipped.
+  - Idle `b .` loops and RAM polling loops (load/compare/branch back, e.g. TP 0x80341144) are skipped to the next
+    event (`gekko_poll_loop_len`); on the PC that is 88% of TP's loading time.
+  - The 3DS bottom screen shows a time profile (GX, disc, log, JIT compile, present, wait, guest; X toggles).
 - **Not yet:** audio output (DSP is mail-level HLE only), memory cards (both slots empty), Wii (no MEM2, IOS, disc
   decryption).
 
@@ -72,7 +74,6 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
    - FPU and paired singles on VFP (TP is about 14% float).
    - Register caching across a block.
    - Block linking (direct branches; keep hot code inside the 16 KB I-cache).
-   - Idle detection for polling loops (TP at 0x80341144: `lwz`/`cmpli`/`bc` on RAM).
 3. **Gameplay blockers (Sonnet, one per agent, TP save states as the start point):**
    - Memory card in slot A (EXI card commands plus the DSP "CARD" unlock).
    - Play past the cutscene to controllable Link.
