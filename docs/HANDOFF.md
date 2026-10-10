@@ -76,7 +76,9 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   vertex path costs about 7.5 µs per vertex on the ARM11.
 - **Guest code alone caps the title scene near 5–6%.** The likely cause is float and paired-single code falling back
   to the interpreter one instruction at a time; check the JIT's dynamic fallback count first.
-- **The pink/white title screen: found and fixed, but not yet seen on the 2DS.**
+- **The pink/white title screen: fixed and confirmed on the 2DS (2026-10-10).** The castle, dunes and Link on
+  Epona render. Against the PC reference, the orange distance haze and the dark far mountain are missing: GX fog
+  is not implemented in pica.c yet (the next correctness item).
   - **Cause:** TP resets its depth buffer every frame with ~650 quads that replace depth from a uniform 4x4 Z texture.
     The PICA backend ignored Z textures, so every later draw failed the depth test. Uniform Z textures now set the
     vertex depth (`apply_ztex` in pica.c).
