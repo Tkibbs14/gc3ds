@@ -27,7 +27,12 @@
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
 
 typedef u32 (*BlockFn)(Gekko* g);
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; } Entry;
+// Every compiled block stays reachable until the code cache is flushed: entries live in a pool, chained per hash
+// bucket (a direct-mapped table evicted and recompiled colliding blocks, e.g. a real-mode exception handler at
+// 0x00000500 and code at 0x80000500, hundreds of times per second).
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u32 next; } Entry;
+#define MAX_ENTRIES (1u << 16)
+#define NO_ENTRY 0xFFFFFFFFu
 
 struct Jit {
     Gekko* g;
@@ -35,7 +40,9 @@ struct Jit {
     u32 ramSize;
     u32* code;
     u32 codeWords, codeUsed;
-    Entry* table;
+    Entry* table;          // pool of MAX_ENTRIES
+    u32* buckets;          // DISPATCH_SIZE chain heads
+    u32 nEntries;
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
     JitStats stats;
@@ -717,6 +724,28 @@ static BlockFn compile(Jit* j, u32 pc) {
 }
 
 // ---- dispatcher ----
+static u32 bucket_of(u32 pc, u32 msrBits) { return ((pc >> 2) ^ (pc >> 18) ^ (msrBits << 9)) & (DISPATCH_SIZE - 1); }
+
+// Finds the block for (pc, msrBits), compiling it on first use; NULL when it cannot be compiled.
+static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
+    u32* head = &j->buckets[bucket_of(pc, msrBits)];
+    for (u32 i = *head; i != NO_ENTRY; i = j->table[i].next)
+        if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
+    if (j->nEntries == MAX_ENTRIES) { jit_invalidate_all(j); j->stats.flushes++; head = &j->buckets[bucket_of(pc, msrBits)]; }
+    BlockFn fn = compile(j, pc);
+    if (!fn) return NULL;
+    // compile() may have flushed the whole cache (code space full), which also emptied the chains.
+    head = &j->buckets[bucket_of(pc, msrBits)];
+    Gekko* g = j->g;
+    u32 pa, idx = j->nEntries++;
+    Entry* en = &j->table[idx];
+    en->pc = pc; en->msrBits = msrBits; en->fn = fn;
+    en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
+               ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
+    en->next = *head;
+    *head = idx;
+    return en;
+}
 static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     Jit* j = ctx;
     u32 total = 0;
@@ -728,15 +757,8 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
                  gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0 && j->ramSize >= 0x01800000u;
     while ((s64)total < budget) {
         u32 pc = g->pc, msrBits = g->msr & (MSR_IR | MSR_DR | MSR_PR);
-        Entry* en = &j->table[(pc >> 2) & (DISPATCH_SIZE - 1)];
-        if (!en->fn || en->pc != pc || en->msrBits != msrBits) {
-            BlockFn fn = compile(j, pc);
-            if (!fn) break;
-            u32 pa;
-            en->pc = pc; en->msrBits = msrBits; en->fn = fn;
-            en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
-                       ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
-        }
+        Entry* en = lookup(j, pc, msrBits);
+        if (!en) break;
         // Idle loop ("b ." with interrupts on): nothing can change until the next event, so use up the budget.
         if (en->idle && (g->msr & MSR_EE)) { total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1); break; }
         u32 n = en->fn(g);
@@ -757,8 +779,10 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->ramSize = ramSize;
     j->code = jit_host_alloc_exec(codeBytes);
     j->codeWords = codeBytes / 4;
-    j->table = calloc(DISPATCH_SIZE, sizeof(Entry));
-    if (!j->code || !j->table) { free(j->table); free(j); return NULL; }
+    j->table = calloc(MAX_ENTRIES, sizeof(Entry));
+    j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
+    if (!j->code || !j->table || !j->buckets) { free(j->table); free(j->buckets); free(j); return NULL; }
+    jit_invalidate_all(j);
     g_jit = j;
     return j;
 }
@@ -767,6 +791,7 @@ void jit_destroy(Jit* j) {
     if (!j) return;
     gekko_set_jit(j->g, NULL, NULL);
     free(j->table);
+    free(j->buckets);
     free(j);  // the executable region is kept for the process lifetime
 }
 
@@ -779,24 +804,21 @@ u32 jit_run_one_block(Jit* j) {
     u32 a, b;
     j->fastmem = gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
                  gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0 && j->ramSize >= 0x01800000u;
-    Entry* en = &j->table[(g->pc >> 2) & (DISPATCH_SIZE - 1)];
-    if (!en->fn || en->pc != g->pc || en->msrBits != msrBits) {
-        BlockFn fn = compile(j, g->pc);
-        if (!fn) return 0;
-        en->pc = g->pc; en->msrBits = msrBits; en->fn = fn;
-    }
-    return en->fn(g);
+    Entry* en = lookup(j, g->pc, msrBits);
+    return en ? en->fn(g) : 0;
 }
 
 void jit_invalidate_all(Jit* j) {
-    memset(j->table, 0, DISPATCH_SIZE * sizeof(Entry));
+    memset(j->buckets, 0xFF, DISPATCH_SIZE * sizeof(u32));
+    j->nEntries = 0;
     memset(j->codePages, 0, sizeof j->codePages);
     j->codeUsed = 0;
 }
 
 void jit_invalidate(Jit* j, u32 pa) {
     // Level 1 keeps no per-page block lists: any icbi that touches a page holding compiled code drops everything.
-    if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) jit_invalidate_all(j);
+    j->stats.icbis++;
+    if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) { j->stats.icbiFlushes++; jit_invalidate_all(j); }
 }
 
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }
@@ -804,6 +826,9 @@ const JitStats* jit_stats(const Jit* j) { return &j->stats; }
 void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
     char line[160];
     const JitStats* s = &j->stats;
+    snprintf(line, sizeof line, "JIT: icbi %llu (%llu dropped all code), %u blocks live", (unsigned long long)s->icbis,
+             (unsigned long long)s->icbiFlushes, j->nEntries);
+    print(line);
     snprintf(line, sizeof line, "JIT: %llu blocks compiled, %llu run, %llu/%llu instructions native (%.1f%%), %llu flushes",
              (unsigned long long)s->blocksCompiled, (unsigned long long)s->blocksRun, (unsigned long long)s->instrsNative,
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
@@ -821,7 +846,8 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
         }
         for (u32 i = 0; i < 32; i++) if (s->fallback59[i] > best) { best = s->fallback59[i]; which = i; group = 59; }
         if (!best) break;
-        snprintf(line, sizeof line, "  fallback %s%u%s%u: %u", group ? "op " : "op ", group ? group : which, group ? " xo " : "", group ? which : 0, best);
+        if (group) snprintf(line, sizeof line, "  fallback op %u xo %u: %u", group, which, best);
+        else snprintf(line, sizeof line, "  fallback op %u: %u", which, best);
         print(line);
         JitStats* m = (JitStats*)s;  // clear the printed entry to find the next one
         if (!group) m->fallbackPrimary[which] = 0;

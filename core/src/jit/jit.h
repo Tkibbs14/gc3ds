@@ -11,6 +11,7 @@ typedef struct Jit Jit;
 
 typedef struct {
     u64 blocksCompiled, blocksRun, instrsCompiled, instrsNative, flushes;
+    u64 icbis, icbiFlushes, dispatchMisses;
     u32 fallbackPrimary[64];   // compiled instructions left to the interpreter, by primary opcode
     u32 fallback31[1024];      // ... and by extended opcode for groups 31 / 19 / 63 / 59 / 4
     u32 fallback19[1024], fallback63[1024], fallback59[32], fallback4[1024];
