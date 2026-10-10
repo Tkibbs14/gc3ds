@@ -550,6 +550,11 @@ static void vchk_report(void) {
     fprintf(stderr, "VFAST_CHECK: %llu draws, %llu vertices, %llu draws over tolerance; max error pos %.3g z %.3g "
             "tc %.3g col %d\n", (unsigned long long)g_vchk.draws, (unsigned long long)g_vchk.verts,
             (unsigned long long)g_vchk.bad, g_vchk.pos, g_vchk.z, g_vchk.tc, g_vchk.col);
+    const VFastStats* st = &g_vfastStats;
+    double v = st->verts ? (double)st->verts : 1;
+    fprintf(stderr, "VFAST_STATS: per vertex: lights %.2f lit halves %.2f indexed attrs %.2f texgens %.2f normals %.2f; "
+            "matrix compositions per draw %.2f\n", st->lightEvals / v, st->litHalves / v, st->indexed / v, st->texgens / v,
+            st->nrmReads / v, st->draws ? (double)st->composes / (double)st->draws : 0.0);
 }
 
 static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const SVert* v) {

@@ -281,6 +281,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "loaded state %s at field %u, cycle %llu\n", loadPath, fe.fields, (unsigned long long)sys.cpu.cycles);
     }
 
+    // OPMIX=1: dynamic instruction mix of the interpreter, printed at exit (which instructions a JIT must cover).
+    if (getenv("OPMIX")) g_gekkoOpMix = calloc(65536, sizeof(u64));
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     u64 startCycles = sys.cpu.cycles, end = startCycles + (u64)(seconds * GEKKO_HZ);
@@ -307,6 +309,23 @@ int main(int argc, char** argv) {
 
     save_frame(&sys, &fe, "last");
     host_jit_report();
+    if (g_gekkoOpMix) {
+        u64 total = 0;
+        for (u32 k = 0; k < 65536; k++) total += g_gekkoOpMix[k];
+        fprintf(stderr, "OPMIX: %llu instructions interpreted\n", (unsigned long long)total);
+        for (int n = 0; n < 40 && total; n++) {
+            u32 best = 0;
+            for (u32 k = 1; k < 65536; k++) if (g_gekkoOpMix[k] > g_gekkoOpMix[best]) best = k;
+            if (!g_gekkoOpMix[best]) break;
+            char dis[64];
+            gekko_disasm(0, ((best >> 10) << 26) | ((best & 0x3FF) << 1), dis, sizeof dis);
+            char* sp = strchr(dis, ' ');
+            if (sp) *sp = 0;
+            fprintf(stderr, "  %5.2f%%  op %2u xo %4u  %s\n", 100.0 * (double)g_gekkoOpMix[best] / (double)total, best >> 10,
+                    best & 0x3FF, dis);
+            g_gekkoOpMix[best] = 0;
+        }
+    }
     if (profile) prof_print(&sys);
     // Where the program is and what it might be waiting for.
     Gekko* g = &sys.cpu;

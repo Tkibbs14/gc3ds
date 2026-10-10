@@ -323,6 +323,17 @@ void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx) {
     GKP(g)->jitCtx = ctx;
 }
 
+u64* g_gekkoOpMix;
+
+u32 gekko_op_key(u32 inst) {
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
+    if (op != 31 && op != 19 && op != 63 && op != 59 && op != 4) return op << 10;
+    // A-form float and paired-single instructions keep a register in the upper extended bits: key by xo5.
+    if (op == 59 || (op == 63 && xo5 >= 18) || (op == 4 && ((xo5 >= 10 && xo5 <= 15) || xo5 == 18 || xo5 == 20 || xo5 == 21 || xo5 >= 23)))
+        xo = xo5;
+    return (op << 10) | xo;
+}
+
 u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop) {
     GkPriv* p = GKP(g);
     p->brk = false;  // report only what this instruction causes (callers leave compiled code whenever brk is set)
@@ -379,6 +390,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             }
             p->curPc = pc;
             p->npc = pc + 4;
+            if (g_gekkoOpMix) g_gekkoOpMix[gekko_op_key(inst)]++;
             gk_prim[inst >> 26](g, inst);
             g->pc = p->npc;
             g->cycles++;

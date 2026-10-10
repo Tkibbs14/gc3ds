@@ -193,7 +193,8 @@ static void run(const char* path) {
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
     u32 fieldsLast = 0;
-    u64 waitTicks = 0, drawsLast = g_sys.gx.core.draws;
+    u64 waitTicks = 0, drawsLast = g_sys.gx.core.draws, vertsLast = g_sys.gx.core.vertices;
+    u64 jLast[5] = { 0 };  // instructions run, interpreted, blocks run, slow loads, slow stores (JIT, per second)
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
@@ -241,12 +242,21 @@ static void run(const char* path) {
                 printf("disc %4.1f%%  log %4.1f%%   \n", p[PROF_DISC], p[PROF_LOG]);
                 printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
                 printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
-                printf("draws/s %5.0f", (double)(g_sys.gx.core.draws - drawsLast) / secs);
-                if (g_jit && g_useJit)
-                    printf("  full %llu icbi %llu  polls %llu", (unsigned long long)jit_stats(g_jit)->flushes,
-                           (unsigned long long)jit_stats(g_jit)->icbiFlushes, (unsigned long long)jit_stats(g_jit)->pollSkips);
-                printf("   \n");
+                printf("draws/s %5.0f  verts/s %6.0f   \n", (double)(g_sys.gx.core.draws - drawsLast) / secs,
+                       (double)(g_sys.gx.core.vertices - vertsLast) / secs);
+                if (g_jit && g_useJit) {
+                    // Thousands per second: guest instructions run by compiled blocks, interpreted ones among them,
+                    // blocks entered, and loads / stores through the C helpers (MMIO, write-gather pipe).
+                    const JitStats* js = jit_stats(g_jit);
+                    u64 now5[5] = { js->instrsRun, js->fallbacksRun, js->blocksRun, js->slowLoads, js->slowStores };
+                    double k[5];
+                    for (int i = 0; i < 5; i++) k[i] = (double)(now5[i] - jLast[i]) / secs / 1000.0;
+                    printf("k/s ins %5.0f fb %4.0f blk %5.0f   \n", k[0], k[1], k[2]);
+                    printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)js->icbiFlushes);
+                    memcpy(jLast, now5, sizeof jLast);
+                }
             }
+            vertsLast = g_sys.gx.core.vertices;
             memset(g_hostProf, 0, sizeof g_hostProf);
             waitTicks = 0;
             drawsLast = g_sys.gx.core.draws;

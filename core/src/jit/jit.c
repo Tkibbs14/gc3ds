@@ -60,6 +60,7 @@ u32 jit_debug_last_words;
 static u32 g_status;
 
 static u32 jit_load(Gekko* g, u32 ea, u32 size, u32 pc) {
+    g_jit->stats.slowLoads++;
     GkPriv* p = GKP(g);
     p->curPc = pc;
     p->npc = pc + 4;
@@ -72,6 +73,7 @@ static u32 jit_load(Gekko* g, u32 ea, u32 size, u32 pc) {
 
 // sizePc = pc | log2(size): instructions are word aligned, so the two low bits are free.
 static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
+    g_jit->stats.slowStores++;
     GkPriv* p = GKP(g);
     u32 size = 1u << (sizePc & 3), pc = sizePc & ~3u;
     p->curPc = pc;

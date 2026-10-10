@@ -119,6 +119,8 @@ typedef struct {
     u16 cpRegs[0x40];
     u16 peRegs[0x80];
     u64 bytesReceived;
+    u8 wgp[32];            // write-gather pipe: the CPU's partial 32-byte burst, not yet seen by the GP
+    u32 wgpLen;
     GXCore core;           // command stream, register files, EFB
 } GXState;
 

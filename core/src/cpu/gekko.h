@@ -113,6 +113,10 @@ void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx);
 u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop);
 // Debug: disassemble one instruction into buf (for traces and error messages).
 void gekko_disasm(u32 pc, u32 inst, char* buf, size_t len);
+// Debug: when set (65536 entries), the interpreter counts every instruction it executes under gekko_op_key: primary
+// opcode << 10 | extended opcode (A-form float / paired-single forms by their 5-bit opcode).
+extern u64* g_gekkoOpMix;
+u32 gekko_op_key(u32 inst);
 
 // ---- Hooks the system provides (called by the CPU core) ----
 // Called when the CPU executes an instruction it does not implement or hits an unrecoverable condition; the system

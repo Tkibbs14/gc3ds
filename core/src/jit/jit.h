@@ -18,6 +18,7 @@ typedef struct {
     u64 blocksCompiled, blocksRun, instrsCompiled, instrsNative, flushes;
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
     u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
+    u64 slowLoads, slowStores;    // loads / stores through the C helpers (MMIO, write-gather pipe, non-standard BATs)
     JitOpCounts fallback;      // static: one per compiled occurrence
     JitOpCounts fallbackRun;   // dynamic: one per execution
 } JitStats;

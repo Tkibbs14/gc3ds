@@ -42,16 +42,28 @@ void pe_write16(System* s, u32 off, u16 v) {
     s->gx.peRegs[off / 2] = v;
 }
 
-void gp_fifo_write(System* s, const u8* data, u32 len) {
-    // Mirror the bytes into the CPU-side FIFO in RAM, as the write-gather pipe does, and advance the pointer.
+// One 32-byte burst reaches the FIFO: mirrored into the CPU-side FIFO in RAM, the write pointer advanced, and the
+// GP executes it.
+static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
     u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29);
-    for (u32 i = 0; i < len; i++) {
+    for (u32 i = 0; i < 32; i++) {
         if (wp < PA_MEM1_END) s->mem1[wp] = data[i];
         wp++;
         if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
     }
     pi->fifoWrite = wp | wrap;
-    s->gx.bytesReceived += len;
-    gxcore_feed(s, &s->gx.core, data, len);
+    s->gx.bytesReceived += 32;
+    gxcore_feed(s, &s->gx.core, data, 32);
+}
+
+// CPU stores to the write-gather pipe. As on the hardware, the GP sees them only in whole 32-byte bursts; programs
+// end a command batch with GXFlush, which pads the last burst. (Feeding every 1-4 byte store separately cost a
+// parse attempt and two clock reads each, tens of thousands per field in Twilight Princess.)
+void gp_fifo_write(System* s, const u8* data, u32 len) {
+    GXState* gx = &s->gx;
+    for (u32 i = 0; i < len; i++) {
+        gx->wgp[gx->wgpLen++] = data[i];
+        if (gx->wgpLen == 32) { gx->wgpLen = 0; gp_burst(s, gx->wgp); }
+    }
 }

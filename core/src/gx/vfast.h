@@ -22,5 +22,9 @@ void vfast_attribs(const VSel* sel, const SVert* v, PVert* o);
 // Fast path: decodes, transforms and lights `count` raw vertices (stride vsize) into `out`. Equal to vfast_ref of
 // the reference transform up to float rounding (matrices are composed per draw), for the coordinates the draw
 // delivers; texture coordinates past the texgen count are 0 (the reference leaves them undefined).
+// Work counters since start (cheap; printed by the PC checker): what the vertex cost is made of.
+typedef struct { u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads; } VFastStats;
+extern VFastStats g_vfastStats;
+
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                u32 vsize, PVert* out);

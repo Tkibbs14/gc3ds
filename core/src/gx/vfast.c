@@ -191,6 +191,7 @@ static void compose(const GXCore* gx, const VFold* f, u32 pnmtx, float out[16]) 
 }
 
 // ---- the draw ----
+VFastStats g_vfastStats;
 static float g_clip[256][16];
 static u32 g_clipGen[256], g_gen;
 
@@ -258,6 +259,23 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
     }
     u32 pnDefault = ma & 63;
     bool pnDirect = lo & 1;
+    {
+        VFastStats* st = &g_vfastStats;
+        st->draws++;
+        st->verts += count;
+        u32 lights = 0, halves = 0, idx = 0, gens = 0;
+        for (u32 ch = 0; ch < 2; ch++)
+            if ((chans & (1u << ch)) && ch < numChans)
+                for (u32 k = 0; k < 2; k++) { lights += half[ch][k].n; halves += half[ch][k].lit; }
+        idx += pos.mode >= 2; idx += nrm.mode >= 2; idx += col[0].mode >= 2; idx += col[1].mode >= 2;
+        for (u32 i = 0; i < 8; i++) idx += tex[i].mode >= 2;
+        for (u32 i = 0; i < 8; i++) gens += (genUsed >> i) & 1;
+        st->lightEvals += (u64)lights * count;
+        st->litHalves += (u64)halves * count;
+        st->indexed += (u64)idx * count;
+        st->texgens += (u64)gens * count;
+        st->nrmReads += nrmUsed ? count : 0;
+    }
 
     for (u32 vi = 0; vi < count; vi++) {
         const u8* p = raw + vi * vsize;
@@ -304,7 +322,7 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
 
         // Position.
         float* C = g_clip[pn & 255];
-        if (g_clipGen[pn & 255] != g_gen) { compose(gx, f, pn & 255, C); g_clipGen[pn & 255] = g_gen; }
+        if (g_clipGen[pn & 255] != g_gen) { compose(gx, f, pn & 255, C); g_clipGen[pn & 255] = g_gen; g_vfastStats.composes++; }
         for (int r = 0; r < 4; r++) o->pos[r] = C[4 * r] * vp[0] + C[4 * r + 1] * vp[1] + C[4 * r + 2] * vp[2] + C[4 * r + 3];
 
         // Colour channels the outputs need.
