@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef GC3DS_HOST_TYPES  // a 3DS frontend file that also includes <3ds.h> uses libctru's (ABI-identical) types
 typedef uint8_t u8;
 typedef uint16_t u16;
 // Plain int, not uint32_t: newlib (3DS) makes uint32_t `unsigned long`, glibc `unsigned int`. With int on both,
@@ -16,6 +17,7 @@ typedef int8_t s8;
 typedef int16_t s16;
 typedef int s32;
 typedef int64_t s64;
+#endif
 _Static_assert(sizeof(u32) == 4 && sizeof(s32) == 4, "32-bit int required");
 
 static inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }

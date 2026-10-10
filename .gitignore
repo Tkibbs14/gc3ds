@@ -20,3 +20,9 @@ gc-tests/examples-dol/
 *.rvz
 *.wbfs
 *.ciso
+core/host3ds/build/
+core/host3ds/romfs/
+core/host3ds/*.3dsx
+core/host3ds/*.elf
+core/host3ds/*.smdh
+core/host3ds/*.map
