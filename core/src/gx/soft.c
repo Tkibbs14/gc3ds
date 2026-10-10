@@ -5,10 +5,19 @@
 // wrap modes, TLUTs), indirect texturing, alpha test, Z textures, fog, blending, lines and points (as quads). Not yet:
 // range fog, mipmaps (level 0 only), clipping (triangles crossing the eye plane are dropped).
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "../sys/system.h"
 #include "gx.h"
 #include "xform.h"
+#include "tev_pica_sim.h"
+
+// --pica-tev: TEV computed the way the 3DS backend does it (tev_pica_compile + the PICA combiner model), to see in
+// whole frames what the translation's approximations do. Compiled once per draw.
+static bool g_picaTev, g_usePica;  // g_usePica: this draw takes the PICA path
+static float g_picaDiff;           // largest |PICA - reference| over this draw's pixels
+static PicaTev g_picaProg;
+void gx_soft_set_pica_tev(bool on) { g_picaTev = on; }
 
 static float xf_f(const GXCore* gx, u32 a) { float f; memcpy(&f, &gx->xf[a], 4); return f; }
 
@@ -466,7 +475,19 @@ static void raster_tri(System* s, GXCore* gx, const SVert* v0, const SVert* v1, 
                 tc[t][1] = (p0 * v0->tex[t][1] + p1 * v1->tex[t][1] + p2 * v2->tex[t][1]) / q;
             }
             float out[4];
-            run_tev(s, gx, ras, tc, out);
+            if (g_usePica) {
+                float unit[3][4] = { { 255, 255, 255, 255 }, { 255, 255, 255, 255 }, { 255, 255, 255, 255 } };
+                for (u32 u = 0; u < g_picaProg.numTex && u < 3; u++) {
+                    u32 c = g_picaProg.texCoord[u] & 7;
+                    sample(s, gx, g_picaProg.texMap[u] & 7, tc[c][0], tc[c][1], unit[u]);
+                }
+                float ref[4];
+                run_tev(s, gx, ras, tc, ref);  // keeps the Z-texture texel as the reference does; also the comparison
+                tev_pica_eval(&g_picaProg, ras, unit, out);
+                for (int k = 0; k < 4; k++) if (fabsf(out[k] - ref[k]) > g_picaDiff) g_picaDiff = fabsf(out[k] - ref[k]);
+            } else {
+                run_tev(s, gx, ras, tc, out);
+            }
             u32 ztexMode = gx->bp[0xF5];
             if ((ztexMode >> 2) & 3) {
                 // Z texture (BP 0xF4 bias, 0xF5 bits 0-1 texel format, 2-3 op): depth from the last stage's texel, as
@@ -522,6 +543,27 @@ static void draw_point(System* s, GXCore* gx, const SVert* p) {
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
+    // PICA_TEV_FLAGS=hex (with --pica-tev): only draws whose approximations are all in the mask take the PICA path,
+    // the rest the reference TEV; bisects which approximation changes a frame.
+    static int allowSet = -1;
+    static u32 allow;
+    if (allowSet < 0) { const char* e = getenv("PICA_TEV_FLAGS"); allowSet = e != NULL; allow = e ? (u32)strtoul(e, NULL, 16) : 0; }
+    bool usePica = false;
+    if (g_picaTev) { tev_pica_compile(gx, &g_picaProg); usePica = !allowSet || !(g_picaProg.approx & ~allow); }
+    g_usePica = usePica;
+    // ZTEX_LOG: one line per draw that uses a Z texture (BP 0xF5 op != 0), for the PICA backend's design.
+    if (((gx->bp[0xF5] >> 2) & 3) && getenv("ZTEX_LOG")) {
+        u32 tw, th, tmode;
+        const u32* px = fetch_texture(s, gx, 0, &tw, &th, &tmode);
+        bool uniform = px != NULL;
+        for (u32 i = 1; px && i < tw * th; i++) if (px[i] != px[0]) uniform = false;
+        fprintf(stderr, "ZTEXDRAW draw %llu prim %u n %u ztex %06x bias %06x zmode %02x blend %04x cull %u tref %06x "
+                "img0 %06x img3 %06x stages %u map0 %s %08x\n", (unsigned long long)gx->draws, prim, count, gx->bp[0xF5],
+                gx->bp[0xF4], gx->bp[0x40] & 0x1F, gx->bp[0x41] & 0xFFFF, (gx->bp[0x00] >> 14) & 3, gx->bp[0x28],
+                gx->bp[0x88], gx->bp[0x94], ((gx->bp[0x00] >> 10) & 15) + 1, uniform ? "uniform" : "varying",
+                px ? px[0] : 0);
+    }
+    g_picaDiff = 0;
     SVert* v = malloc(sizeof(SVert) * count);
     if (!v) return;
     for (u32 i = 0; i < count; i++) {
@@ -556,6 +598,33 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     }
     #undef TRI
     free(v);
+    // PICA_TEV_CHECK: report each distinct TEV program whose PICA result differs from the reference by more than
+    // a few levels (approximated or not), once.
+    static u32 seen[512][4];
+    static u32 nSeen;
+    if (g_usePica && g_picaDiff > 12 && getenv("PICA_TEV_CHECK")) {
+        u32 key[4] = { gx->bp[0xC0] ^ gx->bp[0xC2] * 3 ^ gx->bp[0xC4] * 7, gx->bp[0xC1] ^ gx->bp[0xC3] * 3 ^ gx->bp[0xC5] * 7,
+                       gx->bp[0x00] & 0x3C00, g_picaProg.approx };
+        bool known = false;
+        for (u32 i = 0; i < nSeen; i++) if (!memcmp(seen[i], key, sizeof key)) known = true;
+        if (!known && nSeen < 512) {
+            memcpy(seen[nSeen++], key, sizeof key);
+            u32 n = ((gx->bp[0x00] >> 10) & 15) + 1;
+            fprintf(stderr, "TEVDIFF draw %llu diff %.0f approx %02x stages %u pica %u tex %u ras %u | tref %06x %06x ksel %06x %06x\n",
+                    (unsigned long long)gx->draws, g_picaDiff, g_picaProg.approx, n, g_picaProg.numStages, g_picaProg.numTex,
+                    g_picaProg.rasChan, gx->bp[0x28], gx->bp[0x29], gx->bp[0xF6], gx->bp[0xF7]);
+            for (u32 i = 0; i < n; i++) fprintf(stderr, "  gx%u c %06x a %06x\n", i, gx->bp[0xC0 + 2 * i], gx->bp[0xC1 + 2 * i]);
+            for (u32 i = 0; i < 4; i++)
+                fprintf(stderr, "  reg%u %06x %06x k %06x %06x\n", i, gx->tevLo[i], gx->tevHi[i], gx->kLo[i], gx->kHi[i]);
+            for (u32 i = 0; i < g_picaProg.numStages; i++) {
+                const PicaStage* q = &g_picaProg.st[i];
+                fprintf(stderr, "  p%u rgb %x%x%x op %x%x%x fn %u s%u | a %x%x%x op %x%x%x fn %u s%u | k %08x\n", i,
+                        q->srcRgb[0], q->srcRgb[1], q->srcRgb[2], q->opRgb[0], q->opRgb[1], q->opRgb[2], q->fnRgb, q->scaleRgb,
+                        q->srcA[0], q->srcA[1], q->srcA[2], q->opA[0], q->opA[1], q->opA[2], q->fnA, q->scaleA, q->konst);
+            }
+            fprintf(stderr, "  buf rgb %x a %x color %08x\n", g_picaProg.bufRgb, g_picaProg.bufA, g_picaProg.bufColor);
+        }
+    }
 }
 
 static const GXBackend kSoft = { soft_draw, NULL };

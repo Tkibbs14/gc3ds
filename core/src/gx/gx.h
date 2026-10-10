@@ -68,6 +68,7 @@ void gx_texture_block_size(u32 fmt, u32* bw, u32* bh);
 
 // Software reference renderer (PC): draws go into GXCore.efb / efbZ.
 void gx_soft_attach(System* s);
+void gx_soft_set_pica_tev(bool on);  // TEV through the PICA translation (see soft.c)
 // One pixel of the current TEV state with fixed rasterised colours and texels per texture map (translation tests).
 void gx_soft_eval_tev(const GXCore* gx, const float ras[2][4], const float texel[8][4], float out[4]);
 

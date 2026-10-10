@@ -450,6 +450,55 @@ static void attribs(const SVert* v, PVert* o) {
 
 // GX clip space -> PICA clip space. EFB position times w is linear in the clip coordinates, so the viewport, the
 // EFB scale and the depth range fold in before the divide and the hardware clips correctly.
+// Z textures (BP 0xF4 bias, 0xF5 bits 0-1 texel format U8/U16/U24, bits 2-3 op: 1 add, 2 replace) give each pixel
+// a depth taken from the last texture the TEV sampled. The PICA cannot write depth from a texture, but games use
+// them mostly with uniform textures: Twilight Princess resets its depth buffer every frame with ~650 quads that
+// replace depth from a 4x4 texture, and without this every later draw failed the depth test (only the sky showed).
+// A uniform texture's value goes into the vertices' depth; a non-uniform one uses its first texel (approximation).
+static u32 g_ztexKey[5], g_ztexValue;
+static bool g_ztexUniform;
+
+static void apply_ztex(System* s, const GXCore* gx, u32 count) {
+    u32 mode = gx->bp[0xF5], op = (mode >> 2) & 3;
+    if (!op || op == 3) return;
+    // The last enabled texture stage's map.
+    u32 stages = ((gx->bp[0x00] >> 10) & 15) + 1, map = 8;
+    for (u32 st = 0; st < stages; st++) {
+        u32 tref = gx->bp[0x28 + st / 2] >> ((st & 1) * 12);
+        if ((tref >> 6) & 1) map = tref & 7;
+    }
+    if (map == 8) return;
+    u32 hi = map >= 4 ? 0x20 : 0, m = map & 3;
+    u32 img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi], tlut = gx->bp[0x98 + m + hi];
+    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = (img3 & 0xFFFFFF) << 5;
+    u32 key[5] = { img0, img3, tlut, mode, g.xfbSeq };
+    if (memcmp(key, g_ztexKey, sizeof key)) {
+        memcpy(g_ztexKey, key, sizeof key);
+        u32 n = w * h, bytes = gx_texture_size(fmt, w, h);
+        if (n > g_scratchCap) {
+            u32* p = realloc(g_scratch, n * 4);
+            if (!p) return;
+            g_scratch = p;
+            g_scratchCap = n;
+        }
+        if (!bytes || addr + bytes > PA_MEM1_END) return;
+        u32 tlutAddr = (tlut & 0x3FF) << 9;
+        gx_decode_texture(s->mem1 + addr, fmt, w, h, gx->tmem + (tlutAddr & 0xFFFFF), (tlut >> 10) & 3, g_scratch);
+        g_ztexUniform = true;
+        for (u32 i = 1; i < n; i++) if (g_scratch[i] != g_scratch[0]) { g_ztexUniform = false; break; }
+        u32 c = g_scratch[0], r = c >> 24, gg = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF, a = c & 0xFF;
+        g_ztexValue = (mode & 3) == 0 ? a : (mode & 3) == 1 ? (a << 8) | r : (r << 16) | (gg << 8) | b;
+        if (!g_ztexUniform) note_approx(1u << 28);
+    }
+    u32 zt = g_ztexValue + (gx->bp[0xF4] & 0xFFFFFF);
+    float z = (float)(op == 2 ? zt & 0xFFFFFF : zt) * (1.0f / 16777216.0f);  // replace wraps to 24 bits
+    for (u32 i = 0; i < count; i++) {
+        PVert* o = &g_pv[i];
+        if (op == 2) o->pos[2] = -z * o->pos[3];
+        else o->pos[2] -= z * o->pos[3];
+    }
+}
+
 static void to_pica(const Viewport* vp, const SVert* v, PVert* o) {
     float w = v->w, ex = v->x * vp->wd + vp->xo * w, ey = v->y * vp->ht + vp->yo * w;
     o->pos[0] = ex * vp->kx - w;
@@ -536,6 +585,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         gx_to_screen(gx, &g_sv[i]);
         to_pica(&vp, &g_sv[i], &g_pv[i]);
     }
+    apply_ztex(s, gx, count);
     prof_end(PROF_GXVTX, t0);
     u32 maxVerts = prim >= PRIM_LINES ? count * 6 : count * 3;
     u32 frameBefore = g.frameNo;

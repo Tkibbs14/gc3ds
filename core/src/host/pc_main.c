@@ -226,6 +226,7 @@ int main(int argc, char** argv) {
             if (!parse_presses(&fe, argv[++i])) { fprintf(stderr, "bad --press list (BUTTON@from-to,...)\n"); return 2; }
         }
         else if (!strcmp(argv[i], "--jit")) useJit = true;
+        else if (!strcmp(argv[i], "--pica-tev")) gx_soft_set_pica_tev(true);
         else if (!strcmp(argv[i], "--disc") && i + 1 < argc) discPath = argv[++i];
         else if (!strcmp(argv[i], "--rtc") && i + 1 < argc) rtc = (u32)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--from") && i + 1 < argc) fe.from = (u32)atoi(argv[++i]);
