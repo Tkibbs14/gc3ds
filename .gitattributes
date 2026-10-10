@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.png binary
+*.dol binary
+*.3dsx binary

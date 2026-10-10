@@ -1,0 +1,22 @@
+# Build outputs
+build/
+bench/build/
+bench/*.3dsx
+bench/*.elf
+bench/*.smdh
+bench/results/
+core/build/
+core/out/
+*.o
+*.d
+
+# Built test programs (rebuilt by gc-tests/build_examples.sh)
+gc-tests/examples-dol/
+
+# Game data never goes in the repository
+*.iso
+*.gcm
+*.nkit.*
+*.rvz
+*.wbfs
+*.ciso
