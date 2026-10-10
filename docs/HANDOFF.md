@@ -98,10 +98,17 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
 
 ## Next work, ordered by speed gained per token
 
-1. **Vertices on the GPU:** GPU_BACKEND_PLAN.md step 5. Matrices as uniforms, GameCube integer formats fed to the
-   PICA directly, lighting in the shader. Also batch consecutive draws with identical state into one PICA draw;
-   thousands of 5-vertex draws are mostly fixed cost.
-2. **JIT level 2 (Sonnet, fuzzer-checked):**
+1. **Vertices: done on the CPU instead (0b29e22, not yet measured on the 2DS).** `gx/vfast.c` replaces the
+   reference transform in pica.c with a per-draw compiled path, and pica.c batches draws with an unchanged state
+   key into one `C3D_DrawArrays`. Checked with `core/tools/vfast_check.sh [secs] [tp-frames]` (`VFAST_CHECK=1`
+   in soft.c), and NeHe 5/7, texturetest and triangle render correctly in Azahar. A vertex shader transform would
+   gain little more while guest code is 54% of the field. **Next:** read the 2DS profile (`vtx` and draw counts) on
+   the TP title scene.
+   - Azahar needs about 35 s before a test program draws, so use `az_test.ps1 -Seconds 50`.
+2. **JIT level 2 (Sonnet, fuzzer-checked).** First measure: `core/tools/arm_tp_jitstats.sh` runs TP under
+   qemu-arm with the JIT and prints the instructions interpreted at run time. The ARM build needs its own states
+   (the script's header shows how to make `/root/tp_arm_700.state`; the PC states do not load into it). A boot to
+   field 700 under qemu takes well over 20 minutes, so run it in the background.
    - FPU and paired singles on VFP (TP is about 14% float).
    - Register caching across a block.
    - Block linking (direct branches; keep hot code inside the 16 KB I-cache).
