@@ -341,7 +341,7 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
     }
 }
 
-void gxcore_feed(System* s, GXCore* gx, const u8* data, u32 len) {
+static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
     if (gx->pendingLen + len > gx->pendingCap) {
         u32 cap = gx->pendingCap ? gx->pendingCap : 4096;
         while (cap < gx->pendingLen + len) cap *= 2;
@@ -363,4 +363,10 @@ void gxcore_feed(System* s, GXCore* gx, const u8* data, u32 len) {
         memmove(gx->pending, gx->pending + off, gx->pendingLen - off);
         gx->pendingLen -= off;
     }
+}
+
+void gxcore_feed(System* s, GXCore* gx, const u8* data, u32 len) {
+    u64 t0 = prof_begin();
+    feed(s, gx, data, len);
+    prof_end(PROF_GX, t0);
 }

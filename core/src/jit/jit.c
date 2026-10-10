@@ -653,7 +653,7 @@ static void count_fallback(Jit* j, u32 inst) {
 }
 
 // Compiles the block starting at guest PC `pc`; NULL when the code is not in RAM or the cache is full.
-static BlockFn compile(Jit* j, u32 pc) {
+static BlockFn compile_block(Jit* j, u32 pc) {
     Gekko* g = j->g;
     u32 pa;
     if (!gk_translate(g, pc, false, false, &pa, false) || pa >= j->ramSize) return NULL;
@@ -721,6 +721,13 @@ static BlockFn compile(Jit* j, u32 pc) {
     for (u32 a = startPa >> 12; a <= (startPa + 4 * MAX_BLOCK_INSNS) >> 12 && a < sizeof j->codePages; a++) j->codePages[a] = 1;
     j->stats.blocksCompiled++;
     return (BlockFn)fn;
+}
+
+static BlockFn compile(Jit* j, u32 pc) {
+    u64 t0 = prof_begin();
+    BlockFn fn = compile_block(j, pc);
+    prof_end(PROF_JITC, t0);
+    return fn;
 }
 
 // ---- dispatcher ----

@@ -29,3 +29,11 @@ typedef enum { LOG_CPU, LOG_MEM, LOG_HW, LOG_BOOT, LOG_GX, LOG_DSP, LOG_EXI, LOG
 void emu_log(LogCat cat, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 void emu_error(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 extern u32 g_logMask;  // bit per LogCat
+
+// Wall-clock profiling of a few host-side areas (the 3DS frontend reads and clears it once a second). Off while
+// g_profClock is NULL, which costs one test per call site.
+enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_N };
+extern u64 g_hostProf[PROF_N];
+extern u64 (*g_profClock)(void);
+static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
+static inline void prof_end(int area, u64 t0) { if (g_profClock) g_hostProf[area] += g_profClock() - t0; }

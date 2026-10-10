@@ -66,7 +66,16 @@ static void on_field(System* s, void* user) {
 // Shows the field the VI scans out. With the GPU backend the image never left the GPU (virtual XFB); otherwise, and
 // for programs that draw the XFB with the CPU, the XFB in RAM (YUYV, 640 wide) is scaled to the 400x240 top screen.
 // The top framebuffer is stored rotated: column-major, 240 pixels per column, BGR8.
+static void present_field(System* s);
 static void present(System* s) {
+    u64 t0 = prof_begin();
+    present_field(s);
+    prof_end(PROF_PRESENT, t0);
+}
+
+static u64 prof_clock(void) { return svcGetSystemTick(); }
+
+static void present_field(System* s) {
     g_frameReady = false;
     u32 top = 0, bottom, w = 0, h, stride;
     bool vi = vi_get_xfb(s, &top, &bottom, &w, &h, &stride) && w;
@@ -184,9 +193,13 @@ static void run(const char* path) {
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
     u32 fieldsLast = 0;
+    u64 waitTicks = 0, drawsLast = g_sys.gx.core.draws;
+    g_profClock = prof_clock;  // X toggles the profile lines
+    memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
+        if (hidKeysDown() & KEY_X) { g_profClock = g_profClock ? NULL : prof_clock; printf("\x1b[9;0H\x1b[0J"); }
         sys_run(&g_sys, CYCLES_PER_FIELD);
         if (g_sys.stopRequested) { printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc); break; }
         // Pace to real time: when emulation is ahead, present and wait for the next 3DS refresh; when behind,
@@ -195,7 +208,9 @@ static void run(const char* path) {
         double emulated = (double)(g_sys.cpu.cycles - cyc0) / GEKKO_HZ, real = (double)(now - t0) / SYSCLOCK_ARM11;
         if (emulated > real) {
             if (g_frameReady) present(&g_sys);
+            u64 w0 = svcGetSystemTick();
             gspWaitForVBlank();
+            waitTicks += svcGetSystemTick() - w0;
             tPresent = svcGetSystemTick();
         } else if (g_frameReady && now - tPresent > SYSCLOCK_ARM11 / 60) {
             present(&g_sys);
@@ -213,6 +228,20 @@ static void run(const char* path) {
                 printf("JIT %llu blocks, %.1f%% native   \n", (unsigned long long)js->blocksCompiled,
                        js->instrsCompiled ? 100.0 * (double)js->instrsNative / (double)js->instrsCompiled : 0.0);
             }
+            if (g_profClock) {
+                // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
+                double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
+                for (int k = 0; k < PROF_N; k++) { p[k] = 100.0 * (double)g_hostProf[k] / tot; rest -= p[k]; }
+                printf("\x1b[9;0HGX %4.1f%%  disc %4.1f%%  log %4.1f%%   \n", p[PROF_GX], p[PROF_DISC], p[PROF_LOG]);
+                printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
+                printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
+                printf("draws/s %5.0f", (double)(g_sys.gx.core.draws - drawsLast) / secs);
+                if (g_jit && g_useJit) printf("  JIT flushes %llu", (unsigned long long)jit_stats(g_jit)->flushes);
+                printf("   \n");
+            }
+            memset(g_hostProf, 0, sizeof g_hostProf);
+            waitTicks = 0;
+            drawsLast = g_sys.gx.core.draws;
             tLast = now; cycLast = g_sys.cpu.cycles; fieldsLast = g_fields;
         }
     }

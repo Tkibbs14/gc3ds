@@ -5,7 +5,8 @@
 #include <sys/stat.h>
 #include "../src/common.h"
 
-u32 g_logMask = (1u << LOG_BOOT) | (1u << LOG_OS) | (1u << LOG_MEM) | (1u << LOG_HW) | (1u << LOG_GX) | (1u << LOG_DSP);
+// LOG_DSP is off: Twilight Princess logs its DSP mail handshake many times a second and every line is flushed to SD.
+u32 g_logMask = (1u << LOG_BOOT) | (1u << LOG_OS) | (1u << LOG_MEM) | (1u << LOG_HW) | (1u << LOG_GX);
 
 static FILE* g_log;
 static const char* const kNames[LOG_NCAT] = { "cpu", "mem", "hw", "boot", "gx", "dsp", "exi", "si", "di", "vi", "os" };
@@ -21,8 +22,10 @@ static FILE* log_file(void) {
 static void emit(const char* tag, bool toScreen, const char* fmt, va_list ap) {
     char line[512];
     vsnprintf(line, sizeof line, fmt, ap);
+    u64 t0 = prof_begin();
     FILE* f = log_file();
     if (f) { fprintf(f, "[%s] %s", tag, line); fflush(f); }
+    prof_end(PROF_LOG, t0);
     if (toScreen) printf("[%s] %s", tag, line);
 }
 

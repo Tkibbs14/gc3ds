@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+u64 g_hostProf[PROF_N];
+u64 (*g_profClock)(void);
+
 // ---- physical bus ----
 
 static void unknown_access(System* s, const char* what, u32 pa, u32 v) {

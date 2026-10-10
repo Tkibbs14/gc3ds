@@ -10,7 +10,7 @@
 
 static u32 be32(const u8* p) { return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3]; }
 
-bool disc_read(Disc* d, u64 offset, void* dst, u32 len) {
+static bool read_at(Disc* d, u64 offset, void* dst, u32 len) {
     u8* out = dst;
     if (offset >= d->size) { memset(out, 0, len); return true; }
     u32 have = offset + len > d->size ? (u32)(d->size - offset) : len;
@@ -18,6 +18,13 @@ bool disc_read(Disc* d, u64 offset, void* dst, u32 len) {
     if (fseek(f, (long)offset, SEEK_SET) != 0 || fread(out, 1, have, f) != have) return false;
     if (have < len) memset(out + have, 0, len - have);
     return true;
+}
+
+bool disc_read(Disc* d, u64 offset, void* dst, u32 len) {
+    u64 t0 = prof_begin();
+    bool ok = read_at(d, offset, dst, len);
+    prof_end(PROF_DISC, t0);
+    return ok;
 }
 
 bool disc_probe(const char* path) {
