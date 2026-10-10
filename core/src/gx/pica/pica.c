@@ -534,7 +534,11 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         }
     }
     apply_frag(gx);
-    for (u32 i = 0; i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i]);
+    // Only the units the combiners read are bound; the others keep whatever they had, which nothing samples.
+    // - Never bind NULL: citro3d 1.7.1 reads the texture's type through it, a data abort on hardware. Azahar does not
+    //   fault on reads near address 0, so it hid this.
+    // - Binding a placeholder to unused units 1 and 2 crashed Azahar itself (2026-10-10).
+    for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
     g_cull = (gx->bp[0x00] >> 14) & 3;
     u32 first = g.arenaUsed;
     switch (prim) {
@@ -562,8 +566,6 @@ static void quad_state(C3D_Tex* src, bool linear) {
     C3D_TexSetFilter(src, linear ? GPU_LINEAR : GPU_NEAREST, linear ? GPU_LINEAR : GPU_NEAREST);
     C3D_TexSetWrap(src, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
     C3D_TexBind(0, src);
-    C3D_TexBind(1, NULL);
-    C3D_TexBind(2, NULL);
     for (int i = 1; i < PICA_STAGES; i++) C3D_TexEnvInit(C3D_GetTexEnv(i));
     C3D_TexEnvBufUpdate(C3D_Both, 0);
     g.stateValid = g.tevValid = false;
@@ -680,7 +682,16 @@ static void clear_efb(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h) {
     if (!bits) return;
     if (x0 > 8 || y0 > 8 || w * h < EFB_W * 400) note_approx(1u << 30);  // partial clear widened to the whole EFB
     split(1);
-    C3D_RenderTargetClear(g.efb, (C3D_ClearBits)bits, rgba, gx->bp[0x51] & 0xFFFFFF);
+    // One memory fill with both slots naming a real buffer: C3D_RenderTargetClear leaves the second slot NULL for
+    // a colour-only or depth-only clear, which Azahar turns into physical address 0 and crashes on.
+    u32 n = TW * TH, z = gx->bp[0x51] & 0xFFFFFF;
+    u32* cb = (u32*)g.efb->frameBuf.colorBuf;
+    u32* db = (u32*)g.efb->frameBuf.depthBuf;
+    bool color = bits & C3D_CLEAR_COLOR, depth = bits & C3D_CLEAR_DEPTH;
+    u32* b0 = color ? cb : db;
+    u32* b1 = depth ? db : cb;
+    u16 ctl = GX_FILL_TRIGGER | GX_FILL_32BIT_DEPTH;
+    GX_MemoryFill(b0, color ? rgba : z, b0 + n, ctl, b1, depth ? z : rgba, b1 + n, ctl);
 }
 
 static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
@@ -764,12 +775,17 @@ bool pica_attach(System* s) {
         if (!g.efb) return false;
         for (u32 i = 0; i < MAX_XFB; i++)
             if (!C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) return false;
-        g.screen = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, -1);
+        g.screen = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);  // a depth buffer even though unused: a NULL one reads as physical address 0
         if (!g.screen) return false;
         C3D_RenderTargetSetOutput(g.screen, GFX_TOP, GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
         if (!C3D_TexInit(&g.white, 8, 8, GPU_RGBA8)) return false;
         memset(g.white.data, 0xFF, g.white.size);
         GSPGPU_FlushDataCache(g.white.data, g.white.size);
+        emu_log(LOG_GX, "pica: PA arena %08x efb %08x depth %08x xfb %08x %08x %08x screen %08x white %08x\n",
+                (unsigned)osConvertVirtToPhys(g.arena), (unsigned)osConvertVirtToPhys(g.efbTex.data),
+                (unsigned)osConvertVirtToPhys(g.efb->frameBuf.depthBuf), (unsigned)osConvertVirtToPhys(g.xfb[0].tex.data),
+                (unsigned)osConvertVirtToPhys(g.xfb[1].tex.data), (unsigned)osConvertVirtToPhys(g.xfb[2].tex.data),
+                (unsigned)osConvertVirtToPhys(g.screen->frameBuf.colorBuf), (unsigned)osConvertVirtToPhys(g.white.data));
         g.ready = true;
     }
     s->gx.core.backend = &kPica;
