@@ -65,11 +65,30 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   renderer; ask before running GPU-heavy tools.
 - **Never** download or commit game data. The owner's own images are on his SD card under `sdmc:/gc3ds/games`.
 
+## Measured on the 2DS (2026-10-10, bottom-screen profile)
+
+| TP stage | speed | where the time went |
+|---|---|---|
+| Health screen, logos | 68–69% | after the polling-loop skip; disc reads up to 57% while loading |
+| Title scene (field ~700) | 3.0% | GX 46% (vertex decode + transform on the CPU 30%, textures 2%, GPU wait 4%); guest code 54% |
+
+- **The title scene issues about 4,400 draws of ~5 vertices per field** (PC: 1.3 M draws by field 900). The CPU
+  vertex path costs about 7.5 µs per vertex on the ARM11.
+- **Guest code alone caps the title scene near 5–6%.** The likely cause is float and paired-single code falling back
+  to the interpreter one instruction at a time; check the JIT's dynamic fallback count first.
+- **TP's title scene makes a Z copy each frame** (fmt 11, 608x448 to 304x224, then a downscale chain at 0x0064f040)
+  for its haze. Depth copies now sample the depth buffer as a texture. The build with this was not yet seen on the
+  2DS: before it, the title scene was washed pink/white, because white depth means maximum haze.
+- **Tools:**
+  - `core/tools/tp_frame.sh N` renders TP field N on the PC.
+  - `tp_copies.sh A B` lists TP's EFB copies.
+  - `tp_profile.sh S` gives guest hot spots.
+
 ## Next work, ordered by speed gained per token
 
-1. **GPU backend, on hardware:** run the new build on the 2DS (triangle, NeHe, texturetest, then TP) and read
-   `sdmc:/gc3ds/log.txt` for `pica:` lines. Then GPU_BACKEND_PLAN.md step 5 (transform in the vertex shader), the
-   gaps above, and textures in VRAM.
+1. **Vertices on the GPU:** GPU_BACKEND_PLAN.md step 5. Matrices as uniforms, GameCube integer formats fed to the
+   PICA directly, lighting in the shader. Also batch consecutive draws with identical state into one PICA draw;
+   thousands of 5-vertex draws are mostly fixed cost.
 2. **JIT level 2 (Sonnet, fuzzer-checked):**
    - FPU and paired singles on VFP (TP is about 14% float).
    - Register caching across a block.

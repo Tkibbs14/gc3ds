@@ -70,6 +70,9 @@ static struct {
     shaderProgram_s prog;
     DVLB_s* dvlb;
     C3D_Tex efbTex, white;
+    // The EFB's D24S8 depth buffer read as an RGBA8 texture (same tiling): A = depth bits 0-7, B = 8-15, G = 16-23,
+    // R = stencil. Depth copies sample it directly.
+    C3D_Tex efbDepthTex;
     C3D_RenderTarget* efb;
     C3D_RenderTarget* screen;
     PVert* arena;
@@ -637,14 +640,32 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
     split(0);
     need(6);
     C3D_FrameDrawOn(c->rt);
-    quad_state(&g.efbTex, half || W < w || H < h);
+    quad_state(depth ? &g.efbDepthTex : &g.efbTex, !depth && (half || W < w || H < h));
     C3D_TexEnv* e = C3D_GetTexEnv(0);
     C3D_TexEnvInit(e);
     C3D_TexEnvSrc(e, C3D_Both, GPU_TEXTURE0, GPU_CONSTANT, GPU_PRIMARY_COLOR);
     C3D_TexEnvFunc(e, C3D_Both, GPU_REPLACE);
-    if (depth) {  // depth copies are not supported yet: white reads as "far"
-        C3D_TexEnvSrc(e, C3D_Both, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
-        C3D_TexEnvColor(e, 0xFFFFFFFF);
+    if (depth) {
+        // Z copies: the copy unit treats depth bits 16-23 / 8-15 / 0-7 as R / G / B (fifo.c). The texture then holds
+        // what the matching intensity decoder returns: one byte as I (I4/I8 reads) or two as I and A (IA8 reads,
+        // which store the second-named channel first, so RG8 gives I = R, A = G). From efbDepthTex: hi = G,
+        // mid = B, lo = A. RGBA8 / RGB565 / RGB5A3 Z copies show the high byte only (approximation).
+        static const u8 rgbOp[13] = { GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G,
+                                      GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_G,
+                                      GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_B, GPU_TEVOP_RGB_SRC_ALPHA,
+                                      GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_B };
+        static const u8 aOp[13] = { GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_B,
+                                    GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_G,
+                                    GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_B, GPU_TEVOP_A_SRC_ALPHA,
+                                    GPU_TEVOP_A_SRC_B, GPU_TEVOP_A_SRC_ALPHA };
+        u32 f = fmt < 13 ? fmt : 8;
+        C3D_TexEnvOpRgb(e, rgbOp[f], GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+        C3D_TexEnvOpAlpha(e, aOp[f], GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA);
+        if (f == 2 || f == 3) {  // RA formats: the copy unit writes alpha 255 for depth
+            C3D_TexEnvSrc(e, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+            C3D_TexEnvColor(e, 0xFFFFFFFF);
+        }
+        if (f == 4 || f == 5 || f == 6) note_approx(1u << 29);
     } else if (intensity && fmt <= 3) {
         // Studio-range luma: Y = 0.257 R + 0.504 G + 0.098 B + 16/255 as DOT3 (4 * sum((a - .5)(b - .5))) against
         // b = 0.5 + k / 4, then + (0.5 * sum(k) + 16/255) in stage 1. IA formats keep the EFB alpha.
@@ -785,6 +806,8 @@ bool pica_attach(System* s) {
         if (!C3D_TexInitVRAM(&g.efbTex, TW, TH, GPU_RGBA8)) return false;
         g.efb = C3D_RenderTargetCreateFromTex(&g.efbTex, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
         if (!g.efb) return false;
+        g.efbDepthTex = g.efbTex;
+        g.efbDepthTex.data = g.efb->frameBuf.depthBuf;
         for (u32 i = 0; i < MAX_XFB; i++)
             if (!C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) return false;
         g.screen = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);  // a depth buffer even though unused: a NULL one reads as physical address 0
