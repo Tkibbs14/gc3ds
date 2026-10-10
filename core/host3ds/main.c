@@ -231,14 +231,20 @@ static void run(const char* path) {
             if (g_profClock) {
                 // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
                 double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
-                for (int k = 0; k < PROF_N; k++) { p[k] = 100.0 * (double)g_hostProf[k] / tot; rest -= p[k]; }
-                printf("\x1b[9;0HGX %4.1f%%  disc %4.1f%%  log %4.1f%%   \n", p[PROF_GX], p[PROF_DISC], p[PROF_LOG]);
+                for (int k = 0; k < PROF_N; k++) {
+                    p[k] = 100.0 * (double)g_hostProf[k] / tot;
+                    if (k != PROF_GXTEX && k != PROF_GXVTX && k != PROF_GXSYNC) rest -= p[k];  // inside GX/present
+                }
+                // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
+                printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
+                       p[PROF_GXSYNC]);
+                printf("disc %4.1f%%  log %4.1f%%   \n", p[PROF_DISC], p[PROF_LOG]);
                 printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
                 printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
                 printf("draws/s %5.0f", (double)(g_sys.gx.core.draws - drawsLast) / secs);
                 if (g_jit && g_useJit)
-                    printf("  flushes %llu  polls %llu", (unsigned long long)jit_stats(g_jit)->flushes,
-                           (unsigned long long)jit_stats(g_jit)->pollSkips);
+                    printf("  full %llu icbi %llu  polls %llu", (unsigned long long)jit_stats(g_jit)->flushes,
+                           (unsigned long long)jit_stats(g_jit)->icbiFlushes, (unsigned long long)jit_stats(g_jit)->pollSkips);
                 printf("   \n");
             }
             memset(g_hostProf, 0, sizeof g_hostProf);
@@ -264,7 +270,9 @@ int main(void) {
     g_pica = pica_attach(&g_sys);
     if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
     g_sys.on_field = on_field;
-    g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 4u << 20);
+    // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
+    // recompiled about a million blocks in 12 emulated seconds (35% of the time).
+    g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 16u << 20);
     if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; }
     // romfs:/autorun.txt (test builds) names a program to start without the menu.
     FILE* ar = fopen("romfs:/autorun.txt", "r");

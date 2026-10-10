@@ -32,7 +32,7 @@ extern u32 g_logMask;  // bit per LogCat
 
 // Wall-clock profiling of a few host-side areas (the 3DS frontend reads and clears it once a second). Off while
 // g_profClock is NULL, which costs one test per call site.
-enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_N };
+enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_N };  // GXTEX, GXVTX, GXSYNC: parts of GX
 extern u64 g_hostProf[PROF_N];
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }

@@ -83,6 +83,7 @@ static struct {
     u32 xfbSeq;
     u32 tevKey[72], fragKey[8];
     PicaTev tev;
+    PTex* lastHit[8];  // per GX texture map: the entry its last lookup found
     u32 approxSeen, queued;  // queued: GX queue entries added this frame
 } g;
 
@@ -108,7 +109,9 @@ static void free_all_textures(void) {
 
 static void begin_frame(void) {
     if (g.frame) return;
+    u64 t0 = prof_begin();
     C3D_FrameBegin(0);  // waits for the previous submit: the arena and retired textures are free again
+    prof_end(PROF_GXSYNC, t0);
     g.frame = true;
     g.frameNo++;
     g.arenaUsed = g.arenaFlushed = g.queued = 0;
@@ -237,14 +240,18 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     return true;
 }
 
-static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg) {
+static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg) {
     u32 bytes = gx_texture_size(fmt, w, h);
     if (!bytes || addr + bytes > PA_MEM1_END) return NULL;
     bool pal = fmt == 8 || fmt == 9 || fmt == 10;
     u32 tlutAddr = pal ? (tlutReg & 0x3FF) << 9 : 0, tlutFmt = pal ? (tlutReg >> 10) & 3 : 0;
     PTex* e = NULL;
     PTex* slot = NULL;
-    for (u32 i = 0; i < MAX_TEX; i++) {
+    PTex* last = g.lastHit[map];  // texture maps mostly keep their texture from one draw to the next
+    if (last && last->live && last->addr == addr && last->fmt == fmt && last->w == w && last->h == h &&
+        last->tlutAddr == tlutAddr && last->tlutFmt == tlutFmt)
+        e = last;
+    for (u32 i = 0; i < MAX_TEX && !e; i++) {
         PTex* p = &g.tex[i];
         if (!p->live) { if (!slot) slot = p; continue; }
         if (p->addr == addr && p->fmt == fmt && p->w == w && p->h == h && p->tlutAddr == tlutAddr && p->tlutFmt == tlutFmt) {
@@ -253,14 +260,14 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 addr, u32 fmt, u
         }
     }
     if (e) {
-        // RAM and palettes may have changed since the entry was checked (versions move each frame and at each EFB
-        // copy): re-hash and decode again only when the contents really differ.
+        // RAM and palettes may have changed since the entry was checked: re-hash once per emulated frame (EFB copies
+        // stay on the GPU here and never write RAM) and decode again only when the contents really differ.
         bool dirty = false;
-        if (e->texVersion != gx->texVersion) {
+        if (e->texVersion != g.xfbSeq) {
             u32 dh = hash_words(s->mem1 + addr, bytes);
             dirty |= dh != e->dataHash;
             e->dataHash = dh;
-            e->texVersion = gx->texVersion;
+            e->texVersion = g.xfbSeq;
         }
         if (pal && e->tlutVersion != gx->tlutVersion) {
             u32 th = hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt));
@@ -282,11 +289,12 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 addr, u32 fmt, u
         e->addr = addr; e->fmt = fmt; e->w = w; e->h = h; e->tlutAddr = tlutAddr; e->tlutFmt = tlutFmt;
         e->dataHash = hash_words(s->mem1 + addr, bytes);
         e->tlutHash = pal ? hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt)) : 0;
-        e->texVersion = gx->texVersion;
+        e->texVersion = g.xfbSeq;
         e->tlutVersion = gx->tlutVersion;
         if (!decode(s, gx, e)) return NULL;
     }
     e->lastUse = g.frameNo;
+    g.lastHit[map] = e;
     return &e->tex;
 }
 
@@ -295,9 +303,9 @@ static PCopy* find_copy(System* s, const GXCore* gx, u32 addr, u32 w, u32 h) {
         PCopy* c = &g.copies[i];
         if (!c->used || c->addr != addr || c->w != w || c->h != h) continue;
         // The CPU writing the destination afterwards means RAM holds a newer texture than the copy.
-        if (c->texVersion != gx->texVersion) {
+        if (c->texVersion != g.xfbSeq) {
             if (hash_words(s->mem1 + addr, c->ramBytes) != c->ramHash) { c->used = false; return NULL; }
-            c->texVersion = gx->texVersion;
+            c->texVersion = g.xfbSeq;
         }
         return c;
     }
@@ -310,7 +318,7 @@ static C3D_Tex* fetch_texture(System* s, const GXCore* gx, u32 map) {
     u32 img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi], tlut = gx->bp[0x98 + m + hi], mode = gx->bp[0x80 + m + hi];
     u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = (img3 & 0xFFFFFF) << 5;
     PCopy* c = find_copy(s, gx, addr, w, h);
-    C3D_Tex* t = c ? &c->tex : cached_texture(s, gx, addr, fmt, w, h, tlut);
+    C3D_Tex* t = c ? &c->tex : cached_texture(s, gx, map, addr, fmt, w, h, tlut);
     if (!t) t = &g.white;
     static const GPU_TEXTURE_WRAP_PARAM wraps[4] = { GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT };
     C3D_TexSetWrap(t, wraps[mode & 3], wraps[(mode >> 2) & 3]);
@@ -512,7 +520,10 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     begin_frame();
     update_tev(gx);
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
+    u64 t0 = prof_begin();
     for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+    prof_end(PROF_GXTEX, t0);
+    t0 = prof_begin();
     Viewport vp;
     viewport(gx, &vp);
     for (u32 i = 0; i < count; i++) {
@@ -522,6 +533,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         gx_to_screen(gx, &g_sv[i]);
         to_pica(&vp, &g_sv[i], &g_pv[i]);
     }
+    prof_end(PROF_GXVTX, t0);
     u32 maxVerts = prim >= PRIM_LINES ? count * 6 : count * 3;
     u32 frameBefore = g.frameNo;
     if (!need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
@@ -671,7 +683,7 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
     c->ramBytes = ow * oh * bpp / 8;
     if (dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
     c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
-    c->texVersion = gx->texVersion + 1;  // fifo.c bumps texVersion after this returns
+    c->texVersion = g.xfbSeq;
 }
 
 static void clear_efb(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h) {
