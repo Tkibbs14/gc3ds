@@ -14,8 +14,14 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
 - **3DS build (`core/host3ds`):** runs on the New 2DS XL.
   - A menu lists the bundled test DOLs plus `sdmc:/gc3ds` and `sdmc:/gc3ds/games` (DOL/ISO/GCM).
   - JIT on by default (Y toggles it).
-  - Stable: consoletest at 99.7% speed. 3D at about 5%, limited by the software renderer. TP boots but will be
-    extremely slow until the GPU backend exists.
+  - Stable: consoletest at 99.7% speed.
+  - **GPU backend (`gx/pica/pica.c`, 2026-10-10):** GX draws, clears, EFB copies and the XFB run on the PICA200,
+    with TEV compiled to combiners by `gx/tev_pica.c` (checked by `core/tests/tev/run_tev_tests.sh`). In Azahar:
+    triangle 99.6%, texturetest 99.7% (was about 5%); NeHe 5 and 7 render. Not yet measured on the 2DS, and TP is
+    untested on it. Known gaps are listed at the top of pica.c (fog, Z textures, indirect, depth copies, partial
+    clears, mipmaps, textures in FCRAM rather than VRAM).
+  - Test 3DS builds in Azahar with `core/host3ds/az_test.ps1 -Prog <name>` (build with autorun + screenshot). The
+    TP image is in Azahar's virtual SD, but Azahar is too slow to get TP to its first frame.
 - **CPU:**
   - Interpreter verified against qemu-ppc (`core/tests/cpu/run_tests.sh`).
   - JIT level 1 (`core/src/jit`): integer, load/store and branches native, the rest falls back per instruction.
@@ -59,8 +65,9 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
 
 ## Next work, ordered by speed gained per token
 
-1. **GPU backend:** follow GPU_BACKEND_PLAN.md step by step, each step checked against `soft.c` frames, then on the
-   2DS. Opus for the core design; Sonnet agents for the well-tested pieces (texture cache, combiner mapping).
+1. **GPU backend, on hardware:** run the new build on the 2DS (triangle, NeHe, texturetest, then TP) and read
+   `sdmc:/gc3ds/log.txt` for `pica:` lines. Then GPU_BACKEND_PLAN.md step 5 (transform in the vertex shader), the
+   gaps above, and textures in VRAM.
 2. **JIT level 2 (Sonnet, fuzzer-checked):**
    - FPU and paired singles on VFP (TP is about 14% float).
    - Register caching across a block.
