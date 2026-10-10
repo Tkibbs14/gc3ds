@@ -42,6 +42,10 @@ typedef struct {
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.
 struct GXBackend {
     void (*draw)(void* ctx, System* s, u32 prim, u32 vat, const u8* verts, u32 count, u32 vtxSize);
+    // Optional (NULL for the software renderer): performs an EFB copy (BP 0x52 control word, source rectangle in
+    // EFB pixels, destination physical address) on the backend's own framebuffer, including the clear. Returns true
+    // when handled; the software copy into RAM is then skipped.
+    bool (*efb_copy)(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest);
 };
 
 // One decoded vertex, before transformation (model space, dequantised).
@@ -64,6 +68,8 @@ void gx_texture_block_size(u32 fmt, u32* bw, u32* bh);
 
 // Software reference renderer (PC): draws go into GXCore.efb / efbZ.
 void gx_soft_attach(System* s);
+// One pixel of the current TEV state with fixed rasterised colours and texels per texture map (translation tests).
+void gx_soft_eval_tev(const GXCore* gx, const float ras[2][4], const float texel[8][4], float out[4]);
 
 void gxcore_init(GXCore* gx);
 void gxcore_free(GXCore* gx);

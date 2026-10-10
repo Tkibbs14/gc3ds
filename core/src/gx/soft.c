@@ -55,7 +55,11 @@ static int wrap_coord(int v, int size, u32 mode) {
     v %= size; return v < 0 ? v + size : v;                                  // repeat
 }
 
+// Test hook (gx_soft_eval_tev): when set, every texture fetch returns the map's fixed texel instead of sampling.
+static const float (*g_fixedTexel)[4];
+
 static void sample(System* s, const GXCore* gx, u32 map, float u, float v, float out[4]) {
+    if (g_fixedTexel) { memcpy(out, g_fixedTexel[map & 7], 4 * sizeof(float)); return; }
     u32 w, h, mode;
     const u32* pix = fetch_texture(s, gx, map, &w, &h, &mode);
     if (!pix) { out[0] = out[1] = out[2] = out[3] = 255; return; }
@@ -304,6 +308,15 @@ static void run_tev(System* s, const GXCore* gx, const float ras[2][4], const fl
     for (int k = 0; k < 4; k++) out[k] = reg[0][k] < 0 ? 0 : reg[0][k] > 255 ? 255 : reg[0][k];
 }
 
+// One pixel of the current TEV state with the given rasterised colours (colour 0, 1; RGBA 0-255) and one fixed texel per
+// texture map instead of sampling memory. Used by the TEV translation tests (core/tests/tev); not used when rendering.
+void gx_soft_eval_tev(const GXCore* gx, const float ras[2][4], const float texel[8][4], float out[4]) {
+    static const float tc[8][2] = { { 0 } };
+    g_fixedTexel = texel;
+    run_tev(NULL, gx, ras, tc, out);
+    g_fixedTexel = NULL;
+}
+
 // ---- per-pixel tests and blending ----
 static bool compare(u32 fn, float a, float b) {
     switch (fn) {
@@ -545,7 +558,7 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     free(v);
 }
 
-static const GXBackend kSoft = { soft_draw };
+static const GXBackend kSoft = { soft_draw, NULL };
 
 void gx_soft_attach(System* s) {
     s->gx.core.backend = &kSoft;

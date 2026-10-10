@@ -1,0 +1,778 @@
+// GX -> PICA200 backend (3DS, citro3d). Plan and measurements: docs/GPU_BACKEND_PLAN.md, docs/FINDINGS.md.
+//
+// Frame model. citro3d queues every piece of GPU work (command lists, memory fills, transfers) and runs the queue
+// only at C3D_FrameEnd. A frame here begins lazily at the first GX work after a submit and ends at present, or when
+// the command buffer or the vertex arena fills. Transfers that must happen between draws (EFB clears and copies) are
+// preceded by C3D_FrameSplit, so the queue holds them in stream order. C3D_FrameBegin waits for the previous submit,
+// so the vertex arena and textures retired during a frame are reused only once the GPU is idle.
+//
+// EFB. A 512x256 RGBA8 texture with a D24S8 depth buffer in VRAM: the GameCube's 640x528 EFB scaled by 0.625 x 0.5,
+// so a 640x480 frame lands 1:1 on the 400x240 top screen. Rows past 512 (PAL 528-line EFBs) are cut. Vertices are
+// transformed on the CPU by the reference code (gx/xform.c) and folded into PICA clip space so the hardware clips
+// them (GX viewport and depth range included); culling is done on the CPU with the reference renderer's rule.
+//
+// Copies. EFB -> XFB copies the render target into one of three XFB textures tagged with the destination address;
+// present shows the one the VI is scanning out ("virtual XFB": the XFB in RAM is not written). EFB -> texture renders
+// the source rectangle into a GPU texture registered under the destination address, used in place of decoding RAM.
+//
+// Not yet: fog, Z textures, indirect texturing, depth copies (white), partial clears (whole EFB cleared), mipmaps,
+// textures in VRAM (they live in linear FCRAM, 2.5-3.6x slower to sample).
+#include <3ds.h>
+#define GC3DS_HOST_TYPES
+#include <citro3d.h>
+#include <math.h>
+#include <stdlib.h>
+#include "../../sys/system.h"
+#include "../tev_pica.h"
+#include "../xform.h"
+#include "gxpass_shbin.h"
+#include "pica.h"
+
+#define TW 512
+#define TH 256
+#define SX (400.0f / 640.0f)
+#define SY (240.0f / 480.0f)
+// Whether NDC y = +1 lands on texture row 0 of a render-target texture. Fixed by the Azahar check: with the wrong
+// value every frame is upside down.
+#define FLIP_Y 0
+#define CMDBUF_BYTES (1u << 20)
+#define ARENA_VERTS ((6u << 20) / sizeof(PVert))
+#define TEX_BUDGET (12u << 20)
+#define MAX_TEX 384
+#define MAX_GRAVE 128
+#define MAX_COPIES 32
+#define MAX_XFB 3
+#define GXQUEUE_BUDGET 26  // of citro3d's 32 GX queue entries; C3D_FrameEnd adds its own
+
+#define DISPLAY_TRANSFER_FLAGS (GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) | \
+    GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
+    GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
+
+typedef struct { float pos[4]; u8 col[4]; float tc[3][2]; } PVert;  // gxpass.v.pica inputs v0-v4
+
+typedef struct {         // a texture decoded from RAM
+    u32 addr, fmt, w, h, tlutAddr, tlutFmt, dataHash, tlutHash, texVersion, tlutVersion, lastUse, bytes;
+    C3D_Tex tex;
+    bool live;
+} PTex;
+
+typedef struct {         // a GPU-side EFB copy standing in for the texture the copy would have written to RAM
+    u32 addr, w, h, ramHash, ramBytes, texVersion;
+    C3D_Tex tex;
+    C3D_RenderTarget* rt;
+    bool live, used;
+} PCopy;
+
+typedef struct { u32 addr, x0, y0, w, h, seq; C3D_Tex tex; } PXfb;
+
+static struct {
+    bool ready, frame, resetPending, stateValid, tevValid;
+    shaderProgram_s prog;
+    DVLB_s* dvlb;
+    C3D_Tex efbTex, white;
+    C3D_RenderTarget* efb;
+    C3D_RenderTarget* screen;
+    PVert* arena;
+    u32 arenaUsed, arenaFlushed;
+    PTex tex[MAX_TEX];
+    u32 texBytes, frameNo;
+    C3D_Tex grave[MAX_GRAVE];
+    u32 nGrave;
+    PCopy copies[MAX_COPIES];
+    PXfb xfb[MAX_XFB];
+    u32 xfbSeq;
+    u32 tevKey[72], fragKey[8];
+    PicaTev tev;
+    u32 approxSeen, queued;  // queued: GX queue entries added this frame
+} g;
+
+static u8 g_morton[64];
+static SVert* g_sv;
+static PVert* g_pv;
+static u32 g_vcap;
+static u32* g_scratch;
+static u32 g_scratchCap;
+
+// ---- frames ----
+static void flush_arena(void) {
+    if (g.arenaUsed > g.arenaFlushed)
+        GSPGPU_FlushDataCache(g.arena + g.arenaFlushed, (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
+    g.arenaFlushed = g.arenaUsed;
+}
+
+static void free_all_textures(void) {
+    for (u32 i = 0; i < MAX_TEX; i++)
+        if (g.tex[i].live) { C3D_TexDelete(&g.tex[i].tex); g.tex[i].live = false; }
+    g.texBytes = 0;
+}
+
+static void begin_frame(void) {
+    if (g.frame) return;
+    C3D_FrameBegin(0);  // waits for the previous submit: the arena and retired textures are free again
+    g.frame = true;
+    g.frameNo++;
+    g.arenaUsed = g.arenaFlushed = g.queued = 0;
+    for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
+    g.nGrave = 0;
+    if (g.resetPending) { free_all_textures(); g.resetPending = false; }
+    C3D_BindProgram(&g.prog);
+    C3D_AttrInfo* ai = C3D_GetAttrInfo();
+    AttrInfo_Init(ai);
+    AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
+    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
+    C3D_BufInfo* bi = C3D_GetBufInfo();
+    BufInfo_Init(bi);
+    BufInfo_Add(bi, g.arena, sizeof(PVert), 5, 0x43210);
+    C3D_DepthMap(true, -1.0f, 0.0f);  // depth = -z/w; vertices carry z = -(GX screen z / 2^24) * w
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_FrameDrawOn(g.efb);
+    g.stateValid = g.tevValid = false;
+}
+
+static void end_frame(void) {
+    if (!g.frame) return;
+    flush_arena();
+    C3D_FrameEnd(GX_CMDLIST_FLUSH);
+    g.frame = false;
+}
+
+// Submits what is queued so far so that the `transfers` GX transfers queued next run after it. The GX command queue
+// holds 32 entries (citro3d) and runs only at C3D_FrameEnd; libctru panics when it is full, so a frame that has
+// queued many splits and transfers (several emulated fields between presents) is submitted early.
+static void split(u32 transfers) {
+    begin_frame();
+    if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { end_frame(); begin_frame(); }
+    flush_arena();
+    C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    g.queued += 1 + transfers;
+}
+
+// Makes room for `verts` more vertices and keeps the command buffer from overflowing (libctru drops commands
+// silently when it is full).
+static bool need(u32 verts) {
+    if (verts > ARENA_VERTS) return false;
+    begin_frame();
+    if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+    return true;
+}
+
+static void retire(C3D_Tex* t, bool usedThisFrame) {
+    if (!usedThisFrame) { C3D_TexDelete(t); return; }
+    if (g.nGrave == MAX_GRAVE) { end_frame(); begin_frame(); }
+    g.grave[g.nGrave++] = *t;
+}
+
+static void note_approx(u32 bits) {
+    u32 fresh = bits & ~g.approxSeen;
+    if (!fresh) return;
+    g.approxSeen |= fresh;
+    emu_log(LOG_GX, "pica: TEV approximation flags %02x (first seen)\n", (unsigned)fresh);
+}
+
+// ---- textures ----
+static u32 pow2(u32 v) { u32 p = 8; while (p < v && p < 1024) p <<= 1; return p; }
+
+// FNV-1a over 32-bit words; above 16 KB every n-th word only (catches replaced textures, can miss small edits).
+static u32 hash_words(const u8* p, u32 bytes) {
+    const u32* w = (const u32*)p;
+    u32 n = bytes / 4, step = n > 4096 ? n / 4096 : 1, h = 2166136261u;
+    for (u32 i = 0; i < n; i += step) h = (h ^ w[i]) * 16777619u;
+    return h ^ bytes;
+}
+
+static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; }
+
+// Linear RGBA8 (0xRRGGBBAA, rows top-down) into the PICA's tiled layout: 8x8 tiles in Z-order, tile rows stored
+// bottom-up (the PICA samples t = 0 from the last stored row; checked with texturetest in Azahar), so GX texture
+// coordinates are used unchanged. Sizes that are not powers of two are resampled (nearest) up to one, which keeps
+// every wrap mode correct.
+static void upload(C3D_Tex* t, const u32* rgba, u32 w, u32 h) {
+    u32 W = t->width, H = t->height;
+    u32* dst = (u32*)t->data;
+    for (u32 y = 0; y < H; y++) {
+        const u32* row = rgba + ((H - 1 - y) * h / H) * w;
+        u32* tiles = dst + (y >> 3) * (W >> 3) * 64;
+        const u8* m = &g_morton[(y & 7) * 8];
+        for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[x * w / W];
+    }
+    GSPGPU_FlushDataCache(t->data, t->size);
+}
+
+static void evict_unused(u32 want) {
+    while (g.texBytes + want > TEX_BUDGET) {
+        PTex* old = NULL;
+        for (u32 i = 0; i < MAX_TEX; i++) {
+            PTex* p = &g.tex[i];
+            if (p->live && p->lastUse != g.frameNo && (!old || p->lastUse < old->lastUse)) old = p;
+        }
+        if (!old) return;
+        C3D_TexDelete(&old->tex);
+        old->live = false;
+        g.texBytes -= old->bytes;
+    }
+}
+
+static bool decode(System* s, const GXCore* gx, PTex* e) {
+    u32 W = pow2(e->w), H = pow2(e->h), bytes = W * H * 4;
+    evict_unused(bytes);
+    C3D_Tex nt;
+    if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) return false;
+    u32 n = e->w * e->h;
+    if (n > g_scratchCap) {
+        u32* p = realloc(g_scratch, n * 4);
+        if (!p) { C3D_TexDelete(&nt); return false; }
+        g_scratch = p;
+        g_scratchCap = n;
+    }
+    gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
+    upload(&nt, g_scratch, e->w, e->h);
+    if (e->live) { retire(&e->tex, e->lastUse == g.frameNo); g.texBytes -= e->bytes; }
+    e->tex = nt;
+    e->bytes = bytes;
+    e->live = true;
+    g.texBytes += bytes;
+    return true;
+}
+
+static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg) {
+    u32 bytes = gx_texture_size(fmt, w, h);
+    if (!bytes || addr + bytes > PA_MEM1_END) return NULL;
+    bool pal = fmt == 8 || fmt == 9 || fmt == 10;
+    u32 tlutAddr = pal ? (tlutReg & 0x3FF) << 9 : 0, tlutFmt = pal ? (tlutReg >> 10) & 3 : 0;
+    PTex* e = NULL;
+    PTex* slot = NULL;
+    for (u32 i = 0; i < MAX_TEX; i++) {
+        PTex* p = &g.tex[i];
+        if (!p->live) { if (!slot) slot = p; continue; }
+        if (p->addr == addr && p->fmt == fmt && p->w == w && p->h == h && p->tlutAddr == tlutAddr && p->tlutFmt == tlutFmt) {
+            e = p;
+            break;
+        }
+    }
+    if (e) {
+        // RAM and palettes may have changed since the entry was checked (versions move each frame and at each EFB
+        // copy): re-hash and decode again only when the contents really differ.
+        bool dirty = false;
+        if (e->texVersion != gx->texVersion) {
+            u32 dh = hash_words(s->mem1 + addr, bytes);
+            dirty |= dh != e->dataHash;
+            e->dataHash = dh;
+            e->texVersion = gx->texVersion;
+        }
+        if (pal && e->tlutVersion != gx->tlutVersion) {
+            u32 th = hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt));
+            dirty |= th != e->tlutHash;
+            e->tlutHash = th;
+            e->tlutVersion = gx->tlutVersion;
+        }
+        if (dirty && !decode(s, gx, e)) return NULL;
+    } else {
+        if (!slot) {  // table full: reuse the least recently used entry not drawn with this frame
+            for (u32 i = 0; i < MAX_TEX; i++)
+                if (g.tex[i].lastUse != g.frameNo && (!slot || g.tex[i].lastUse < slot->lastUse)) slot = &g.tex[i];
+            if (!slot) return NULL;
+            C3D_TexDelete(&slot->tex);
+            slot->live = false;
+            g.texBytes -= slot->bytes;
+        }
+        e = slot;
+        e->addr = addr; e->fmt = fmt; e->w = w; e->h = h; e->tlutAddr = tlutAddr; e->tlutFmt = tlutFmt;
+        e->dataHash = hash_words(s->mem1 + addr, bytes);
+        e->tlutHash = pal ? hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt)) : 0;
+        e->texVersion = gx->texVersion;
+        e->tlutVersion = gx->tlutVersion;
+        if (!decode(s, gx, e)) return NULL;
+    }
+    e->lastUse = g.frameNo;
+    return &e->tex;
+}
+
+static PCopy* find_copy(System* s, const GXCore* gx, u32 addr, u32 w, u32 h) {
+    for (u32 i = 0; i < MAX_COPIES; i++) {
+        PCopy* c = &g.copies[i];
+        if (!c->used || c->addr != addr || c->w != w || c->h != h) continue;
+        // The CPU writing the destination afterwards means RAM holds a newer texture than the copy.
+        if (c->texVersion != gx->texVersion) {
+            if (hash_words(s->mem1 + addr, c->ramBytes) != c->ramHash) { c->used = false; return NULL; }
+            c->texVersion = gx->texVersion;
+        }
+        return c;
+    }
+    return NULL;
+}
+
+// The texture bound for GX texture map `map`, with its wrap and filter modes applied.
+static C3D_Tex* fetch_texture(System* s, const GXCore* gx, u32 map) {
+    u32 hi = map >= 4 ? 0x20 : 0, m = map & 3;
+    u32 img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi], tlut = gx->bp[0x98 + m + hi], mode = gx->bp[0x80 + m + hi];
+    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = (img3 & 0xFFFFFF) << 5;
+    PCopy* c = find_copy(s, gx, addr, w, h);
+    C3D_Tex* t = c ? &c->tex : cached_texture(s, gx, addr, fmt, w, h, tlut);
+    if (!t) t = &g.white;
+    static const GPU_TEXTURE_WRAP_PARAM wraps[4] = { GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT };
+    C3D_TexSetWrap(t, wraps[mode & 3], wraps[(mode >> 2) & 3]);
+    C3D_TexSetFilter(t, (mode >> 4) & 1 ? GPU_LINEAR : GPU_NEAREST, ((mode >> 5) & 7) >= 4 ? GPU_LINEAR : GPU_NEAREST);
+    return t;
+}
+
+// ---- state ----
+static const GPU_TESTFUNC kFunc[8] = { GPU_NEVER, GPU_LESS, GPU_EQUAL, GPU_LEQUAL, GPU_GREATER, GPU_NOTEQUAL, GPU_GEQUAL, GPU_ALWAYS };
+
+static void apply_tev(const PicaTev* t) {
+    for (int i = 0; i < PICA_STAGES; i++) {
+        C3D_TexEnv* e = C3D_GetTexEnv(i);
+        C3D_TexEnvInit(e);
+        if (i >= t->numStages) continue;
+        const PicaStage* p = &t->st[i];
+        C3D_TexEnvSrc(e, C3D_RGB, p->srcRgb[0], p->srcRgb[1], p->srcRgb[2]);
+        C3D_TexEnvSrc(e, C3D_Alpha, p->srcA[0], p->srcA[1], p->srcA[2]);
+        C3D_TexEnvOpRgb(e, p->opRgb[0], p->opRgb[1], p->opRgb[2]);
+        C3D_TexEnvOpAlpha(e, p->opA[0], p->opA[1], p->opA[2]);
+        C3D_TexEnvFunc(e, C3D_RGB, p->fnRgb);
+        C3D_TexEnvFunc(e, C3D_Alpha, p->fnA);
+        C3D_TexEnvScale(e, C3D_RGB, p->scaleRgb);
+        C3D_TexEnvScale(e, C3D_Alpha, p->scaleA);
+        C3D_TexEnvColor(e, p->konst);
+    }
+    C3D_TexEnvBufUpdate(C3D_RGB, t->bufRgb);
+    C3D_TexEnvBufUpdate(C3D_Alpha, t->bufA);
+    C3D_TexEnvBufColor(t->bufColor);
+}
+
+// Recompiles the TEV program only when a register it depends on changed.
+static void update_tev(const GXCore* gx) {
+    u32 k[72], n = 0;
+    k[n++] = gx->bp[0x00];
+    for (u32 r = 0x28; r <= 0x2F; r++) k[n++] = gx->bp[r];
+    for (u32 r = 0xC0; r <= 0xDF; r++) k[n++] = gx->bp[r];
+    for (u32 r = 0xF6; r <= 0xFD; r++) k[n++] = gx->bp[r];
+    for (u32 i = 0; i < 4; i++) { k[n++] = gx->tevLo[i]; k[n++] = gx->tevHi[i]; k[n++] = gx->kLo[i]; k[n++] = gx->kHi[i]; }
+    if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
+    memcpy(g.tevKey, k, n * 4);
+    tev_pica_compile(gx, &g.tev);
+    if (g.tev.approx) note_approx(g.tev.approx);
+    apply_tev(&g.tev);
+    g.tevValid = true;
+}
+
+// Depth, alpha test, blending / logic op, write masks and scissor (BP 0x40, 0x41, 0x43, 0xF3, 0x20/0x21).
+static void apply_frag(const GXCore* gx) {
+    u32 k[6] = { gx->bp[0x40], gx->bp[0x41], gx->bp[0x43] & 7, gx->bp[0xF3], gx->bp[0x20], gx->bp[0x21] };
+    if (g.stateValid && !memcmp(k, g.fragKey, sizeof k)) return;
+    memcpy(g.fragKey, k, sizeof k);
+    g.stateValid = true;
+    u32 zmode = k[0], cmode = k[1];
+    bool hasAlpha = k[2] == 1;  // RGBA6_Z24; the other formats have no destination alpha (kept at 255)
+    int mask = 0;
+    if (cmode & 8) mask |= GPU_WRITE_RED | GPU_WRITE_GREEN | GPU_WRITE_BLUE;
+    if ((cmode & 16) && hasAlpha) mask |= GPU_WRITE_ALPHA;
+    bool zen = zmode & 1;
+    if (zen && (zmode & 16)) mask |= GPU_WRITE_DEPTH;
+    C3D_DepthTest(zen, zen ? kFunc[(zmode >> 1) & 7] : GPU_ALWAYS, (GPU_WRITEMASK)mask);
+    // Two GX alpha comparisons and a logic op reduced to the PICA's single comparison.
+    u32 r = k[3], c0 = (r >> 16) & 7, c1 = (r >> 19) & 7, op = (r >> 22) & 3, r0 = r & 0xFF, r1 = (r >> 8) & 0xFF;
+    if (op == 0 && c0 == 7 && c1 == 7) C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    else if ((op == 0 && c1 == 7) || (op == 1 && c1 == 0)) C3D_AlphaTest(true, kFunc[c0], (int)r0);
+    else if ((op == 0 && c0 == 7) || (op == 1 && c0 == 0)) C3D_AlphaTest(true, kFunc[c1], (int)r1);
+    else { note_approx(1u << 31); C3D_AlphaTest(true, kFunc[c0], (int)r0); }
+    if (cmode & 1) {
+        static const GPU_BLENDFACTOR srcF[8] = { GPU_ZERO, GPU_ONE, GPU_DST_COLOR, GPU_ONE_MINUS_DST_COLOR, GPU_SRC_ALPHA,
+                                                 GPU_ONE_MINUS_SRC_ALPHA, GPU_DST_ALPHA, GPU_ONE_MINUS_DST_ALPHA };
+        static const GPU_BLENDFACTOR dstF[8] = { GPU_ZERO, GPU_ONE, GPU_SRC_COLOR, GPU_ONE_MINUS_SRC_COLOR, GPU_SRC_ALPHA,
+                                                 GPU_ONE_MINUS_SRC_ALPHA, GPU_DST_ALPHA, GPU_ONE_MINUS_DST_ALPHA };
+        if (cmode & (1 << 11)) {  // subtract: dst - src
+            C3D_AlphaBlend(GPU_BLEND_REVERSE_SUBTRACT, GPU_BLEND_REVERSE_SUBTRACT, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ONE);
+        } else {
+            GPU_BLENDFACTOR sf = srcF[(cmode >> 8) & 7], df = dstF[(cmode >> 5) & 7];
+            C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, sf, df, sf, df);
+        }
+    } else if (cmode & 2) {
+        static const GPU_LOGICOP ops[16] = { GPU_LOGICOP_CLEAR, GPU_LOGICOP_AND, GPU_LOGICOP_AND_REVERSE, GPU_LOGICOP_COPY,
+            GPU_LOGICOP_AND_INVERTED, GPU_LOGICOP_NOOP, GPU_LOGICOP_XOR, GPU_LOGICOP_OR, GPU_LOGICOP_NOR, GPU_LOGICOP_EQUIV,
+            GPU_LOGICOP_INVERT, GPU_LOGICOP_OR_REVERSE, GPU_LOGICOP_COPY_INVERTED, GPU_LOGICOP_OR_INVERTED, GPU_LOGICOP_NAND,
+            GPU_LOGICOP_SET };
+        C3D_ColorLogicOp(ops[(cmode >> 12) & 15]);
+    } else {
+        C3D_ColorLogicOp(GPU_LOGICOP_COPY);
+    }
+    // Scissor: BP 0x20 top-left, 0x21 bottom-right, inclusive, offset by 342.
+    int sx0 = (int)((k[4] >> 12) & 0x7FF) - 342, sy0 = (int)(k[4] & 0x7FF) - 342;
+    int sx1 = (int)((k[5] >> 12) & 0x7FF) - 342, sy1 = (int)(k[5] & 0x7FF) - 342;
+    if (sx0 <= 0 && sy0 <= 0 && sx1 >= EFB_W - 1 && sy1 >= EFB_H - 1) {
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    } else {
+        int l = (int)floorf((float)sx0 * SX), rr = (int)ceilf((float)(sx1 + 1) * SX);
+        int t = (int)floorf((float)sy0 * SY), b = (int)ceilf((float)(sy1 + 1) * SY);
+        if (FLIP_Y) { int tt = TH - b; b = TH - t; t = tt; }
+        l = l < 0 ? 0 : l > TW ? TW : l; rr = rr < l ? l : rr > TW ? TW : rr;
+        t = t < 0 ? 0 : t > TH ? TH : t; b = b < t ? t : b > TH ? TH : b;
+        C3D_SetScissor(GPU_SCISSOR_NORMAL, (u32)l, (u32)t, (u32)rr, (u32)b);
+    }
+}
+
+// ---- vertices ----
+typedef struct { float kx, ky, wd, ht, xo, yo, zr, fz; } Viewport;
+
+static float xf_f(const GXCore* gx, u32 a) { float f; memcpy(&f, &gx->xf[a], 4); return f; }
+
+static void viewport(const GXCore* gx, Viewport* vp) {
+    vp->kx = SX * 2.0f / TW; vp->ky = SY * 2.0f / TH;
+    vp->wd = xf_f(gx, 0x101A); vp->ht = xf_f(gx, 0x101B); vp->zr = xf_f(gx, 0x101C);
+    vp->xo = xf_f(gx, 0x101D) - 342.0f; vp->yo = xf_f(gx, 0x101E) - 342.0f; vp->fz = xf_f(gx, 0x101F);
+}
+
+static u8 c8(float v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v + 0.5f); }
+
+static void attribs(const SVert* v, PVert* o) {
+    const float* c = v->col[g.tev.rasChan & 1];
+    o->col[0] = c8(c[0]); o->col[1] = c8(c[1]); o->col[2] = c8(c[2]); o->col[3] = c8(c[3]);
+    for (u32 i = 0; i < PICA_TEXUNITS; i++) {
+        const float* t = v->tex[g.tev.texCoord[i] & 7];
+        float iq = i < g.tev.numTex && t[2] != 0 ? 1.0f / t[2] : 1.0f;
+        o->tc[i][0] = t[0] * iq;
+        o->tc[i][1] = t[1] * iq;
+    }
+}
+
+// GX clip space -> PICA clip space. EFB position times w is linear in the clip coordinates, so the viewport, the
+// EFB scale and the depth range fold in before the divide and the hardware clips correctly.
+static void to_pica(const Viewport* vp, const SVert* v, PVert* o) {
+    float w = v->w, ex = v->x * vp->wd + vp->xo * w, ey = v->y * vp->ht + vp->yo * w;
+    o->pos[0] = ex * vp->kx - w;
+    o->pos[1] = FLIP_Y ? w - ey * vp->ky : ey * vp->ky - w;
+    o->pos[2] = -(v->z * vp->zr + vp->fz * w) * (1.0f / 16777216.0f);
+    o->pos[3] = w;
+    attribs(v, o);
+}
+
+// A vertex given in EFB screen space (lines and points, expanded on the CPU).
+static void to_pica_screen(const Viewport* vp, const SVert* v, float sx, float sy, PVert* o) {
+    o->pos[0] = sx * vp->kx - 1.0f;
+    o->pos[1] = FLIP_Y ? 1.0f - sy * vp->ky : sy * vp->ky - 1.0f;
+    o->pos[2] = -v->sz * (1.0f / 16777216.0f);
+    o->pos[3] = 1.0f;
+    attribs(v, o);
+}
+
+static u32 g_cull;
+
+static void tri(u32 a, u32 b, u32 c) {
+    const SVert *va = &g_sv[a], *vb = &g_sv[b], *vc = &g_sv[c];
+    if (g_cull == 3) return;
+    if (va->w > 0 && vb->w > 0 && vc->w > 0) {
+        float area = (vb->sx - va->sx) * (vc->sy - va->sy) - (vc->sx - va->sx) * (vb->sy - va->sy);
+        if (area == 0 || (g_cull == 1 && area < 0) || (g_cull == 2 && area > 0)) return;
+    }
+    PVert* o = g.arena + g.arenaUsed;
+    o[0] = g_pv[a]; o[1] = g_pv[b]; o[2] = g_pv[c];
+    g.arenaUsed += 3;
+}
+
+static void quad_screen(const Viewport* vp, const SVert* a, const SVert* b, const float xy[4][2]) {
+    PVert q[4];
+    for (int i = 0; i < 4; i++) to_pica_screen(vp, i == 1 || i == 2 ? b : a, xy[i][0], xy[i][1], &q[i]);
+    PVert* o = g.arena + g.arenaUsed;
+    o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[0]; o[4] = q[2]; o[5] = q[3];
+    g.arenaUsed += 6;
+}
+
+// Lines and points as screen-space quads, sized like the reference renderer (BP 0x22, sixths of a pixel).
+static void line(const GXCore* gx, const Viewport* vp, const SVert* a, const SVert* b) {
+    if (a->w <= 0 || b->w <= 0) return;
+    float hw = (float)(gx->bp[0x22] & 0xFF) / 12.0f;
+    bool horiz = fabsf(b->sx - a->sx) >= fabsf(b->sy - a->sy);
+    float xy[4][2] = { { a->sx, a->sy }, { b->sx, b->sy }, { b->sx, b->sy }, { a->sx, a->sy } };
+    for (int i = 0; i < 4; i++) { float d = i < 2 ? -hw : hw; if (horiz) xy[i][1] += d; else xy[i][0] += d; }
+    quad_screen(vp, a, b, xy);
+}
+
+static void point(const GXCore* gx, const Viewport* vp, const SVert* p) {
+    if (p->w <= 0) return;
+    float h = (float)((gx->bp[0x22] >> 8) & 0xFF) / 12.0f;
+    float xy[4][2] = { { p->sx - h, p->sy - h }, { p->sx + h, p->sy - h }, { p->sx + h, p->sy + h }, { p->sx - h, p->sy + h } };
+    quad_screen(vp, p, p, xy);
+}
+
+enum { PRIM_QUADS = 0, PRIM_QUADS2 = 1, PRIM_TRIS = 2, PRIM_STRIP = 3, PRIM_FAN = 4, PRIM_LINES = 5, PRIM_LSTRIP = 6, PRIM_POINTS = 7 };
+
+static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
+    (void)ctx;
+    GXCore* gx = &s->gx.core;
+    if (count > g_vcap) {
+        SVert* sv = realloc(g_sv, count * sizeof *sv);
+        if (sv) g_sv = sv;
+        PVert* pv = realloc(g_pv, count * sizeof *pv);
+        if (pv) g_pv = pv;
+        if (!sv || !pv) return;
+        g_vcap = count;
+    }
+    begin_frame();
+    update_tev(gx);
+    C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
+    for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+    Viewport vp;
+    viewport(gx, &vp);
+    for (u32 i = 0; i < count; i++) {
+        GXVertex dv;
+        gx_decode_vertex(s, gx, vat, raw + i * vsize, &dv);
+        gx_transform(gx, &dv, &g_sv[i]);
+        gx_to_screen(gx, &g_sv[i]);
+        to_pica(&vp, &g_sv[i], &g_pv[i]);
+    }
+    u32 maxVerts = prim >= PRIM_LINES ? count * 6 : count * 3;
+    u32 frameBefore = g.frameNo;
+    if (!need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
+    if (g.frameNo != frameBefore) {  // a new frame resets citro3d's state tracking; textures stay live
+        update_tev(gx);
+        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) {
+            PTex* p = NULL;
+            for (u32 j = 0; j < MAX_TEX; j++) if (&g.tex[j].tex == tex[i]) p = &g.tex[j];
+            if (p) p->lastUse = g.frameNo;
+        }
+    }
+    apply_frag(gx);
+    for (u32 i = 0; i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i]);
+    g_cull = (gx->bp[0x00] >> 14) & 3;
+    u32 first = g.arenaUsed;
+    switch (prim) {
+    case PRIM_QUADS: case PRIM_QUADS2:
+        for (u32 i = 0; i + 3 < count; i += 4) { tri(i, i + 1, i + 2); tri(i, i + 2, i + 3); }
+        break;
+    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) tri(i, i + 1, i + 2); break;
+    case PRIM_STRIP: for (u32 i = 0; i + 2 < count; i++) { if (i & 1) tri(i + 1, i, i + 2); else tri(i, i + 1, i + 2); } break;
+    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) tri(0, i, i + 1); break;
+    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) line(gx, &vp, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) line(gx, &vp, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_POINTS: for (u32 i = 0; i < count; i++) point(gx, &vp, &g_sv[i]); break;
+    default: break;
+    }
+    if (g.arenaUsed > first) C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)(g.arenaUsed - first));
+}
+
+// ---- EFB copies and clears ----
+// Fixed-function state for a full-target textured quad (copies and present).
+static void quad_state(C3D_Tex* src, bool linear) {
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_ColorLogicOp(GPU_LOGICOP_COPY);
+    C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    C3D_TexSetFilter(src, linear ? GPU_LINEAR : GPU_NEAREST, linear ? GPU_LINEAR : GPU_NEAREST);
+    C3D_TexSetWrap(src, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+    C3D_TexBind(0, src);
+    C3D_TexBind(1, NULL);
+    C3D_TexBind(2, NULL);
+    for (int i = 1; i < PICA_STAGES; i++) C3D_TexEnvInit(C3D_GetTexEnv(i));
+    C3D_TexEnvBufUpdate(C3D_Both, 0);
+    g.stateValid = g.tevValid = false;
+}
+
+// Two triangles: corner i at clip (x, y), sampling (s, t). The caller has made room (need(6)) before binding the
+// target, since making room can start a new frame.
+static void quad(const float pos[4][2], const float st[4][2]) {
+    PVert v[4];
+    memset(v, 0, sizeof v);
+    for (int i = 0; i < 4; i++) {
+        v[i].pos[0] = pos[i][0]; v[i].pos[1] = pos[i][1]; v[i].pos[2] = -0.5f; v[i].pos[3] = 1.0f;
+        v[i].col[0] = v[i].col[1] = v[i].col[2] = v[i].col[3] = 255;
+        v[i].tc[0][0] = st[i][0]; v[i].tc[0][1] = st[i][1];
+    }
+    PVert* o = g.arena + g.arenaUsed;
+    o[0] = v[0]; o[1] = v[1]; o[2] = v[2]; o[3] = v[0]; o[4] = v[2]; o[5] = v[3];
+    C3D_DrawArrays(GPU_TRIANGLES, (int)g.arenaUsed, 6);
+    g.arenaUsed += 6;
+}
+
+// Texture coordinate of EFB row y / column x in the EFB texture.
+static float efb_s(float x) { return x * SX / TW; }
+static float efb_t(float y) { return y * SY / TH; }
+static float ndc_y(float t) { return FLIP_Y ? 1.0f - 2.0f * t : 2.0f * t - 1.0f; }
+
+static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    PXfb* x = NULL;
+    for (u32 i = 0; i < MAX_XFB; i++) if (g.xfb[i].seq && g.xfb[i].addr == dest) x = &g.xfb[i];
+    if (!x) for (u32 i = 0; i < MAX_XFB; i++) if (!x || g.xfb[i].seq < x->seq) x = &g.xfb[i];
+    split(1);  // the draws so far reach the EFB before the copy reads it
+    GX_TextureCopy((u32*)g.efbTex.data, 0, (u32*)x->tex.data, 0, TW * TH * 4, GX_TRANSFER_RAW_COPY(1));
+    x->addr = dest; x->x0 = x0; x->y0 = y0; x->w = w; x->h = h; x->seq = ++g.xfbSeq;
+}
+
+// Copy-unit formats (fifo.c): R4, R8 alias, RA4, RA8, RGB565, RGB5A3, RGBA8, A8, R8, G8, B8, RG8, GB8.
+static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    u32 field = (ctl >> 3) & 15, fmt = (field >> 1) | ((field & 1) << 3);
+    bool half = (ctl >> 9) & 1, intensity = (ctl >> 15) & 1, depth = (gx->bp[0x43] & 7) == 3, hasAlpha = (gx->bp[0x43] & 7) == 1;
+    u32 ow = half ? (w + 1) / 2 : w, oh = half ? (h + 1) / 2 : h;
+    u32 W = pow2((u32)ceilf((float)w * SX)), H = pow2((u32)ceilf((float)h * SY));
+    PCopy* c = NULL;
+    for (u32 i = 0; i < MAX_COPIES && !c; i++)
+        if (g.copies[i].live && g.copies[i].used && g.copies[i].addr == dest && g.copies[i].tex.width == W && g.copies[i].tex.height == H) c = &g.copies[i];
+    for (u32 i = 0; i < MAX_COPIES && !c; i++)
+        if (g.copies[i].live && !g.copies[i].used && g.copies[i].tex.width == W && g.copies[i].tex.height == H) c = &g.copies[i];
+    for (u32 i = 0; i < MAX_COPIES && !c; i++) {
+        PCopy* p = &g.copies[i];
+        if (p->live) continue;
+        if (!C3D_TexInitVRAM(&p->tex, (u16)W, (u16)H, GPU_RGBA8) && !C3D_TexInit(&p->tex, (u16)W, (u16)H, GPU_RGBA8)) break;
+        p->rt = C3D_RenderTargetCreateFromTex(&p->tex, GPU_TEXFACE_2D, 0, -1);
+        if (!p->rt) { C3D_TexDelete(&p->tex); break; }
+        p->live = true;
+        c = p;
+    }
+    if (!c) { emu_log(LOG_GX, "pica: no free EFB copy texture for %08x %ux%u\n", (unsigned)dest, (unsigned)ow, (unsigned)oh); return; }
+    split(0);
+    need(6);
+    C3D_FrameDrawOn(c->rt);
+    quad_state(&g.efbTex, half || W < w || H < h);
+    C3D_TexEnv* e = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(e);
+    C3D_TexEnvSrc(e, C3D_Both, GPU_TEXTURE0, GPU_CONSTANT, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(e, C3D_Both, GPU_REPLACE);
+    if (depth) {  // depth copies are not supported yet: white reads as "far"
+        C3D_TexEnvSrc(e, C3D_Both, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvColor(e, 0xFFFFFFFF);
+    } else if (intensity && fmt <= 3) {
+        // Studio-range luma: Y = 0.257 R + 0.504 G + 0.098 B + 16/255 as DOT3 (4 * sum((a - .5)(b - .5))) against
+        // b = 0.5 + k / 4, then + (0.5 * sum(k) + 16/255) in stage 1. IA formats keep the EFB alpha.
+        C3D_TexEnvFunc(e, C3D_Both, GPU_DOT3_RGBA);
+        C3D_TexEnvColor(e, 0xFF000000u | (134u << 16) | (160u << 8) | 144u);  // 0.5 + k/4 for B, G, R
+        C3D_TexEnv* e1 = C3D_GetTexEnv(1);
+        C3D_TexEnvInit(e1);
+        C3D_TexEnvSrc(e1, C3D_Both, GPU_PREVIOUS, GPU_CONSTANT, GPU_PRIMARY_COLOR);
+        C3D_TexEnvFunc(e1, C3D_Both, GPU_ADD);
+        C3D_TexEnvColor(e1, 0x7D7D7D7Du);  // 0.430 + 0.063
+        if (fmt == 2 || fmt == 3) {
+            C3D_TexEnvSrc(e1, C3D_Alpha, GPU_TEXTURE0, GPU_CONSTANT, GPU_PRIMARY_COLOR);
+            C3D_TexEnvFunc(e1, C3D_Alpha, GPU_REPLACE);
+            if (!hasAlpha) { C3D_TexEnvSrc(e1, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT); C3D_TexEnvColor(e1, 0xFF7D7D7Du); }
+        }
+    } else if (fmt == 0 || fmt == 1 || fmt == 8 || fmt == 9 || fmt == 10 || fmt == 7) {
+        // One channel replicated, as the matching I4/I8 decoders return it.
+        static const u8 opc[11] = { GPU_TEVOP_RGB_SRC_R, GPU_TEVOP_RGB_SRC_R, 0, 0, 0, 0, 0, GPU_TEVOP_RGB_SRC_ALPHA,
+                                    GPU_TEVOP_RGB_SRC_R, GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_B };
+        static const u8 opa[11] = { GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_R, 0, 0, 0, 0, 0, GPU_TEVOP_A_SRC_ALPHA,
+                                    GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_G, GPU_TEVOP_A_SRC_B };
+        C3D_TexEnvOpRgb(e, opc[fmt], GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+        C3D_TexEnvOpAlpha(e, opa[fmt], GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA);
+        if (fmt == 7 && !hasAlpha) { C3D_TexEnvSrc(e, C3D_Both, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT); C3D_TexEnvColor(e, 0xFFFFFFFF); }
+    } else if (fmt == 4 || !hasAlpha) {  // RGB565, or an EFB without alpha: opaque
+        C3D_TexEnvSrc(e, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvColor(e, 0xFFFFFFFF);
+    }
+    float s0 = efb_s((float)x0), s1 = efb_s((float)(x0 + w)), t0 = efb_t((float)y0), t1 = efb_t((float)(y0 + h));
+    float pos[4][2] = { { -1, ndc_y(0) }, { 1, ndc_y(0) }, { 1, ndc_y(1) }, { -1, ndc_y(1) } };
+    float st[4][2] = { { s0, t0 }, { s1, t0 }, { s1, t1 }, { s0, t1 } };
+    quad(pos, st);
+    C3D_FrameDrawOn(g.efb);
+    c->addr = dest; c->w = ow; c->h = oh; c->used = true;
+    u32 bpp = fmt == 0 ? 4 : fmt == 6 ? 32 : (fmt == 3 || fmt == 4 || fmt == 5 || fmt >= 11) ? 16 : 8;
+    c->ramBytes = ow * oh * bpp / 8;
+    if (dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
+    c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
+    c->texVersion = gx->texVersion + 1;  // fifo.c bumps texVersion after this returns
+}
+
+static void clear_efb(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h) {
+    u32 ar = gx->bp[0x4F], gb = gx->bp[0x50], cmode = gx->bp[0x41];
+    u32 a = (gx->bp[0x43] & 7) == 1 ? (ar >> 8) & 0xFF : 0xFF;
+    u32 rgba = ((ar & 0xFF) << 24) | (((gb >> 8) & 0xFF) << 16) | ((gb & 0xFF) << 8) | a;
+    u32 bits = ((cmode & 0x18) ? C3D_CLEAR_COLOR : 0) | ((gx->bp[0x40] & 0x10) ? C3D_CLEAR_DEPTH : 0);
+    if (!bits) return;
+    if (x0 > 8 || y0 > 8 || w * h < EFB_W * 400) note_approx(1u << 30);  // partial clear widened to the whole EFB
+    split(1);
+    C3D_RenderTargetClear(g.efb, (C3D_ClearBits)bits, rgba, gx->bp[0x51] & 0xFFFFFF);
+}
+
+static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    (void)ctx;
+    GXCore* gx = &s->gx.core;
+    begin_frame();
+    if ((ctl >> 14) & 1) copy_to_xfb(x0, y0, w, h, dest);
+    else copy_to_texture(s, gx, ctl, x0, y0, w, h, dest);
+    if ((ctl >> 11) & 1) clear_efb(gx, x0, y0, w, h);
+    return true;
+}
+
+static const GXBackend kPica = { pica_draw, pica_efb_copy };
+
+// ---- present ----
+bool pica_present(System* s, u32 xfbAddr) {
+    (void)s;
+    PXfb* show = NULL;
+    for (u32 i = 0; i < MAX_XFB; i++) {
+        PXfb* x = &g.xfb[i];
+        if (!x->seq) continue;
+        if (xfbAddr >= x->addr && xfbAddr <= x->addr + 2 * 1280) { show = x; break; }
+        if (!show || x->seq > show->seq) show = x;
+    }
+    if (!show) return false;
+    if (!need(6)) return true;
+    C3D_FrameDrawOn(g.screen);
+    quad_state(&show->tex, true);
+    C3D_TexEnv* e = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(e);
+    C3D_TexEnvSrc(e, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(e, C3D_RGB, GPU_REPLACE);
+    C3D_TexEnvSrc(e, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvColor(e, 0xFFFFFFFF);
+    // Screen pixels (x right, y up) -> the rotated top-screen target, as citro3d's own examples do.
+    C3D_Mtx proj;
+    Mtx_OrthoTilt(&proj, 0.0f, 400.0f, 0.0f, 240.0f, 0.0f, 1.0f, true);
+    static const float corner[4][2] = { { 0, 240 }, { 400, 240 }, { 400, 0 }, { 0, 0 } };  // top-left first, clockwise
+    float s0 = efb_s((float)show->x0), s1 = efb_s((float)(show->x0 + show->w));
+    float t0 = efb_t((float)show->y0), t1 = efb_t((float)(show->y0 + show->h));
+    float st[4][2] = { { s0, t0 }, { s1, t0 }, { s1, t1 }, { s0, t1 } };
+    PVert* o = g.arena + g.arenaUsed;
+    static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+    for (int k = 0; k < 6; k++) {
+        int i = order[k];
+        C3D_FVec p = Mtx_MultiplyFVec4(&proj, FVec4_New(corner[i][0], corner[i][1], 0.5f, 1.0f));
+        PVert* v = &o[k];
+        memset(v, 0, sizeof *v);
+        v->pos[0] = p.x; v->pos[1] = p.y; v->pos[2] = p.z; v->pos[3] = p.w;
+        v->col[0] = v->col[1] = v->col[2] = v->col[3] = 255;
+        v->tc[0][0] = st[i][0]; v->tc[0][1] = st[i][1];
+    }
+    C3D_DrawArrays(GPU_TRIANGLES, (int)g.arenaUsed, 6);
+    g.arenaUsed += 6;
+    end_frame();  // queues the transfer to the top framebuffer and the swap
+    return true;
+}
+
+void pica_reset(void) {
+    // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
+    for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
+    for (u32 i = 0; i < MAX_XFB; i++) g.xfb[i].seq = 0;
+    g.resetPending = true;
+    g.tevValid = g.stateValid = false;
+}
+
+bool pica_attach(System* s) {
+    if (!g.ready) {
+        for (u32 y = 0; y < 8; y++)
+            for (u32 x = 0; x < 8; x++)
+                g_morton[y * 8 + x] = (u8)((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3));
+        if (!C3D_Init(CMDBUF_BYTES)) return false;
+        g.dvlb = DVLB_ParseFile((u32*)gxpass_shbin, gxpass_shbin_size);
+        if (!g.dvlb) return false;
+        shaderProgramInit(&g.prog);
+        shaderProgramSetVsh(&g.prog, &g.dvlb->DVLE[0]);
+        g.arena = linearAlloc(ARENA_VERTS * sizeof(PVert));
+        if (!g.arena) return false;
+        if (!C3D_TexInitVRAM(&g.efbTex, TW, TH, GPU_RGBA8)) return false;
+        g.efb = C3D_RenderTargetCreateFromTex(&g.efbTex, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
+        if (!g.efb) return false;
+        for (u32 i = 0; i < MAX_XFB; i++)
+            if (!C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) return false;
+        g.screen = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, -1);
+        if (!g.screen) return false;
+        C3D_RenderTargetSetOutput(g.screen, GFX_TOP, GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
+        if (!C3D_TexInit(&g.white, 8, 8, GPU_RGBA8)) return false;
+        memset(g.white.data, 0xFF, g.white.size);
+        GSPGPU_FlushDataCache(g.white.data, g.white.size);
+        g.ready = true;
+    }
+    s->gx.core.backend = &kPica;
+    s->gx.core.backendCtx = NULL;
+    return true;
+}

@@ -9,6 +9,7 @@
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
+#include "../src/gx/pica/pica.h"
 #include "../src/jit/jit.h"
 
 #define MAX_FILES 64
@@ -20,6 +21,7 @@ static int g_nFiles;
 static u32 g_fields;
 static Jit* g_jit;
 static bool g_useJit = true;
+static bool g_pica;  // GX draws on the PICA200 (false: software renderer)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
@@ -61,12 +63,15 @@ static void on_field(System* s, void* user) {
     g_frameReady = true;
 }
 
-// The latest XFB field (YUYV, 640 wide) scaled to the 400x240 top screen. The top framebuffer is stored rotated:
-// column-major, 240 pixels per column, BGR8.
+// Shows the field the VI scans out. With the GPU backend the image never left the GPU (virtual XFB); otherwise, and
+// for programs that draw the XFB with the CPU, the XFB in RAM (YUYV, 640 wide) is scaled to the 400x240 top screen.
+// The top framebuffer is stored rotated: column-major, 240 pixels per column, BGR8.
 static void present(System* s) {
     g_frameReady = false;
-    u32 top, bottom, w, h, stride;
-    if (!vi_get_xfb(s, &top, &bottom, &w, &h, &stride) || w == 0) return;
+    u32 top = 0, bottom, w = 0, h, stride;
+    bool vi = vi_get_xfb(s, &top, &bottom, &w, &h, &stride) && w;
+    if (g_pica && pica_present(s, top)) return;
+    if (!vi) return;
     u16 fbW, fbH;
     u8* fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &fbW, &fbH);
     u32 lines = h / 2 < 240 ? h / 2 : 240;
@@ -125,6 +130,7 @@ static int pick(void) {
     for (;;) {
         consoleClear();
         printf("gc3ds - A run, Y JIT on/off, START quit\n");
+        printf("GPU: %s\n", g_pica ? "PICA200" : "software");
         printf("CPU: %s\n\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
         int first = sel > 20 ? sel - 20 : 0;
@@ -166,6 +172,7 @@ static void run(const char* path) {
         dol = load_file(path, &size);
         if (!dol) { printf("cannot read %s\n", path); return; }
     }
+    if (g_pica) pica_reset();
     if (g_jit) {
         jit_invalidate_all(g_jit);
         if (g_useJit) jit_attach(g_jit); else gekko_set_jit(&g_sys.cpu, NULL, NULL);
@@ -223,7 +230,8 @@ int main(void) {
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
-    gx_soft_attach(&g_sys);
+    g_pica = pica_attach(&g_sys);
+    if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
     g_sys.on_field = on_field;
     g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 4u << 20);
     if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; }

@@ -204,6 +204,11 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
     bool toXfb = (ctl >> 14) & 1, clear = (ctl >> 11) & 1;
     if (x0 + w > EFB_W) w = EFB_W - x0;
     if (y0 + h > EFB_H) h = EFB_H - y0;
+    if (gx->backend && gx->backend->efb_copy && gx->backend->efb_copy(gx->backendCtx, s, ctl, x0, y0, w, h, dest)) {
+        if (!toXfb) gx->efbCopies++;
+        gx->texVersion++;
+        return;
+    }
     if (toXfb) {
         emu_log(LOG_GX, "EFB copy to XFB %08x %ux%u from %u,%u (%llu draws so far)\n", dest, w, h, x0, y0,
                 (unsigned long long)gx->draws);
