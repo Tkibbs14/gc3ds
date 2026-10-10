@@ -71,6 +71,19 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
 |---|---|---|
 | Health screen, logos | 68–69% | after the polling-loop skip; disc reads up to 57% while loading |
 | Title scene (field ~700) | 3.0% | GX 46% (vertex decode + transform on the CPU 30%, textures 2%, GPU wait 4%); guest code 54% |
+| Title scene, vfast + batching (0b29e22) | 3.1% | GX 38% (vtx 29.3%, tex 0.5%, gpu 0.9%); guest+other 61%; 8,300 draws/s |
+
+- **After 0b29e22 the vertex share did not move** (29% for about 27,000 vertices per field, about 5.7 us each),
+  although the new path does far less work per vertex; batching did cut the rest of GX from 16% to 9%. The
+  title scene evaluates about 5.5 lights per vertex (sqrt and divides each) and reads 3.6 indexed attributes per
+  vertex (PC counts, `VFAST_CHECK`). a3b6498 adds vertices/s to the screen so the cost per vertex can be read
+  directly; if it stays near 5 us, measure the light loop and the attribute reads on the device next.
+- **The title scene's guest code is small:** about 1.55 M guest instructions per field (PC, `OPMIX=1` from
+  `/root/tp_900.state`), and about 15% of them are float / paired-single, which the JIT hands to the interpreter
+  and its exact software float. a3b6498's counters (instructions, interpreted, blocks, slow loads and stores per
+  second) split "guest+other" on the device.
+- **a3b6498 feeds the GP in 32-byte write-gather bursts** instead of one parse attempt per 1-4 byte store (TP
+  writes its command stream byte by byte through a pointer). Not yet measured on the 2DS.
 
 - **The title scene issues about 4,400 draws of ~5 vertices per field** (PC: 1.3 M draws by field 900). The CPU
   vertex path costs about 7.5 µs per vertex on the ARM11.
