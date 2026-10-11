@@ -233,7 +233,9 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // starting the GPU queue early alternates on and off in a run (the earlyq column)
+#define AB_SECS 20  // A/B period: the vertex-shader transform alternates on and off (the gpupos column)
+static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
+static bool g_gpuPosFixed = true; // the transform a run starts with
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait", "vwork",
                                                 "vwait", "gxpres", "gxstate", "gxend" };
@@ -245,7 +247,7 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s (none set) | hot guest code sampled\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s (gpupos: vertex-shader transform) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -253,7 +255,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -378,7 +380,7 @@ static void run(const char* path) {
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) jit_set_linking(g_jit, true);
-    if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); }
+    if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); pica_set_gpu_transform(g_gpuPosFixed); }
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
@@ -473,6 +475,8 @@ static void run(const char* path) {
                 fprintf(g_perf, ",%d,%.0f,%d", g_jit && jit_linking(g_jit) ? 1 : 0, (links - linksLast) / secs,
                         g_pica && pica_vertex_worker_wanted() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_early_queue() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_gpu_transform() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_gpu_transform() ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -481,8 +485,8 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // (A/B comparisons: set one up here, as the vertex worker and the early GPU queue were.)
-                (void)AB_SECS;
+                // A/B: the position transform in the vertex shader alternates on and off every AB_SECS (gpupos column).
+                if (g_pica && g_abGpuPos && perfRows % AB_SECS == 0) pica_set_gpu_transform(!pica_gpu_transform());
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
@@ -504,6 +508,13 @@ static void run(const char* path) {
                                 (unsigned long long)(why[1] - lastWhy[1]), (unsigned long long)(why[2] - lastWhy[2]),
                                 (unsigned long long)(why[3] - lastWhy[3]), (unsigned long long)(why[4] - lastWhy[4]),
                                 (unsigned long long)(why[5] - lastWhy[5]));
+                        static u64 lastPal, lastSub;
+                        fprintf(g_perf, "# gpu transform 10s: palette uploads %llu, draw calls for palette or projection "
+                                "changes %llu, draws over the palette (CPU) %llu\n",
+                                (unsigned long long)(g_picaStats.palUploads - lastPal),
+                                (unsigned long long)(g_picaStats.subDraws - lastSub), (unsigned long long)(p[7] - lastP[7]));
+                        lastPal = g_picaStats.palUploads;
+                        lastSub = g_picaStats.subDraws;
                         memcpy(lastP, p, sizeof p);
                         memcpy(lastWhy, why, sizeof why);
                         lastSetups = setups;
@@ -613,6 +624,9 @@ int main(void) {
         char name[200] = "";
         if (fgets(name, sizeof name, ar)) {
             name[strcspn(name, "\r\n")] = 0;
+            char opt[64] = "";  // optional second line gpupos=0 / gpupos=1: the transform, fixed for the run
+            g_abGpuPos = false;
+            g_gpuPosFixed = !(fgets(opt, sizeof opt, ar) && strstr(opt, "gpupos=0"));
             for (int i = 0; i < g_nFiles; i++) if (strstr(g_files[i], name)) { run(g_files[i]); break; }
         }
         fclose(ar);

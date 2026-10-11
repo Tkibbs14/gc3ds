@@ -46,6 +46,22 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                     u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out);
 void vfast_finish(VJob* job, PVert* out);
+// Position transform in the vertex shader (gxpass.v.pica with lon.w = 1): the shader computes clip = P * (M * p) from
+// a palette of position matrices in uniforms (pal[3 * slot + row]) and the projection P. Between prepare and finish
+// the caller gives every matrix of the job a palette slot (vfast_job_gpu_pos); vfast_finish then writes positions
+// relative to the job's origin with w = 3 * slot, and for shader-lit draws only the normal (the shader's eye position
+// is M * p).
+u32 vfast_job_matrices(const VJob* job, const float (**pos)[21]);  // position matrix (3x4) + normal matrix (3x3)
+const float* vfast_job_proj(const VJob* job);                       // P: projection x viewport x fold, rows of 4
+// The job's origin (its first vertex's model position; 0 for a deferred job), which vfast_finish subtracts from
+// every position, and in m[i] each position matrix with the origin folded into its translation: the palette's
+// contents. Returns the origin.
+const float* vfast_job_origin(const VJob* job, float m[][12]);
+void vfast_job_gpu_pos(VJob* job, const u8* slots);                // slots[i]: palette slot of matrix i (< 42)
+// The shader's position computation in C: clip and eye position of a vertex vfast_finish wrote with slots. f24:
+// inputs and every product and sum rounded to the PICA's 24-bit floats (vfast_f24).
+void vfast_gpu_pos_model(const float (*pal)[12], const float P[16], const PVert* v, bool f24, float clip[4], float eye[3]);
+float vfast_f24(float x);  // rounded to the PICA's 24-bit float (16 mantissa bits, to nearest; exponent range ignored)
 // Forgets the cached draw setup (call when GX state is replaced, e.g. a reset or a loaded state).
 void vfast_reset_cache(void);
 

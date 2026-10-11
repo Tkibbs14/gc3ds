@@ -18,11 +18,16 @@ void pica_capture(const char* path);
 // Lighting in the vertex shader (on by default when the shader provides it); off lights on the CPU (comparison).
 void pica_set_shader_light(bool on);
 bool pica_shader_light(void);
+// Position transform in the vertex shader with a palette of matrices (on by default when the shader provides it;
+// lines, points and Z-texture draws stay on the CPU); off transforms and culls every vertex on the CPU (comparison).
+void pica_set_gpu_transform(bool on);
+bool pica_gpu_transform(void);
 
 // Work counters since start (the frontend logs them per second): C3D_DrawArrays calls (batches), command-list
 // submits (C3D_FrameEnd) and splits, textures decoded from RAM and their size in VRAM/FCRAM, EFB -> texture and
-// EFB -> XFB copies, EFB clears.
-typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears; } PicaStats;
+// EFB -> XFB copies, EFB clears; palette matrices uploaded and draw calls made to change palette slots or the
+// projection inside a batch (GPU-transformed batches).
+typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears, palUploads, subDraws; } PicaStats;
 extern PicaStats g_picaStats;
 // The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work
 // runs there; off does it all on the GX thread (comparison).

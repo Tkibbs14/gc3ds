@@ -109,6 +109,16 @@ everything we can onto the GPU"), it says so.
 28. **Audio:** time-stretching (WSOLA) costs 0.66% of a core, so normal-pitch audio below full speed is affordable.
     ndsp plays 8–192 kHz; its sound frame is 4.88 ms.
 
+## Added with the vertex-shader transform (core, 2026-10-11; a float24 model on the PC, not a 2DS measurement)
+
+29. **Never send world coordinates to the shader as they are.** The PICA computes in 24-bit floats (16 mantissa
+    bits): Twilight Princess's terrain at model coordinates ~40,000 lands up to 1.04 EFB texels off (906 of 4.7 M
+    on-screen vertices over 0.25; `core/tools/vfast_check.sh`, `VFAST_GPU` lines). Send positions relative to an
+    origin and fold the origin into the matrix translation in f32 on the CPU (`vfast_job_origin`): 0.114 texels at
+    most. Round the origin to a coarse grid (cells 4-8 eye distances) so draws that share a matrix still share a
+    palette entry: 81% of TP's draws reuse the previous draw's entries, against 86% without an origin and 40% with
+    an exact per-draw origin.
+
 ## Not yet measured
 
 - CPU memcpy speed while the GPU fills: the test was invalid, because the compiler removed the copies.

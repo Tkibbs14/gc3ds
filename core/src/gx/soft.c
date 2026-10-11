@@ -572,6 +572,145 @@ static void vchk_report(void) {
             (unsigned long long)st->setupWhy[3], (unsigned long long)st->setupWhy[4], (unsigned long long)st->setupWhy[5]);
 }
 
+// A vertex's PICA clip position computed in double from the decoded vertex (the yardstick for both float paths).
+static void ref_clip_double(System* s, GXCore* gx, const VFold* f, u32 vat, const u8* raw, double t[4]) {
+    GXVertex dv;
+    gx_decode_vertex(s, gx, vat, raw, &dv);
+    u32 pm = (u32)dv.pnmtx * 4;
+    double p[3], cl[4];
+    for (int r = 0; r < 3; r++)
+        p[r] = (double)xf_f(gx, pm + 4 * r) * dv.pos[0] + (double)xf_f(gx, pm + 4 * r + 1) * dv.pos[1] +
+               (double)xf_f(gx, pm + 4 * r + 2) * dv.pos[2] + xf_f(gx, pm + 4 * r + 3);
+    double a = xf_f(gx, 0x1020), b = xf_f(gx, 0x1021), c = xf_f(gx, 0x1022), d = xf_f(gx, 0x1023), e = xf_f(gx, 0x1024), ff = xf_f(gx, 0x1025);
+    if (gx->xf[0x1026] == 0) { cl[0] = a * p[0] + b * p[2]; cl[1] = c * p[1] + d * p[2]; cl[2] = e * p[2] + ff; cl[3] = -p[2]; }
+    else { cl[0] = a * p[0] + b; cl[1] = c * p[1] + d; cl[2] = e * p[2] + ff; cl[3] = 1; }
+    t[0] = (cl[0] * f->wd + (double)f->xo * cl[3]) * f->kx - cl[3];
+    t[1] = (cl[1] * f->ht + (double)f->yo * cl[3]) * f->ky - cl[3];
+    t[2] = -(cl[2] * f->zr + (double)f->fz * cl[3]) / 16777216.0;
+    t[3] = cl[3];
+}
+
+// GPU position transform (vfast_job_gpu_pos + the shader's model in 24-bit floats) against the double reference, next
+// to today's CPU path whose clip positions the PICA also rounds to 24 bits when it loads them. Errors are measured
+// where the vertex lands, for vertices in front of the eye: EFB-texture texels (512 x 256) and 24-bit depth units.
+#define VGPU_N 4
+static struct {
+    u64 draws, verts, over[VGPU_N][2], zOver[VGPU_N][2], litDraws, litBad, reuse[2];
+    double tex[VGPU_N], z[VGPU_N];
+    int litCol;
+} g_vgpu;  // [0] CPU path, f24 at load; [1] shader model f32, [2] f24, without the origin; [3] the backend (f24, origin)
+
+static void vgpu_report(void) {
+    static const char* kName[VGPU_N] = { "CPU path (f24 at load)", "shader f32, no origin", "shader f24, no origin",
+                                         "shader f24 (backend)" };
+    fprintf(stderr, "VFAST_GPU position on the GPU: %llu draws, %llu vertices on screen; draws using only the previous "
+            "draw's palette matrices: %llu without the origin, %llu with it\n", (unsigned long long)g_vgpu.draws,
+            (unsigned long long)g_vgpu.verts, (unsigned long long)g_vgpu.reuse[0], (unsigned long long)g_vgpu.reuse[1]);
+    for (int k = 0; k < VGPU_N; k++)
+        fprintf(stderr, "VFAST_GPU %-24s max %.3g texels, %llu vertices over 0.25, %llu over 1; max %.0f depth units, %llu over 256, "
+                "%llu over 4096\n", kName[k], g_vgpu.tex[k], (unsigned long long)g_vgpu.over[k][0],
+                (unsigned long long)g_vgpu.over[k][1], g_vgpu.z[k], (unsigned long long)g_vgpu.zOver[k][0],
+                (unsigned long long)g_vgpu.zOver[k][1]);
+    fprintf(stderr, "VFAST_GPU lighting from the shader's eye position: %llu draws, %llu with a colour off by more than 2; "
+            "max %d\n", (unsigned long long)g_vgpu.litDraws, (unsigned long long)g_vgpu.litBad, g_vgpu.litCol);
+}
+
+static void vgpu_check(System* s, GXCore* gx, const VFold* f, const VSel* sel, u32 vat, const u8* raw, u32 count,
+                       u32 vsize, const PVert* cpu, const SVert* v) {
+    static u8* mem;
+    static u32 cap;
+    u32 bytes = vfast_job_bytes(gx, count, vsize);
+    if (bytes > cap) { u8* n = realloc(mem, bytes); if (!n) return; mem = n; cap = bytes; }
+    PVert* gp = malloc(sizeof(PVert) * count);
+    if (!gp) return;
+    VLightUniforms lu;
+    bool lit = vfast_gpu_light(gx, sel, &lu);
+    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, lit, false, mem, gp);
+    if (!job) { free(gp); return; }
+    const float (*pos)[21];
+    u32 n = vfast_job_matrices(job, &pos);
+    // The palette as the backend fills it (matrices with the job's origin folded in), and the raw matrices for the
+    // variants without an origin ([1], [2]: positions put back to model space).
+    u8 slots[64];
+    float pal[64][12], palO[64][12], o[3];
+    memcpy(o, vfast_job_origin(job, palO), sizeof o);
+    for (u32 i = 0; i < n; i++) { slots[i] = (u8)i; memcpy(pal[i], pos[i], sizeof pal[i]); }
+    float P[16];
+    memcpy(P, vfast_job_proj(job), sizeof P);
+    vfast_job_gpu_pos(job, slots);
+    vfast_finish(job, gp);
+    if (!g_vgpu.draws) atexit(vgpu_report);
+    g_vgpu.draws++;
+    {  // how often a draw's matrices were all in the previous draw: palette reuse without and with the origin
+        static float prev[2][64][12];
+        static u32 prevN;
+        for (int v2 = 0; v2 < 2; v2++) {
+            float (*m)[12] = v2 ? palO : pal;
+            bool all = n > 0;
+            for (u32 i = 0; i < n && all; i++) {
+                bool hit = false;
+                for (u32 j = 0; j < prevN && !hit; j++) hit = !memcmp(m[i], prev[v2][j], sizeof m[i]);
+                all = hit;
+            }
+            g_vgpu.reuse[v2] += all;
+            memcpy(prev[v2], m, n * sizeof m[0]);
+        }
+        prevN = n;
+    }
+    int worstCol = 0;
+    for (u32 i = 0; i < count; i++) {
+        double t[4];
+        ref_clip_double(s, gx, f, vat, raw + i * vsize, t);
+        float c[VGPU_N][4], eye[3], eye24[3], eyeO[3];
+        for (int k = 0; k < 4; k++) c[0][k] = vfast_f24(cpu[i].pos[k]);
+        PVert abs_ = gp[i];
+        for (int k = 0; k < 3; k++) abs_.pos[k] += o[k];
+        vfast_gpu_pos_model((const float (*)[12])pal, P, &abs_, false, c[1], eye);
+        vfast_gpu_pos_model((const float (*)[12])pal, P, &abs_, true, c[2], eye24);
+        vfast_gpu_pos_model((const float (*)[12])palO, P, &gp[i], true, c[3], eyeO);
+        if (lit) {  // the shader lights from its own eye position
+            PVert lv = gp[i];
+            memcpy(lv.eye, eyeO, sizeof lv.eye);
+            float m[4];
+            vfast_gpu_light_model(&lu, &lv, m);
+            PVert r;
+            vfast_ref(f, sel, &v[i], &r);
+            for (int k = 0; k < 4; k++) { int d = abs((int)(m[k] + 0.5f) - (int)r.col[k]); worstCol = d > worstCol ? d : worstCol; }
+        }
+        if (t[3] <= 1e-6) continue;
+        double nx = t[0] / t[3], ny = t[1] / t[3], nz = t[2] / t[3];
+        if (fabs(nx) > 1 || fabs(ny) > 1 || nz > 0 || nz < -1) continue;  // off screen or outside the depth range
+        g_vgpu.verts++;
+        for (int k = 0; k < VGPU_N; k++) {
+            if (!(c[k][3] > 0)) { g_vgpu.over[k][1]++; continue; }
+            double ex = fabs(c[k][0] / c[k][3] - nx) * 256.0, ey = fabs(c[k][1] / c[k][3] - ny) * 128.0;
+            double et = ex > ey ? ex : ey, ez = fabs(c[k][2] / c[k][3] - nz) * 16777216.0;
+            if (et > g_vgpu.tex[k]) g_vgpu.tex[k] = et;
+            if (ez > g_vgpu.z[k]) g_vgpu.z[k] = ez;
+            g_vgpu.over[k][0] += et > 0.25; g_vgpu.over[k][1] += et > 1.0;
+            static int dumps;
+            if (k == 3 && et > 0.25 && dumps < 12 && getenv("VGPU_DUMP")) {
+                dumps++;
+                const float* M = palO[(int)gp[i].pos[3] / 3];
+                fprintf(stderr, "VGPU_DUMP draw %llu v%u/%u: %.3g texels; rel %g %g %g origin %g %g %g eye %g %g %g "
+                        "clip %g %g %g %g ref %g %g %g %g | M %g %g %g %g / %g %g %g %g / %g %g %g %g | P %g %g %g %g / "
+                        "%g %g %g %g / %g %g %g %g / %g %g %g %g\n", (unsigned long long)gx->draws, i, count, et,
+                        gp[i].pos[0], gp[i].pos[1], gp[i].pos[2], o[0], o[1], o[2], eyeO[0], eyeO[1], eyeO[2],
+                        c[3][0], c[3][1], c[3][2], c[3][3], t[0], t[1], t[2], t[3], M[0], M[1], M[2], M[3], M[4], M[5],
+                        M[6], M[7], M[8], M[9], M[10], M[11], P[0], P[1], P[2], P[3], P[4], P[5], P[6], P[7], P[8],
+                        P[9], P[10], P[11], P[12], P[13], P[14], P[15]);
+            }
+            g_vgpu.zOver[k][0] += ez > 256; g_vgpu.zOver[k][1] += ez > 4096;
+        }
+    }
+    if (lit) {
+        g_vgpu.litDraws++;
+        if (worstCol > g_vgpu.litCol) g_vgpu.litCol = worstCol;
+        if (worstCol > 2) g_vgpu.litBad++;
+    }
+    free(gp);
+}
+
 static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const SVert* v) {
     if (prim >= PRIM_LINES) return;
     if (!g_vchk.draws) atexit(vchk_report);
@@ -620,6 +759,7 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
             free(lp);
         }
     }
+    vgpu_check(s, gx, &f, &sel, vat, raw, count, vsize, fast, v);
     u32 numGens = gx->xf[0x103F] & 15;
     double ep = 0, ez = 0, et = 0;
     int ec = 0;

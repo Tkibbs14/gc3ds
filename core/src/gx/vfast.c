@@ -263,7 +263,9 @@ enum { VU_ZERO, VU_COLOUR, VU_GEN };
 
 struct VJob {
     u32 count, nPos, nTex;
-    bool gpuLight;
+    bool gpuLight, gpuPos;
+    float slot3[64];   // gpuPos: 3 * palette slot per local position matrix (the shader's pal[] row)
+    float origin[3];   // gpuPos: subtracted from every position (vfast_job_origin)
     float P[16];
     VUnit unit[3];
     VIn* in;
@@ -510,6 +512,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     job->tex = (float (*)[12])m;
     job->count = count;
     job->gpuLight = gpuLight;
+    job->gpuPos = false;
     VIn* g_in = job->in;
     // The draw's setup (decode layout, outputs needed, texture units, lighting halves, projection) depends only on
     // registers, so it is kept until one of them changes value (GXCore versions) or the draw's format, the TEV's
@@ -656,6 +659,32 @@ matrices:
             in->tm[gi] = texLocal[tm];
         }
     }
+    // GPU transform: positions go relative to an origin near the first vertex (vfast_job_origin), so the shader's 24-bit
+    // floats hold offsets that are small against the vertex's distance from the eye, not world coordinates (Twilight
+    // Princess's far geometry was off by up to a texel without it). The origin is the first vertex rounded to a
+    // power-of-two grid of cells 4-8 times its eye distance (in model space: over the matrix's scale), so that
+    // neighbouring draws with the same matrix share a palette entry, and geometry in small local coordinates keeps
+    // origin 0. TP to field 1000 (vfast_check.sh): draws using only the previous draw's palette entries 86% without an
+    // origin, 81% with these cells, 70% with cells of 1-2 eye distances, 40% at 1/16; largest on-screen error 1.04,
+    // 0.114, 0.035 and 0.028 EFB texels. A deferred job has not read its positions yet: origin 0.
+    memset(job->origin, 0, sizeof job->origin);
+    if (job->gathered && count) {
+        const float* p = g_in[0].p;
+        const float* M = job->pos[g_in[0].pn];
+        float e = 0, sc = 0;  // eye distance (largest component), matrix scale (largest row sum)
+        for (int r = 0; r < 3; r++) {
+            float c = fabsf(M[4 * r] * p[0] + M[4 * r + 1] * p[1] + M[4 * r + 2] * p[2] + M[4 * r + 3]);
+            float rs = fabsf(M[4 * r]) + fabsf(M[4 * r + 1]) + fabsf(M[4 * r + 2]);
+            e = c > e ? c : e;
+            sc = rs > sc ? rs : sc;
+        }
+        if (sc > 0) {
+            int ex;
+            frexpf(e / sc, &ex);
+            float step = ldexpf(1.0f, ex + 2), inv = 1.0f / step;
+            for (int k = 0; k < 3; k++) job->origin[k] = step * floorf(p[k] * inv + 0.5f);
+        }
+    }
     return job;
 }
 
@@ -673,6 +702,26 @@ void vfast_finish(VJob* job, PVert* out) {
     u32 count = job->count;
     const VIn* in = job->in;
     const float* P = job->P;
+    if (job->gpuPos) {  // the shader transforms: position from the origin and palette row; normals for shader lighting
+        const float* slot3 = job->slot3;
+        float ox = job->origin[0], oy = job->origin[1], oz = job->origin[2];
+        for (u32 vi = 0; vi < count; vi++) {
+            float* o = out[vi].pos;
+            o[0] = in[vi].p[0] - ox; o[1] = in[vi].p[1] - oy; o[2] = in[vi].p[2] - oz; o[3] = slot3[in[vi].pn];
+        }
+        if (job->gpuLight) {
+#pragma GCC unroll 4
+            for (u32 vi = 0; vi < count; vi++) {
+                const float* N = job->pos[in[vi].pn] + 12;
+                float nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
+                PVert* o = &out[vi];
+                o->nrm[0] = N[0] * nx + N[1] * ny + N[2] * nz;
+                o->nrm[1] = N[3] * nx + N[4] * ny + N[5] * nz;
+                o->nrm[2] = N[6] * nx + N[7] * ny + N[8] * nz;
+            }
+        }
+        goto texcoords;
+    }
     // Position: branch-free, so the compiler unrolls and interleaves the loop (see the lighting notes).
 #pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
@@ -699,6 +748,7 @@ void vfast_finish(VJob* job, PVert* out) {
             o->nrm[2] = N[6] * nx + N[7] * ny + N[8] * nz;
         }
     }
+texcoords:
     // Texture coordinates, one unit at a time with its texgen settled outside the vertex loop.
     for (u32 u = 0; u < 3; u++) {
         const VUnit* vu = &job->unit[u];
@@ -725,6 +775,49 @@ void vfast_finish(VJob* job, PVert* out) {
             }
         }
     }
+}
+
+u32 vfast_job_matrices(const VJob* job, const float (**pos)[21]) { *pos = job->pos; return job->nPos; }
+const float* vfast_job_proj(const VJob* job) { return job->P; }
+
+const float* vfast_job_origin(const VJob* job, float m[][12]) {
+    const float* o = job->origin;
+    for (u32 i = 0; i < job->nPos; i++) {
+        const float* M = job->pos[i];
+        memcpy(m[i], M, 12 * sizeof(float));
+        for (int r = 0; r < 3; r++) m[i][4 * r + 3] = M[4 * r + 3] + (M[4 * r] * o[0] + M[4 * r + 1] * o[1] + M[4 * r + 2] * o[2]);
+    }
+    return o;
+}
+
+void vfast_job_gpu_pos(VJob* job, const u8* slots) {
+    job->gpuPos = slots != NULL;
+    for (u32 i = 0; slots && i < job->nPos; i++) job->slot3[i] = 3.0f * slots[i];
+}
+
+float vfast_f24(float x) {
+    u32 b;
+    memcpy(&b, &x, 4);
+    b = (b + 0x40u) & ~0x7Fu;
+    memcpy(&x, &b, 4);
+    return x;
+}
+
+// dp4 as the shader computes it: f24 rounds the inputs, each product and each partial sum.
+static float dp4_model(const float* a, const float* b, bool f24) {
+    if (!f24) return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    float s = vfast_f24(vfast_f24(a[0]) * vfast_f24(b[0]));
+    for (int k = 1; k < 4; k++) s = vfast_f24(s + vfast_f24(vfast_f24(a[k]) * vfast_f24(b[k])));
+    return s;
+}
+
+void vfast_gpu_pos_model(const float (*pal)[12], const float P[16], const PVert* v, bool f24, float clip[4], float eye[3]) {
+    const float* M = pal[(int)v->pos[3] / 3];
+    float p[4] = { v->pos[0], v->pos[1], v->pos[2], 1.0f }, e[4];
+    for (int r = 0; r < 3; r++) e[r] = dp4_model(M + 4 * r, p, f24);
+    e[3] = 1.0f;
+    for (int r = 0; r < 4; r++) clip[r] = dp4_model(P + 4 * r, e, f24);
+    for (int r = 0; r < 3; r++) eye[r] = e[r];
 }
 
 // Both halves at once (the PC checker and the backend's inline path).

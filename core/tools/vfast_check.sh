@@ -12,6 +12,7 @@ mkdir -p "$out"
     res="$(VFAST_CHECK=1 timeout 300 core/build/gcemu "$dol" --seconds "$secs" --out "$out/$name" 2>&1 | grep -E '^VFAST')"
     [ -n "$res" ] && printf '%-34s %s\n' "$name" "$(echo "$res" | grep '^VFAST_CHECK' | sed 's/^VFAST_CHECK: //; s/^VFAST_CHECK shader lighting: /  shader lighting: /')"
     echo "$res" | grep -E '^VFAST draw' | head -3
+    echo "$res" | grep -E '^VFAST_GPU'
 done
 if [ -n "${2:-}" ]; then
     iso="$(ls /mnt/c/Users/tyler/TP3DS/game/*.iso | head -1)"

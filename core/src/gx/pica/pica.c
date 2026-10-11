@@ -45,6 +45,7 @@
 #define MAX_COPIES 32
 #define MAX_XFB 3
 #define GXQUEUE_BUDGET 26  // of citro3d's 32 GX queue entries; C3D_FrameEnd adds its own
+#define PAL_SLOTS 14       // position matrices in the shader's palette (pal[42] in gen_gxpass.sh)
 
 #define DISPLAY_TRANSFER_FLAGS (GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) | \
     GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
@@ -94,13 +95,23 @@ static struct {
     bool batchOpen;
     u32 batchFirst, batchKeyLen, batchKey[96];
     u32 batchBpVer, batchTlutVer, batchLightVer, batchXfbSeq;  // what the key was made from (pica_draw's fast path)
-    bool batchLines;
+    u32 batchCls;  // primitive class and transform of the open batch (pica_draw's cls)
     VSel sel;
     // Lighting in the vertex shader (gxpass.v.pica): on unless pica_set_shader_light(false); the open batch's
     // decision and uniforms; uniform locations.
     bool shaderLight, batchGpuLight;
     VLightUniforms lu;
     s8 uLights, uSel, uMat, uAmb, uVsel, uOn;
+    // Position transform in the vertex shader (gxpass.v.pica, lon.w): on unless pica_set_gpu_transform(false). A batch
+    // is all GPU-transformed or all CPU-transformed (batchGpuPos); GPU-transformed batches are culled by the PICA
+    // (batchCull). The shader's projection and matrix palette as uploaded; a palette slot whose palUse is palSerial is
+    // used by the open sub-batch (the batch's vertices since batchFirst, drawn by flush_sub) and is not replaced.
+    bool gpuPos, batchGpuPos, projValid;
+    GPU_CULLMODE batchCull;
+    s8 uProj, uPal;
+    float proj[16];
+    float pal[PAL_SLOTS][12];
+    u32 palUse[PAL_SLOTS], palSerial, palNext, palLast, palValid;
 } g;
 
 PicaStats g_picaStats;
@@ -114,8 +125,9 @@ static u32 g_scratchCap;
 // ---- frames ----
 // Issues the open batch's triangles; call before anything changes GPU state or submits.
 static void vw_sync(void);
+static void vw_sync_all(void);
 static void flush_batch(void) {
-    vw_sync();  // the batch's last triangles may still be on the vertex worker
+    vw_sync();  // where the batch ends may still be on the vertex worker (CPU-transformed draws it culls)
     if (g.batchOpen && g.arenaUsed > g.batchFirst) {
         C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
         g_picaStats.drawCalls++;
@@ -123,9 +135,8 @@ static void flush_batch(void) {
     g.batchOpen = false;
 }
 
-static void vw_sync(void);
 static void flush_arena(void) {
-    vw_sync();  // the vertex worker must have filled the arena before the GPU reads it
+    vw_sync_all();  // the vertex worker must have filled the arena before the GPU reads it
     if (g.arenaUsed > g.arenaFlushed)
         GSPGPU_FlushDataCache(g.arena + g.arenaFlushed, (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
     g.arenaFlushed = g.arenaUsed;
@@ -263,7 +274,7 @@ static u32 g_vwReserved;  // arena vertices the vertex worker's queued draws may
 static bool need(u32 verts) {
     if (verts > ARENA_VERTS) return false;
     begin_frame();
-    vw_sync();  // this thread writes the arena itself
+    vw_sync();  // this thread writes the arena itself, after the worker's variable-length draws
     if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
     return true;
 }
@@ -600,12 +611,6 @@ static void ztex_apply(PVert* pv, u32 count, u32 op, float z) {
     }
 }
 
-static void apply_ztex(System* s, const GXCore* gx, u32 count) {
-    u32 op;
-    float z;
-    if (ztex_value(s, gx, &op, &z)) ztex_apply(g_pv, count, op, z);
-}
-
 // A vertex given in EFB screen space (lines and points, expanded on the CPU).
 static void to_pica_screen(const VFold* f, const SVert* v, float sx, float sy, PVert* o) {
     o->pos[0] = sx * f->kx - 1.0f;
@@ -617,6 +622,20 @@ static void to_pica_screen(const VFold* f, const SVert* v, float sx, float sy, P
 
 static u32 g_cull;
 static float (*g_nd)[2];  // NDC x, y per vertex for culling (w > 0 only)
+static u8* g_jobMem;      // the GX thread's own vertex job (GPU-transformed draws without the worker)
+static u32 g_jobCap;
+
+// GX cull mode (BP 0x00 bits 14-15) -> the PICA's, for GPU-transformed batches. The CPU rule below rejects mode 1 at
+// negative NDC area (clockwise with y up) and mode 2 at positive area (counter-clockwise); mode 3 draws nothing.
+static const GPU_CULLMODE kCull[4] = { GPU_CULL_NONE, GPU_CULL_BACK_CCW, GPU_CULL_FRONT_CCW, GPU_CULL_NONE };
+
+static void cull_ndc(u32 count) {
+    if (g_cull != 1 && g_cull != 2) return;
+    for (u32 i = 0; i < count; i++) {
+        float w = g_pv[i].pos[3], iw = w > 0 ? 1.0f / w : 0;
+        g_nd[i][0] = g_pv[i].pos[0] * iw; g_nd[i][1] = g_pv[i].pos[1] * iw;
+    }
+}
 
 // Culling with the reference renderer's rule: only triangles entirely in front of the eye, by screen-space winding
 // (NDC is EFB pixels scaled by positive factors, mirrored in y when FLIP_Y).
@@ -661,6 +680,22 @@ static void point(const GXCore* gx, const VFold* f, const SVert* p) {
 
 enum { PRIM_QUADS = 0, PRIM_QUADS2 = 1, PRIM_TRIS = 2, PRIM_STRIP = 3, PRIM_FAN = 4, PRIM_LINES = 5, PRIM_LSTRIP = 6, PRIM_POINTS = 7 };
 
+// Appends a draw's triangles (g_pv, culled by g_cull) or line / point quads (g_sv) to the arena.
+static void assemble(const GXCore* gx, const VFold* f, u32 prim, u32 count) {
+    switch (prim) {
+    case PRIM_QUADS: case PRIM_QUADS2:
+        for (u32 i = 0; i + 3 < count; i += 4) { tri(i, i + 1, i + 2); tri(i, i + 2, i + 3); }
+        break;
+    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) tri(i, i + 1, i + 2); break;
+    case PRIM_STRIP: for (u32 i = 0; i + 2 < count; i++) { if (i & 1) tri(i + 1, i, i + 2); else tri(i, i + 1, i + 2); } break;
+    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) tri(0, i, i + 1); break;
+    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) line(gx, f, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) line(gx, f, &g_sv[i], &g_sv[i + 1]); break;
+    case PRIM_POINTS: for (u32 i = 0; i < count; i++) point(gx, f, &g_sv[i]); break;
+    default: break;
+    }
+}
+
 // Everything a draw's GPU state depends on: TEV, fragment state, the used texture maps' registers, and what decides
 // whether a texture is re-read from RAM. Draws with equal keys share a batch.
 static u32 batch_key(const GXCore* gx, u32* k) {
@@ -674,15 +709,120 @@ static u32 batch_key(const GXCore* gx, u32* k) {
 
 // Shader lighting state for the batch being opened: whether the shader lights it (lon.z, tested with cmp in the
 // shader; a bool uniform set with C3D_BoolUnifSet never reached it in Azahar), and its uniforms.
+// lon: (colour half lit, alpha half lit, the shader lights, the shader transforms).
+static void set_lon(bool gpuPos) {
+    const VLightUniforms* u = &g.lu;
+    if (g.batchGpuLight) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, u->on[0], u->on[1], 1.0f, gpuPos ? 1.0f : 0.0f);
+    else C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, 0, 0, 0, gpuPos ? 1.0f : 0.0f);
+}
+
 static void apply_light_uniforms(void) {
-    if (!g.batchGpuLight) { C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, 0, 0, 0, 0); return; }
+    C3D_CullFace(g.batchGpuPos ? g.batchCull : GPU_CULL_NONE);
+    if (!g.batchGpuLight) { set_lon(g.batchGpuPos); return; }
     const VLightUniforms* u = &g.lu;
     for (int i = 0; i < 40; i++) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLights + i, u->lights[i][0], u->lights[i][1], u->lights[i][2], u->lights[i][3]);
     for (int i = 0; i < 4; i++) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uSel + i, u->sel[i][0], u->sel[i][1], u->sel[i][2], u->sel[i][3]);
     C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uMat, u->mat[0], u->mat[1], u->mat[2], u->mat[3]);
     C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uAmb, u->amb[0], u->amb[1], u->amb[2], u->amb[3]);
     C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uVsel, u->vsel[0], u->vsel[1], u->vsel[2], u->vsel[3]);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, u->on[0], u->on[1], 1.0f, 0);
+    set_lon(g.batchGpuPos);
+}
+
+// ---- position transform in the vertex shader ----
+// GPU-transformed batches: draws the batch's vertices since batchFirst, so that the projection and palette slots can
+// be replaced; the batch's other GPU state stays. Each draw's vertices have a fixed place in the arena (the GPU culls),
+// so this never waits for the vertex worker.
+static void flush_sub(void) {
+    if (g.arenaUsed > g.batchFirst) {
+        C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
+        g_picaStats.drawCalls++;
+        g_picaStats.subDraws++;
+    }
+    g.batchFirst = g.arenaUsed;
+    g.palSerial++;
+}
+
+static void pal_upload(u32 k, const float* m) {
+    memcpy(g.pal[k], m, sizeof g.pal[k]);
+    C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + 3 * (int)k, 3);
+    for (int r = 0; r < 3; r++) u[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
+    g.palValid |= 1u << k;
+    g_picaStats.palUploads++;
+}
+
+static int pal_find(const float* m) {
+    if (((g.palValid >> g.palLast) & 1) && !memcmp(g.pal[g.palLast], m, sizeof g.pal[0])) return (int)g.palLast;
+    for (u32 k = 0; k < PAL_SLOTS; k++)
+        if (((g.palValid >> k) & 1) && !memcmp(g.pal[k], m, sizeof g.pal[0])) return (int)k;
+    return -1;
+}
+
+// Gives the job's position matrices palette slots (a slot holding the same matrix, else the next free one round the
+// palette) and the shader the job's projection, drawing the open sub-batch first when a slot it uses or the projection
+// must change. False when the job has more matrices than the palette.
+static bool pal_assign(VJob* job) {
+    const float (*raw)[21];
+    u32 n = vfast_job_matrices(job, &raw);
+    if (n > PAL_SLOTS) return false;
+    float pos[PAL_SLOTS][12];  // the matrices with the job's origin folded in: what the palette holds
+    vfast_job_origin(job, pos);
+    const float* P = vfast_job_proj(job);
+    if (!g.projValid || memcmp(P, g.proj, sizeof g.proj)) {
+        flush_sub();
+        memcpy(g.proj, P, sizeof g.proj);
+        C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uProj, 4);
+        for (int r = 0; r < 4; r++) u[r] = FVec4_New(P[4 * r], P[4 * r + 1], P[4 * r + 2], P[4 * r + 3]);
+        g.projValid = true;
+    }
+    int slot[PAL_SLOTS];
+    u32 misses = 0, busy = 0;
+    for (u32 i = 0; i < n; i++) {
+        slot[i] = pal_find(pos[i]);
+        if (slot[i] < 0) misses++;
+        else g.palUse[slot[i]] = g.palSerial;
+    }
+    if (misses) {
+        for (u32 k = 0; k < PAL_SLOTS; k++) busy += g.palUse[k] == g.palSerial;
+        if (misses > PAL_SLOTS - busy) {  // no room beside the open sub-batch's matrices: draw it, keep this job's
+            flush_sub();
+            for (u32 i = 0; i < n; i++) if (slot[i] >= 0) g.palUse[slot[i]] = g.palSerial;
+        }
+        for (u32 i = 0; i < n; i++) {
+            if (slot[i] >= 0) continue;
+            u32 k = g.palNext;
+            while (g.palUse[k] == g.palSerial) k = (k + 1) % PAL_SLOTS;
+            pal_upload(k, pos[i]);
+            g.palUse[k] = g.palSerial;
+            g.palNext = (k + 1) % PAL_SLOTS;
+            slot[i] = (int)k;
+        }
+    }
+    u8 slots8[PAL_SLOTS];
+    for (u32 i = 0; i < n; i++) slots8[i] = (u8)slot[i];
+    if (n) g.palLast = (u32)slot[n - 1];
+    vfast_job_gpu_pos(job, slots8);
+    return true;
+}
+
+// A draw of a GPU-transformed batch with more matrices than the palette: transformed and culled on the CPU and drawn
+// on its own (counted in g_picaDrawPaths[7]). It closes the batch, so the next draw applies its state again. `cols`:
+// where vfast_prepare put the colours (room for the triangles was made for the whole draw).
+static void draw_cpu_alone(VJob* job, const GXCore* gx, const VFold* f, u32 prim, u32 count, const PVert* cols) {
+    g_picaDrawPaths[7]++;
+    flush_batch();
+    if (cols != g_pv) memcpy(g_pv, cols, count * sizeof *g_pv);
+    vfast_job_gpu_pos(job, NULL);
+    vfast_finish(job, g_pv);
+    g_cull = (gx->bp[0x00] >> 14) & 3;
+    cull_ndc(count);
+    set_lon(false);
+    C3D_CullFace(GPU_CULL_NONE);
+    u32 first = g.arenaUsed;
+    assemble(gx, f, prim, count);
+    if (g.arenaUsed > first) {
+        C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)(g.arenaUsed - first));
+        g_picaStats.drawCalls++;
+    }
 }
 
 static void tex_key(const GXCore* gx, u32* k, u32* n) {
@@ -710,6 +850,8 @@ typedef struct {
     float (*nd)[2];    // NDC x, y per vertex for culling
     u32 memStart, prim, count, cull, ztexOp;
     float ztexZ;
+    bool fixed;        // GPU-transformed: every triangle is kept, written at arena index dst (the GPU culls)
+    u32 dst;
 } VWork;
 static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
@@ -755,7 +897,7 @@ static void vw_do(const VWork* w) {
             float wv = w->pv[i].pos[3], iw = wv > 0 ? 1.0f / wv : 0;
             w->nd[i][0] = w->pv[i].pos[0] * iw; w->nd[i][1] = w->pv[i].pos[1] * iw;
         }
-    PVert* o = g.arena + g_vwPos;
+    PVert* o = g.arena + (w->fixed ? w->dst : g_vwPos);
     switch (w->prim) {
     case PRIM_QUADS: case PRIM_QUADS2:
         for (u32 i = 0; i + 3 < count; i += 4) { vw_tri(w, &o, i, i + 1, i + 2); vw_tri(w, &o, i, i + 2, i + 3); }
@@ -767,7 +909,7 @@ static void vw_do(const VWork* w) {
     case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) vw_tri(w, &o, 0, i, i + 1); break;
     default: break;
     }
-    g_vwPos = (u32)(o - g.arena);
+    if (!w->fixed) g_vwPos = (u32)(o - g.arena);
 }
 
 static void vw_main(void* arg) {
@@ -799,17 +941,30 @@ bool pica_vertex_worker_idle(void) {
     return idle;
 }
 
-// Waits until the worker has done every queued draw, and takes over the arena again.
-static void vw_sync(void) {
-    if (!g_vwReserved) return;
+static bool g_vwFixed;  // fixed-place (GPU-transformed) draws queued since the last vw_sync_all
+
+static void vw_wait(void) {
     if (g_vwTail != g_vwHead) {
         u64 t0 = prof_begin();
         while (g_vwTail != g_vwHead) {}
         prof_end(PROF_VWAIT, t0);
     }
     vw_dmb();
+}
+
+// Waits for the worker's variable-length (CPU-culled) draws, and takes over the arena after them. Fixed-place draws
+// need no wait here: their arena ranges were reserved when queued.
+static void vw_sync(void) {
+    if (!g_vwReserved) return;
+    vw_wait();
     g.arenaUsed = g_vwPos;
     g_vwReserved = 0;
+}
+
+// Waits until the worker has done every queued draw (before the GPU reads the arena).
+static void vw_sync_all(void) {
+    vw_sync();
+    if (g_vwFixed) { vw_wait(); g_vwFixed = false; }
 }
 
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
@@ -836,8 +991,12 @@ static u8* vw_alloc(u32 bytes) {
 
 // Queues a prepared draw that may write up to `verts` arena vertices.
 static void vw_queue(const VWork* w, u32 verts) {
-    if (!g_vwReserved) g_vwPos = g.arenaUsed;  // synced: the worker starts where this thread is
-    g_vwReserved += verts;
+    if (w->fixed) {
+        g_vwFixed = true;
+    } else {
+        if (!g_vwReserved) g_vwPos = g.arenaUsed;  // synced: the worker starts where this thread is
+        g_vwReserved += verts;
+    }
     g_vw[g_vwHead % VW_SLOTS] = *w;
     vw_dmb();
     g_vwHead = g_vwHead + 1;
@@ -858,7 +1017,7 @@ static volatile bool g_vwWant = true;  // the GX thread applies it at its next d
 void pica_set_vertex_worker(bool on) { g_vwWant = on; }
 static void vw_apply(void) {
     if (g_vwWant == g_vwOn || !g_vwThread) return;
-    vw_sync();
+    vw_sync_all();
     g_vwOn = g_vwWant;
 }
 bool pica_vertex_worker(void) { return g_vwOn && g_vwThread; }
@@ -884,20 +1043,30 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     begin_frame();
     u64 tState = dprof_begin();
     u32 frameBefore = g.frameNo;  // looking up textures can also start a frame (texture graveyard full)
+    bool lines = prim >= PRIM_LINES;
+    u32 cull = (gx->bp[0x00] >> 14) & 3;
+    if (!lines && cull == 3) { dprof_end(PROF_GXSTATE, tState); return; }  // every triangle culled
+    // Z-texture depth goes into the vertices on the CPU, so those draws keep the CPU transform.
+    u32 zop = 0;
+    float zz = 0;
+    bool ztex = !lines && ztex_value(s, gx, &zop, &zz);
+    bool gpuPos = g.gpuPos && !lines && !ztex;
+    // Lines and points are lit and placed on the CPU, and a batch is transformed all on the GPU or all on the CPU:
+    // draws of different classes never share a batch.
+    u32 cls = (lines ? 1u : 0u) | (gpuPos ? 2u : 0u);
     // The open batch's key holds the TEV words first, so the used texture maps (from the compiled TEV) are only
     // compared once the TEV is known to be the same.
-    // Lines and points are lit on the CPU (shader lighting is for triangles): they never share a batch with triangles.
     // Fast path: nothing the key is made of has changed since the open batch's draw (no BP write that changed a
-    // value, same palettes, lights, XFB copies and primitive class), so it is the same batch without building the key.
+    // value, same palettes, lights, XFB copies and class), so it is the same batch without building the key.
     u32 key[96], kn = 0;
     bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
-                gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && (prim >= PRIM_LINES) == g.batchLines;
+                gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && cls == g.batchCls;
     if (same) {
         kn = 0;  // the open batch keeps its key (g.batchKey): not copied
         g_picaDrawPaths[0]++;
     } else {
         kn = batch_key(gx, key);
-        key[kn++] = prim >= PRIM_LINES;
+        key[kn++] = cls;
         same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
         if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
         g_picaDrawPaths[same ? 1 : 2]++;
@@ -914,21 +1083,23 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         flush_batch();
         update_tev(gx);
         kn = batch_key(gx, key);
-        key[kn++] = prim >= PRIM_LINES;
+        key[kn++] = cls;
         tex_key(gx, key, &kn);
         u64 t0 = dprof_begin();
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
         dprof_end(PROF_GXTEX, t0);
         g.batchGpuLight = g.shaderLight && prim < PRIM_LINES && vfast_gpu_light(gx, &g.sel, &g.lu);
+        g.batchGpuPos = gpuPos;
+        g.batchCull = kCull[cull];  // the cull mode is in the key (BP 0x00)
     }
     dprof_end(PROF_GXSTATE, tState);
     u64 t0 = dprof_begin();
     VFold f;
     vfold_init(gx, SX * 2.0f / TW, SY * 2.0f / TH, FLIP_Y, &f);
-    bool lines = prim >= PRIM_LINES;
     // Triangles: the first half of the vertex work here, the second on the vertex worker (core 3).
     bool work = !lines && pica_vertex_worker();
     VWork w;
+    VJob* job = NULL;  // GPU-transformed: finished once its matrices have palette slots
     u32 workVerts = 0;
     if (work) {
         workVerts = tri_verts(prim, count);
@@ -945,11 +1116,12 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;
             w.count = count;
-            w.cull = (gx->bp[0x00] >> 14) & 3;
-            u32 op = 0;
-            float z = 0;
-            w.ztexOp = ztex_value(s, gx, &op, &z) ? op : 0;
-            w.ztexZ = z;
+            w.cull = gpuPos ? 0 : cull;  // GPU-transformed: the PICA culls
+            w.ztexOp = ztex ? zop : 0;
+            w.ztexZ = zz;
+            w.fixed = gpuPos;
+            w.dst = 0;
+            if (gpuPos) job = w.job;
         }
     }
     if (work) {
@@ -960,15 +1132,21 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             gx_transform(gx, &dv, &g_sv[i]);
             gx_to_screen(gx, &g_sv[i]);
         }
+    } else if (gpuPos) {
+        u32 bytes = vfast_job_bytes(gx, count, vsize);
+        if (bytes > g_jobCap) {
+            u8* m = realloc(g_jobMem, bytes);
+            if (!m) { dprof_end(PROF_GXVTX, t0); return; }
+            g_jobMem = m;
+            g_jobCap = bytes;
+        }
+        job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, false, g_jobMem, g_pv);
+        if (!job) { dprof_end(PROF_GXVTX, t0); return; }
     } else {
         vfast_run(s, gx, vat, &f, &g.sel, raw, count, vsize, g_pv, g.batchGpuLight);
-        apply_ztex(s, gx, count);
-        g_cull = (gx->bp[0x00] >> 14) & 3;
-        if (g_cull == 1 || g_cull == 2)
-            for (u32 i = 0; i < count; i++) {
-                float w = g_pv[i].pos[3], iw = w > 0 ? 1.0f / w : 0;
-                g_nd[i][0] = g_pv[i].pos[0] * iw; g_nd[i][1] = g_pv[i].pos[1] * iw;
-            }
+        if (ztex) ztex_apply(g_pv, count, zop, zz);
+        g_cull = cull;
+        cull_ndc(count);
     }
     dprof_end(PROF_GXVTX, t0);
     u32 maxVerts = lines ? count * 6 : count * 3;
@@ -996,30 +1174,37 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         apply_light_uniforms();
         g.batchOpen = true;
         g.batchFirst = g.arenaUsed;
+        g.palSerial++;  // the previous batch is drawn: its palette slots may be replaced
         if (!same) {  // the same batch (a new frame only) already holds this key
             memcpy(g.batchKey, key, kn * 4);
             g.batchKeyLen = kn;
         }
     }
     g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
-    g.batchXfbSeq = g.xfbSeq; g.batchLines = prim >= PRIM_LINES;
+    g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
     dprof_end(PROF_GXSTATE, tState);
-    if (work) {  // the worker appends its triangles to the arena; the batch's draw call waits for it (flush_batch)
+    if (gpuPos) {
+        t0 = dprof_begin();
+        if (!pal_assign(job)) {
+            draw_cpu_alone(job, gx, &f, prim, count, work ? w.pv : g_pv);
+            dprof_end(PROF_GXVTX, t0);
+            return;
+        }
+        if (work) {  // every triangle kept: the draw's arena range is known now, and no draw call waits for the worker
+            w.dst = g.arenaUsed;
+            g.arenaUsed += workVerts;
+            vw_queue(&w, workVerts);
+            dprof_end(PROF_GXVTX, t0);
+            return;
+        }
+        vfast_finish(job, g_pv);
+        g_cull = 0;
+        dprof_end(PROF_GXVTX, t0);
+    } else if (work) {  // the worker appends the triangles it keeps; the batch's draw call waits for it (flush_batch)
         vw_queue(&w, workVerts);
         return;
     }
-    switch (prim) {
-    case PRIM_QUADS: case PRIM_QUADS2:
-        for (u32 i = 0; i + 3 < count; i += 4) { tri(i, i + 1, i + 2); tri(i, i + 2, i + 3); }
-        break;
-    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) tri(i, i + 1, i + 2); break;
-    case PRIM_STRIP: for (u32 i = 0; i + 2 < count; i++) { if (i & 1) tri(i + 1, i, i + 2); else tri(i, i + 1, i + 2); } break;
-    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) tri(0, i, i + 1); break;
-    case PRIM_LINES: for (u32 i = 0; i + 1 < count; i += 2) line(gx, &f, &g_sv[i], &g_sv[i + 1]); break;
-    case PRIM_LSTRIP: for (u32 i = 0; i + 1 < count; i++) line(gx, &f, &g_sv[i], &g_sv[i + 1]); break;
-    case PRIM_POINTS: for (u32 i = 0; i < count; i++) point(gx, &f, &g_sv[i]); break;
-    default: break;
-    }
+    assemble(gx, &f, prim, count);
 }
 
 // ---- EFB copies and clears ----
@@ -1027,6 +1212,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
 static void quad_state(C3D_Tex* src, bool linear) {
     flush_batch();
     C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, 0, 0, 0, 0);  // copy and present quads carry their colour
+    C3D_CullFace(GPU_CULL_NONE);
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_ColorLogicOp(GPU_LOGICOP_COPY);
@@ -1325,9 +1511,15 @@ void pica_set_shader_light(bool on) {
 
 bool pica_shader_light(void) { return g.shaderLight; }
 
+// Called from the CPU thread: the GX thread applies it at its next draw (a batch never mixes the two transforms).
+void pica_set_gpu_transform(bool on) { g.gpuPos = on && g.uProj >= 0 && g.uPal >= 0 && g.uOn >= 0; }
+bool pica_gpu_transform(void) { return g.gpuPos; }
+
 void pica_reset(void) {
-    vw_sync();
+    vw_sync_all();
     vfast_reset_cache();
+    g.palValid = 0;
+    g.projValid = false;
     // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
     for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
     for (u32 i = 0; i < MAX_XFB; i++) g.xfb[i].seq = 0;
@@ -1356,6 +1548,12 @@ bool pica_attach(System* s) {
         g.shaderLight = g.uLights >= 0 && g.uSel >= 0 && g.uMat >= 0 && g.uAmb >= 0 && g.uVsel >= 0 && g.uOn >= 0;
         emu_log(LOG_GX, "pica: shader lighting %s (uniforms %d %d %d %d %d %d)\n", g.shaderLight ? "on" : "unavailable",
                 g.uLights, g.uSel, g.uMat, g.uAmb, g.uVsel, g.uOn);
+        g.uProj = shaderInstanceGetUniformLocation(vs, "proj");
+        g.uPal = shaderInstanceGetUniformLocation(vs, "pal");
+        g.gpuPos = g.uProj >= 0 && g.uPal >= 0 && g.uOn >= 0;
+        g.palSerial = 1;
+        emu_log(LOG_GX, "pica: position transform %s (uniforms %d %d)\n", g.gpuPos ? "in the shader" : "on the CPU only",
+                g.uProj, g.uPal);
         g.arena = linearAlloc(ARENA_VERTS * sizeof(PVert));
         if (!g.arena) return false;
         if (!vw_start()) g_vwOn = false;  // no worker: the GX thread does all the vertex work
