@@ -502,21 +502,26 @@ int main(int argc, char** argv) {
         st.fpOff = rnd() % 40 == 0;
         st.user = rnd() % 30 == 0;
         bool isFloat = rnd() % 100 < 55;
-        u32 inst = isFloat ? genf(&st) : gen(&st), inst2 = 0;
-        bool pair = !isFloat && rnd() % 3 == 0 && !is_branch_op(inst);
-        if (pair) {  // a second instruction, often reading what the first wrote or branching on its compare
-            inst2 = gen(&st);
-            int d = dest_gpr(inst), f = crf_set(inst);
-            if (d >= 0 && (rnd() & 1)) inst2 = read_gpr(inst2, (u32)d);
-            if (f >= 0 && (inst2 >> 26) == 16 && rnd() % 4) inst2 = (inst2 & ~(31u << 16)) | (((u32)f * 4 + rnd() % 4) << 16);
+        // Integer cases are often blocks of 2-4 instructions: each later one often reads a GPR an earlier one wrote,
+        // or branches on its compare (the JIT's register cache, forwarding of flags and write-back at exits).
+        u32 seq[4] = { isFloat ? genf(&st) : gen(&st), 0, 0, 0 }, len = 1;
+        if (!isFloat && rnd() % 2 == 0 && !is_branch_op(seq[0])) {
+            u32 want = 2 + rnd() % 3;
+            while (len < want && !is_branch_op(seq[len - 1])) {
+                u32 next = gen(&st);
+                int d = dest_gpr(seq[len - 1 - (rnd() % len)]), f = crf_set(seq[len - 1]);
+                if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
+                if (f >= 0 && (next >> 26) == 16 && rnd() % 4) next = (next & ~(31u << 16)) | (((u32)f * 4 + rnd() % 4) << 16);
+                seq[len++] = next;
+            }
         }
+        u32 inst = seq[0], inst2 = seq[1];
         floats += isFloat;
-        CODE_PA = 0x3000u + 4 * (rnd() % 1023);
+        CODE_PA = 0x3000u + 4 * (rnd() % (1024 - len + 1));
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         if (st.fmem && rnd() % 8) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
-        mem1_write32(&A, CODE_PA, inst); mem1_write32(&A, CODE_PA + 4, inst2);
-        mem1_write32(&B, CODE_PA, inst); mem1_write32(&B, CODE_PA + 4, inst2);
+        for (u32 i = 0; i < 4; i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
         memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };
         for (int m = 0; m < 2; m++) {
@@ -533,19 +538,23 @@ int main(int argc, char** argv) {
             gekko_set_external_irq(g, st.irq);
         }
         jit_invalidate_all(jit);
-        jit_debug_max_insns = pair ? 2 : 1;
-        u32 msrBefore = B.cpu.msr;
-        if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x\n", k, inst, inst2); fflush(stdout); }  // finds a crash
+        jit_debug_max_insns = len;
+        if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x %08x %08x\n", k, seq[0], seq[1], seq[2], seq[3]); fflush(stdout); }
         int n = (int)jit_run_one_block(jit);
         if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
-        bool stop;
-        B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA, inst, &stop);
-        int expect = 1;
-        // The second instruction runs unless the first left pc + 4 or must stop compiled code: an mtmsr that changed more
-        // than EE or set EE with an interrupt pending (other stops are the JIT's choice and need n == 2 to continue).
-        bool mtmsr = (inst >> 26) == 31 && ((inst >> 1) & 0x3FF) == 146;
-        bool mustStop = stop && mtmsr && (((msrBefore ^ B.cpu.msr) & ~MSR_EE) || (st.irq && (B.cpu.msr & ~msrBefore & MSR_EE)));
-        if (pair && B.cpu.pc == CODE_EA + 4 && !mustStop && (!stop || n == 2)) { B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA + 4, inst2, &stop); expect = 2; }
+        // The interpreter runs the sequence while each instruction goes on to the next one, except that compiled code
+        // must stop after an mtmsr that changed more than EE or set EE with an interrupt pending (other stops are the
+        // JIT's choice: the interpreter goes on only as far as the JIT did).
+        int expect = 0;
+        for (u32 i = 0; i < len; i++) {
+            bool stop;
+            u32 msrBefore = B.cpu.msr;
+            B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA + 4 * i, seq[i], &stop);
+            expect++;
+            bool mtmsr = (seq[i] >> 26) == 31 && ((seq[i] >> 1) & 0x3FF) == 146;
+            bool mustStop = stop && mtmsr && (((msrBefore ^ B.cpu.msr) & ~MSR_EE) || (st.irq && (B.cpu.msr & ~msrBefore & MSR_EE)));
+            if (B.cpu.pc != CODE_EA + 4 * (i + 1) || mustStop || (stop && n <= expect)) break;
+        }
         if (!compare(inst, inst2, n, expect)) {
             if (!fails && !plant) {  // keep the first failing block for disassembly
                 FILE* d = fopen("/tmp/jit_fail.bin", "wb");

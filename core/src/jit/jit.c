@@ -16,7 +16,6 @@
 #define RG R11   // Gekko*
 #define RRAM R10 // host pointer to physical RAM 0
 #define RDC R9   // guest instructions left in this run (each exit subtracts what its block executed)
-#define RFAST R8 // the indirect-branch table (FastEntry[FAST_SIZE])
 #define RSTOP R5 // set to 1 by a slow memory access that requires leaving compiled code after the instruction
 
 // Blocks are linked: an exit to a known guest address starts as a branch to a stub that returns to the dispatcher,
@@ -81,13 +80,30 @@ void (*jit_debug_on_compile)(const u32* code, u32 words);
 const u32* jit_debug_last_code;  // most recently compiled block and its length in words (tests dump it)
 u32 jit_debug_last_words;
 
+// ---- guest time inside compiled code ----
+// gekko_run adds the instructions a JIT run executed to g->cycles only when the run returns, so during the run
+// g->cycles is the time it started. Helpers that reach the rest of the machine (MMIO, the interpreter: timebase,
+// decrementer, scheduled events) must see the exact current time, as the interpreter's would: compiled code stores
+// its budget left at the instruction (RDC minus the block's earlier instructions) in g_jitLeft before calling them,
+// and they run with g->cycles = start of the run + instructions executed.
+static u64 g_runStart;    // g->cycles + instructions already run by this jit_entry, when the run started
+static s32 g_runBudget;   // the run's budget
+static s32 g_jitLeft;
+typedef struct { Gekko* g; u64 saved; } GuestTime;
+static GuestTime time_enter(Gekko* g) {
+    GuestTime t = { g, g->cycles };
+    g->cycles = g_runStart + (u64)(s64)(g_runBudget - g_jitLeft);
+    return t;
+}
+static void time_leave(GuestTime t) { t.g->cycles = t.saved; }
+
 // ---- helpers called from generated code ----
 // Memory slow path: anything the inline fast path does not handle (MMIO, unaligned, other mappings). g_status:
 // 1 = the access raised an exception (g->pc = handler; the instruction has no effect), 2 = it completed but
 // interrupt-relevant state changed (g->pc = next instruction; finish the instruction, then leave compiled code).
 static u32 g_status;
 
-static u32 jit_load(Gekko* g, u32 ea, u32 size, u32 pc) {
+static u32 jit_load_at(Gekko* g, u32 ea, u32 size, u32 pc) {
     g_jit->stats.slowLoads++;
     GkPriv* p = GKP(g);
     p->curPc = pc;
@@ -100,7 +116,7 @@ static u32 jit_load(Gekko* g, u32 ea, u32 size, u32 pc) {
 }
 
 // sizePc = pc | log2(size): instructions are word aligned, so the two low bits are free.
-static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
+static void jit_store_at(Gekko* g, u32 ea, u32 v, u32 sizePc) {
     g_jit->stats.slowStores++;
     GkPriv* p = GKP(g);
     u32 size = 1u << (sizePc & 3), pc = sizePc & ~3u;
@@ -113,7 +129,7 @@ static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
 
 // Store to the write-gather pipe (jit_set_gather). Returns 1, with g->pc = the next instruction, when compiled code
 // must stop after this instruction (the store raised an interrupt or a stop request).
-static u32 jit_gather(Gekko* g, u32 v, u32 sizePc) {
+static u32 jit_gather_at(Gekko* g, u32 v, u32 sizePc) {
     g_jit->stats.gatherStores++;
     g_jit->gatherPut(g_jit->gatherCtx, v, 1u << (sizePc & 3));
     GkPriv* p = GKP(g);
@@ -122,7 +138,7 @@ static u32 jit_gather(Gekko* g, u32 v, u32 sizePc) {
 }
 
 // lfd / stfd slow paths (same status protocol): the helper moves the FPR itself.
-static void jit_load64(Gekko* g, u32 ea, u32 pc, u32 frd) {
+static void jit_load64_at(Gekko* g, u32 ea, u32 pc, u32 frd) {
     g_jit->stats.slowLoads++;
     GkPriv* p = GKP(g);
     p->curPc = pc;
@@ -133,7 +149,7 @@ static void jit_load64(Gekko* g, u32 ea, u32 pc, u32 frd) {
     if (p->brk || p->stopReq) { g->pc = pc + 4; g_status = 2; }
 }
 
-static void jit_store64(Gekko* g, u32 ea, u32 pc, u32 frs) {
+static void jit_store64_at(Gekko* g, u32 ea, u32 pc, u32 frs) {
     g_jit->stats.slowStores++;
     GkPriv* p = GKP(g);
     p->curPc = pc;
@@ -156,7 +172,7 @@ static void count_op(JitOpCounts* t, u32 inst) {
     else if (op == 4) t->x4[xo]++;
 }
 
-static u32 jit_interp(Gekko* g, u32 pc, u32 inst) {
+static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
     u64 n = ++g_jit->stats.fallbacksRun;
     count_op(&g_jit->stats.fallbackRun, inst);
     bool stop;
@@ -186,9 +202,53 @@ static u32 jit_mtmsr(Gekko* g, u32 v) {
     return 0;
 }
 
+// The helpers as compiled code calls them: each runs at the exact guest time (see g_jitLeft).
+static u32 jit_load(Gekko* g, u32 ea, u32 size, u32 pc) {
+    GuestTime t = time_enter(g);
+    u32 v = jit_load_at(g, ea, size, pc);
+    time_leave(t);
+    return v;
+}
+static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
+    GuestTime t = time_enter(g);
+    jit_store_at(g, ea, v, sizePc);
+    time_leave(t);
+}
+static u32 jit_gather(Gekko* g, u32 v, u32 sizePc) {
+    GuestTime t = time_enter(g);
+    u32 r = jit_gather_at(g, v, sizePc);
+    time_leave(t);
+    return r;
+}
+static void jit_load64(Gekko* g, u32 ea, u32 pc, u32 frd) {
+    GuestTime t = time_enter(g);
+    jit_load64_at(g, ea, pc, frd);
+    time_leave(t);
+}
+static void jit_store64(Gekko* g, u32 ea, u32 pc, u32 frs) {
+    GuestTime t = time_enter(g);
+    jit_store64_at(g, ea, pc, frs);
+    time_leave(t);
+}
+static u32 jit_interp(Gekko* g, u32 pc, u32 inst) {
+    GuestTime t = time_enter(g);
+    u32 r = jit_interp_at(g, pc, inst);
+    time_leave(t);
+    return r;
+}
+
 // ---- code generation ----
 // Encoding of a constant that is known to fit a data-processing immediate (checked at startup by jit_create).
 static u32 IMM(u32 v) { u32 enc = 0; arm_imm(v, &enc); return enc; }
+
+// Register cache: guest GPRs live in host registers r4, r6, r7 and r8 (callee-saved, so C helpers keep them) from
+// their first use in a block, and are written back (when changed: `dirty`) at every exit and before the interpreter
+// runs an instruction. Instructions compute straight into and from these registers, which removes most of the loads
+// and stores of guest state from compiled code.
+#define NSLOT 4
+static const int kSlot[NSLOT] = { R4, R6, R7, R8 };
+typedef struct { s8 id[NSLOT]; bool dirty[NSLOT]; u32 use[NSLOT]; } Rc;  // id: guest GPR or -1
+
 typedef struct {
     Emit e;
     u32 pc;          // guest address of the instruction being compiled
@@ -208,14 +268,14 @@ typedef struct {
     bool tailOn;        // set_tail
     int tailN, tailHost[2];
     u32 tailGpr[2];
-    // Store-to-load forwarding: host register lastStHost holds guest GPR lastStGpr when the previous instruction's
-    // code ended with that st_gpr (lastStAt); the current instruction's first ld_gpr may take it from there.
-    int lastStHost, fwdHost;
-    u32 lastStGpr, lastStAt, fwdGpr, fwdAt;
-    bool fwdValid;
-    // Out-of-line exit stubs: each subtracts `count` from RDC and leaves to the dispatcher, after writing g->pc = pc
-    // when `setPc` (otherwise g->pc is already written). inCold: the branch to the stub is in the cold code.
-    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; } exits[MAX_BLOCK_INSNS * 4];
+    // Guest GPRs cached in host registers within the block (see "register cache" below).
+    Rc rc;
+    u32 pinned;         // slots used by the current instruction (never evicted during it)
+    u32 tick;
+    // Out-of-line exit stubs: each writes back the dirty cached GPRs of `snap`, subtracts `count` from RDC and leaves
+    // to the dispatcher, after writing g->pc = pc when `setPc` (otherwise g->pc is already written). inCold: the branch
+    // to the stub is in the cold code.
+    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; } exits[MAX_BLOCK_INSNS * 4];
     u32 nExits;
     // Cold code: slow paths are emitted into a second buffer (`alt` while hot code is current; the two Emit structs
     // swap places) and appended after the block, so hot code falls through its fast paths and packs into fewer cache
@@ -241,55 +301,128 @@ static void add_fix(Cg* c, bool fromCold, u32 at, bool toCold, u32 target) {
 static void cold_begin(Cg* c) { swap_emit(c); }
 // Called in cold code: the hot branch at hotAt goes to the current cold position.
 static void fix_to_cold(Cg* c, u32 hotAt) { add_fix(c, false, hotAt, true, c->e.n); }
-// Ends a cold fragment with a branch back to hot index hotResume and makes hot code current again. The cold path
-// need not leave the host registers as the hot path's last instructions did, so nothing is forwarded across it.
+// Ends a cold fragment with a branch back to hot index hotResume and makes hot code current again.
 static void cold_end(Cg* c, u32 hotResume) {
     u32 at = branch_c(&c->e, C_AL, 0);
     add_fix(c, true, at, false, hotResume);
     swap_emit(c);
-    c->lastStAt = c->flagsAt = NO_BRANCH;
+    c->flagsAt = NO_BRANCH;
 }
 
-static void ld_gpr(Cg* c, int host, u32 r) {
-    if (c->fwdValid && !c->inCold && c->e.n == c->fwdAt) {  // nothing emitted yet in this instruction: fwdHost holds fwdGpr
-        c->fwdValid = false;
-        if (c->fwdGpr == r) {
-            mov_reg(&c->e, host, jit_debug_plant == 4 ? c->fwdHost ^ 1 : c->fwdHost);  // 4: the fuzzer's self-test
-            c->j->stats.forwards++;
-            return;
-        }
-    }
-    c->fwdValid = false;
-    ldr_imm(&c->e, host, RG, OFF_GPR(r));
+// ---- register cache ----
+// Cold code reads the cache but never changes its state: the hot path continues with the state it had.
+static int slot_of(const Rc* rc, u32 r) {
+    for (int k = 0; k < NSLOT; k++) if (rc->id[k] == (s8)r) return k;
+    return -1;
 }
+
+// Writes back the dirty slots of `rc` (does not change it).
+static void rc_emit_flush(Cg* c, const Rc* rc) {
+    bool skipped = false;
+    for (int k = 0; k < NSLOT; k++) {
+        if (rc->id[k] < 0 || !rc->dirty[k]) continue;
+        if (jit_debug_plant == 4 && !skipped) { skipped = true; continue; }  // the fuzzer's self-test: lose a write
+        str_imm(&c->e, kSlot[k], RG, OFF_GPR((u32)rc->id[k]));
+    }
+}
+
+// Writes back every dirty slot; in hot code they are clean afterwards.
+static void rc_flush(Cg* c) {
+    rc_emit_flush(c, &c->rc);
+    if (!c->inCold) for (int k = 0; k < NSLOT; k++) c->rc.dirty[k] = false;
+}
+
+// After the interpreter ran an instruction (it reads and writes guest state in memory): hot code forgets the cache;
+// cold code, which must leave the hot path's state intact, reloads every cached GPR from memory instead.
+static void rc_after_interp(Cg* c) {
+    if (c->inCold) {
+        for (int k = 0; k < NSLOT; k++)
+            if (c->rc.id[k] >= 0) ldr_imm(&c->e, kSlot[k], RG, OFF_GPR((u32)c->rc.id[k]));
+        return;
+    }
+    for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; }
+}
+
+// A slot for guest GPR r: an empty one, else the least recently used one not pinned by this instruction (written
+// back first if dirty). -1 when all are pinned.
+static int rc_alloc(Cg* c, u32 r) {
+    int best = -1;
+    for (int k = 0; k < NSLOT; k++) {
+        if (c->pinned & (1u << k)) continue;
+        if (c->rc.id[k] < 0) { best = k; break; }
+        if (best < 0 || c->rc.use[k] < c->rc.use[best]) best = k;
+    }
+    if (best < 0) return -1;
+    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) str_imm(&c->e, kSlot[best], RG, OFF_GPR((u32)c->rc.id[best]));
+    c->rc.id[best] = (s8)r;
+    c->rc.dirty[best] = false;
+    return best;
+}
+
+static void rc_touch(Cg* c, int k) { c->pinned |= 1u << k; c->rc.use[k] = ++c->tick; }
+
+// A host register holding guest GPR r for reading: its slot (loaded on first use), or `tmp` loaded from memory.
+static int src(Cg* c, u32 r, int tmp) {
+    int k = slot_of(&c->rc, r);
+    if (k >= 0) c->j->stats.forwards++;
+    if (c->inCold) {
+        if (k >= 0) return kSlot[k];
+        ldr_imm(&c->e, tmp, RG, OFF_GPR(r));
+        return tmp;
+    }
+    if (k < 0) {
+        k = rc_alloc(c, r);
+        if (k < 0) { ldr_imm(&c->e, tmp, RG, OFF_GPR(r)); return tmp; }
+        ldr_imm(&c->e, kSlot[k], RG, OFF_GPR(r));
+    }
+    rc_touch(c, k);
+    return kSlot[k];
+}
+
+// A host register to compute guest GPR r into (its slot, or `tmp`); dst_done commits the value afterwards. A slot
+// is marked dirty only by dst_done, so an exit taken in between writes back the old value.
+static int dst(Cg* c, u32 r, int tmp) {
+    if (c->inCold) return tmp;
+    int k = slot_of(&c->rc, r);
+    if (k < 0) k = rc_alloc(c, r);
+    if (k < 0) return tmp;
+    rc_touch(c, k);
+    return kSlot[k];
+}
+static void dst_done(Cg* c, u32 r, int reg) {
+    int k = slot_of(&c->rc, r);
+    if (k >= 0 && kSlot[k] == reg) { c->rc.dirty[k] = true; return; }
+    str_imm(&c->e, reg, RG, OFF_GPR(r));
+    if (k >= 0) mov_reg(&c->e, kSlot[k], reg);  // (cold code) keep the cached copy equal to memory
+}
+
+// Plain loads and stores of a GPR through a given host register, for code that does not use src / dst.
+static void ld_gpr(Cg* c, int host, u32 r) { mov_reg(&c->e, host, src(c, r, host)); }
 static void st_gpr(Cg* c, int host, u32 r) {
-    str_imm(&c->e, host, RG, OFF_GPR(r));
-    c->lastStHost = host;
-    c->lastStGpr = r;
-    c->lastStAt = c->inCold ? NO_BRANCH : c->e.n;
+    int d = dst(c, r, host);
+    mov_reg(&c->e, d, host);
+    dst_done(c, r, d);
 }
 static const u32* stub(const Cg* c, int k) { return c->j->code + c->j->stub[k]; }
 
-// Branch (if `cond`) to an exit stub that leaves with c->count instructions executed (g->pc already written).
-static void exit_if(Cg* c, int cond) {
+// Branch (if `cond`) to an exit stub that leaves with c->count instructions executed (g->pc already written),
+// writing back the dirty slots of `snap` (the current cache when NULL).
+static void exit_snap(Cg* c, int cond, bool setPc, u32 pc, const Rc* snap) {
     c->exits[c->nExits].at = branch_c(&c->e, cond, c->e.n);
     c->exits[c->nExits].count = c->count;
-    c->exits[c->nExits].setPc = false;
-    c->exits[c->nExits].inCold = c->inCold;
-    c->nExits++;
-}
-// The same, writing g->pc = pc first; the dispatcher never links it (state the block depends on may have changed).
-static void exit_pc_if(Cg* c, int cond, u32 pc) {
-    c->exits[c->nExits].at = branch_c(&c->e, cond, c->e.n);
-    c->exits[c->nExits].count = c->count;
-    c->exits[c->nExits].setPc = true;
+    c->exits[c->nExits].setPc = setPc;
     c->exits[c->nExits].inCold = c->inCold;
     c->exits[c->nExits].pc = pc;
+    c->exits[c->nExits].snap = snap ? *snap : c->rc;
     c->nExits++;
 }
+static void exit_if(Cg* c, int cond) { exit_snap(c, cond, false, 0, NULL); }
+// The same, writing g->pc = pc first; the dispatcher never links it (state the block depends on may have changed).
+static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, NULL); }
 
 // Unconditional exit to the guest address `target`, emitted in place: a link site (a branch the dispatcher patches
-// to the target block once it is compiled; until then it falls through to the stub that asks for it).
+// to the target block once it is compiled; until then it falls through to the stub that asks for it). The cache must
+// already be written back (rc_flush).
 static void exit_const(Cg* c, u32 target) {
     Emit* e = &c->e;
     dp_imm(e, SUB, 0, RDC, RDC, c->count);
@@ -316,6 +449,13 @@ static void exit_indirect(Cg* c) {
 static void call(Cg* c, const void* fn) {
     load_const(&c->e, R12, (u32)(uintptr_t)fn);
     blx_reg(&c->e, R12);
+}
+
+// Before a helper that runs at guest time: the budget left at this instruction to g_jitLeft (clobbers lr and r12).
+static void emit_time(Cg* c) {
+    dp_imm(&c->e, SUB, 0, LR, RDC, c->count - 1);
+    load_const(&c->e, R12, (u32)(uintptr_t)&g_jitLeft);
+    str_imm(&c->e, LR, R12, 0);
 }
 
 // CR field `fld` from the ARM flags of a compare already done (signed or unsigned), plus XER[SO]. The ARM flags are
@@ -418,21 +558,25 @@ static void stop_tail(Cg* c) {
     Emit* e = &c->e;
     dp_imm(e, CMP, 1, 0, RSTOP, 0);
     u32 skip = branch_c(e, C_EQ, 0);
-    for (int k = 0; k < c->tailN; k++) st_gpr(c, c->tailHost[k], c->tailGpr[k]);
-    exit_if(c, C_AL);  // g->pc is already the next instruction
+    // Write back the cache as it stands, then the instruction's results straight to memory, and leave.
+    rc_emit_flush(c, &c->rc);
+    for (int k = 0; k < c->tailN; k++) str_imm(e, c->tailHost[k], RG, OFF_GPR(c->tailGpr[k]));
+    Rc clean = c->rc;
+    for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
+    exit_snap(c, C_AL, false, 0, &clean);  // g->pc is already the next instruction
     patch_branch(e, skip, e->n);
     c->pendingStop = false;
 }
 
 // Effective address into r0: (rA|0) + d, or rA + rB for indexed forms.
 static void ea_disp(Cg* c, u32 ra, u32 d) {
-    if (ra) { ld_gpr(c, R0, ra); add_const(&c->e, R0, R0, d, R12); }
+    if (ra) add_const(&c->e, R0, src(c, ra, R0), d, R12);
     else load_const(&c->e, R0, d);
 }
 static void ea_index(Cg* c, u32 ra, u32 rb) {
-    ld_gpr(c, R1, rb);
-    if (ra) { ld_gpr(c, R0, ra); dp_reg(&c->e, ADD, 0, R0, R0, R1); }
-    else mov_reg(&c->e, R0, R1);
+    int b = src(c, rb, R1);
+    if (ra) dp_reg(&c->e, ADD, 0, R0, src(c, ra, R0), b);
+    else mov_reg(&c->e, R0, b);
 }
 
 // The inline MEM1 check of the fast paths: r1 = the physical offset of the guest address in r0 (0xC0000000 folded
@@ -449,94 +593,118 @@ static void mem1_check(Cg* c, u32 align, u32 slow[2]) {
 }
 
 // Starts the out-of-line part of a fast path: the hot branches in slow[] go to the cold code emitted from here on.
+// Rule: between a branch into cold code and the cold code itself, hot code makes no register-cache allocation (src /
+// dst of a GPR not yet cached): the cold path sees the cache state at its emission, and an eviction it skipped would
+// lose a write-back. Instructions therefore take their operands and destination slots before their first check.
 static void cold_start(Cg* c, const u32 slow[2]) {
     cold_begin(c);
     for (int k = 0; k < 2; k++) if (slow[k] != NO_BRANCH) fix_to_cold(c, slow[k]);
 }
 
-static void load_slow(Cg* c, u32 size, bool sign) {
+// Every memory access keeps the effective address in r0 on all its paths (update forms write it to rA afterwards):
+// the slow paths save it around their helper call.
+#define EA_SAVE ((1u << R0) | (1u << R1))  // two registers keep the stack 8-byte aligned
+
+static void load_slow(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
     // r0 = ea; jit_load(g, ea, size, pc).
+    push_regs(e, EA_SAVE);
     mov_reg(e, R1, R0);
     mov_reg(e, R0, RG);
     load_const(e, R2, size);
     load_const(e, R3, c->pc);
+    emit_time(c);
     call(c, (const void*)jit_load);
     mov_reg(e, R2, R0);
-    slow_status(c);
+    pop_regs(e, EA_SAVE);
+    slow_status(c);  // a fault leaves before dreg (maybe a cached GPR) changes
     if (sign && size == 2) sxth(e, R2, R2);
     stop_tail(c);
+    mov_reg(e, dreg, R2);
 }
 
-// Load `size` bytes from the guest address in r0 into r2 (zero- or sign-extended). The fast path covers aligned
+// Load `size` bytes from the guest address in r0 into dreg (zero- or sign-extended). The fast path covers aligned
 // accesses to MEM1 through the standard cached/uncached mappings and falls through; everything else goes out of line
-// to jit_load and comes back.
-static void emit_load(Cg* c, u32 size, bool sign) {
+// to jit_load and comes back. With set_tail, the loaded value is r2 on the way out of a stop.
+static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
-    if (!c->fastmem) { load_slow(c, size, sign); return; }
+    if (!c->fastmem) { load_slow(c, size, sign, dreg); return; }
     u32 slow[2];
     mem1_check(c, size, slow);
-    if (size == 4) { ldr_reg(e, R2, RRAM, R1); rev(e, R2, R2); }
-    else if (size == 2) { ldrh_reg(e, R2, RRAM, R1); if (sign) revsh(e, R2, R2); else rev16(e, R2, R2); }
-    else ldrb_reg(e, R2, RRAM, R1);
+    if (size == 4) { ldr_reg(e, dreg, RRAM, R1); rev(e, dreg, dreg); }
+    else if (size == 2) { ldrh_reg(e, dreg, RRAM, R1); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+    else ldrb_reg(e, dreg, RRAM, R1);
     u32 resume = e->n;
     cold_start(c, slow);
-    load_slow(c, size, sign);
+    load_slow(c, size, sign, dreg);
     cold_end(c, resume);
 }
 
-static void store_slow(Cg* c, u32 size) {
+static void store_slow(Cg* c, u32 size, int vreg) {
     Emit* e = &c->e;
     u32 sizePc = c->pc | (size == 4 ? 2u : size == 2 ? 1u : 0u);  // pc is word aligned
     u32 pipeDone = NO_BRANCH;
+    mov_reg(e, R2, vreg);
     if (c->fastmem && c->j->gatherPut) {
         // The write-gather pipe (the graphics command stream, written a few bytes at a time): straight to the GP.
         load_const(e, R1, c->j->gatherEa);
         dp_reg(e, CMP, 1, 0, R0, R1);
         u32 notPipe = branch_c(e, C_NE, 0);
+        push_regs(e, EA_SAVE);
         mov_reg(e, R0, RG);
         mov_reg(e, R1, R2);
         load_const(e, R2, sizePc);
+        emit_time(c);
         call(c, (const void*)jit_gather);
-        dp_imm(e, CMP, 1, 0, R0, 0);
+        mov_reg(e, R3, R0);
+        pop_regs(e, EA_SAVE);
+        dp_imm(e, CMP, 1, 0, R3, 0);
         dp_imm_c(e, C_NE, MOV, 0, RSTOP, 0, 1);  // leave once the instruction is done (as stop_flag_from_status)
         c->pendingStop = true;
         pipeDone = branch_c(e, C_AL, 0);
         patch_branch(e, notPipe, e->n);
     }
     // r0 = ea, r2 = value; jit_store(g, ea, value, pc | log2(size)).
+    push_regs(e, EA_SAVE);
     mov_reg(e, R1, R0);
     mov_reg(e, R0, RG);
     load_const(e, R3, sizePc);
+    emit_time(c);
     call(c, (const void*)jit_store);
+    pop_regs(e, EA_SAVE);
     slow_status(c);
     if (pipeDone != NO_BRANCH) patch_branch(e, pipeDone, e->n);
     stop_tail(c);
 }
 
-// Store `size` bytes of r2 to the guest address in r0.
-static void emit_store(Cg* c, u32 size) {
+// Store `size` bytes of vreg to the guest address in r0.
+static void emit_store(Cg* c, u32 size, int vreg) {
     Emit* e = &c->e;
-    if (!c->fastmem) { store_slow(c, size); return; }
+    if (!c->fastmem) { store_slow(c, size, vreg); return; }
     u32 slow[2];
     mem1_check(c, size, slow);
-    if (size == 4) { rev(e, R3, R2); str_reg(e, R3, RRAM, R1); }
-    else if (size == 2) { rev16(e, R3, R2); strh_reg(e, R3, RRAM, R1); }
-    else strb_reg(e, R2, RRAM, R1);
+    if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R1); }
+    else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R1); }
+    else strb_reg(e, vreg, RRAM, R1);
     u32 resume = e->n;
     cold_start(c, slow);
-    store_slow(c, size);
+    store_slow(c, size, vreg);
     cold_end(c, resume);
 }
 
 static void emit_fallback(Cg* c, u32 inst) {
     Emit* e = &c->e;
+    rc_flush(c);  // the interpreter works on guest state in memory
+    Rc clean = c->rc;
+    for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
     mov_reg(e, R0, RG);
     load_const(e, R1, c->pc);
     load_const(e, R2, inst);
+    emit_time(c);
     call(c, (const void*)jit_interp);
     dp_imm(e, CMP, 1, 0, R0, 0);
-    exit_if(c, C_NE);
+    exit_snap(c, C_NE, false, 0, &clean);
+    rc_after_interp(c);
 }
 
 // ---- branches (end the block) ----
@@ -574,6 +742,7 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
 }
 
 static bool compile_branch(Cg* c, u32 inst) {
+    rc_flush(c);  // every path out of the block leaves guest state in memory (stores keep the ARM flags)
     Emit* e = &c->e;
     u32 op = inst >> 26, lk = inst & 1;
     if (op == 18) {  // b, bl, ba, bla
@@ -627,118 +796,141 @@ static bool ends_block(u32 inst) {
 }
 
 // ---- integer instructions ----
+// Operands come from src() and results go to dst() / dst_done(): cached GPRs are used in place, others through the
+// given temporaries. A destination may be the same host register as a source; each case reads its sources before it
+// writes its destination, or writes it with one ARM instruction.
+static void op_imm(Cg* c, int opc, int d, int s, u32 imm) {
+    u32 enc;
+    if (arm_imm(imm, &enc)) dp_imm(&c->e, opc, 0, d, s, enc);
+    else { load_const(&c->e, R12, imm); dp_reg(&c->e, opc, 0, d, s, R12); }
+}
+
+// Integer load of `size` bytes from the address in r0 into rD; with update, rA = the address.
+static void int_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, bool update) {
+    int d = dst(c, rd, R2);
+    set_tail(c, update ? 2 : 1, R2, rd, R0, ra);
+    emit_load(c, size, sign, d);
+    dst_done(c, rd, d);
+    if (update) st_gpr(c, R0, ra);
+}
+
+// Integer store of rS's low `size` bytes to the address in r0; with update, rA = the address.
+static void int_store(Cg* c, u32 size, u32 rs, u32 ra, bool update) {
+    int v = src(c, rs, R2);
+    set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+    emit_store(c, size, v);
+    if (update) st_gpr(c, R0, ra);
+}
+
 static bool compile_int(Cg* c, u32 inst) {
     Emit* e = &c->e;
     u32 op = inst >> 26, rd = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31;
     u32 uimm = inst & 0xFFFF, simm = (u32)(s32)(s16)uimm, rc = inst & 1;
     u32 enc;
     switch (op) {
-    case 14:  // addi
-        if (ra) { ld_gpr(c, R0, ra); add_const(e, R0, R0, simm, R12); } else load_const(e, R0, simm);
-        st_gpr(c, R0, rd);
+    case 14: case 15: {  // addi, addis
+        u32 v = op == 14 ? simm : uimm << 16;
+        int a = ra ? src(c, ra, R0) : -1;
+        int d = dst(c, rd, R0);
+        if (ra) add_const(e, d, a, v, R12); else load_const(e, d, v);
+        dst_done(c, rd, d);
         return true;
-    case 15:  // addis
-        if (ra) { ld_gpr(c, R0, ra); add_const(e, R0, R0, uimm << 16, R12); } else load_const(e, R0, uimm << 16);
-        st_gpr(c, R0, rd);
-        return true;
-    case 12: case 13:  // addic, addic.
-        ld_gpr(c, R0, ra);
+    }
+    case 12: case 13: {  // addic, addic.
+        int a = src(c, ra, R0);
         load_const(e, R1, simm);
-        dp_reg(e, ADD, 1, R0, R0, R1);
+        int d = dst(c, rd, R0);
+        dp_reg(e, ADD, 1, d, a, R1);
         set_ca_from_c(c);
-        st_gpr(c, R0, rd);
-        if (op == 13) update_cr0(c, R0);
+        dst_done(c, rd, d);
+        if (op == 13) update_cr0(c, d);
         return true;
-    case 8:  // subfic
-        ld_gpr(c, R0, ra);
+    }
+    case 8: {  // subfic
+        int a = src(c, ra, R0);
         load_const(e, R1, simm);
-        dp_reg(e, SUB, 1, R0, R1, R0);  // imm - ra; C = imm >= ra (unsigned) = PowerPC CA
+        int d = dst(c, rd, R0);
+        dp_reg(e, SUB, 1, d, R1, a);  // imm - ra; C = imm >= ra (unsigned) = PowerPC CA
         set_ca_from_c(c);
-        st_gpr(c, R0, rd);
+        dst_done(c, rd, d);
         return true;
-    case 7:  // mulli
-        ld_gpr(c, R0, ra);
+    }
+    case 7: {  // mulli
+        int a = src(c, ra, R0);
         load_const(e, R1, simm);
-        mul(e, R2, R0, R1);
-        st_gpr(c, R2, rd);
+        int d = dst(c, rd, R2);
+        mul(e, d, R1, a);
+        dst_done(c, rd, d);
         return true;
+    }
     case 10: case 11: {  // cmpli, cmpi
         if (inst & (1u << 21)) return false;  // L = 1 (64-bit) is invalid on a 32-bit core
-        ld_gpr(c, R0, ra);
+        int a = src(c, ra, R0);
         u32 imm = op == 11 ? simm : uimm;
-        if (arm_imm(imm, &enc)) dp_imm(e, CMP, 1, 0, R0, enc);
-        else if (arm_imm(0u - imm, &enc)) dp_imm(e, CMN, 1, 0, R0, enc);
-        else { load_const(e, R1, imm); dp_reg(e, CMP, 1, 0, R0, R1); }
+        if (arm_imm(imm, &enc)) dp_imm(e, CMP, 1, 0, a, enc);
+        else if (arm_imm(0u - imm, &enc)) dp_imm(e, CMN, 1, 0, a, enc);
+        else { load_const(e, R1, imm); dp_reg(e, CMP, 1, 0, a, R1); }
         update_crf_from_flags(c, rd >> 2, op == 11);
         return true;
     }
     case 24: case 25: case 26: case 27: case 28: case 29: {  // ori oris xori xoris andi. andis.
         u32 imm = (op & 1) ? uimm << 16 : uimm;
         int opc = op <= 25 ? ORR : op <= 27 ? EOR : AND;
-        ld_gpr(c, R0, rd);  // rS
-        if (arm_imm(imm, &enc)) dp_imm(e, opc, 0, R0, R0, enc);
-        else { load_const(e, R1, imm); dp_reg(e, opc, 0, R0, R0, R1); }
-        st_gpr(c, R0, ra);
-        if (op >= 28) update_cr0(c, R0);
+        if (op <= 27 && imm == 0 && rd == ra) return true;  // ori r,r,0 (nop) and friends
+        int s = src(c, rd, R0);  // rS
+        int d = dst(c, ra, R0);
+        op_imm(c, opc, d, s, imm);
+        dst_done(c, ra, d);
+        if (op >= 28) update_cr0(c, d);
         return true;
     }
     case 21: {  // rlwinm
         u32 sh = rb, mb = (inst >> 6) & 31, me = (inst >> 1) & 31;
-        ld_gpr(c, R0, rd);
-        rotate_mask(c, R0, R0, sh, ppc_mask(mb, me));
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        int s = src(c, rd, R0);
+        int d = dst(c, ra, R0);
+        rotate_mask(c, d, s, sh, ppc_mask(mb, me));
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 20: {  // rlwimi: ra = (rotl(rs, sh) & m) | (ra & ~m)
         u32 sh = rb, m = ppc_mask((inst >> 6) & 31, (inst >> 1) & 31);
-        ld_gpr(c, R0, rd);
-        rotate_mask(c, R0, R0, sh, m);
-        ld_gpr(c, R1, ra);
-        if (arm_imm(m, &enc)) dp_imm(e, BIC, 0, R1, R1, enc);
-        else { load_const(e, R12, m); dp_reg(e, BIC, 0, R1, R1, R12); }
-        dp_reg(e, ORR, 0, R0, R0, R1);
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        int s = src(c, rd, R0);
+        int a = src(c, ra, R1);
+        rotate_mask(c, R2, s, sh, m);
+        if (arm_imm(m, &enc)) dp_imm(e, BIC, 0, R3, a, enc);
+        else { load_const(e, R12, m); dp_reg(e, BIC, 0, R3, a, R12); }
+        int d = dst(c, ra, R0);
+        dp_reg(e, ORR, 0, d, R2, R3);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 23: {  // rlwnm
         u32 m = ppc_mask((inst >> 6) & 31, (inst >> 1) & 31);
-        ld_gpr(c, R0, rd);
-        ld_gpr(c, R1, rb);
-        dp_imm(e, AND, 0, R1, R1, 31);
-        dp_imm(e, RSB, 0, R1, R1, 32);  // rotate right by 32 - n (32 behaves as 0)
-        dp_rsr(e, MOV, 0, R0, 0, R0, ROR, R1);
-        if (m != 0xFFFFFFFFu) {
-            if (arm_imm(m, &enc)) dp_imm(e, AND, 0, R0, R0, enc);
-            else { load_const(e, R12, m); dp_reg(e, AND, 0, R0, R0, R12); }
-        }
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        int s = src(c, rd, R0);
+        int b = src(c, rb, R1);
+        dp_imm(e, AND, 0, R2, b, 31);
+        dp_imm(e, RSB, 0, R2, R2, 32);  // rotate right by 32 - n (32 behaves as 0)
+        int d = dst(c, ra, R0);
+        dp_rsr(e, MOV, 0, d, 0, s, ROR, R2);
+        if (m != 0xFFFFFFFFu) op_imm(c, AND, d, d, m);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 32: case 33: case 34: case 35: case 40: case 41: case 42: case 43: {  // lwz lwzu lbz lbzu lhz lhzu lha lhau
         bool update = op & 1;
         if (update && (ra == 0 || ra == rd)) return false;  // invalid forms
-        u32 size = op <= 33 ? 4 : op <= 35 ? 1 : 2;
         ea_disp(c, ra, simm);
-        if (update) mov_reg(e, R4, R0);
-        set_tail(c, update ? 2 : 1, R2, rd, R4, ra);
-        emit_load(c, size, op >= 42);
-        st_gpr(c, R2, rd);
-        if (update) st_gpr(c, R4, ra);
+        int_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, update);
         return true;
     }
     case 36: case 37: case 38: case 39: case 44: case 45: {  // stw stwu stb stbu sth sthu
         bool update = op & 1;
         if (update && ra == 0) return false;
-        u32 size = op <= 37 ? 4 : op <= 39 ? 1 : 2;
         ea_disp(c, ra, simm);
-        if (update) mov_reg(e, R4, R0);
-        ld_gpr(c, R2, rd);
-        set_tail(c, update ? 1 : 0, R4, ra, 0, 0);
-        emit_store(c, size);
-        if (update) st_gpr(c, R4, ra);
+        int_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, update);
         return true;
     }
     case 31:
@@ -755,150 +947,155 @@ static bool compile_int(Cg* c, u32 inst) {
     }
     switch (xo) {
     case 266: case 10: case 138: case 202:  // add, addc, adde, addze
-    case 40: case 8: case 136: case 104:    // subf, subfc, subfe, neg
-    case 522: case 650: case 714: case 552: case 520: case 648: case 616:  // OE forms are rejected above
-        if (xo >= 512) return false;
-        ld_gpr(c, R0, ra);
-        if (xo != 202 && xo != 104) ld_gpr(c, R1, rb);
+    case 40: case 8: case 136: case 104: {  // subf, subfc, subfe, neg
+        int a = src(c, ra, R0);
+        int b = (xo != 202 && xo != 104) ? src(c, rb, R1) : -1;
+        if (xo == 138 || xo == 202 || xo == 136) load_ca_to_c(c);
+        int d = dst(c, rd, R0);
         switch (xo) {
-        case 266: dp_reg(e, ADD, 0, R0, R0, R1); break;
-        case 10: dp_reg(e, ADD, 1, R0, R0, R1); set_ca_from_c(c); break;
-        case 138: load_ca_to_c(c); dp_reg(e, ADC, 1, R0, R0, R1); set_ca_from_c(c); break;
-        case 202: load_ca_to_c(c); dp_imm(e, ADC, 1, R0, R0, 0); set_ca_from_c(c); break;
-        case 40: dp_reg(e, SUB, 0, R0, R1, R0); break;
-        case 8: dp_reg(e, SUB, 1, R0, R1, R0); set_ca_from_c(c); break;
-        case 136: load_ca_to_c(c); dp_reg(e, SBC, 1, R0, R1, R0); set_ca_from_c(c); break;  // ~ra + rb + CA
-        case 104: dp_imm(e, RSB, 0, R0, R0, 0); break;
+        case 266: dp_reg(e, ADD, 0, d, a, b); break;
+        case 10: dp_reg(e, ADD, 1, d, a, b); break;
+        case 138: dp_reg(e, ADC, 1, d, a, b); break;
+        case 202: dp_imm(e, ADC, 1, d, a, 0); break;
+        case 40: dp_reg(e, SUB, 0, d, b, a); break;
+        case 8: dp_reg(e, SUB, 1, d, b, a); break;
+        case 136: dp_reg(e, SBC, 1, d, b, a); break;  // ~ra + rb + CA
+        case 104: dp_imm(e, RSB, 0, d, a, 0); break;
         }
-        st_gpr(c, R0, rd);
-        if (rc) update_cr0(c, R0);
+        if (xo == 10 || xo == 138 || xo == 202 || xo == 8 || xo == 136) set_ca_from_c(c);
+        dst_done(c, rd, d);
+        if (rc) update_cr0(c, d);
         return true;
+    }
     case 28: case 60: case 444: case 412: case 316: case 124: case 476: case 284: {  // and andc or orc xor nor nand eqv
-        ld_gpr(c, R0, rd);  // rS
-        ld_gpr(c, R1, rb);
+        int s = src(c, rd, R0);  // rS
+        int b = src(c, rb, R1);
+        if (xo == 412) { dp_reg(e, MVN, 0, R2, 0, b); b = R2; }  // orc: rs | ~rb
+        int d = dst(c, ra, R0);
         switch (xo) {
-        case 28: dp_reg(e, AND, 0, R0, R0, R1); break;
-        case 60: dp_reg(e, BIC, 0, R0, R0, R1); break;
-        case 444: dp_reg(e, ORR, 0, R0, R0, R1); break;
-        case 412: dp_reg(e, MVN, 0, R1, 0, R1); dp_reg(e, ORR, 0, R0, R0, R1); break;
-        case 316: dp_reg(e, EOR, 0, R0, R0, R1); break;
-        case 124: dp_reg(e, ORR, 0, R0, R0, R1); dp_reg(e, MVN, 0, R0, 0, R0); break;
-        case 476: dp_reg(e, AND, 0, R0, R0, R1); dp_reg(e, MVN, 0, R0, 0, R0); break;
-        case 284: dp_reg(e, EOR, 0, R0, R0, R1); dp_reg(e, MVN, 0, R0, 0, R0); break;
+        case 28: case 476: dp_reg(e, AND, 0, d, s, b); break;
+        case 60: dp_reg(e, BIC, 0, d, s, b); break;
+        case 444: case 412: case 124: dp_reg(e, ORR, 0, d, s, b); break;
+        case 316: case 284: dp_reg(e, EOR, 0, d, s, b); break;
         }
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        if (xo == 124 || xo == 476 || xo == 284) dp_reg(e, MVN, 0, d, 0, d);  // nor, nand, eqv
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 24: case 536: {  // slw, srw: shift amounts 32..63 give 0, as ARM's register shifts do
-        ld_gpr(c, R0, rd);
-        ld_gpr(c, R1, rb);
-        dp_imm(e, AND, 0, R1, R1, 0x3F);
-        dp_rsr(e, MOV, 0, R0, 0, R0, xo == 24 ? LSL : LSR, R1);
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        int s = src(c, rd, R0);
+        int b = src(c, rb, R1);
+        dp_imm(e, AND, 0, R2, b, 0x3F);
+        int d = dst(c, ra, R0);
+        dp_rsr(e, MOV, 0, d, 0, s, xo == 24 ? LSL : LSR, R2);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 824: {  // srawi: CA = negative source with 1-bits shifted out
         u32 sh = rb;
-        ld_gpr(c, R0, rd);
+        int s = src(c, rd, R0);
         dp_imm(e, MOV, 0, R2, 0, 0);
         if (sh) {
-            mov_shift(e, 1, R3, R0, LSL, (int)(32 - sh));       // Z = no 1-bits shifted out
-            dp_reg_c(e, C_NE, MOV, 0, R2, 0, R0, LSR, 31);      // CA = sign when bits were lost
-            mov_shift(e, 0, R0, R0, ASR, (int)sh);
+            mov_shift(e, 1, R3, s, LSL, (int)(32 - sh));       // Z = no 1-bits shifted out
+            dp_reg_c(e, C_NE, MOV, 0, R2, 0, s, LSR, 31);      // CA = sign when bits were lost
         }
+        int d = dst(c, ra, R0);
+        if (sh) mov_shift(e, 0, d, s, ASR, (int)sh); else mov_reg(e, d, s);
         ldr_imm(e, R3, RG, OFF_XER);
         dp_imm(e, BIC, 0, R3, R3, IMM(XER_CA));
         dp_reg_c(e, C_AL, ORR, 0, R3, R3, R2, LSL, 29);
         str_imm(e, R3, RG, OFF_XER);
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
     case 26: case 954: case 922: {  // cntlzw extsb extsh
-        ld_gpr(c, R0, rd);
-        if (xo == 26) clz(e, R0, R0); else if (xo == 954) sxtb(e, R0, R0); else sxth(e, R0, R0);
-        st_gpr(c, R0, ra);
-        if (rc) update_cr0(c, R0);
+        int s = src(c, rd, R0);
+        int d = dst(c, ra, R0);
+        if (xo == 26) clz(e, d, s); else if (xo == 954) sxtb(e, d, s); else sxth(e, d, s);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
         return true;
     }
-    case 0: case 32:  // cmp, cmpl
+    case 0: case 32: {  // cmp, cmpl
         if (inst & (1u << 21)) return false;
-        ld_gpr(c, R0, ra);
-        ld_gpr(c, R1, rb);
-        dp_reg(e, CMP, 1, 0, R0, R1);
+        int a = src(c, ra, R0);
+        int b = src(c, rb, R1);
+        dp_reg(e, CMP, 1, 0, a, b);
         update_crf_from_flags(c, rd >> 2, xo == 0);
         return true;
-    case 235: case 75: case 11:  // mullw, mulhw, mulhwu
-        ld_gpr(c, R0, ra);
-        ld_gpr(c, R1, rb);
-        if (xo == 235) mul(e, R2, R0, R1);
-        else if (xo == 75) smull(e, R3, R2, R0, R1);
-        else umull(e, R3, R2, R0, R1);
-        st_gpr(c, R2, rd);
-        if (rc) update_cr0(c, R2);
+    }
+    case 235: case 75: case 11: {  // mullw, mulhw, mulhwu
+        int a = src(c, ra, R0);
+        int b = src(c, rb, R1);
+        if (xo == 235) mul(e, R2, a, b);
+        else if (xo == 75) smull(e, R3, R2, a, b);
+        else umull(e, R3, R2, a, b);
+        int d = dst(c, rd, R2);
+        mov_reg(e, d, R2);
+        dst_done(c, rd, d);
+        if (rc) update_cr0(c, d);
         return true;
+    }
     case 23: case 87: case 279: case 343: case 55: case 119: case 311: case 375: {  // lwzx lbzx lhzx lhax (+ux)
         bool update = xo == 55 || xo == 119 || xo == 311 || xo == 375;
         if (update && (ra == 0 || ra == rd)) return false;
         u32 base = update ? xo - 32 : xo;
-        u32 size = base == 23 ? 4 : base == 87 ? 1 : 2;
         ea_index(c, ra, rb);
-        if (update) mov_reg(e, R4, R0);
-        set_tail(c, update ? 2 : 1, R2, rd, R4, ra);
-        emit_load(c, size, base == 343);
-        st_gpr(c, R2, rd);
-        if (update) st_gpr(c, R4, ra);
+        int_load(c, base == 23 ? 4 : base == 87 ? 1 : 2, base == 343, rd, ra, update);
         return true;
     }
     case 151: case 215: case 407: case 183: case 247: case 439: {  // stwx stbx sthx (+ux)
         bool update = xo == 183 || xo == 247 || xo == 439;
         if (update && ra == 0) return false;
         u32 base = update ? xo - 32 : xo;
-        u32 size = base == 151 ? 4 : base == 215 ? 1 : 2;
         ea_index(c, ra, rb);
-        if (update) mov_reg(e, R4, R0);
-        ld_gpr(c, R2, rd);
-        set_tail(c, update ? 1 : 0, R4, ra, 0, 0);
-        emit_store(c, size);
-        if (update) st_gpr(c, R4, ra);
+        int_store(c, base == 151 ? 4 : base == 215 ? 1 : 2, rd, ra, update);
         return true;
     }
     case 339: case 467: {  // mfspr / mtspr for LR, CTR, XER and SPRs that are plain storage
         u32 spr = ((inst >> 16) & 31) | ((inst >> 6) & 0x3E0);
         u32 off = spr == 8 ? OFF_LR : spr == 9 ? OFF_CTR : spr == 1 ? OFF_XER : 0;
+        int base = RG;
         if (!off) {
             bool plain = spr == SPR_SRR0 || spr == SPR_SRR1 || spr == SPR_DAR || spr == SPR_DSISR ||
                          (spr >= SPR_SPRG0 && spr < SPR_SPRG0 + 4) || (spr >= SPR_GQR0 && spr < SPR_GQR0 + 8);
             if (!plain || ((spr & 0x10) && c->pr)) return false;
             u32 so = (u32)offsetof(Gekko, spr) + 4u * spr;
             add_const(e, R1, RG, so & ~0xFFFu, R12);
-            if (xo == 339) { ldr_imm(e, R0, R1, so & 0xFFFu); st_gpr(c, R0, rd); }
-            else { ld_gpr(c, R0, rd); str_imm(e, R0, R1, so & 0xFFFu); }
-            return true;
+            base = R1;
+            off = so & 0xFFFu;
         }
-        if (xo == 339) { ldr_imm(e, R0, RG, off); st_gpr(c, R0, rd); }
-        else {
-            ld_gpr(c, R0, rd);
-            if (spr == 1) { load_const(e, R1, XER_MASK); dp_reg(e, AND, 0, R0, R0, R1); }
-            str_imm(e, R0, RG, off);
+        if (xo == 339) {
+            int d = dst(c, rd, R0);
+            ldr_imm(e, d, base, off);
+            dst_done(c, rd, d);
+        } else {
+            int s = src(c, rd, R0);
+            if (spr == 1) { load_const(e, R2, XER_MASK); dp_reg(e, AND, 0, R2, s, R2); s = R2; }
+            str_imm(e, s, base, off);
         }
         return true;
     }
-    case 19:  // mfcr
-        ldr_imm(e, R0, RG, OFF_CR);
-        st_gpr(c, R0, rd);
+    case 19: {  // mfcr
+        int d = dst(c, rd, R0);
+        ldr_imm(e, d, RG, OFF_CR);
+        dst_done(c, rd, d);
         return true;
-    case 83:  // mfmsr
+    }
+    case 83: {  // mfmsr
         if (c->pr) return false;
-        ldr_imm(e, R0, RG, OFF_MSR);
-        st_gpr(c, R0, rd);
+        int d = dst(c, rd, R0);
+        ldr_imm(e, d, RG, OFF_MSR);
+        dst_done(c, rd, d);
         return true;
+    }
     case 146:  // mtmsr: the block goes on unless more than EE changed or an interrupt is now due
         if (c->pr) return false;
-        mov_reg(e, R0, RG);
         ld_gpr(c, R1, rd);
+        mov_reg(e, R0, RG);
         call(c, (const void*)jit_mtmsr);
         dp_imm(e, CMP, 1, 0, R0, 0);
         exit_pc_if(c, C_NE, c->pc + 4);
@@ -913,15 +1110,16 @@ static bool compile_int(Cg* c, u32 inst) {
         dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
         u32 slow = branch_c(e, C_CS, 0);
         if (xo == 1014) {  // dcbz: zero the 32-byte line
+            u32 zero = (1u << R2) | (1u << R3) | (1u << R12) | (1u << LR);
             dp_imm(e, BIC, 0, R1, R1, 31);
             dp_reg(e, ADD, 0, R1, R1, RRAM);
             dp_imm(e, MOV, 0, R2, 0, 0);
             dp_imm(e, MOV, 0, R3, 0, 0);
-            dp_imm(e, MOV, 0, R6, 0, 0);
-            dp_imm(e, MOV, 0, R7, 0, 0);
-            stmia(e, R1, (1u << R2) | (1u << R3) | (1u << R6) | (1u << R7));
+            dp_imm(e, MOV, 0, R12, 0, 0);
+            dp_imm(e, MOV, 0, LR, 0, 0);
+            stmia(e, R1, zero);
             dp_imm(e, ADD, 0, R1, R1, 16);
-            stmia(e, R1, (1u << R2) | (1u << R3) | (1u << R6) | (1u << R7));
+            stmia(e, R1, zero);
         }
         u32 resume = e->n;
         cold_begin(c);
@@ -933,12 +1131,12 @@ static bool compile_int(Cg* c, u32 inst) {
     case 144: {  // mtcrf
         u32 crm = (inst >> 12) & 0xFF, m = 0;
         for (int i = 0; i < 8; i++) if (crm & (0x80u >> i)) m |= 0xF0000000u >> (4 * i);
-        ld_gpr(c, R0, rd);
+        int s = src(c, rd, R0);
         ldr_imm(e, R1, RG, OFF_CR);
         load_const(e, R2, m);
-        dp_reg(e, AND, 0, R0, R0, R2);
+        dp_reg(e, AND, 0, R3, s, R2);
         dp_reg(e, BIC, 0, R1, R1, R2);
-        dp_reg(e, ORR, 0, R1, R1, R0);
+        dp_reg(e, ORR, 0, R1, R1, R3);
         str_imm(e, R1, RG, OFF_CR);
         return true;
     }
@@ -1001,11 +1199,14 @@ static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2)
 
 static void load64_slow(Cg* c, u32 frd) {
     Emit* e = &c->e;
+    push_regs(e, EA_SAVE);
     mov_reg(e, R1, R0);
     mov_reg(e, R0, RG);
     load_const(e, R2, c->pc);
     load_const(e, R3, frd);
+    emit_time(c);
     call(c, (const void*)jit_load64);
+    pop_regs(e, EA_SAVE);
     slow_status(c);
     stop_tail(c);
 }
@@ -1030,11 +1231,14 @@ static void emit_load64(Cg* c, u32 frd) {
 
 static void store64_slow(Cg* c, u32 frs) {
     Emit* e = &c->e;
+    push_regs(e, EA_SAVE);
     mov_reg(e, R1, R0);
     mov_reg(e, R0, RG);
     load_const(e, R2, c->pc);
     load_const(e, R3, frs);
+    emit_time(c);
     call(c, (const void*)jit_store64);
+    pop_regs(e, EA_SAVE);
     slow_status(c);
     stop_tail(c);
 }
@@ -1061,22 +1265,21 @@ static void emit_store64(Cg* c, u32 frs) {
 static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
     Emit* e = &c->e;
     if (update && ra == 0) return false;  // invalid form
-    if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R6, R7);
+    if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R12, LR);
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
-    if (update) mov_reg(e, R4, R0);
     switch (kind) {
     case 0:
-        emit_load(c, 4, false);
+        emit_load(c, 4, false, R2);
         vmov_s_r(e, 0, R2);
         vcvt_f64_f32(e, 1, 0);
         st_fpr(c, 1, fr, 0);
         st_fpr(c, 1, fr, 1);
         break;
-    case 1: set_tail(c, update ? 1 : 0, R4, ra, 0, 0); emit_load64(c, fr); break;
-    case 2: set_tail(c, update ? 1 : 0, R4, ra, 0, 0); emit_store(c, 4); break;
-    default: set_tail(c, update ? 1 : 0, R4, ra, 0, 0); emit_store64(c, fr); break;
+    case 1: set_tail(c, update ? 1 : 0, R0, ra, 0, 0); emit_load64(c, fr); break;
+    case 2: set_tail(c, update ? 1 : 0, R0, ra, 0, 0); emit_store(c, 4, R2); break;
+    default: set_tail(c, update ? 1 : 0, R0, ra, 0, 0); emit_store64(c, fr); break;
     }
-    if (update) st_gpr(c, R4, ra);
+    if (update) st_gpr(c, R0, ra);  // the access kept the effective address in r0
     return true;
 }
 
@@ -1090,13 +1293,14 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     u32 w = indexed ? (inst >> 10) & 1 : (inst >> 15) & 1, idx = indexed ? (inst >> 7) & 7 : (inst >> 12) & 7;
     u32 gqr = (u32)offsetof(Gekko, spr) + 4u * (SPR_GQR0 + idx);
     u32 fb[4], nfb = 0;
-    add_const(e, R1, RG, gqr & ~0xFFFu, R12);
-    ldr_imm(e, R0, R1, gqr & 0xFFFu);
-    dp_imm(e, AND, 1, R1, R0, IMM(store ? 0x3F00u : 0x3F000000u));        // scale
-    dp_imm_c(e, C_EQ, AND, 1, R1, R0, IMM(store ? 0x7u : 0x70000u));      // type
-    fb[nfb++] = branch_c(e, C_NE, 0);
+    // The address first: the register cache must not change after the first branch to the cold fallback (that path
+    // would skip the write-back of an evicted register).
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, (u32)((s32)(inst << 20) >> 20));
-    if (update) mov_reg(e, R4, R0);
+    add_const(e, R1, RG, gqr & ~0xFFFu, R12);
+    ldr_imm(e, R2, R1, gqr & 0xFFFu);
+    dp_imm(e, AND, 1, R1, R2, IMM(store ? 0x3F00u : 0x3F000000u));        // scale
+    dp_imm_c(e, C_EQ, AND, 1, R1, R2, IMM(store ? 0x7u : 0x70000u));      // type
+    fb[nfb++] = branch_c(e, C_NE, 0);
     dp_imm(e, TST, 1, 0, R0, 3);
     fb[nfb++] = branch_c(e, C_NE, 0);
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
@@ -1131,17 +1335,17 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             st_fpr(c, 2, fr, 1);
         }
     } else {
-        dbl_to_single_bits(c, R2, fr, 0, R6, R7);
+        dbl_to_single_bits(c, R2, fr, 0, R12, LR);
         rev(e, R2, R2);
         if (w) {
             str_imm(e, R2, R1, 0);
         } else {
-            dbl_to_single_bits(c, R3, fr, 1, R6, R7);
+            dbl_to_single_bits(c, R3, fr, 1, R12, LR);
             rev(e, R3, R3);
             stmia(e, R1, (1u << R2) | (1u << R3));
         }
     }
-    if (update) st_gpr(c, R4, ra);
+    if (update) st_gpr(c, R0, ra);  // the access kept the effective address in r0
     u32 resume = e->n;
     cold_begin(c);  // other quantizations, unaligned or outside MEM1: the interpreter, out of line
     for (u32 k = 0; k < nfb; k++) fix_to_cold(c, fb[k]);
@@ -1358,7 +1562,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     memset(c, 0, sizeof *c);
     c->e = (Emit){ j->code + j->codeUsed, 0, BLOCK_MAX_WORDS, false };
     c->alt = (Emit){ g_coldBuf, 0, BLOCK_MAX_WORDS, false };
-    c->lastStAt = c->flagsAt = NO_BRANCH;
+    c->flagsAt = NO_BRANCH;
+    for (int k = 0; k < NSLOT; k++) c->rc.id[k] = -1;
     c->j = j;
     c->noLink = noLink;
     c->fastmem = j->fastmem && (g->msr & MSR_DR);
@@ -1379,13 +1584,10 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if ((((c->pc ^ pc) >> 12) != 0 && i > 0) || ipa + 4 > j->ramSize) break;  // one 4 KB page, inside RAM
         u32 inst = ((u32)j->ram[ipa] << 24) | ((u32)j->ram[ipa + 1] << 16) | ((u32)j->ram[ipa + 2] << 8) | j->ram[ipa + 3];
         c->count = i + 1;
-        // What the previous instruction left in host registers. Every path through an instruction's code reaches
-        // its end, so a value its last emitted instruction put in place is there on all of them.
+        // The ARM flags the previous instruction left: every path through an instruction's code reaches its end, so
+        // flags its last emitted instruction set are there on all of them.
         c->flagsLive = i > 0 && c->flagsAt == e->n;
-        c->fwdValid = i > 0 && c->lastStAt == e->n;
-        c->fwdHost = c->lastStHost;
-        c->fwdGpr = c->lastStGpr;
-        c->fwdAt = e->n;
+        c->pinned = 0;
         c->tailOn = false;
         j->stats.instrsCompiled++;
         if (is_branch(inst)) {
@@ -1409,11 +1611,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             ended = true;
         }
     }
-    if (!ended) exit_const(c, pc + 4 * c->count);  // ran out of instructions (or reached a page end)
+    if (!ended) { rc_flush(c); exit_const(c, pc + 4 * c->count); }  // ran out of instructions (or a page end)
     // Exit stubs: subtract what the block executed from RDC and leave to the dispatcher.
     for (u32 k = 0; k < c->nExits; k++) {
         if (c->exits[k].inCold) add_fix(c, true, c->exits[k].at, false, e->n);
         else patch_branch(e, c->exits[k].at, e->n);
+        rc_emit_flush(c, &c->exits[k].snap);
         if (c->exits[k].setPc) { load_const(e, R1, c->exits[k].pc); str_imm(e, R1, RG, OFF_PC); }
         dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
@@ -1449,7 +1652,7 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     return fn;
 }
 
-// The shared stubs, at the start of the code buffer. Compiled code keeps RG, RRAM, RDC, RFAST and RSTOP in registers
+// The shared stubs, at the start of the code buffer. Compiled code keeps RG, RRAM, RDC and RSTOP in registers
 // from ST_ENTER until it leaves through ST_EXIT, which returns r0 to the dispatcher (a link site or 0) and stores
 // the budget left in *left.
 //   ST_ENTER (g, fn, budget, left): saves the C registers, sets up the block registers and jumps to fn.
@@ -1468,7 +1671,6 @@ static void emit_stubs(Jit* j) {
     load_const(e, RRAM, (u32)(uintptr_t)j->ram);
     dp_imm(e, MOV, 0, RSTOP, 0, 0);
     mov_reg(e, RDC, R2);
-    load_const(e, RFAST, (u32)(uintptr_t)j->fast);
     bx_reg_c(e, C_AL, R1);
     j->stub[ST_EXIT] = e->n;
     ldr_imm(e, R3, SP, 0);  // the saved r3: `left`
@@ -1490,7 +1692,8 @@ static void emit_stubs(Jit* j) {
     j->stub[ST_INDIRECT] = e->n;
     mov_shift(e, 0, R1, R2, LSL, 21);  // (pc >> 2) & 511
     mov_shift(e, 0, R1, R1, LSR, 23);
-    dp_reg_c(e, C_AL, ADD, 0, R12, RFAST, R1, LSL, 3);
+    load_const(e, R12, (u32)(uintptr_t)j->fast);
+    dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     bx_reg_c(e, C_EQ, R1);
@@ -1505,8 +1708,11 @@ typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
 // Runs compiled code from block `fn` with a budget of guest instructions; returns how many ran and the link site the
 // code left through (or NULL).
-static u32 run(Jit* j, BlockFn fn, s32 budget, u32** site) {
+static u32 run(Jit* j, BlockFn fn, s32 budget, u64 start, u32** site) {
     s32 left = budget;
+    g_runStart = start;
+    g_runBudget = budget;
+    g_jitLeft = budget;
     *site = (u32*)(uintptr_t)((EnterFn)(void*)(j->code + j->stub[ST_ENTER]))(j->g, (void*)fn, budget, &left);
     return (u32)(budget - left);
 }
@@ -1592,7 +1798,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         }
         s64 room = budget - (s64)total;
         u32 gen = j->gen, *s;
-        u32 n = run(j, en->fn, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room, &s);
+        u32 n = run(j, en->fn, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room, g->cycles + total, &s);
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
@@ -1666,7 +1872,7 @@ u32 jit_run_one_block(Jit* j) {
     if (!en) return 0;
     if (j->fastKey != msrBits) { fast_clear(j); j->fastKey = msrBits; }
     u32* site;
-    return run(j, en->fn, 0x3FFFFFFF, &site);
+    return run(j, en->fn, 0x3FFFFFFF, g->cycles, &site);
 }
 
 void jit_invalidate_all(Jit* j) {
@@ -1739,7 +1945,7 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
     print(line);
-    snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu forwarded GPRs, %llu pipe stores",
+    snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu cached GPR reads, %llu pipe stores",
              s->instrsCompiled ? (double)(j->codeUsed - j->stubWords) / (double)s->instrsCompiled : 0.0,
              (j->codeUsed * 4) >> 10, (unsigned long long)s->fusedBranches, (unsigned long long)s->forwards,
              (unsigned long long)s->gatherStores);

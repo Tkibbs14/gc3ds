@@ -457,7 +457,7 @@ static void run(const char* path) {
                     if (g_jit) {
                         const JitStats* js = jit_stats(g_jit);
                         fprintf(g_perf, "# jit code: %.2f host words per guest instruction, %.0f%% of the buffer; "
-                                "fused compare-branches %llu, forwarded loads %llu, pipe stores %llu, links %llu\n",
+                                "fused compare-branches %llu, cached GPR reads %llu, pipe stores %llu, links %llu\n",
                                 jit_words_per_insn(g_jit), 100.0 * jit_code_used(g_jit),
                                 (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
                                 (unsigned long long)js->gatherStores, (unsigned long long)js->links);

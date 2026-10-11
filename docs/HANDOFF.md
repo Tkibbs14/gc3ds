@@ -144,8 +144,18 @@ cycles per block): the level-1 dispatcher (C hash lookup, 10-register save/resto
   of SRR0/1, DAR, DSISR, SPRG0-3, GQR0-7. These were TP's top fallbacks (dcbi ~150k/s, mfmsr/mtmsr ~40k/s each).
 - **Compare + branch fusion:** CR updates no longer clobber the ARM flags (SO is or-ed in with a shift), and a `bc`
   right after the compare that set its field branches on the flags.
-- **Store-to-load forwarding:** an instruction whose code ended with `st_gpr` leaves that value in a host register;
-  the next instruction's first `ld_gpr` of the same GPR takes it (`fwd*` in Cg).
+- **Register cache** (replaced the store-to-load forwarding of 4bf5279): guest GPRs live in r4, r6, r7, r8 from their
+  first use in a block (`src`/`dst`/`dst_done`, LRU, pinned per instruction), written back when dirty at every exit
+  (each exit stub carries a snapshot), before every interpreter fallback (hot code then forgets the cache, cold code
+  reloads it) and at branches. Update forms keep the effective address in r0 (slow paths push it around their helper
+  call). **Rule:** no cache allocation between a branch into cold code and that cold code (the cold path would skip an
+  eviction's write-back); psq computes its address before its GQR check for this reason. CR, XER, LR, CTR stay in
+  memory (next: CR in a slot; r5 is still RSTOP).
+- **Guest time inside compiled code:** `g->cycles` only advances when a run returns, so helpers (MMIO, the
+  interpreter: timebase, decrementer, event scheduling) used to see time frozen for a whole run. Compiled code now
+  stores its budget left in `g_jitLeft` before each helper call (`emit_time`) and the helpers run with the exact time
+  (`time_enter`/`time_leave`). Found because TP under the qemu JIT reached field 500 with 739 draws and 15,262 DSP
+  mails where the qemu and PC interpreters both had 1,270 and 28,051 (linking on/off identical: not the linking).
 - **Cold code:** memory slow paths (MMIO, unaligned, faults), psq/dcb fallbacks and the pipe path are emitted into a
   second buffer and appended after the block, with branches fixed up (`cold_begin`/`cold_end`/`fix`). Fast paths fall
   through. The working hypothesis is that TP's JIT is bound by instruction fetch (1.5M guest instructions per field,

@@ -15,5 +15,5 @@ for plant in 1 2 3 4; do
     JIT_FUZZ_PLANT=$plant qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 2000 7 > "$out/plant$plant.txt"
     if grep -q "fails=0" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected"; exit 3; fi
 done
-echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, forwarded GPR)"
+echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write)"
 exit $status
