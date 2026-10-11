@@ -10,7 +10,7 @@ mkdir -p "$out"
 [ -n "${SKIP_DOLS:-}" ] || for dol in gc-tests/examples-dol/*.dol; do
     name="$(basename "$dol" .dol)"
     res="$(VFAST_CHECK=1 timeout 300 core/build/gcemu "$dol" --seconds "$secs" --out "$out/$name" 2>&1 | grep -E '^VFAST')"
-    [ -n "$res" ] && printf '%-34s %s\n' "$name" "$(echo "$res" | tail -1)"
+    [ -n "$res" ] && printf '%-34s %s\n' "$name" "$(echo "$res" | grep '^VFAST_CHECK' | sed 's/^VFAST_CHECK: //')"
     echo "$res" | grep -E '^VFAST draw' | head -3
 done
 if [ -n "${2:-}" ]; then

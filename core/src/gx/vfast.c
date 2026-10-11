@@ -1,10 +1,11 @@
 // GX vertices straight to PICA200 vertex-shader inputs, for the 3DS backend. The reference path (gx_decode_vertex,
 // gx_transform, gx_to_screen, then the PICA fold) cost about 7.5 us per vertex on the ARM11, and Twilight Princess's
 // title scene sends about 22,000 vertices per field. This path does the same work with what is fixed for a draw
-// worked out once: the decode layout, position matrix x projection x viewport x PICA fold composed into one 4x4 per
-// matrix index, and the light parameters. Per vertex it reads only the attributes the draw uses and lights only the
+// worked out once: the decode layout, projection x viewport x PICA fold composed into one 4x4, and the light
+// parameters. Per vertex it reads only the attributes the draw uses and lights only the
 // colour channel the PICA receives. Checked against the reference on the PC with VFAST_CHECK (soft.c).
 #include <math.h>
+#include <stdlib.h>
 #include "../sys/system.h"
 #include "vfast.h"
 
@@ -165,12 +166,11 @@ static void half_run(const VHalf* h, const float vc[4], const float eye[3], cons
 }
 
 // ---- position matrices ----
-// Position matrix `pnmtx` x projection x viewport x PICA fold, as one 4x4 (row-major, over model x, y, z, 1).
-// Composed in double; per-vertex work is then 16 multiply-adds.
-static void compose(const GXCore* gx, const VFold* f, u32 pnmtx, float out[16]) {
-    double M[3][4];
-    u32 pm = pnmtx * 4;
-    for (int r = 0; r < 3; r++) for (int k = 0; k < 4; k++) M[r][k] = xf_f(gx, pm + 4 * r + k);
+// Projection x viewport x PICA fold as one 4x4 over eye space (x, y, z, 1), composed in double once per draw.
+// Positions go model -> eye with the position matrix in float first, as the reference does: folding the position
+// matrix in as well put a large translation into float coefficients and lost up to 8x more precision on Twilight
+// Princess's far geometry.
+static void proj_fold(const GXCore* gx, const VFold* f, float out[16]) {
     double a = xf_f(gx, 0x1020), b = xf_f(gx, 0x1021), c = xf_f(gx, 0x1022), d = xf_f(gx, 0x1023);
     double e = xf_f(gx, 0x1024), ff = xf_f(gx, 0x1025);
     double X[4] = { a, 0, 0, b }, Y[4] = { 0, c, 0, d }, Z[4] = { 0, 0, e, ff }, W[4] = { 0, 0, 0, 1 };
@@ -186,13 +186,17 @@ static void compose(const GXCore* gx, const VFold* f, u32 pnmtx, float out[16]) 
         P[3][k] = W[k];
     }
     for (int r = 0; r < 4; r++)
-        for (int k = 0; k < 4; k++)
-            out[4 * r + k] = (float)(P[r][0] * M[0][k] + P[r][1] * M[1][k] + P[r][2] * M[2][k] + (k == 3 ? P[r][3] : 0.0));
+        for (int k = 0; k < 4; k++) out[4 * r + k] = (float)P[r][k];
 }
 
 // ---- the draw ----
 VFastStats g_vfastStats;
-static float g_clip[256][16];
+static float g_clip[256][12];  // position matrices used by the current draw, by index (3x4, row-major)
+
+// One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen.
+typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 pn, hasColor, tm[8]; } VIn;
+static VIn* g_in;
+static u32 g_inCap;
 static u32 g_clipGen[256], g_gen;
 
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
@@ -202,6 +206,8 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
     u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
     u32 ma = gx->cp[CP_MATINDEX_A], mb = gx->cp[CP_MATINDEX_B];
     if (++g_gen == 0) { memset(g_clipGen, 0, sizeof g_clipGen); g_gen = 1; }
+    float P[16];
+    proj_fold(gx, f, P);
 
     // What the delivered outputs need.
     u32 numChans = gx->xf[0x1009] & 3, numGens = gx->xf[0x103F] & 15;
@@ -277,21 +283,28 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         st->nrmReads += nrmUsed ? count : 0;
     }
 
+    // Three passes over the draw, timed separately on the 3DS profile: gather (all reads of guest memory), lighting
+    // (colours), then position and texture coordinates.
+    if (count > g_inCap) {
+        VIn* n = realloc(g_in, count * sizeof *n);
+        if (!n) return;
+        g_in = n;
+        g_inCap = count;
+    }
+    u64 t0 = prof_begin();
     for (u32 vi = 0; vi < count; vi++) {
         const u8* p = raw + vi * vsize;
-        PVert* o = &out[vi];
-        u32 pn = pnDefault;
-        if (pnDirect) pn = *p++;
-        u8 tm[8];
-        memcpy(tm, tmDefault, 8);
-        for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) tm[i] = *p++;
-
-        float vp[3] = { 0, 0, 0 };
+        VIn* in = &g_in[vi];
+        in->pn = (u8)pnDefault;
+        if (pnDirect) in->pn = *p++;
+        memcpy(in->tm, tmDefault, 8);
+        for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) in->tm[i] = *p++;
+        in->p[0] = in->p[1] = in->p[2] = 0;
         if (pos.mode) {
             const u8* src = fetch(mem1, &pos, &p, pos.n * pos.cs);
-            for (u32 k = 0; k < pos.n; k++) vp[k] = read_comp(src + k * pos.cs, pos.fmt, pos.scale);
+            for (u32 k = 0; k < pos.n; k++) in->p[k] = read_comp(src + k * pos.cs, pos.fmt, pos.scale);
         }
-        float vn[3] = { 0, 0, 0 };
+        in->n[0] = in->n[1] = in->n[2] = 0;
         if (nrm.mode) {
             const u8* src;
             if (nrm.mode != 1 && nbt && index3) {
@@ -301,38 +314,39 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
             } else {
                 src = fetch(mem1, &nrm, &p, nrm.n * nrm.cs);
             }
-            if (nrmUsed) for (u32 k = 0; k < 3; k++) vn[k] = read_comp(src + k * nrm.cs, nrm.fmt, nrm.scale);
+            if (nrmUsed) for (u32 k = 0; k < 3; k++) in->n[k] = read_comp(src + k * nrm.cs, nrm.fmt, nrm.scale);
         }
-        u32 vcol[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
-        u32 hasColor = 0;
+        in->col[0] = in->col[1] = 0xFFFFFFFFu;
+        in->hasColor = 0;
         for (u32 i = 0; i < 2; i++) {
             if (!col[i].mode) continue;
             const u8* src = fetch(mem1, &col[i], &p, col[i].cs);
-            vcol[i] = read_color(src, col[i].fmt);
-            hasColor |= 1u << i;
+            in->col[i] = read_color(src, col[i].fmt);
+            in->hasColor |= (u8)(1u << i);
         }
-        float vt[8][2];
         for (u32 i = 0; i < 8; i++) {
             if (!tex[i].mode) continue;
             const u8* src = fetch(mem1, &tex[i], &p, tex[i].n * tex[i].cs);
             if (!((texUsed >> i) & 1)) continue;
-            vt[i][0] = read_comp(src, tex[i].fmt, tex[i].scale);
-            vt[i][1] = tex[i].n == 2 ? read_comp(src + tex[i].cs, tex[i].fmt, tex[i].scale) : 0.0f;
+            in->t[i][0] = read_comp(src, tex[i].fmt, tex[i].scale);
+            in->t[i][1] = tex[i].n == 2 ? read_comp(src + tex[i].cs, tex[i].fmt, tex[i].scale) : 0.0f;
         }
+    }
+    prof_end(PROF_VDEC, t0);
 
-        // Position.
-        float* C = g_clip[pn & 255];
-        if (g_clipGen[pn & 255] != g_gen) { compose(gx, f, pn & 255, C); g_clipGen[pn & 255] = g_gen; g_vfastStats.composes++; }
-        for (int r = 0; r < 4; r++) o->pos[r] = C[4 * r] * vp[0] + C[4 * r + 1] * vp[1] + C[4 * r + 2] * vp[2] + C[4 * r + 3];
-
-        // Colour channels the outputs need.
+    // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
+    t0 = prof_begin();
+    for (u32 vi = 0; vi < count; vi++) {
+        VIn* in = &g_in[vi];
+        PVert* o = &out[vi];
+        u32 pn = in->pn;
         float eye[3] = { 0, 0, 0 }, n[3] = { 0, 0, 0 };
         if (eyeUsed) {
             u32 pm = pn * 4;
             for (int r = 0; r < 3; r++)
-                eye[r] = xf_f(gx, pm + 4 * r) * vp[0] + xf_f(gx, pm + 4 * r + 1) * vp[1] + xf_f(gx, pm + 4 * r + 2) * vp[2] + xf_f(gx, pm + 4 * r + 3);
+                eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
             u32 nm = 0x400 + (pn & 31) * 3;
-            for (int r = 0; r < 3; r++) n[r] = xf_f(gx, nm + 3 * r) * vn[0] + xf_f(gx, nm + 3 * r + 1) * vn[1] + xf_f(gx, nm + 3 * r + 2) * vn[2];
+            for (int r = 0; r < 3; r++) n[r] = xf_f(gx, nm + 3 * r) * in->n[0] + xf_f(gx, nm + 3 * r + 1) * in->n[1] + xf_f(gx, nm + 3 * r + 2) * in->n[2];
             float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
             if (nl > 0) { n[0] /= nl; n[1] /= nl; n[2] /= nl; }
         }
@@ -340,15 +354,27 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         for (u32 ch = 0; ch < 2; ch++) {
             if (!(chans & (1u << ch))) continue;
             float vc[4];
-            unpack(ch == 1 && !(hasColor & 2) && (hasColor & 1) ? vcol[0] : vcol[ch], vc);
+            unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], vc);
             if (ch >= numChans) { memcpy(lc[ch], vc, sizeof vc); continue; }
             half_run(&half[ch][0], vc, eye, n, 0, 3, lc[ch]);
             half_run(&half[ch][1], vc, eye, n, 3, 4, lc[ch]);
         }
         const float* oc = lc[sel->rasChan & 1];
         o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
+        if (chans & 1) { in->c0[0] = lc[0][0]; in->c0[1] = lc[0][1]; }
+    }
+    prof_end(PROF_VLIGHT, t0);
 
-        // Texture coordinates of the units the combiners read.
+    // Position, and texture coordinates of the units the combiners read.
+    for (u32 vi = 0; vi < count; vi++) {
+        const VIn* in = &g_in[vi];
+        PVert* o = &out[vi];
+        u32 pn = in->pn;
+        float* M = g_clip[pn];
+        if (g_clipGen[pn] != g_gen) { memcpy(M, &gx->xf[pn * 4], sizeof g_clip[0]); g_clipGen[pn] = g_gen; g_vfastStats.composes++; }
+        float e[3];
+        for (int r = 0; r < 3; r++) e[r] = M[4 * r] * in->p[0] + M[4 * r + 1] * in->p[1] + M[4 * r + 2] * in->p[2] + M[4 * r + 3];
+        for (int r = 0; r < 4; r++) o->pos[r] = P[4 * r] * e[0] + P[4 * r + 1] * e[1] + P[4 * r + 2] * e[2] + P[4 * r + 3];
         for (u32 u = 0; u < 3; u++) {
             o->tc[u][0] = o->tc[u][1] = 0;
             if (u >= numTex) continue;
@@ -357,15 +383,15 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
             u32 cfg = gx->xf[0x1040 + gi];
             bool stq = (cfg >> 1) & 1;
             u32 type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
-            if (type >= 2) { o->tc[u][0] = lc[0][0] / 255.0f; o->tc[u][1] = lc[0][1] / 255.0f; continue; }
-            float in[4] = { 0, 0, 1, 1 };
-            if (src == 0) { in[0] = vp[0]; in[1] = vp[1]; in[2] = vp[2]; }
-            else if (src == 1) { in[0] = vn[0]; in[1] = vn[1]; in[2] = vn[2]; }
-            else if (src >= 5 && src <= 12) { in[0] = vt[src - 5][0]; in[1] = vt[src - 5][1]; }
-            u32 t = (u32)tm[gi] * 4;
+            if (type >= 2) { o->tc[u][0] = in->c0[0] / 255.0f; o->tc[u][1] = in->c0[1] / 255.0f; continue; }
+            float v4[4] = { 0, 0, 1, 1 };
+            if (src == 0) { v4[0] = in->p[0]; v4[1] = in->p[1]; v4[2] = in->p[2]; }
+            else if (src == 1) { v4[0] = in->n[0]; v4[1] = in->n[1]; v4[2] = in->n[2]; }
+            else if (src >= 5 && src <= 12) { v4[0] = in->t[src - 5][0]; v4[1] = in->t[src - 5][1]; }
+            u32 t = (u32)in->tm[gi] * 4;
             float st[3];
             for (int r = 0; r < (stq ? 3 : 2); r++)
-                st[r] = xf_f(gx, t + 4 * r) * in[0] + xf_f(gx, t + 4 * r + 1) * in[1] + xf_f(gx, t + 4 * r + 2) * in[2] + xf_f(gx, t + 4 * r + 3) * in[3];
+                st[r] = xf_f(gx, t + 4 * r) * v4[0] + xf_f(gx, t + 4 * r + 1) * v4[1] + xf_f(gx, t + 4 * r + 2) * v4[2] + xf_f(gx, t + 4 * r + 3) * v4[3];
             float iq = stq && st[2] != 0 ? 1.0f / st[2] : 1.0f;
             o->tc[u][0] = st[0] * iq;
             o->tc[u][1] = st[1] * iq;

@@ -591,6 +591,7 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
     }
     g_vchk.draws++;
     g_vchk.verts += count;
+    bool worst = ep > 1e-3 && ep > g_vchk.pos;  // a new largest position error is listed even past the first 20
     if (ep > g_vchk.pos) g_vchk.pos = ep;
     if (ez > g_vchk.z) g_vchk.z = ez;
     if (et > g_vchk.tc) g_vchk.tc = et;
@@ -621,8 +622,9 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
                 rp = dr > rp ? dr : rp; fp = df > fp ? df : fp;
             }
         }
-        if (g_vchk.bad < 20) fprintf(stderr, "  vs double: reference %.3g fast %.3g\n", rp, fp);
-        if (g_vchk.bad++ < 20)
+        bool list = g_vchk.bad++ < 20 || worst;
+        if (list) fprintf(stderr, "  vs double: reference %.3g fast %.3g\n", rp, fp);
+        if (list)
             fprintf(stderr, "VFAST draw %llu prim %u n %u vat %u: pos %.3g z %.3g tc %.3g col %d | vcd %08x %08x chans %u "
                     "gens %u ras %u tex %u (%u %u %u) proj %u\n", (unsigned long long)gx->draws, prim, count, vat, ep, ez, et,
                     ec, gx->cp[0x50], gx->cp[0x60], gx->xf[0x1009] & 3, numGens, sel.rasChan, sel.numTex, sel.texCoord[0],

@@ -234,12 +234,15 @@ static void run(const char* path) {
                 double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
                 for (int k = 0; k < PROF_N; k++) {
                     p[k] = 100.0 * (double)g_hostProf[k] / tot;
-                    if (k != PROF_GXTEX && k != PROF_GXVTX && k != PROF_GXSYNC) rest -= p[k];  // inside GX/present
+                    if (k != PROF_GXTEX && k != PROF_GXVTX && k != PROF_GXSYNC && k != PROF_VDEC && k != PROF_VLIGHT)
+                        rest -= p[k];  // nested inside GX
                 }
                 // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
                 printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
                        p[PROF_GXSYNC]);
-                printf("disc %4.1f%%  log %4.1f%%   \n", p[PROF_DISC], p[PROF_LOG]);
+                // disc, log; then the vertex path's gather (dec) and lighting (lit) parts of vtx
+                printf("disc%5.1f log%4.1f  dec%5.1f lit%5.1f  \n", p[PROF_DISC], p[PROF_LOG], p[PROF_VDEC],
+                       p[PROF_VLIGHT]);
                 printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
                 printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
                 printf("draws/s %5.0f  verts/s %6.0f   \n", (double)(g_sys.gx.core.draws - drawsLast) / secs,
