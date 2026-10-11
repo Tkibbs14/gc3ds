@@ -196,8 +196,9 @@ static int pick(void) {
     int sel = 0;
     for (;;) {
         consoleClear();
-        printf("gc3ds - A run, Y JIT, B GX thread, START quit\n");
-        printf("GPU: %s, GX %s\n", g_pica ? "PICA200" : "software", gxthread_enabled() ? "on core 2" : "inline");
+        printf("gc3ds - A run, Y JIT, B GX thread, X shader lighting, START quit\n");
+        printf("GPU: %s, GX %s, lighting %s\n", g_pica ? "PICA200" : "software", gxthread_enabled() ? "on core 2" : "inline",
+               g_pica && pica_shader_light() ? "shader" : "CPU");
         printf("CPU: %s\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
         printf("%s\n%s\n\n", g_clockLine, g_coreLine);
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
@@ -214,6 +215,7 @@ static int pick(void) {
             if ((d & KEY_A) && g_nFiles) return sel;
             if ((d & KEY_Y) && g_jit) { g_useJit = !g_useJit; break; }
             if ((d & KEY_B) && g_gxThread) { gxthread_enable(&g_sys, !gxthread_enabled()); break; }
+            if ((d & KEY_X) && g_pica) { pica_set_shader_light(!pica_shader_light()); break; }
             if ((d & KEY_DDOWN) && sel + 1 < g_nFiles) { sel++; break; }
             if ((d & KEY_DUP) && sel > 0) { sel--; break; }
             gspWaitForVBlank();
@@ -237,8 +239,9 @@ static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine,
-            g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline", g_coreLine);
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine,
+            g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
+            g_pica && pica_shader_light() ? "shader" : "cpu", g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct"

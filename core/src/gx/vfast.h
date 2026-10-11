@@ -3,7 +3,9 @@
 // checks it against the reference transform (gx/xform.c) with VFAST_CHECK.
 #include "xform.h"
 
-typedef struct { float pos[4]; u8 col[4]; float tc[3][2]; } PVert;  // gxpass.v.pica inputs v0-v4
+// gxpass.v.pica inputs v0-v6: clip position, colour, three texture coordinates, and for draws lit by the shader the
+// eye-space position and (unnormalised) normal.
+typedef struct { float pos[4]; u8 col[4]; float tc[3][2]; float eye[3], nrm[3]; } PVert;
 
 // What a draw delivers: the PICA's one vertex colour (GX channel rasChan) and, per texture unit, a GX texture
 // coordinate (texCoord[i] & 7) divided by its q.
@@ -19,12 +21,28 @@ void vfast_ref(const VFold* f, const VSel* sel, const SVert* v, PVert* o);
 // Colour and texture coordinates only (vertices placed some other way, such as lines and points).
 void vfast_attribs(const VSel* sel, const SVert* v, PVert* o);
 
-// Fast path: decodes, transforms and lights `count` raw vertices (stride vsize) into `out`. Equal to vfast_ref of
-// the reference transform up to float rounding (matrices are composed per draw), for the coordinates the draw
-// delivers; texture coordinates past the texgen count are 0 (the reference leaves them undefined).
 // Work counters since start (cheap; printed by the PC checker): what the vertex cost is made of.
 typedef struct { u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads; } VFastStats;
 extern VFastStats g_vfastStats;
 
+// Fast path: decodes, transforms and lights `count` raw vertices (stride vsize) into `out`. Equal to vfast_ref of
+// the reference transform up to float rounding (matrices are composed per draw), for the coordinates the draw
+// delivers; texture coordinates past the texgen count are 0 (the reference leaves them undefined).
+// gpuLight: the shader lights the colour (vfast_gpu_light returned true): `col` gets the channel's vertex colour and
+// eye / nrm are filled instead of lighting on the CPU.
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-               u32 vsize, PVert* out);
+               u32 vsize, PVert* out, bool gpuLight);
+
+// Lighting in the vertex shader. The shader lights the colour channel the PICA receives (both its colour and alpha
+// halves) from the eight GX lights, with these uniforms (gxpass.v.pica; colours 0..1):
+// - lights[5i + 0..4]: position, direction, colour, (a0 a1 a2 colour-half mask), (k0 k1 k2 alpha-half mask);
+// - sel[0..3]: one-hot selectors (1, signed, clamped) diffuse and (none, spot, specular) attenuation, colour half
+//   then alpha half;
+// - mat, amb: the material and ambient registers; vsel: (material from vertex colour: rgb, a; ambient: rgb, a);
+//   on: (colour half lit, alpha half lit). Unlit halves output the material.
+typedef struct { float lights[40][4], sel[4][4], mat[4], amb[4], vsel[4], on[4]; } VLightUniforms;
+// Whether the draw's delivered colour channel can be lit by the shader (it is lit, and no texture coordinate is
+// generated from a lit colour, which the CPU would need); fills u when it can.
+bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u);
+// The shader's colour computation in C (the PC checks it against the reference): RGBA 0..255.
+void vfast_gpu_light_model(const VLightUniforms* u, const PVert* v, float out[4]);

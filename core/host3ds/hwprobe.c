@@ -150,9 +150,9 @@ static void probe_vertices(FILE* f, System* s) {
     };
     for (u32 c = 0; c < sizeof cases / sizeof cases[0]; c++) {
         gx.xf[0x100E] = cases[c].ctrl;
-        vfast_run(s, &gx, 0, &fold, &sel, raw, cases[c].count, 24, out);  // warm up
+        vfast_run(s, &gx, 0, &fold, &sel, raw, cases[c].count, 24, out, false);  // warm up
         u64 t0 = svcGetSystemTick();
-        for (u32 d = 0; d < cases[c].draws; d++) vfast_run(s, &gx, 0, &fold, &sel, raw, cases[c].count, 24, out);
+        for (u32 d = 0; d < cases[c].draws; d++) vfast_run(s, &gx, 0, &fold, &sel, raw, cases[c].count, 24, out, false);
         double ns = ns_since(t0);
         fprintf(f, "vertices, %s: %.0f ns per vertex, %.0f ns per draw\n", cases[c].name,
                 ns / (cases[c].draws * cases[c].count), ns / cases[c].draws);

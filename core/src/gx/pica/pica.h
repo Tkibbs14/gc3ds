@@ -12,6 +12,9 @@ bool pica_attach(System* s);
 bool pica_present(System* s, u32 xfbAddr);
 // Forgets every GPU-side copy and cached texture; call before booting another program.
 void pica_reset(void);
+// Lighting in the vertex shader (on by default when the shader provides it); off lights on the CPU (comparison).
+void pica_set_shader_light(bool on);
+bool pica_shader_light(void);
 
 // Work counters since start (the frontend logs them per second): C3D_DrawArrays calls (batches), command-list
 // submits (C3D_FrameEnd) and splits, textures decoded from RAM and their size in VRAM/FCRAM, EFB -> texture and

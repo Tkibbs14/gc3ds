@@ -93,6 +93,11 @@ static struct {
     bool batchOpen;
     u32 batchFirst, batchKeyLen, batchKey[96];
     VSel sel;
+    // Lighting in the vertex shader (gxpass.v.pica): on unless pica_set_shader_light(false); the open batch's
+    // decision and uniforms; uniform locations.
+    bool shaderLight, batchGpuLight;
+    VLightUniforms lu;
+    s8 uLights, uSel, uMat, uAmb, uVsel, uOn;
 } g;
 
 PicaStats g_picaStats;
@@ -145,9 +150,11 @@ static void begin_frame(void) {
     AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
     AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
     AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);  // eye-space position (shader lighting)
+    AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);  // eye-space normal
     C3D_BufInfo* bi = C3D_GetBufInfo();
     BufInfo_Init(bi);
-    BufInfo_Add(bi, g.arena, sizeof(PVert), 5, 0x43210);
+    BufInfo_Add(bi, g.arena, sizeof(PVert), 7, 0x6543210);
     C3D_DepthMap(true, -1.0f, 0.0f);  // depth = -z/w; vertices carry z = -(GX screen z / 2^24) * w
     C3D_CullFace(GPU_CULL_NONE);
     C3D_FrameDrawOn(g.efb);
@@ -565,7 +572,21 @@ static u32 batch_key(const GXCore* gx, u32* k) {
     k[n++] = gx->bp[0x40]; k[n++] = gx->bp[0x41]; k[n++] = gx->bp[0x43] & 7; k[n++] = gx->bp[0xF3];
     k[n++] = gx->bp[0x20]; k[n++] = gx->bp[0x21];
     k[n++] = g.xfbSeq; k[n++] = gx->tlutVersion;
+    k[n++] = gx->xfLightVersion;  // the shader lighting uniforms
     return n;
+}
+
+// Shader lighting state for the batch being opened: whether the shader lights it (lon.z, tested with cmp in the
+// shader; a bool uniform set with C3D_BoolUnifSet never reached it in Azahar), and its uniforms.
+static void apply_light_uniforms(void) {
+    if (!g.batchGpuLight) { C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, 0, 0, 0, 0); return; }
+    const VLightUniforms* u = &g.lu;
+    for (int i = 0; i < 40; i++) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLights + i, u->lights[i][0], u->lights[i][1], u->lights[i][2], u->lights[i][3]);
+    for (int i = 0; i < 4; i++) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uSel + i, u->sel[i][0], u->sel[i][1], u->sel[i][2], u->sel[i][3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uMat, u->mat[0], u->mat[1], u->mat[2], u->mat[3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uAmb, u->amb[0], u->amb[1], u->amb[2], u->amb[3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uVsel, u->vsel[0], u->vsel[1], u->vsel[2], u->vsel[3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, u->on[0], u->on[1], 1.0f, 0);
 }
 
 static void tex_key(const GXCore* gx, u32* k, u32* n) {
@@ -593,7 +614,9 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     u32 frameBefore = g.frameNo;  // looking up textures can also start a frame (texture graveyard full)
     // The open batch's key holds the TEV words first, so the used texture maps (from the compiled TEV) are only
     // compared once the TEV is known to be the same.
+    // Lines and points are lit on the CPU (shader lighting is for triangles): they never share a batch with triangles.
     u32 key[96], kn = batch_key(gx, key);
+    key[kn++] = prim >= PRIM_LINES;
     bool same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
     if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
@@ -601,10 +624,12 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         flush_batch();
         update_tev(gx);
         kn = batch_key(gx, key);
+        key[kn++] = prim >= PRIM_LINES;
         tex_key(gx, key, &kn);
         u64 t0 = prof_begin();
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
         prof_end(PROF_GXTEX, t0);
+        g.batchGpuLight = g.shaderLight && prim < PRIM_LINES && vfast_gpu_light(gx, &g.sel, &g.lu);
     }
     u64 t0 = prof_begin();
     VFold f;
@@ -618,7 +643,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             gx_to_screen(gx, &g_sv[i]);
         }
     } else {
-        vfast_run(s, gx, vat, &f, &g.sel, raw, count, vsize, g_pv);
+        vfast_run(s, gx, vat, &f, &g.sel, raw, count, vsize, g_pv, g.batchGpuLight);
         apply_ztex(s, gx, count);
         g_cull = (gx->bp[0x00] >> 14) & 3;
         if (g_cull == 1 || g_cull == 2)
@@ -649,6 +674,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         //   not fault on reads near address 0, so it hid this.
         // - Binding a placeholder to unused units 1 and 2 crashed Azahar itself (2026-10-10).
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
+        apply_light_uniforms();
         g.batchOpen = true;
         g.batchFirst = g.arenaUsed;
         memcpy(g.batchKey, key, kn * 4);
@@ -672,6 +698,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
 // Fixed-function state for a full-target textured quad (copies and present).
 static void quad_state(C3D_Tex* src, bool linear) {
     flush_batch();
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, 0, 0, 0, 0);  // copy and present quads carry their colour
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_ColorLogicOp(GPU_LOGICOP_COPY);
@@ -885,6 +912,14 @@ bool pica_present(System* s, u32 xfbAddr) {
     return true;
 }
 
+void pica_set_shader_light(bool on) {
+    bool ok = g.uLights >= 0 && g.uOn >= 0 && g.dvlb;
+    g.shaderLight = on && ok;
+    g.batchOpen = false;
+}
+
+bool pica_shader_light(void) { return g.shaderLight; }
+
 void pica_reset(void) {
     // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
     for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
@@ -903,6 +938,16 @@ bool pica_attach(System* s) {
         if (!g.dvlb) return false;
         shaderProgramInit(&g.prog);
         shaderProgramSetVsh(&g.prog, &g.dvlb->DVLE[0]);
+        shaderInstance_s* vs = g.prog.vertexShader;
+        g.uLights = shaderInstanceGetUniformLocation(vs, "lights");
+        g.uSel = shaderInstanceGetUniformLocation(vs, "lsel");
+        g.uMat = shaderInstanceGetUniformLocation(vs, "lmat");
+        g.uAmb = shaderInstanceGetUniformLocation(vs, "lamb");
+        g.uVsel = shaderInstanceGetUniformLocation(vs, "lvsel");
+        g.uOn = shaderInstanceGetUniformLocation(vs, "lon");
+        g.shaderLight = g.uLights >= 0 && g.uSel >= 0 && g.uMat >= 0 && g.uAmb >= 0 && g.uVsel >= 0 && g.uOn >= 0;
+        emu_log(LOG_GX, "pica: shader lighting %s (uniforms %d %d %d %d %d %d)\n", g.shaderLight ? "on" : "unavailable",
+                g.uLights, g.uSel, g.uMat, g.uAmb, g.uVsel, g.uOn);
         g.arena = linearAlloc(ARENA_VERTS * sizeof(PVert));
         if (!g.arena) return false;
         if (!C3D_TexInitVRAM(&g.efbTex, TW, TH, GPU_RGBA8)) return false;

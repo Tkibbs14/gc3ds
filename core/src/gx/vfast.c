@@ -242,7 +242,8 @@ static void proj_fold(const GXCore* gx, const VFold* f, float out[16]) {
 
 // ---- the draw ----
 VFastStats g_vfastStats;
-static float g_clip[256][12];  // position matrices used by the current draw, by index (3x4, row-major)
+// Position matrices used by the current draw, by index (3x4, row-major), each followed by its normal matrix (3x3).
+static float g_clip[256][21];
 
 // One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen.
 typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 pn, hasColor, tm[8]; } VIn;
@@ -276,7 +277,7 @@ VF_INLINE void texgen_one(const GXCore* gx, const VIn* in, u32 gi, int kind, u32
 static u32 g_clipGen[256], g_gen;
 
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-               u32 vsize, PVert* out) {
+               u32 vsize, PVert* out, bool gpuLight) {
     const u8* mem1 = s->mem1;
     u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
     u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
@@ -308,6 +309,7 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         half_init(gx, ch, gx->xf[0x1010 + ch], &half[ch][1]);
         if (half[ch][0].n || half[ch][1].n) nrmUsed = eyeUsed = true;
     }
+    if (gpuLight) { nrmUsed = true; eyeUsed = false; }  // the shader lights from eye position and normal
 
     // Decode layout.
     u8 tmDefault[8];
@@ -412,39 +414,49 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
     t0 = prof_begin();
-    if (count > g_litCap) {
-        VLit* n = realloc(g_lit, count * sizeof *n);
-        if (!n) return;
-        g_lit = n;
-        g_litCap = count;
-    }
-    VLit* lv = g_lit;
-    for (u32 vi = 0; vi < count; vi++) {
-        const VIn* in = &g_in[vi];
-        VLit* v = &lv[vi];
-        if (eyeUsed) {
-            u32 pn = in->pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
-            float* n = v->n;
-            for (int r = 0; r < 3; r++)
-                v->eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
-            for (int r = 0; r < 3; r++) n[r] = xf_f(gx, nm + 3 * r) * in->n[0] + xf_f(gx, nm + 3 * r + 1) * in->n[1] + xf_f(gx, nm + 3 * r + 2) * in->n[2];
-            float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), inl = nl > 0 ? 1.0f / nl : 0.0f;
-            if (nl > 0) { n[0] *= inl; n[1] *= inl; n[2] *= inl; }
+    if (gpuLight) {  // the shader lights the channel: it gets the raw vertex colour (eye and normal come below)
+        u32 ch = sel->rasChan & 1;
+        for (u32 vi = 0; vi < count; vi++) {
+            const VIn* in = &g_in[vi];
+            u32 c = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
+            u8* o = out[vi].col;
+            o[0] = (u8)(c >> 24); o[1] = (u8)(c >> 16); o[2] = (u8)(c >> 8); o[3] = (u8)c;
         }
-        for (u32 ch = 0; ch < 2; ch++)
-            if (chans & (1u << ch)) unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], v->vc[ch]);
-    }
-    for (u32 ch = 0; ch < 2; ch++) {
-        if (!(chans & (1u << ch))) continue;
-        if (ch >= numChans) { for (u32 vi = 0; vi < count; vi++) memcpy(lv[vi].lc[ch], lv[vi].vc[ch], sizeof lv[vi].vc[ch]); continue; }
-        light_half(&half[ch][0], ch, false, lv, count);
-        light_half(&half[ch][1], ch, true, lv, count);
-    }
-    for (u32 vi = 0; vi < count; vi++) {
-        const float* oc = lv[vi].lc[sel->rasChan & 1];
-        PVert* o = &out[vi];
-        o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
-        if (chans & 1) { g_in[vi].c0[0] = lv[vi].lc[0][0]; g_in[vi].c0[1] = lv[vi].lc[0][1]; }
+    } else {
+        if (count > g_litCap) {
+            VLit* n = realloc(g_lit, count * sizeof *n);
+            if (!n) return;
+            g_lit = n;
+            g_litCap = count;
+        }
+        VLit* lv = g_lit;
+        for (u32 vi = 0; vi < count; vi++) {
+            const VIn* in = &g_in[vi];
+            VLit* v = &lv[vi];
+            if (eyeUsed) {
+                u32 pn = in->pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
+                float* n = v->n;
+                for (int r = 0; r < 3; r++)
+                    v->eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
+                for (int r = 0; r < 3; r++) n[r] = xf_f(gx, nm + 3 * r) * in->n[0] + xf_f(gx, nm + 3 * r + 1) * in->n[1] + xf_f(gx, nm + 3 * r + 2) * in->n[2];
+                float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), inl = nl > 0 ? 1.0f / nl : 0.0f;
+                if (nl > 0) { n[0] *= inl; n[1] *= inl; n[2] *= inl; }
+            }
+            for (u32 ch = 0; ch < 2; ch++)
+                if (chans & (1u << ch)) unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], v->vc[ch]);
+        }
+        for (u32 ch = 0; ch < 2; ch++) {
+            if (!(chans & (1u << ch))) continue;
+            if (ch >= numChans) { for (u32 vi = 0; vi < count; vi++) memcpy(lv[vi].lc[ch], lv[vi].vc[ch], sizeof lv[vi].vc[ch]); continue; }
+            light_half(&half[ch][0], ch, false, lv, count);
+            light_half(&half[ch][1], ch, true, lv, count);
+        }
+        for (u32 vi = 0; vi < count; vi++) {
+            const float* oc = lv[vi].lc[sel->rasChan & 1];
+            PVert* o = &out[vi];
+            o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
+            if (chans & 1) { g_in[vi].c0[0] = lv[vi].lc[0][0]; g_in[vi].c0[1] = lv[vi].lc[0][1]; }
+        }
     }
     prof_end(PROF_VLIGHT, t0);
 
@@ -452,7 +464,12 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
     // unrolls and interleaves it (see the lighting notes).
     for (u32 vi = 0; vi < count; vi++) {
         u32 pn = g_in[vi].pn;
-        if (g_clipGen[pn] != g_gen) { memcpy(g_clip[pn], &gx->xf[pn * 4], sizeof g_clip[0]); g_clipGen[pn] = g_gen; g_vfastStats.composes++; }
+        if (g_clipGen[pn] != g_gen) {
+            memcpy(g_clip[pn], &gx->xf[pn * 4], 12 * 4);
+            memcpy(g_clip[pn] + 12, &gx->xf[0x400 + (pn & 31) * 3], 9 * 4);  // its normal matrix
+            g_clipGen[pn] = g_gen;
+            g_vfastStats.composes++;
+        }
     }
 #pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
@@ -464,6 +481,22 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         float e2 = M[8] * x + M[9] * y + M[10] * z + M[11];
         float* o = out[vi].pos;
         for (int r = 0; r < 4; r++) o[r] = P[4 * r] * e0 + P[4 * r + 1] * e1 + P[4 * r + 2] * e2 + P[4 * r + 3];
+    }
+    if (gpuLight) {
+#pragma GCC unroll 4
+        for (u32 vi = 0; vi < count; vi++) {
+            const VIn* in = &g_in[vi];
+            const float* M = g_clip[in->pn];
+            const float* N = M + 12;
+            float x = in->p[0], y = in->p[1], z = in->p[2], nx = in->n[0], ny = in->n[1], nz = in->n[2];
+            PVert* o = &out[vi];
+            o->eye[0] = M[0] * x + M[1] * y + M[2] * z + M[3];
+            o->eye[1] = M[4] * x + M[5] * y + M[6] * z + M[7];
+            o->eye[2] = M[8] * x + M[9] * y + M[10] * z + M[11];
+            o->nrm[0] = N[0] * nx + N[1] * ny + N[2] * nz;
+            o->nrm[1] = N[3] * nx + N[4] * ny + N[5] * nz;
+            o->nrm[2] = N[6] * nx + N[7] * ny + N[8] * nz;
+        }
     }
 
     // Texture coordinates, one unit at a time with its texgen settled outside the vertex loop.
@@ -495,5 +528,95 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
             default: TG_LOOP(TG_NONE, false); break;
             }
         }
+    }
+}
+
+// ---- lighting in the vertex shader ----
+bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u) {
+    u32 ch = sel->rasChan & 1, numChans = gx->xf[0x1009] & 3;
+    if (ch >= numChans) return false;
+    u32 ctrl[2] = { gx->xf[0x100E + ch], gx->xf[0x1010 + ch] };  // colour half, alpha half
+    bool lit[2] = { (ctrl[0] >> 1) & 1, (ctrl[1] >> 1) & 1 };
+    if (!lit[0] && !lit[1]) return false;
+    // A texture coordinate generated from a lit colour needs the colour on the CPU.
+    u32 numGens = gx->xf[0x103F] & 15;
+    for (u32 i = 0; i < sel->numTex && i < 3; i++) {
+        u32 gi = sel->texCoord[i] & 7;
+        if (gi < numGens && ((gx->xf[0x1040 + gi] >> 4) & 7) >= 2) return false;
+    }
+    memset(u, 0, sizeof *u);
+    u32 mask[2];
+    for (int h = 0; h < 2; h++) {
+        u32 c = ctrl[h];
+        mask[h] = lit[h] ? ((c >> 2) & 15) | (((c >> 11) & 15) << 4) : 0;
+        u32 diffFn = (c >> 7) & 3;
+        u->sel[2 * h][diffFn == 0 ? 0 : diffFn == 1 ? 1 : 2] = 1;
+        u->sel[2 * h + 1][!((c >> 9) & 1) ? 0 : ((c >> 10) & 1) ? 1 : 2] = 1;
+        u->on[h] = lit[h];
+        u->vsel[h] = c & 1;               // material from the vertex colour
+        u->vsel[2 + h] = (c >> 6) & 1;    // ambient from the vertex colour
+    }
+    float m[4], a[4];
+    unpack(gx->xf[0x100C + ch], m);
+    unpack(gx->xf[0x100A + ch], a);
+    for (int k = 0; k < 4; k++) { u->mat[k] = m[k] / 255.0f; u->amb[k] = a[k] / 255.0f; }
+    for (u32 i = 0; i < 8; i++) {
+        u32 base = 0x600 + 16 * i;
+        float (*L)[4] = &u->lights[5 * i];
+        float c[4];
+        unpack(gx->xf[base + 3], c);
+        for (int k = 0; k < 3; k++) {
+            L[0][k] = xf_f(gx, base + 10 + k);
+            L[1][k] = xf_f(gx, base + 13 + k);
+            L[3][k] = xf_f(gx, base + 4 + k);
+            L[4][k] = xf_f(gx, base + 7 + k);
+        }
+        for (int k = 0; k < 4; k++) L[2][k] = c[k] / 255.0f;
+        // As half_init: an all-zero distance polynomial divides by 1.
+        if (L[4][0] == 0 && L[4][1] == 0 && L[4][2] == 0) L[4][0] = 1;
+        L[3][3] = (float)((mask[0] >> i) & 1);
+        L[4][3] = (float)((mask[1] >> i) & 1);
+    }
+    return true;
+}
+
+static float dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// The shader clamps every reciprocal to +-1e18, so that a term its selector discards stays finite (the PICA
+// flushes tiny values to 0 and 1/0 would be infinite, and 0 * infinity is not 0); NeHe lesson 8's unused
+// attenuation coefficients are such tiny values.
+#define VBIG 1.0e18f
+static float rcp_c(float x) { float r = 1.0f / x; return r > VBIG ? VBIG : r < -VBIG ? -VBIG : r; }
+static float rsq_c(float x) { float r = 1.0f / sqrtf(x); return r > VBIG ? VBIG : r; }
+
+void vfast_gpu_light_model(const VLightUniforms* u, const PVert* v, float out[4]) {
+    float vc[4] = { v->col[0] / 255.0f, v->col[1] / 255.0f, v->col[2] / 255.0f, v->col[3] / 255.0f };
+    float n[3] = { v->nrm[0], v->nrm[1], v->nrm[2] }, nr = rsq_c(dot3(n, n));
+    n[0] *= nr; n[1] *= nr; n[2] *= nr;
+    float acc[4] = { 0, 0, 0, 0 };
+    for (int i = 0; i < 8; i++) {
+        const float (*L)[4] = &u->lights[5 * i];
+        float l[3] = { L[0][0] - v->eye[0], L[0][1] - v->eye[1], L[0][2] - v->eye[2] };
+        float d2 = dot3(l, l), inv = rsq_c(d2), dist = d2 * inv;
+        l[0] *= inv; l[1] *= inv; l[2] *= inv;
+        float dot = dot3(n, l), dotc = dot < 0 ? 0 : dot;
+        float cs = -dot3(L[1], l), hh = dot3(L[1], n);
+        hh = hh < 0 ? 0 : hh;
+        float aa = L[3][0] + L[3][1] * cs + L[3][2] * cs * cs, dd = L[4][0] + L[4][1] * dist + L[4][2] * d2;
+        float aa2 = L[3][0] + L[3][1] * hh + L[3][2] * hh * hh, dd2 = L[4][0] + L[4][1] * hh + L[4][2] * hh * hh;
+        float attSpot = (aa < 0 ? 0 : aa) * rcp_c(dd), attSpec = (aa2 < 0 ? 0 : aa2) * rcp_c(dd2);
+        float dv[3] = { 1, dot, dotc }, av[3] = { 1, attSpot, attSpec };
+        float wc = dot3(u->sel[0], dv) * dot3(u->sel[1], av) * L[3][3];
+        float wa = dot3(u->sel[2], dv) * dot3(u->sel[3], av) * L[4][3];
+        for (int k = 0; k < 3; k++) acc[k] += L[2][k] * wc;
+        acc[3] += L[2][3] * wa;
+    }
+    for (int k = 0; k < 4; k++) {
+        int h = k < 3 ? 0 : 1;
+        float mat = u->mat[k] + u->vsel[h] * (vc[k] - u->mat[k]);
+        float amb = u->amb[k] + u->vsel[2 + h] * (vc[k] - u->amb[k]);
+        float lit = amb + acc[k];
+        lit = lit < 0 ? 0 : lit > 1 ? 1 : lit;
+        out[k] = 255.0f * mat * (1.0f + u->on[h] * (lit - 1.0f));
     }
 }

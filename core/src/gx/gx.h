@@ -37,6 +37,8 @@ typedef struct {
     u64 primCount[8];    // draws per primitive type (quads, quads2, tris, strip, fan, lines, line strip, points)
     u32 bpNonZero[8];    // bit per BP register ever written with a non-zero value (feature-use diagnostics)
     bool traceDraws;     // debug: backends log every draw (LOG_GX)
+    u32 xfLightVersion;  // incremented when XF lights (0x600-0x67F), channel controls (0x1009-0x1011) or texgen
+                         // settings (0x103F-0x1047) change: shader lighting re-reads them then
 } GXCore;
 
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.

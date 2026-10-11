@@ -75,7 +75,12 @@ u32 gx_vertex_size(const GXCore* gx, u32 vat) {
 
 // ---- register writes ----
 static void xf_write(GXCore* gx, u32 addr, u32 v) {
-    if (addr < sizeof gx->xf / 4) gx->xf[addr] = v;
+    if (addr >= sizeof gx->xf / 4) return;
+    // Lights, channel controls and texgen settings: what shader lighting depends on (GXCore.xfLightVersion).
+    if (((addr >= 0x600 && addr < 0x680) || (addr >= 0x1009 && addr <= 0x1011) || (addr >= 0x103F && addr <= 0x1047)) &&
+        gx->xf[addr] != v)
+        gx->xfLightVersion++;
+    gx->xf[addr] = v;
 }
 
 void gx_pe_signal(System* s, u32 kind, u32 value) {

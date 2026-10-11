@@ -544,12 +544,15 @@ static void draw_point(System* s, GXCore* gx, const SVert* p) {
 // VFAST_CHECK: every triangle draw also goes through the 3DS backend's fast vertex path (vfast.c), compared with
 // the reference vertices folded the same way. Draws past the tolerances are listed (the first 20) and totals are
 // printed at exit.
-static struct { u64 draws, verts, bad; double pos, z, tc; int col; } g_vchk;
+static struct { u64 draws, verts, bad, gpuDraws, gpuBad; double pos, z, tc; int col, gpuCol; } g_vchk;
 
 static void vchk_report(void) {
     fprintf(stderr, "VFAST_CHECK: %llu draws, %llu vertices, %llu draws over tolerance; max error pos %.3g z %.3g "
             "tc %.3g col %d\n", (unsigned long long)g_vchk.draws, (unsigned long long)g_vchk.verts,
             (unsigned long long)g_vchk.bad, g_vchk.pos, g_vchk.z, g_vchk.tc, g_vchk.col);
+    fprintf(stderr, "VFAST_CHECK shader lighting: %llu draws lit by the shader model, %llu with a colour off by more "
+            "than 2; max colour error %d\n", (unsigned long long)g_vchk.gpuDraws, (unsigned long long)g_vchk.gpuBad,
+            g_vchk.gpuCol);
     const VFastStats* st = &g_vfastStats;
     double v = st->verts ? (double)st->verts : 1;
     fprintf(stderr, "VFAST_STATS: per vertex: lights %.2f lit halves %.2f indexed attrs %.2f texgens %.2f normals %.2f; "
@@ -567,7 +570,44 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
     vfold_init(gx, (400.0f / 640.0f) * 2.0f / 512.0f, (240.0f / 480.0f) * 2.0f / 256.0f, false, &f);
     PVert* fast = malloc(sizeof(PVert) * count);
     if (!fast) return;
-    vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, fast);
+    vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, fast, false);
+    // The same draw lit by the shader's model (vfast_gpu_light_model), against the reference colours.
+    VLightUniforms lu;
+    if (vfast_gpu_light(gx, &sel, &lu)) {
+        PVert* lp = malloc(sizeof(PVert) * count);
+        if (lp) {
+            vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, lp, true);
+            static int dumped;
+            if (!dumped++ && getenv("VFAST_DUMP_LIGHT")) {  // the first lit draw's uniforms and vertex 0
+                for (int i = 0; i < 40; i++) if (lu.lights[i / 5 * 5 + 3][3] || lu.lights[i / 5 * 5 + 4][3])
+                    fprintf(stderr, "lights[%d] %g %g %g %g\n", i, lu.lights[i][0], lu.lights[i][1], lu.lights[i][2], lu.lights[i][3]);
+                for (int i = 0; i < 4; i++) fprintf(stderr, "sel[%d] %g %g %g\n", i, lu.sel[i][0], lu.sel[i][1], lu.sel[i][2]);
+                fprintf(stderr, "mat %g %g %g %g amb %g %g %g %g vsel %g %g %g %g on %g %g\n", lu.mat[0], lu.mat[1], lu.mat[2],
+                        lu.mat[3], lu.amb[0], lu.amb[1], lu.amb[2], lu.amb[3], lu.vsel[0], lu.vsel[1], lu.vsel[2], lu.vsel[3],
+                        lu.on[0], lu.on[1]);
+                fprintf(stderr, "v0 col %u %u %u %u eye %g %g %g nrm %g %g %g\n", lp[0].col[0], lp[0].col[1], lp[0].col[2],
+                        lp[0].col[3], lp[0].eye[0], lp[0].eye[1], lp[0].eye[2], lp[0].nrm[0], lp[0].nrm[1], lp[0].nrm[2]);
+            }
+            int worst = 0;
+            for (u32 i = 0; i < count; i++) {
+                PVert r;
+                vfast_ref(&f, &sel, &v[i], &r);
+                float m[4];
+                vfast_gpu_light_model(&lu, &lp[i], m);
+                for (int k = 0; k < 4; k++) {
+                    int c = (int)(m[k] + 0.5f), d = abs(c - (int)r.col[k]);
+                    worst = d > worst ? d : worst;
+                }
+            }
+            g_vchk.gpuDraws++;
+            if (worst > g_vchk.gpuCol) g_vchk.gpuCol = worst;
+            if (worst > 2 && g_vchk.gpuBad++ < 10)
+                fprintf(stderr, "VFAST shader-lighting draw %llu: colour off by %d (ctrl %08x %08x chans %u ras %u)\n",
+                        (unsigned long long)gx->draws, worst, gx->xf[0x100E + (sel.rasChan & 1)],
+                        gx->xf[0x1010 + (sel.rasChan & 1)], gx->xf[0x1009] & 3, sel.rasChan);
+            free(lp);
+        }
+    }
     u32 numGens = gx->xf[0x103F] & 15;
     double ep = 0, ez = 0, et = 0;
     int ec = 0;
