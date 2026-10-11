@@ -246,4 +246,4 @@ flushes, cores, audio.
 | H6 render-target formats | RGBA8 = RGB565 = RGB5A1 = RGBA4 = 193.6 Mpx/s | EFB pixel-format changes cost nothing in fill |
 | H7 motion sensors | gyroscope ~90 updates/s, accelerometer ~98/s; poll 0.8 µs | adequate for Wii Remote motion (Dolphin runs remotes at 200 Hz; interpolate or repeat) |
 | H9 software TLB | +7.9 ns per access sequential, +38.8 ns random 16 MB | MMU games are affordable: a few cycles per access when hot |
-| H10 near-plane clipping | the triangle crossing the camera plane draws its expected visible wedge | the PICA clips crossing triangles correctly; no CPU clipping needed |
+| H10 near-plane clipping | the triangle crossing the camera plane draws its expected visible wedge; **Azahar draws the identical sample map** | the PICA clips crossing triangles correctly, no CPU clipping needed; Azahar is trustworthy for clipping checks |
