@@ -124,6 +124,27 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - free heap, linear memory and VRAM.
 - Every 10 s: the most frequent interpreted instructions and the CPU clock.
 
+## GX on core 2 (068ae2f), measured on the 2DS
+
+| TP title scene | GX inline | GX on core 2 |
+|---|---|---|
+| speed | 4.2-4.9% | **6.6-8.2%** |
+| core 2 (GX thread) busy | n/a | 67-86% |
+| core 0 waiting for GX | n/a | 15-37% |
+
+- **The GX thread is now the limit.** Vertices take 49-61% of wall time on core 2 (lighting 25-30%), while the
+  PICA draws in ~2.4 ms per frame.
+- **Next: the transform, lighting and texgen in the PICA vertex shader.** The CPU then only gathers and byte-swaps
+  attributes into a PICA-readable buffer. Matrices and lights go in as uniforms; per-vertex matrix indices use
+  relative addressing (a0).
+- **After that, core 0 (CPU emulation) is the limit:** JIT register caching and block linking.
+- **Self-test numbers** (`hw.txt`; a copy is in core/out, not tracked):
+  - tick read 0.25 us;
+  - spin handoff core 0 <-> 2: 0.9 us;
+  - LightEvent across cores is unreliable;
+  - synthetic vertex: 1.1 us unlit, +0.3 us per light;
+  - random reads: 34 ns within 1 MB, 210 ns across 16 MB.
+
 ## First perf.csv run (2026-10-10, a copy is in core/out/perf_2026-10-10_run1.csv, not tracked)
 
 - **Clock:** 268 MHz at start, 804 after `osSetSpeedupEnable`. The clock was never the problem; the loop estimate
