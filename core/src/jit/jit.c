@@ -98,10 +98,18 @@ static void count_op(JitOpCounts* t, u32 inst) {
 }
 
 static u32 jit_interp(Gekko* g, u32 pc, u32 inst) {
-    g_jit->stats.fallbacksRun++;
+    u64 n = ++g_jit->stats.fallbacksRun;
     count_op(&g_jit->stats.fallbackRun, inst);
     bool stop;
-    u32 npc = gekko_interp_one(g, pc, inst, &stop);
+    u32 npc;
+    if (g_profClock && !(n & 63)) {  // sampled: a clock read per fallback would cost more than many fallbacks
+        u32 op = inst >> 26;
+        u64 t0 = g_profClock();
+        npc = gekko_interp_one(g, pc, inst, &stop);
+        g_hostProf[op == 4 || op >= 48 ? PROF_FBFP : PROF_FB] += (g_profClock() - t0) * 64;
+    } else {
+        npc = gekko_interp_one(g, pc, inst, &stop);
+    }
     if (npc != pc + 4 || stop) { g->pc = npc; return 1; }
     return 0;
 }

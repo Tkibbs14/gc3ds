@@ -33,7 +33,10 @@ extern u32 g_logMask;  // bit per LogCat
 // Wall-clock profiling of a few host-side areas (the 3DS frontend reads and clears it once a second). Off while
 // g_profClock is NULL, which costs one test per call site.
 // GXTEX, GXVTX, GXSYNC: parts of GX; VDEC (attribute gathering) and VLIGHT (lighting): parts of GXVTX.
-enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT, PROF_N };
+// CPU: all of gekko_run (guest code and whatever it triggers, GX included). FBFP / FB: interpreter fallbacks from
+// compiled code (float and paired-single / other), timed on 1 in 64 and scaled.
+enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT,
+       PROF_CPU, PROF_FBFP, PROF_FB, PROF_N };
 extern u64 g_hostProf[PROF_N];
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }

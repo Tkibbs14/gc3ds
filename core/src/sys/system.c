@@ -316,6 +316,8 @@ void sys_run(System* s, u64 cycles) {
         u64 until = s->nextEvent < end ? s->nextEvent : end;
         if (until <= now) continue;
         u64 slice = until - now;
+        u64 t0 = prof_begin();
         gekko_run(&s->cpu, slice > 1000000 ? 1000000u : (u32)slice);
+        prof_end(PROF_CPU, t0);
     }
 }

@@ -234,8 +234,7 @@ static void run(const char* path) {
                 double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
                 for (int k = 0; k < PROF_N; k++) {
                     p[k] = 100.0 * (double)g_hostProf[k] / tot;
-                    if (k != PROF_GXTEX && k != PROF_GXVTX && k != PROF_GXSYNC && k != PROF_VDEC && k != PROF_VLIGHT)
-                        rest -= p[k];  // nested inside GX
+                    if (k <= PROF_PRESENT) rest -= p[k];  // the others are nested inside GX or are overlapping views
                 }
                 // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
                 printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
@@ -245,6 +244,9 @@ static void run(const char* path) {
                        p[PROF_VLIGHT]);
                 printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
                 printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
+                // cpu: inside gekko_run (includes GX and disc work the guest triggers); fpfb / fb: interpreted
+                // float and other instructions from compiled code (sampled)
+                printf("cpu%5.1f fpfb%5.1f fb%5.1f    \n", p[PROF_CPU], p[PROF_FBFP], p[PROF_FB]);
                 printf("draws/s %5.0f  verts/s %6.0f   \n", (double)(g_sys.gx.core.draws - drawsLast) / secs,
                        (double)(g_sys.gx.core.vertices - vertsLast) / secs);
                 if (g_jit && g_useJit) {
