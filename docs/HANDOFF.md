@@ -129,7 +129,34 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   copies the screen with GX_TextureCopy after the present and writes the file at the next one (`pica_capture`).
   Orientation checked against Azahar's own screenshot of graphics_gx_texturetest.
 
-## JIT level 2 and the ARM11 counters (2026-10-11), not yet measured on the 2DS
+## Measured on the 2DS, 2026-10-11 (build cbff68c; perf.csv copy: core/out/perf_2026-10-11_jit2.csv, not tracked)
+
+- **TP title scene: 9.2% speed with linking, 8.0% with linking off in the same run** (7.2-8.7% the day before).
+  With linking **core 0 waits for the GX thread 53% of the time** (15% without): the CPU side is no longer the
+  limit. The GX thread on core 2 is 78% busy: vertices 39% (gather 11%, lighting 2%, the rest position, texgen,
+  assembly), GPU sync 14%. Next limit: the GX thread.
+- **hw.txt JIT benchmarks** (ns per guest instruction, linked / unlinked): ALU loop 4.5 / 66, memory loop 7.6 / 59,
+  call+return 12.2 / 190, compare+branch 7.7 / 130; straight code inside the 16 KB I-cache 1.6 ns (1.3 cycles),
+  beyond it 5.5 ns with one I-cache miss per ~6 guest instructions (~19 cycles each, served by the L2); 256k
+  instructions (1.2 MB of code) 7.0 ns.
+- **Counters:** per core (a 20M-instruction loop reads 20,013,335 instructions, 804 MHz). Title scene, core 0: IPC
+  0.36, 6.4M I-cache misses/s, 143M cycles/s stalled for instructions, 188M for data hazards, 383k mispredictions/s.
+- Fallbacks left at run time (10 s): cror 215k, psq_l / psq_st ~47k each, mtspr 27k, frsqrte 19k, fres 17k, rfi 15k.
+
+## Vertex worker on core 3 (after cbff68c), not yet measured on the 2DS
+
+- `vfast_run` is now `vfast_prepare` (GX thread: everything that reads the stream, RAM, CP and XF state: gather,
+  lighting, and copies of the matrices the vertices use) plus `vfast_finish` (positions, shader-lighting inputs,
+  texgen from the job alone). VFAST_CHECK on TP to field 760 gives exactly the numbers of the unsplit code (370 of
+  652,863 draws over tolerance, max pos error 2.7e-4, the old float-precision cases).
+- pica.c queues each triangle draw's second half (finish, Z-texture depth, culling, triangle assembly) to a worker
+  thread on core 3 (`vw_*`): the draw's arena range is fixed when queued (culled triangles become degenerate ones),
+  job memory is a 4 MB ring freed in order, `flush_arena` (the only place the GPU gets the arena) waits for the
+  worker. Lines and points stay on the GX thread. Profile areas `vwork` (core 3 busy) and `vwait` (GX thread
+  waiting for it). perf.csv's A/B now alternates the worker every 20 s (`vworker` column); linking stays on.
+- Azahar: NeHe 8 and NeHe 11 render correctly through it.
+
+## JIT level 2 and the ARM11 counters (2026-10-11)
 
 On the title scene core 0 ran ~8.0M guest instructions/s in ~1.3M blocks/s (~6 instructions per block, ~650 host
 cycles per block): the level-1 dispatcher (C hash lookup, 10-register save/restore, return per block) dominated.

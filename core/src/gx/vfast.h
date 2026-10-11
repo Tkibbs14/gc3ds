@@ -32,6 +32,15 @@ extern VFastStats g_vfastStats;
 // eye / nrm are filled instead of lighting on the CPU.
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                u32 vsize, PVert* out, bool gpuLight);
+// The same in two halves, so the second can run on another core: vfast_prepare reads everything that belongs to the
+// moment of the draw (stream, arrays, CP and XF state), gathers and lights the vertices into `out` (colours) and into
+// job memory `mem` of vfast_job_bytes, with copies of the matrices the vertices use; vfast_finish then fills in clip
+// positions, the shader-lighting inputs and texture coordinates from the job alone. prepare returns NULL on failure.
+typedef struct VJob VJob;
+u32 vfast_job_bytes(const GXCore* gx, u32 count);
+VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
+                    u32 vsize, bool gpuLight, void* mem, PVert* out);
+void vfast_finish(const VJob* job, PVert* out);
 
 // Lighting in the vertex shader. The shader lights the colour channel the PICA receives (both its colour and alpha
 // halves) from the eight GX lights, with these uniforms (gxpass.v.pica; colours 0..1):

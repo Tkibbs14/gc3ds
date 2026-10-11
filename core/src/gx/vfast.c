@@ -241,25 +241,38 @@ static void proj_fold(const GXCore* gx, const VFold* f, float out[16]) {
 }
 
 // ---- the draw ----
+// A draw is done in two halves so the second can run on another core (the 3DS backend's vertex worker):
+// - vfast_prepare reads everything that belongs to the moment of the draw (the vertex stream and arrays, the CP and XF
+//   registers), gathers the vertices, lights them, and copies the few matrices the vertices use into the job;
+// - vfast_finish computes clip positions, shader-lighting inputs and texture coordinates from the job alone.
 VFastStats g_vfastStats;
-// Position matrices used by the current draw, by index (3x4, row-major), each followed by its normal matrix (3x3).
-static float g_clip[256][21];
 
-// One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen.
+// One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen. pn and
+// tm[] index the job's own matrix copies once vfast_prepare has finished.
 typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 pn, hasColor, tm[8]; } VIn;
-static VIn* g_in;
-static u32 g_inCap;
 
-// One generated texture coordinate (xform.c's regular texgen): texture matrix in->tm[gi] times the input, divided by
-// q when stq. kind: TG_XYZ three components at byte offset `off` of the vertex, TG_XY two, TG_NONE (0, 0, 1); w = 1.
+// What a texture unit's coordinate comes from: zero, channel 0's colour, or texgen `gi` from `kind` input at `off`.
+typedef struct { u8 mode, gi, kind; bool stq; u32 off; } VUnit;  // mode: 0 zero, 1 colour, 2 texgen
+enum { VU_ZERO, VU_COLOUR, VU_GEN };
+
+struct VJob {
+    u32 count, nPos, nTex;
+    bool gpuLight;
+    float P[16];
+    VUnit unit[3];
+    VIn* in;
+    float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
+    float (*tex)[12];  // texture matrices (3x4), per local index
+};
+
+// One generated texture coordinate (xform.c's regular texgen): texture matrix m times the input, divided by q when
+// stq. kind: TG_XYZ three components at byte offset `off` of the vertex, TG_XY two, TG_NONE (0, 0, 1); w = 1.
 enum { TG_XYZ, TG_XY, TG_NONE };
-VF_INLINE void texgen_one(const GXCore* gx, const VIn* in, u32 gi, int kind, u32 off, bool stq, float tc[2]) {
+VF_INLINE void texgen_one(const float* m, const VIn* in, int kind, u32 off, bool stq, float tc[2]) {
     const float* a = (const float*)((const u8*)in + off);
     float x = 0, y = 0, z = 1;
     if (kind == TG_XYZ) { x = a[0]; y = a[1]; z = a[2]; }
     else if (kind == TG_XY) { x = a[0]; y = a[1]; }
-    float m[12];
-    memcpy(m, &gx->xf[(u32)in->tm[gi] * 4], (stq ? 12u : 8u) * 4);
     float s = m[0] * x + m[1] * y + m[2] * z + m[3], t = m[4] * x + m[5] * y + m[6] * z + m[7];
     if (stq) {
         float q = m[8] * x + m[9] * y + m[10] * z + m[11], iq = q != 0 ? 1.0f / q : 1.0f;
@@ -270,21 +283,38 @@ VF_INLINE void texgen_one(const GXCore* gx, const VIn* in, u32 gi, int kind, u32
     tc[1] = t;
 }
 
-#define TG_LOOP(KIND, STQ) do { \
-    _Pragma("GCC unroll 4") \
-    for (u32 vi = 0; vi < count; vi++) texgen_one(gx, &g_in[vi], gi, KIND, off, STQ, out[vi].tc[u]); \
-} while (0)
-static u32 g_clipGen[256], g_gen;
+// Bounds for the job memory: one position matrix unless the vertices carry their own index, one texture matrix per
+// unit unless they carry those.
+static u32 pos_cap(const GXCore* gx, u32 count) { return (gx->cp[CP_VCD_LO] & 1) ? (count < 64 ? count : 64) : 1; }
+static u32 tex_cap(const GXCore* gx, u32 count) {
+    u32 tmDirect = (gx->cp[CP_VCD_LO] >> 1) & 0xFF;
+    return tmDirect ? 3 * (count < 64 ? count : 64) : 3;
+}
 
-void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-               u32 vsize, PVert* out, bool gpuLight) {
+static u32 align8(u32 v) { return (v + 7) & ~7u; }
+
+u32 vfast_job_bytes(const GXCore* gx, u32 count) {
+    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(pos_cap(gx, count) * 21 * 4) +
+           tex_cap(gx, count) * 12 * 4;
+}
+
+VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
+                    u32 vsize, bool gpuLight, void* mem, PVert* out) {
     const u8* mem1 = s->mem1;
+    VJob* job = mem;
+    u8* m = (u8*)mem + align8(sizeof(VJob));
+    job->in = (VIn*)m;
+    m += align8(count * (u32)sizeof(VIn));
+    job->pos = (float (*)[21])m;
+    m += align8(pos_cap(gx, count) * 21 * 4);
+    job->tex = (float (*)[12])m;
+    job->count = count;
+    job->gpuLight = gpuLight;
+    VIn* g_in = job->in;
     u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
     u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
     u32 ma = gx->cp[CP_MATINDEX_A], mb = gx->cp[CP_MATINDEX_B];
-    if (++g_gen == 0) { memset(g_clipGen, 0, sizeof g_clipGen); g_gen = 1; }
-    float P[16];
-    proj_fold(gx, f, P);
+    proj_fold(gx, f, job->P);
 
     // What the delivered outputs need.
     u32 numChans = gx->xf[0x1009] & 3, numGens = gx->xf[0x103F] & 15;
@@ -310,6 +340,22 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         if (half[ch][0].n || half[ch][1].n) nrmUsed = eyeUsed = true;
     }
     if (gpuLight) { nrmUsed = true; eyeUsed = false; }  // the shader lights from eye position and normal
+
+    // Texture units: settled once for the draw.
+    for (u32 u = 0; u < 3; u++) {
+        VUnit* vu = &job->unit[u];
+        u32 gi = sel->texCoord[u] & 7;
+        vu->mode = VU_ZERO;
+        vu->gi = (u8)gi;
+        if (u >= numTex || !((genUsed >> gi) & 1)) continue;
+        u32 cfg = gx->xf[0x1040 + gi], type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
+        if (type >= 2) { vu->mode = VU_COLOUR; continue; }  // colour texgen: s, t from channel 0
+        vu->mode = VU_GEN;
+        vu->stq = (cfg >> 1) & 1;
+        // Input: three components at `off` (position, normal), two (a texture coordinate), or none (0, 0, 1, 1).
+        vu->kind = (u8)(src <= 1 ? TG_XYZ : (src >= 5 && src <= 12) ? TG_XY : TG_NONE);
+        vu->off = src == 0 ? offsetof(VIn, p) : src == 1 ? offsetof(VIn, n) : vu->kind == TG_XY ? offsetof(VIn, t) + 8 * (src - 5) : 0;
+    }
 
     // Decode layout.
     u8 tmDefault[8];
@@ -361,14 +407,7 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         st->nrmReads += nrmUsed ? count : 0;
     }
 
-    // Three passes over the draw, timed separately on the 3DS profile: gather (all reads of guest memory), lighting
-    // (colours), then position and texture coordinates.
-    if (count > g_inCap) {
-        VIn* n = realloc(g_in, count * sizeof *n);
-        if (!n) return;
-        g_in = n;
-        g_inCap = count;
-    }
+    // Gather: all reads of guest memory (timed as "dec" on the 3DS profile).
     u64 t0 = prof_begin();
     for (u32 vi = 0; vi < count; vi++) {
         const u8* p = raw + vi * vsize;
@@ -414,18 +453,18 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
     t0 = prof_begin();
-    if (gpuLight) {  // the shader lights the channel: it gets the raw vertex colour (eye and normal come below)
+    if (gpuLight) {  // the shader lights the channel: it gets the raw vertex colour (eye and normal come later)
         u32 ch = sel->rasChan & 1;
         for (u32 vi = 0; vi < count; vi++) {
             const VIn* in = &g_in[vi];
-            u32 c = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
+            u32 cc = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
             u8* o = out[vi].col;
-            o[0] = (u8)(c >> 24); o[1] = (u8)(c >> 16); o[2] = (u8)(c >> 8); o[3] = (u8)c;
+            o[0] = (u8)(cc >> 24); o[1] = (u8)(cc >> 16); o[2] = (u8)(cc >> 8); o[3] = (u8)cc;
         }
     } else {
         if (count > g_litCap) {
             VLit* n = realloc(g_lit, count * sizeof *n);
-            if (!n) return;
+            if (!n) return NULL;
             g_lit = n;
             g_litCap = count;
         }
@@ -460,35 +499,64 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
     }
     prof_end(PROF_VLIGHT, t0);
 
-    // Position: the matrices the draw uses are fetched first, so the vertex loop is branch-free and the compiler
-    // unrolls and interleaves it (see the lighting notes).
+    // The matrices the vertices use, copied into the job: position (+ normal) matrices by pn, texture matrices by
+    // the used units' tm. Vertices then index the copies.
+    u8 posLocal[64], texLocal[64];
+    memset(posLocal, 0xFF, sizeof posLocal);
+    memset(texLocal, 0xFF, sizeof texLocal);
+    job->nPos = job->nTex = 0;
+    u32 usedGi = 0;
+    for (u32 u = 0; u < 3; u++) if (job->unit[u].mode == VU_GEN) usedGi |= 1u << job->unit[u].gi;
     for (u32 vi = 0; vi < count; vi++) {
-        u32 pn = g_in[vi].pn;
-        if (g_clipGen[pn] != g_gen) {
-            memcpy(g_clip[pn], &gx->xf[pn * 4], 12 * 4);
-            memcpy(g_clip[pn] + 12, &gx->xf[0x400 + (pn & 31) * 3], 9 * 4);  // its normal matrix
-            g_clipGen[pn] = g_gen;
+        VIn* in = &g_in[vi];
+        u32 pn = in->pn & 63;
+        if (posLocal[pn] == 0xFF) {
+            float* d = job->pos[job->nPos];
+            memcpy(d, &gx->xf[pn * 4], 12 * 4);
+            memcpy(d + 12, &gx->xf[0x400 + (pn & 31) * 3], 9 * 4);  // its normal matrix
+            posLocal[pn] = (u8)job->nPos++;
             g_vfastStats.composes++;
         }
+        in->pn = posLocal[pn];
+        for (u32 gi = 0; gi < 8; gi++) {
+            if (!((usedGi >> gi) & 1)) continue;
+            u32 tm = in->tm[gi] & 63;
+            if (texLocal[tm] == 0xFF) {
+                memcpy(job->tex[job->nTex], &gx->xf[tm * 4], 12 * 4);
+                texLocal[tm] = (u8)job->nTex++;
+            }
+            in->tm[gi] = texLocal[tm];
+        }
     }
+    return job;
+}
+
+#define TG_LOOP(KIND, STQ) do { \
+    _Pragma("GCC unroll 4") \
+    for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[in[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
+} while (0)
+
+void vfast_finish(const VJob* job, PVert* out) {
+    u32 count = job->count;
+    const VIn* in = job->in;
+    const float* P = job->P;
+    // Position: branch-free, so the compiler unrolls and interleaves the loop (see the lighting notes).
 #pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
-        const VIn* in = &g_in[vi];
-        const float* M = g_clip[in->pn];
-        float x = in->p[0], y = in->p[1], z = in->p[2];
+        const float* M = job->pos[in[vi].pn];
+        float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2];
         float e0 = M[0] * x + M[1] * y + M[2] * z + M[3];
         float e1 = M[4] * x + M[5] * y + M[6] * z + M[7];
         float e2 = M[8] * x + M[9] * y + M[10] * z + M[11];
         float* o = out[vi].pos;
         for (int r = 0; r < 4; r++) o[r] = P[4 * r] * e0 + P[4 * r + 1] * e1 + P[4 * r + 2] * e2 + P[4 * r + 3];
     }
-    if (gpuLight) {
+    if (job->gpuLight) {
 #pragma GCC unroll 4
         for (u32 vi = 0; vi < count; vi++) {
-            const VIn* in = &g_in[vi];
-            const float* M = g_clip[in->pn];
+            const float* M = job->pos[in[vi].pn];
             const float* N = M + 12;
-            float x = in->p[0], y = in->p[1], z = in->p[2], nx = in->n[0], ny = in->n[1], nz = in->n[2];
+            float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2], nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
             PVert* o = &out[vi];
             o->eye[0] = M[0] * x + M[1] * y + M[2] * z + M[3];
             o->eye[1] = M[4] * x + M[5] * y + M[6] * z + M[7];
@@ -498,37 +566,48 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
             o->nrm[2] = N[6] * nx + N[7] * ny + N[8] * nz;
         }
     }
-
     // Texture coordinates, one unit at a time with its texgen settled outside the vertex loop.
     for (u32 u = 0; u < 3; u++) {
-        u32 gi = sel->texCoord[u] & 7;
-        if (u >= numTex || !((genUsed >> gi) & 1)) {
+        const VUnit* vu = &job->unit[u];
+        if (vu->mode == VU_ZERO) {
             for (u32 vi = 0; vi < count; vi++) out[vi].tc[u][0] = out[vi].tc[u][1] = 0;
             continue;
         }
-        u32 cfg = gx->xf[0x1040 + gi], type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
-        bool stq = (cfg >> 1) & 1;
-        if (type >= 2) {  // colour texgen: s, t from channel 0
-            for (u32 vi = 0; vi < count; vi++) { out[vi].tc[u][0] = g_in[vi].c0[0] / 255.0f; out[vi].tc[u][1] = g_in[vi].c0[1] / 255.0f; }
+        if (vu->mode == VU_COLOUR) {
+            for (u32 vi = 0; vi < count; vi++) { out[vi].tc[u][0] = in[vi].c0[0] / 255.0f; out[vi].tc[u][1] = in[vi].c0[1] / 255.0f; }
             continue;
         }
-        // Input: three components at `off` (position, normal), two (a texture coordinate), or none (0, 0, 1, 1).
-        int kind = src <= 1 ? TG_XYZ : (src >= 5 && src <= 12) ? TG_XY : TG_NONE;
-        u32 off = src == 0 ? offsetof(VIn, p) : src == 1 ? offsetof(VIn, n) : kind == TG_XY ? offsetof(VIn, t) + 8 * (src - 5) : 0;
-        if (stq) {
-            switch (kind) {
+        u32 gi = vu->gi, off = vu->off;
+        if (vu->stq) {
+            switch (vu->kind) {
             case TG_XYZ: TG_LOOP(TG_XYZ, true); break;
             case TG_XY: TG_LOOP(TG_XY, true); break;
             default: TG_LOOP(TG_NONE, true); break;
             }
         } else {
-            switch (kind) {
+            switch (vu->kind) {
             case TG_XYZ: TG_LOOP(TG_XYZ, false); break;
             case TG_XY: TG_LOOP(TG_XY, false); break;
             default: TG_LOOP(TG_NONE, false); break;
             }
         }
     }
+}
+
+// Both halves at once (the PC checker and the backend's inline path).
+static u8* g_jobMem;
+static u32 g_jobCap;
+void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
+               u32 vsize, PVert* out, bool gpuLight) {
+    u32 bytes = vfast_job_bytes(gx, count);
+    if (bytes > g_jobCap) {
+        u8* n = realloc(g_jobMem, bytes);
+        if (!n) return;
+        g_jobMem = n;
+        g_jobCap = bytes;
+    }
+    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, g_jobMem, out);
+    if (job) vfast_finish(job, out);
 }
 
 // ---- lighting in the vertex shader ----

@@ -24,3 +24,8 @@ bool pica_shader_light(void);
 // EFB -> XFB copies, EFB clears.
 typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears; } PicaStats;
 extern PicaStats g_picaStats;
+// The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work
+// runs there; off does it all on the GX thread (comparison).
+void pica_set_vertex_worker(bool on);
+bool pica_vertex_worker(void);
+bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it at its next draw)

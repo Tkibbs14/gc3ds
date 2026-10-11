@@ -36,9 +36,10 @@ extern u32 g_logMask;  // bit per LogCat
 // CPU: all of gekko_run (guest code and whatever it triggers, GX included). FBFP / FB: interpreter fallbacks from
 // compiled code (float and paired-single / other), timed on 1 in 64 and scaled.
 // GXTHREAD: busy time of the GX thread when GX runs on another core; GXWAIT: the CPU thread waiting for it (ring
-// full, or a sync before a PE read or an idle skip).
+// full, or a sync before a PE read or an idle skip). VWORK: busy time of the vertex worker (core 3); VWAIT: the GX
+// thread waiting for it before the GPU reads the vertex arena.
 enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT,
-       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_N };
+       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_N };
 extern u64 g_hostProf[PROF_N];
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
