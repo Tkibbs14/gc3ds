@@ -685,7 +685,12 @@ bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u) {
     if (ch >= numChans) return false;
     u32 ctrl[2] = { gx->xf[0x100E + ch], gx->xf[0x1010 + ch] };  // colour half, alpha half
     bool lit[2] = { (ctrl[0] >> 1) & 1, (ctrl[1] >> 1) & 1 };
-    if (!lit[0] && !lit[1]) return false;
+    // What the shader implements (gen_gxpass.sh): the colour half lit with attenuation none or spot, and the alpha half
+    // unlit or lit exactly as the colour half (same lights, diffuse function and attenuation: one factor per light
+    // then lights all four components). That is every shader-lit draw of Twilight Princess's title scene and of the
+    // NeHe lessons, at about two thirds of the instructions of the general form; the rest is lit on the CPU.
+    if (!lit[0] || ((ctrl[0] >> 9) & 3) == 1) return false;  // colour unlit, or specular (atten on, not spot)
+    if (lit[1] && ((ctrl[0] ^ ctrl[1]) & 0x7FBCu)) return false;  // light masks, diffuse function, attenuation
     // A texture coordinate generated from a lit colour needs the colour on the CPU.
     u32 numGens = gx->xf[0x103F] & 15;
     for (u32 i = 0; i < sel->numTex && i < 3; i++) {
@@ -703,6 +708,11 @@ bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u) {
         u->on[h] = lit[h];
         u->vsel[h] = c & 1;               // material from the vertex colour
         u->vsel[2 + h] = (c >> 6) & 1;    // ambient from the vertex colour
+    }
+    {
+        u32 at[2];
+        for (int h = 0; h < 2; h++) at[h] = !((ctrl[h] >> 9) & 1) ? 0 : ((ctrl[h] >> 10) & 1) ? 1 : 2;
+        g_vfastStats.gpuLit[lit[0]][lit[1]][lit[0] ? at[0] : 0][lit[1] ? at[1] : 0]++;
     }
     float m[4], a[4];
     unpack(gx->xf[0x100C + ch], m);

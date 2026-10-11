@@ -22,7 +22,10 @@ void vfast_ref(const VFold* f, const VSel* sel, const SVert* v, PVert* o);
 void vfast_attribs(const VSel* sel, const SVert* v, PVert* o);
 
 // Work counters since start (cheap; printed by the PC checker): what the vertex cost is made of.
-typedef struct { u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads, setups, setupWhy[6]; } VFastStats;
+typedef struct {
+    u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads, setups, setupWhy[6];
+    u64 gpuLit[2][2][3][3];  // shader-lit draws by colour half lit, alpha half lit, their attenuation (none, spot, specular)
+} VFastStats;
 extern VFastStats g_vfastStats;
 
 // Fast path: decodes, transforms and lights `count` raw vertices (stride vsize) into `out`. Equal to vfast_ref of

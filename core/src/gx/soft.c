@@ -560,6 +560,13 @@ static void vchk_report(void) {
             st->litHalves / v, st->indexed / v, st->texgens / v, st->nrmReads / v,
             st->draws ? (double)st->composes / (double)st->draws : 0.0,
             st->draws ? 100.0 * (double)st->setups / (double)st->draws : 0.0);
+    {
+        static const char* kA[3] = { "none", "spot", "spec" };
+        fprintf(stderr, "VFAST_STATS: shader-lit draws by lit halves (colour, alpha) and attenuation:");
+        for (int c = 0; c < 2; c++) for (int a = 0; a < 2; a++) for (int x = 0; x < 3; x++) for (int y = 0; y < 3; y++)
+            if (st->gpuLit[c][a][x][y]) fprintf(stderr, " %s%s%s%s=%llu", c ? "C" : "-", a ? "A" : "-", c ? kA[x] : "", a ? kA[y] : "", (unsigned long long)st->gpuLit[c][a][x][y]);
+        fprintf(stderr, "\n");
+    }
     fprintf(stderr, "VFAST_STATS: setup changes by key part: cp %llu xf %llu lights %llu format %llu sel %llu reset %llu\n",
             (unsigned long long)st->setupWhy[0], (unsigned long long)st->setupWhy[1], (unsigned long long)st->setupWhy[2],
             (unsigned long long)st->setupWhy[3], (unsigned long long)st->setupWhy[4], (unsigned long long)st->setupWhy[5]);
