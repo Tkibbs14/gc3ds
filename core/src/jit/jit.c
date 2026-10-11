@@ -24,7 +24,7 @@
 #define FAST_SIZE 512
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
-enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_WORDS = 64 };
+enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 96 };
 
 // Offsets into Gekko (ldr/str immediate range is 0..4095; everything used here is below that).
 #define OFF_GPR(r) ((u32)offsetof(Gekko, gpr) + 4u * (u32)(r))
@@ -60,7 +60,7 @@ struct Jit {
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
     JitStats stats;
-    u32 stub[ST_INDIRECT + 1];  // word offsets of the shared stubs in `code`
+    u32 stub[ST_INTERP + 1];    // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
     FastEntry* fast;            // indirect-branch table, valid for blocks of key fastKey only
     u32 fastKey;
@@ -691,12 +691,19 @@ static void emit_fallback(Cg* c, u32 inst) {
     rc_flush(c);  // the interpreter works on guest state in memory
     Rc clean = c->rc;
     for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
-    mov_reg(e, R0, RG);
-    load_const(e, R1, c->pc);
-    load_const(e, R2, inst);
-    emit_time(c);
-    call(c, (const void*)jit_interp);
-    dp_imm(e, CMP, 1, 0, R0, 0);
+    if (c->inCold) {  // cold code moves when it is appended: no branches to absolute addresses
+        mov_reg(e, R0, RG);
+        load_const(e, R1, c->pc);
+        load_const(e, R2, inst);
+        emit_time(c);
+        call(c, (const void*)jit_interp);
+        dp_imm(e, CMP, 1, 0, R0, 0);
+    } else {  // the shared stub: 4 words instead of about 20
+        branch_abs(e, C_AL, true, stub(c, ST_INTERP));
+        word(e, c->pc);
+        word(e, inst);
+        word(e, c->count - 1);
+    }
     exit_snap(c, C_NE, false, 0, &clean);
     rc_after_interp(c);
 }
@@ -1708,6 +1715,24 @@ static void emit_stubs(Jit* j) {
     bx_reg_c(e, C_EQ, R1);
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
+    // ST_INTERP: reached with "bl" followed by three literals: guest pc, instruction, and the block's instructions before it.
+    // Runs the instruction in the interpreter at the exact guest time and returns past the literals with the flags of
+    // "cmp r0, #0" (non-zero: leave compiled code; jit_interp has written g->pc).
+    j->stub[ST_INTERP] = e->n;
+    push_regs(e, (1u << R3) | (1u << LR));
+    ldr_imm(e, R1, LR, 0);
+    ldr_imm(e, R2, LR, 4);
+    ldr_imm(e, R3, LR, 8);
+    dp_reg(e, SUB, 0, R3, RDC, R3);
+    load_const(e, R12, (u32)(uintptr_t)&g_jitLeft);
+    str_imm(e, R3, R12, 0);
+    mov_reg(e, R0, RG);
+    load_const(e, R12, (u32)(uintptr_t)jit_interp);
+    blx_reg(e, R12);
+    pop_regs(e, (1u << R3) | (1u << LR));
+    dp_imm(e, ADD, 0, LR, LR, 12);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    bx_reg_c(e, C_AL, LR);
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
