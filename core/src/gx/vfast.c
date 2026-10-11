@@ -168,6 +168,8 @@ VF_INLINE void light_one(const VLight* l, int D, int A, int K0, int K1, VLit* v)
         }
         da = diff * att;
     }
+    // Unrolled so that the four vertices of LIGHT_LOOP stay one branch-free block the compiler can interleave.
+#pragma GCC unroll 4
     for (int k = K0; k < K1; k++) v->lit[k] += l->lc[k] * da;
 }
 
@@ -246,6 +248,31 @@ static float g_clip[256][12];  // position matrices used by the current draw, by
 typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 pn, hasColor, tm[8]; } VIn;
 static VIn* g_in;
 static u32 g_inCap;
+
+// One generated texture coordinate (xform.c's regular texgen): texture matrix in->tm[gi] times the input, divided by
+// q when stq. kind: TG_XYZ three components at byte offset `off` of the vertex, TG_XY two, TG_NONE (0, 0, 1); w = 1.
+enum { TG_XYZ, TG_XY, TG_NONE };
+VF_INLINE void texgen_one(const GXCore* gx, const VIn* in, u32 gi, int kind, u32 off, bool stq, float tc[2]) {
+    const float* a = (const float*)((const u8*)in + off);
+    float x = 0, y = 0, z = 1;
+    if (kind == TG_XYZ) { x = a[0]; y = a[1]; z = a[2]; }
+    else if (kind == TG_XY) { x = a[0]; y = a[1]; }
+    float m[12];
+    memcpy(m, &gx->xf[(u32)in->tm[gi] * 4], (stq ? 12u : 8u) * 4);
+    float s = m[0] * x + m[1] * y + m[2] * z + m[3], t = m[4] * x + m[5] * y + m[6] * z + m[7];
+    if (stq) {
+        float q = m[8] * x + m[9] * y + m[10] * z + m[11], iq = q != 0 ? 1.0f / q : 1.0f;
+        s *= iq;
+        t *= iq;
+    }
+    tc[0] = s;
+    tc[1] = t;
+}
+
+#define TG_LOOP(KIND, STQ) do { \
+    _Pragma("GCC unroll 4") \
+    for (u32 vi = 0; vi < count; vi++) texgen_one(gx, &g_in[vi], gi, KIND, off, STQ, out[vi].tc[u]); \
+} while (0)
 static u32 g_clipGen[256], g_gen;
 
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
@@ -421,36 +448,52 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
     }
     prof_end(PROF_VLIGHT, t0);
 
-    // Position, and texture coordinates of the units the combiners read.
+    // Position: the matrices the draw uses are fetched first, so the vertex loop is branch-free and the compiler
+    // unrolls and interleaves it (see the lighting notes).
+    for (u32 vi = 0; vi < count; vi++) {
+        u32 pn = g_in[vi].pn;
+        if (g_clipGen[pn] != g_gen) { memcpy(g_clip[pn], &gx->xf[pn * 4], sizeof g_clip[0]); g_clipGen[pn] = g_gen; g_vfastStats.composes++; }
+    }
+#pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
         const VIn* in = &g_in[vi];
-        PVert* o = &out[vi];
-        u32 pn = in->pn;
-        float* M = g_clip[pn];
-        if (g_clipGen[pn] != g_gen) { memcpy(M, &gx->xf[pn * 4], sizeof g_clip[0]); g_clipGen[pn] = g_gen; g_vfastStats.composes++; }
-        float e[3];
-        for (int r = 0; r < 3; r++) e[r] = M[4 * r] * in->p[0] + M[4 * r + 1] * in->p[1] + M[4 * r + 2] * in->p[2] + M[4 * r + 3];
-        for (int r = 0; r < 4; r++) o->pos[r] = P[4 * r] * e[0] + P[4 * r + 1] * e[1] + P[4 * r + 2] * e[2] + P[4 * r + 3];
-        for (u32 u = 0; u < 3; u++) {
-            o->tc[u][0] = o->tc[u][1] = 0;
-            if (u >= numTex) continue;
-            u32 gi = sel->texCoord[u] & 7;
-            if (!((genUsed >> gi) & 1)) continue;
-            u32 cfg = gx->xf[0x1040 + gi];
-            bool stq = (cfg >> 1) & 1;
-            u32 type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
-            if (type >= 2) { o->tc[u][0] = in->c0[0] / 255.0f; o->tc[u][1] = in->c0[1] / 255.0f; continue; }
-            float v4[4] = { 0, 0, 1, 1 };
-            if (src == 0) { v4[0] = in->p[0]; v4[1] = in->p[1]; v4[2] = in->p[2]; }
-            else if (src == 1) { v4[0] = in->n[0]; v4[1] = in->n[1]; v4[2] = in->n[2]; }
-            else if (src >= 5 && src <= 12) { v4[0] = in->t[src - 5][0]; v4[1] = in->t[src - 5][1]; }
-            u32 t = (u32)in->tm[gi] * 4;
-            float st[3];
-            for (int r = 0; r < (stq ? 3 : 2); r++)
-                st[r] = xf_f(gx, t + 4 * r) * v4[0] + xf_f(gx, t + 4 * r + 1) * v4[1] + xf_f(gx, t + 4 * r + 2) * v4[2] + xf_f(gx, t + 4 * r + 3) * v4[3];
-            float iq = stq && st[2] != 0 ? 1.0f / st[2] : 1.0f;
-            o->tc[u][0] = st[0] * iq;
-            o->tc[u][1] = st[1] * iq;
+        const float* M = g_clip[in->pn];
+        float x = in->p[0], y = in->p[1], z = in->p[2];
+        float e0 = M[0] * x + M[1] * y + M[2] * z + M[3];
+        float e1 = M[4] * x + M[5] * y + M[6] * z + M[7];
+        float e2 = M[8] * x + M[9] * y + M[10] * z + M[11];
+        float* o = out[vi].pos;
+        for (int r = 0; r < 4; r++) o[r] = P[4 * r] * e0 + P[4 * r + 1] * e1 + P[4 * r + 2] * e2 + P[4 * r + 3];
+    }
+
+    // Texture coordinates, one unit at a time with its texgen settled outside the vertex loop.
+    for (u32 u = 0; u < 3; u++) {
+        u32 gi = sel->texCoord[u] & 7;
+        if (u >= numTex || !((genUsed >> gi) & 1)) {
+            for (u32 vi = 0; vi < count; vi++) out[vi].tc[u][0] = out[vi].tc[u][1] = 0;
+            continue;
+        }
+        u32 cfg = gx->xf[0x1040 + gi], type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
+        bool stq = (cfg >> 1) & 1;
+        if (type >= 2) {  // colour texgen: s, t from channel 0
+            for (u32 vi = 0; vi < count; vi++) { out[vi].tc[u][0] = g_in[vi].c0[0] / 255.0f; out[vi].tc[u][1] = g_in[vi].c0[1] / 255.0f; }
+            continue;
+        }
+        // Input: three components at `off` (position, normal), two (a texture coordinate), or none (0, 0, 1, 1).
+        int kind = src <= 1 ? TG_XYZ : (src >= 5 && src <= 12) ? TG_XY : TG_NONE;
+        u32 off = src == 0 ? offsetof(VIn, p) : src == 1 ? offsetof(VIn, n) : kind == TG_XY ? offsetof(VIn, t) + 8 * (src - 5) : 0;
+        if (stq) {
+            switch (kind) {
+            case TG_XYZ: TG_LOOP(TG_XYZ, true); break;
+            case TG_XY: TG_LOOP(TG_XY, true); break;
+            default: TG_LOOP(TG_NONE, true); break;
+            }
+        } else {
+            switch (kind) {
+            case TG_XYZ: TG_LOOP(TG_XYZ, false); break;
+            case TG_XY: TG_LOOP(TG_XY, false); break;
+            default: TG_LOOP(TG_NONE, false); break;
+            }
         }
     }
 }
