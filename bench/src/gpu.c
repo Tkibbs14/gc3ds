@@ -31,12 +31,16 @@
 #include "bench.h"
 #include "gpu_simple_shbin.h"
 #include "gpu_light_shbin.h"
+#include "gpu_pad16_shbin.h"
+#include "gpu_pad64_shbin.h"
+#include "gpu_pad128_shbin.h"
+#include "gpu_pal_shbin.h"
 
 #define GPU_TIMEOUT_S   2.0
 #define POLL_NS         20000      // 20 us between idle polls
 #define MEASURE_S       0.35       // target timed GPU time per measurement
 #define MEASURE_MAX_S   3.0        // hard cap per measurement
-#define MODULE_BUDGET_S 55.0       // skip remaining tests after this
+#define MODULE_BUDGET_S 160.0      // skip remaining tests after this (wave 2 included)
 
 #define SCR_W 400
 #define SCR_H 240
@@ -118,7 +122,7 @@ static u8 g_morton[64];
 
 // ---- summary --------------------------------------------------------------------------------------------------
 typedef struct { const char* name; double v; const char* unit; } Sum;
-static Sum g_sum[40];
+static Sum g_sum[80];
 static int g_nsum;
 
 static void sum_add(const char* name, double v, const char* unit)
@@ -215,6 +219,7 @@ static double measure(DrawFn draw, int arg, bool verify, bool* drawn)
             want = t > 1e-6 ? (int)(MEASURE_S / t) : 200;
             if (want < 3) want = 3;
             if (want > 200) want = 200;
+            if (g_w2only) want = 3;  // quick mode (emulator check): emulated GPU time is not real time
         }
         if (frames >= want || total > MEASURE_MAX_S) break;
     }
@@ -942,6 +947,9 @@ static void test_index(void)
 
 // ---- setup / teardown ------------------------------------------------------------------------------------------
 // VRAM is physical 0x18000000-0x185FFFFF (6 MB).
+static bool load_shader(DVLB_s** dvlb, shaderProgram_s* prog, const u8* bin, u32 size);
+#include "gpu_w2.inc"
+
 static bool is_vram(const void* p)
 {
     u32 pa = osConvertVirtToPhys(p);
@@ -967,6 +975,7 @@ static void free_all(void)
     }
     // Every frame_end_timed() returned only after the queue went idle, so the waits inside these calls return
     // immediately.
+    w2_free();
     if (g_rtA) C3D_RenderTargetDelete(g_rtA);
     if (g_tgt) C3D_RenderTargetDelete(g_tgt);
     if (g_texAOk) C3D_TexDelete(&g_texA);
@@ -1107,15 +1116,18 @@ void bench_gpu(void)
     }
     if (!g_texVOk || !g_texLOk) P("note: texture alloc failed: V=%d L=%d\n", g_texVOk, g_texLOk);
 
-    test_overhead();
-    test_tris();
-    test_vshader();
-    test_fill();
-    test_tev();
-    test_upload();
-    test_rtt();
-    test_convert();
-    test_index();
+    if (!g_w2only) {
+        test_overhead();
+        test_tris();
+        test_vshader();
+        test_fill();
+        test_tev();
+        test_upload();
+        test_rtt();
+        test_convert();
+        test_index();
+    }
+    bench_gpu_w2();
 
     step("gpu cleanup");
     free_all();

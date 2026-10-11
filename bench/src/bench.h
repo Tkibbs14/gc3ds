@@ -13,3 +13,5 @@ void step(const char* name);
 void bench_cpu(void);
 void bench_sys(void);
 void bench_gpu(void);
+void bench_wave(void);
+extern bool g_w2only;  // only the wave-2 tests (sdmc:/gcbench/w2only.txt)

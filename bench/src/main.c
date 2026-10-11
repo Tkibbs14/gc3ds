@@ -27,6 +27,7 @@ static size_t g_outLen;
 static FILE* g_file;
 static char g_step[64] = "start";
 static int g_listen = -1;
+bool g_w2only;
 
 static void append(const char* s) {
     size_t n = strlen(s);
@@ -161,7 +162,7 @@ int main(void) {
     remove("sdmc:/gcbench/results_prev.txt");
     rename(RESULTS_PATH, "sdmc:/gcbench/results_prev.txt");
     g_file = fopen(RESULTS_PATH, "w");
-    P("gcbench 3\n");
+    P("gcbench 4 (wave 2)\n");
     start_server();
     g_stepStart = now_s();
     // Core 1 when the system lends it, else core 0 at high priority; it sleeps 1 s between checks.
@@ -169,9 +170,17 @@ int main(void) {
     if (!threadCreate(watchdog, NULL, 8 * 1024, 0x18, 1, true)) threadCreate(watchdog, NULL, 8 * 1024, 0x18, 0, true);
 
     double t0 = now_s();
-    run_module("CPU", cpu_module);
-    run_module("SYSTEM", bench_sys);
-    run_module("GPU", bench_gpu);
+    // sdmc:/gcbench/w2only.txt: run only the wave-2 tests (for quick emulator checks; the device runs everything).
+    FILE* w2f = fopen("sdmc:/gcbench/w2only.txt", "r");
+    g_w2only = w2f != NULL;
+    bool skipGpu = false;   // w2only.txt starting with 'w': the wave-2 memory/audio module alone
+    if (w2f) { skipGpu = fgetc(w2f) == 'w'; fclose(w2f); P("w2only.txt found: wave-2 tests only%s\n", skipGpu ? ", no GPU" : ""); }
+    if (!g_w2only) {
+        run_module("CPU", cpu_module);
+        run_module("SYSTEM", bench_sys);
+    }
+    if (!skipGpu) run_module("GPU", bench_gpu);
+    run_module("WAVE2", bench_wave);
     step("done");
     P("ALL DONE in %.0f s. START exits.\n", now_s() - t0);
 
