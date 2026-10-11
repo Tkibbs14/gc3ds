@@ -233,13 +233,13 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // A/B period (four phases: gpupos x esplit)
+#define AB_SECS 5  // A/B period: four phases (gpupos x esplit), short so each samples every part of a scene
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait", "vwork",
-                                                "vwait", "gxpres", "gxstate", "gxend" };
-_Static_assert(PROF_N == 20, "kProfNames must list every PROF_ area");
+                                                "vwait", "gxpres", "gxstate", "gxend", "vprep", "vpal", "vqueue" };
+_Static_assert(PROF_N == 23, "kProfNames must list every PROF_ area");
 static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
 static void perf_open(const char* path) {

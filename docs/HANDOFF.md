@@ -425,6 +425,13 @@ renderer only):
      draw's matrix and origin skips the palette search. The frame is split every 8,192 arena vertices so the GPU
      starts sooner (`split_early`). Arena and texture cache flushes use `svcFlushProcessDataCache`. perf.csv
      cycles four 20 s phases: both on, transform off, splits off, both off (`gpupos`, `esplit`).
+   - **2DS, 24e4585 (core/out/perf_2026-10-11_split4.csv, ~80 s of title scene, one 20 s sample per phase):**
+     inconclusive for speed. The phases fell on different parts of the title loop (39k-48k draws/s), so speed
+     moved with the scene, not the setting. Mechanisms did show: early splits cut `gxsync` to 0.3-2% and core 0's
+     wait for core 2 from ~27% to 8-12%; the deferred gather cut `vdec` on core 2 from 20% to 0.2-2% (core 3 48-60%
+     busy). But with both on, each early split waited for the worker (`vwait` 10.5%).
+   - **Since then:** phases are 5 s (each setting samples the whole loop), an early split happens only while the
+     worker's queue is empty, and core 2's vertex time is split into `vprep` / `vpal` / `vqueue` columns.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /

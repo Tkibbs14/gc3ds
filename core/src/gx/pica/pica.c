@@ -283,9 +283,11 @@ static void split(u32 transfers) {
 static bool g_earlySplit = true;  // pica_set_early_split
 void pica_set_early_split(bool on) { g_earlySplit = on; }
 bool pica_early_split(void) { return g_earlySplit; }
+static bool vw_idle_now(void);
 static void split_early(void) {
     if (!g_earlySplit || !g_q || !g.frame || g.arenaUsed - g.splitArena < SPLIT_VERTS || g.queued + 8 > GXQUEUE_BUDGET)
         return;
+    if (!vw_idle_now()) return;  // a split waits for the worker (2DS, 24e4585: vwait 10%); try at a later batch
     split(0);
 }
 
@@ -993,6 +995,13 @@ static void vw_wait(void) {
     vw_dmb();
 }
 
+// The worker has nothing queued (a split now would not wait for it).
+static bool vw_idle_now(void) {
+    bool idle = g_vwTail == g_vwHead;
+    vw_dmb();
+    return idle;
+}
+
 // Waits for the worker's variable-length (CPU-culled) draws, and takes over the arena after them. Fixed-place draws
 // need no wait here: their arena ranges were reserved when queued.
 static void vw_sync(void) {
@@ -1147,15 +1156,19 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     if (work) {
         workVerts = tri_verts(prim, count);
         if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
+        u64 tq = dprof_begin();
         if (!need_work(workVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
         u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
         u8* mem = vw_alloc(jb + count * (u32)sizeof(PVert) + count * 8);
+        dprof_end(PROF_VQUEUE, tq);
         if (!mem) work = false;
         else {
             w.pv = (PVert*)(mem + jb);
             w.nd = (float (*)[2])(w.pv + count);
             w.deferred = (gpuPos || kVwGather) && g.batchGpuLight;  // vfast_prepare defers shader-lit draws only
+            u64 tp = dprof_begin();
             w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, gpuPos || kVwGather, mem, w.pv);
+            dprof_end(PROF_VPREP, tp);
             if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;
@@ -1229,7 +1242,10 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     dprof_end(PROF_GXSTATE, tState);
     if (gpuPos) {
         t0 = dprof_begin();
-        if (!pal_assign(job)) {
+        u64 tpal = dprof_begin();
+        bool palOk = pal_assign(job);
+        dprof_end(PROF_VPAL, tpal);
+        if (!palOk) {
             draw_cpu_alone(job, gx, &f, prim, count, work ? w.pv : g_pv);
             dprof_end(PROF_GXVTX, t0);
             return;

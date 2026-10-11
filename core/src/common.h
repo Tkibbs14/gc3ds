@@ -40,8 +40,11 @@ extern u32 g_logMask;  // bit per LogCat
 // thread waiting for it before the GPU reads the vertex arena. GXPRES: the GX thread presenting a field; GXSTATE: the
 // draw path deciding and applying GPU state (batch key, TEV, fragment state, textures bound, uniforms). GXEND: ending a
 // frame (the arena's cache flush and C3D_FrameEnd).
+// VPREP (vfast_prepare, VDEC and VLIGHT included), VPAL (palette slots for GPU-transformed draws) and VQUEUE (room in
+// the arena and the worker's job ring, queueing): parts of GXVTX.
 enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT,
-       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_GXPRES, PROF_GXSTATE, PROF_GXEND, PROF_N };
+       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_GXPRES, PROF_GXSTATE, PROF_GXEND,
+       PROF_VPREP, PROF_VPAL, PROF_VQUEUE, PROF_N };
 extern u64 g_hostProf[PROF_N];
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
