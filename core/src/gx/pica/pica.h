@@ -42,6 +42,10 @@ void pica_set_early_queue(bool on);
 // EFB copies and clears (comparison).
 void pica_set_early_split(bool on);
 bool pica_early_split(void);
+// Indexed triangle draws (on by default): each vertex written and shaded once, culled triangles as a repeated vertex,
+// so no batch waits for the vertex worker; off draws three vertices per triangle (comparison).
+void pica_set_indexed(bool on);
+bool pica_indexed(void);
 bool pica_early_queue(void);
 u32 pica_queue_offset(void);
 extern u64 g_picaDrawPaths[8];

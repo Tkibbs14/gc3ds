@@ -56,7 +56,7 @@ const float* vfast_job_proj(const VJob* job);                       // P: projec
 // The job's origin (its first vertex's position on a grid, deferred jobs included), which vfast_finish subtracts
 // from every position, and in m[i] (unless m is NULL) each position matrix with the origin folded into its
 // translation: the palette's contents. Returns the origin.
-const float* vfast_job_origin(const VJob* job, float m[][12]);
+const float* vfast_job_origin(VJob* job, float m[][12]);
 void vfast_job_gpu_pos(VJob* job, const u8* slots);                // slots[i]: palette slot of matrix i (< 42)
 // The shader's position computation in C: clip and eye position of a vertex vfast_finish wrote with slots. f24:
 // inputs and every product and sum rounded to the PICA's 24-bit floats (vfast_f24).

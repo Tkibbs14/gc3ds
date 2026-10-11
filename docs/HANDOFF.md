@@ -432,6 +432,17 @@ renderer only):
      busy). But with both on, each early split waited for the worker (`vwait` 10.5%).
    - **Since then:** phases are 5 s (each setting samples the whole loop), an early split happens only while the
      worker's queue is empty, and core 2's vertex time is split into `vprep` / `vpal` / `vqueue` columns.
+   - **2DS, eee65ec (core/out/perf_2026-10-11_ab5.csv, ~120 rows per phase, standard error ~0.2):** CPU
+     transform + early splits **13.77%**, baseline 12.20%, GPU transform 12.01% (no splits) / 11.91% (splits).
+     Early splits win (+13%; core 0's wait for core 2 20 → 6%); the GPU transform loses (GPU time 25 → 36 ms per
+     frame, core 2 trades the gather for `vqueue` 11% and `vpal` 6%). Core 2 on the winner: `vprep` 50% of its time
+     (gather `vdec` 21%), ~18 us per draw.
+   - **Since then (not yet measured): indexed draws** (`pica_set_indexed`, `vw_do_indexed`): each draw's vertices
+     once at a fixed arena place, triangles as u16 indices (the vertex buffer start moves along the arena,
+     `set_vbase`), culled triangles as one repeated vertex. Every draw's ranges are known when queued, so the CPU
+     path also leaves the gather to core 3. Early splits fire with up to 4 draws queued. Azahar: NeHe 5, 8 and 11
+     correct; NeHe 11 also with `VBASE_SPAN` at 2000 (rebasing several times a frame). perf.csv phases: indexed x
+     gpupos (`indexed`, `gpupos` columns), early splits always on.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /

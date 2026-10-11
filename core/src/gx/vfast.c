@@ -266,6 +266,7 @@ struct VJob {
     bool gpuLight, gpuPos;
     float slot3[64];   // gpuPos: 3 * palette slot per local position matrix (the shader's pal[] row)
     float origin[3];   // gpuPos: subtracted from every position (vfast_job_origin)
+    bool originDone;
     float P[16];
     VUnit unit[3];
     VIn* in;
@@ -659,43 +660,11 @@ matrices:
             in->tm[gi] = texLocal[tm];
         }
     }
-    // GPU transform: positions go relative to an origin near the first vertex (vfast_job_origin), so the shader's 24-bit
-    // floats hold offsets that are small against the vertex's distance from the eye, not world coordinates (Twilight
-    // Princess's far geometry was off by up to a texel without it). The origin is the first vertex rounded to a
-    // power-of-two grid of cells 4-8 times its eye distance (in model space: over the matrix's scale), so that
-    // neighbouring draws with the same matrix share a palette entry, and geometry in small local coordinates keeps
-    // origin 0. TP to field 1000 (vfast_check.sh): draws using only the previous draw's palette entries 86% without an
-    // origin, 81% with these cells, 70% with cells of 1-2 eye distances, 40% at 1/16; largest on-screen error 1.04,
-    // 0.114, 0.035 and 0.028 EFB texels. A deferred job reads only its first vertex's position here (one guest memory
-    // read).
-    memset(job->origin, 0, sizeof job->origin);
-    float p0[3] = { 0, 0, 0 };
-    if (count && !job->gathered && job->pos_.mode) {
-        const u8* q = job->raw + (job->pnDirect ? 1u : 0u) + (u32)__builtin_popcount(job->tmDirect);
-        const u8* src = fetch(job->mem1, &job->pos_, &q, job->pos_.n * job->pos_.cs);
-        for (u32 k = 0; k < job->pos_.n; k++) p0[k] = read_comp(src + k * job->pos_.cs, job->pos_.fmt, job->pos_.scale);
-    } else if (count && job->gathered) {
-        memcpy(p0, g_in[0].p, sizeof p0);
-    }
-    if (count) {
-        const float* p = p0;
-        const float* M = job->pos[g_in[0].pn];
-        float e = 0, sc = 0;  // eye distance (largest component), matrix scale (largest row sum)
-        for (int r = 0; r < 3; r++) {
-            float c = fabsf(M[4 * r] * p[0] + M[4 * r + 1] * p[1] + M[4 * r + 2] * p[2] + M[4 * r + 3]);
-            float rs = fabsf(M[4 * r]) + fabsf(M[4 * r + 1]) + fabsf(M[4 * r + 2]);
-            e = c > e ? c : e;
-            sc = rs > sc ? rs : sc;
-        }
-        if (sc > 0) {
-            int ex;
-            frexpf(e / sc, &ex);
-            float step = ldexpf(1.0f, ex + 2), inv = 1.0f / step;
-            for (int k = 0; k < 3; k++) job->origin[k] = step * floorf(p[k] * inv + 0.5f);
-        }
-    }
+    job->originDone = false;
     return job;
 }
+
+static void job_origin(VJob* job);
 
 #define TG_LOOP(KIND, STQ) do { \
     _Pragma("GCC unroll 4") \
@@ -711,6 +680,7 @@ void vfast_finish(VJob* job, PVert* out) {
     u32 count = job->count;
     const VIn* in = job->in;
     const float* P = job->P;
+    if (job->gpuPos && !job->originDone) job_origin(job);
     if (job->gpuPos) {  // the shader transforms: position from the origin and palette row; normals for shader lighting
         const float* slot3 = job->slot3;
         float ox = job->origin[0], oy = job->origin[1], oz = job->origin[2];
@@ -789,7 +759,45 @@ texcoords:
 u32 vfast_job_matrices(const VJob* job, const float (**pos)[21]) { *pos = job->pos; return job->nPos; }
 const float* vfast_job_proj(const VJob* job) { return job->P; }
 
-const float* vfast_job_origin(const VJob* job, float m[][12]) {
+// GPU transform: positions go relative to an origin near the first vertex (vfast_job_origin), so the shader's 24-bit
+// floats hold offsets that are small against the vertex's distance from the eye, not world coordinates (Twilight
+// Princess's far geometry was off by up to a texel without it). The origin is the first vertex rounded to a
+// power-of-two grid of cells 4-8 times its eye distance (in model space: over the matrix's scale), so that
+// neighbouring draws with the same matrix share a palette entry, and geometry in small local coordinates keeps
+// origin 0. TP to field 1000 (vfast_check.sh): draws using only the previous draw's palette entries 86% without an
+// origin, 81% with these cells, 70% with cells of 1-2 eye distances, 40% at 1/16; largest on-screen error 1.04,
+// 0.114, 0.035 and 0.028 EFB texels. A job not gathered yet reads only its first vertex's position (one guest memory
+// read). Computed on first use: CPU-transformed draws never need it.
+static void job_origin(VJob* job) {
+    job->originDone = true;
+    memset(job->origin, 0, sizeof job->origin);
+    if (!job->count) return;
+    float p[3] = { 0, 0, 0 };
+    if (job->gathered) {
+        memcpy(p, job->in[0].p, sizeof p);
+    } else if (job->pos_.mode) {
+        const u8* q = job->raw + (job->pnDirect ? 1u : 0u) + (u32)__builtin_popcount(job->tmDirect);
+        const u8* src = fetch(job->mem1, &job->pos_, &q, job->pos_.n * job->pos_.cs);
+        for (u32 k = 0; k < job->pos_.n; k++) p[k] = read_comp(src + k * job->pos_.cs, job->pos_.fmt, job->pos_.scale);
+    }
+    const float* M = job->pos[job->in[0].pn];
+    float e = 0, sc = 0;  // eye distance (largest component), matrix scale (largest row sum)
+    for (int r = 0; r < 3; r++) {
+        float c = fabsf(M[4 * r] * p[0] + M[4 * r + 1] * p[1] + M[4 * r + 2] * p[2] + M[4 * r + 3]);
+        float rs = fabsf(M[4 * r]) + fabsf(M[4 * r + 1]) + fabsf(M[4 * r + 2]);
+        e = c > e ? c : e;
+        sc = rs > sc ? rs : sc;
+    }
+    if (sc > 0) {
+        int ex;
+        frexpf(e / sc, &ex);
+        float step = ldexpf(1.0f, ex + 2), inv = 1.0f / step;
+        for (int k = 0; k < 3; k++) job->origin[k] = step * floorf(p[k] * inv + 0.5f);
+    }
+}
+
+const float* vfast_job_origin(VJob* job, float m[][12]) {
+    if (!job->originDone) job_origin(job);
     const float* o = job->origin;
     for (u32 i = 0; m && i < job->nPos; i++) {
         const float* M = job->pos[i];
