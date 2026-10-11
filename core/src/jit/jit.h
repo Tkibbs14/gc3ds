@@ -46,6 +46,9 @@ float jit_words_per_insn(const Jit* j);  // host code words per guest instructio
 // Stores to exactly guest address `ea` (the write-gather pipe) skip translation and the bus: compiled code hands the
 // value to put(ctx, value, size) directly. Only for blocks compiled with the standard mappings.
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
+// The pipe's partial 32-byte burst (console byte order) and its length: compiled code appends a store that does not
+// complete the burst itself, as `put` would, and calls `put` for the store that does.
+void jit_set_gather_buffer(Jit* j, u8* buf, u32* len);
 void jit_set_linking(Jit* j, bool on);  // off: every block returns to the dispatcher (for comparison); drops all code
 bool jit_linking(const Jit* j);
 // Loads and stores call shared stubs for their MEM1 fast path (on by default) instead of inlining it; off inlines it

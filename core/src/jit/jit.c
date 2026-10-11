@@ -21,8 +21,8 @@
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
-#define FAST_SIZE 2048
-#define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
+#define FAST_SIZE 8192
+#define FAST_TABLES 2  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 640 };
@@ -83,6 +83,8 @@ struct Jit {
     void (*gatherPut)(void* ctx, u32 v, u32 size);  // jit_set_gather
     void* gatherCtx;
     u32 gatherEa;
+    u8* gatherBuf;              // jit_set_gather_buffer: the pipe's partial burst and its length, appended to inline
+    u32* gatherLen;
 };
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
@@ -671,6 +673,27 @@ static void store_slow(Cg* c, u32 size, int vreg) {
         load_const(e, R1, c->j->gatherEa);
         dp_reg(e, CMP, 1, 0, R0, R1);
         u32 notPipe = branch_c(e, C_NE, 0);
+        u32 pipeFast = NO_BRANCH;
+        if (c->j->gatherBuf) {
+            // The common case inline (as gp_wgp_put's): the bytes fit before the 32-byte burst is complete, so they are
+            // appended to the pipe's buffer and nothing else happens. A store that completes a burst calls the GP.
+            load_const(e, R1, (u32)(uintptr_t)c->j->gatherLen);
+            ldr_imm(e, R12, R1, 0);
+            dp_imm(e, ADD, 0, R3, R12, size);
+            dp_imm(e, CMP, 1, 0, R3, 32);
+            u32 full = branch_c(e, C_CS, 0);
+            str_imm(e, R3, R1, 0);
+            load_const(e, R1, (u32)(uintptr_t)c->j->gatherBuf);
+            dp_reg(e, ADD, 0, R1, R1, R12);
+            for (u32 i = 0; i < size; i++) {  // console byte order
+                u32 sh = 8 * (size - 1 - i);
+                if (sh) { mov_shift(e, 0, R3, R2, LSR, (int)sh); strb_imm(e, R3, R1, i); }
+                else strb_imm(e, R2, R1, i);
+            }
+            dp_imm(e, MOV, 0, R3, 0, 0);  // no stop
+            pipeFast = branch_c(e, C_AL, 0);
+            patch_branch(e, full, e->n);
+        }
         push_regs(e, EA_SAVE);
         mov_reg(e, R0, RG);
         mov_reg(e, R1, R2);
@@ -680,6 +703,7 @@ static void store_slow(Cg* c, u32 size, int vreg) {
         mov_reg(e, R3, R0);
         pop_regs(e, EA_SAVE);
         c->pendingStop = true;  // r3 != 0: leave once the instruction is done (stop_tail)
+        if (pipeFast != NO_BRANCH) patch_branch(e, pipeFast, e->n);
         pipeDone = branch_c(e, C_AL, 0);
         patch_branch(e, notPipe, e->n);
     }
@@ -1862,6 +1886,18 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     jit_debug_last_code = fn;
     jit_debug_last_words = e->n;
     if (jit_debug_on_compile) jit_debug_on_compile(fn, e->n);
+#ifndef __3DS__
+    {  // JIT_DUMP=pc (hex, ARM Linux build): the block's hot words, its exit stubs and its cold words, for objdump
+        static int want = -1;
+        static u32 dumpPc;
+        if (want < 0) { const char* s = getenv("JIT_DUMP"); want = s != NULL; dumpPc = s ? (u32)strtoul(s, NULL, 16) : 0; }
+        if (want && pc == dumpPc) {
+            fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, stubEnd - hotEnd, c->alt.n);
+            for (u32 k = 0; k < e->n; k++) fprintf(stderr, "JIT_HOT %08x\n", ((const u32*)fn)[k]);
+            for (u32 k = 0; k < c->alt.n; k++) fprintf(stderr, "JIT_COLD %08x\n", cold[k]);
+        }
+    }
+#endif
     jit_host_sync_icache(fn, e->n * 4);
     if (c->alt.n) jit_host_sync_icache(cold, c->alt.n * 4);
     j->codeUsed += e->n;
@@ -1955,8 +1991,8 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;
-    mov_shift(e, 0, R1, R2, LSL, 19);  // (pc >> 2) & 2047
-    mov_shift(e, 0, R1, R1, LSR, 21);
+    mov_shift(e, 0, R1, R2, LSL, 17);  // (pc >> 2) & 8191
+    mov_shift(e, 0, R1, R1, LSR, 19);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
@@ -1986,7 +2022,7 @@ static void emit_stubs(Jit* j) {
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
-_Static_assert(FAST_SIZE == 2048, "ST_INDIRECT hashes with 11 bits");
+_Static_assert(FAST_SIZE == 8192, "ST_INDIRECT hashes with 13 bits");
 
 typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
@@ -2188,6 +2224,12 @@ void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, 
     j->gatherPut = put;
     j->gatherCtx = ctx;
     j->gatherEa = ea;
+    jit_invalidate_all(j);
+}
+
+void jit_set_gather_buffer(Jit* j, u8* buf, u32* len) {
+    j->gatherBuf = buf;
+    j->gatherLen = len;
     jit_invalidate_all(j);
 }
 
