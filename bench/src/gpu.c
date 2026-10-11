@@ -35,6 +35,7 @@
 #include "gpu_pad64_shbin.h"
 #include "gpu_pad128_shbin.h"
 #include "gpu_pal_shbin.h"
+#include "gpu_pal3_shbin.h"
 
 #define GPU_TIMEOUT_S   2.0
 #define POLL_NS         20000      // 20 us between idle polls
@@ -219,7 +220,7 @@ static double measure(DrawFn draw, int arg, bool verify, bool* drawn)
             want = t > 1e-6 ? (int)(MEASURE_S / t) : 200;
             if (want < 3) want = 3;
             if (want > 200) want = 200;
-            if (g_w2only) want = 3;  // quick mode (emulator check): emulated GPU time is not real time
+            if (g_quick) want = 3;   // quick mode (emulator check): emulated GPU time is not real time
         }
         if (frames >= want || total > MEASURE_MAX_S) break;
     }

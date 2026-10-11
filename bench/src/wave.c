@@ -424,11 +424,11 @@ void bench_wave(void)
     P("== WAVE 2: memory, cores, audio ==\n");
     test_bandwidth();
     test_flush();
-    if (g_w2only) P("quick mode: cross-core tests skipped (an emulator does not run cores 1-3 in parallel)\n");
+    if (g_quick) P("quick mode: cross-core tests skipped (an emulator does not run cores 1-3 in parallel)\n");
     else {
         test_coreshare();
         test_core1();
     }
     test_audio();
-    if (!g_w2only) test_wfe();   // last: if WFE is not allowed in user mode it raises an exception and ends this module
+    if (!g_quick) test_wfe();   // last: if WFE is not allowed in user mode it raises an exception and ends this module
 }

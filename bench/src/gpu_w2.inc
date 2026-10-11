@@ -9,11 +9,11 @@ typedef struct { s16 x, y, z, w; u8 r, g, b, a; s16 u, v; } VtxI;               
 _Static_assert(sizeof(VtxP) == 28, "VtxP layout");
 _Static_assert(sizeof(VtxI) == 16, "VtxI layout");
 
-enum { PX_PAD16, PX_PAD64, PX_PAD128, PX_PAL, PX_N };
+enum { PX_PAD16, PX_PAD64, PX_PAD128, PX_PAL, PX_PAL3, PX_N };
 static DVLB_s* g_dvlbX[PX_N];
 static shaderProgram_s g_progX[PX_N];
 static bool g_progXOk[PX_N];
-static int g_uProjX[PX_N], g_uPal = -1;
+static int g_uProjX[PX_N], g_uPal = -1, g_uPal3 = -1;
 static VtxP* g_triP;
 static VtxI* g_triI;
 static Vtx* g_strip;          // 100 rows x 202 vertices, one triangle strip per row
@@ -28,9 +28,9 @@ static int g_drawN, g_drawFirst;
 
 static void w2_load_shaders(void)
 {
-    static const u8* bins[PX_N] = { gpu_pad16_shbin, gpu_pad64_shbin, gpu_pad128_shbin, gpu_pal_shbin };
+    static const u8* bins[PX_N] = { gpu_pad16_shbin, gpu_pad64_shbin, gpu_pad128_shbin, gpu_pal_shbin, gpu_pal3_shbin };
     static const u32* sizes[PX_N] = { &gpu_pad16_shbin_size, &gpu_pad64_shbin_size, &gpu_pad128_shbin_size,
-                                      &gpu_pal_shbin_size };
+                                      &gpu_pal_shbin_size, &gpu_pal3_shbin_size };
     for (int i = 0; i < PX_N; i++) {
         g_progXOk[i] = load_shader(&g_dvlbX[i], &g_progX[i], bins[i], *sizes[i]);
         g_uProjX[i] = g_progXOk[i] ? shaderInstanceGetUniformLocation(g_progX[i].vertexShader, "projection") : -1;
@@ -38,6 +38,8 @@ static void w2_load_shaders(void)
     }
     if (g_progXOk[PX_PAL]) g_uPal = shaderInstanceGetUniformLocation(g_progX[PX_PAL].vertexShader, "pal");
     if (g_uPal < 0 && g_progXOk[PX_PAL]) { shaderProgramFree(&g_progX[PX_PAL]); g_progXOk[PX_PAL] = false; }
+    if (g_progXOk[PX_PAL3]) g_uPal3 = shaderInstanceGetUniformLocation(g_progX[PX_PAL3].vertexShader, "pal");
+    if (g_uPal3 < 0 && g_progXOk[PX_PAL3]) { shaderProgramFree(&g_progX[PX_PAL3]); g_progXOk[PX_PAL3] = false; }
 }
 
 static void w2_free(void)
@@ -147,7 +149,7 @@ static double measure_cpu(DrawFn draw, int arg, double* cpuMs, bool* drawn)
             want = t > 1e-6 ? (int)(MEASURE_S / t) : 200;
             if (want < 3) want = 3;
             if (want > 100) want = 100;
-            if (g_w2only) want = 3;
+            if (g_quick) want = 3;
         }
         if (frames >= want || total > MEASURE_MAX_S) break;
     }
@@ -405,7 +407,10 @@ static void test_w2_transfer(void)
     static const char* nm[5] = { "xfer 400x240 lin", "xfer ->RGB565", "xfer 2x2 down", "texcopy 256KB", "clear target" };
     static const double mb[5] = { SCR_PX * 4 / 1e6, SCR_PX * 4 / 1e6, SCR_PX * 4 / 1e6, TEX_BYTES / 1e6, SCR_PX * 8 / 1e6 };
     if (!g_rb || !g_stage) { P("G14 SKIPPED: alloc\n"); return; }
-    for (int k = 0; k < 5; k++) {
+    if (!g_vtxVram) g_vtxVram = vramAlloc(TEX_BYTES);
+    static const int order[5] = { 0, 1, 3, 4, 2 };   // the 2x2 downscale last: it hung the GPU in gcbench 4
+    for (int oi = 0; oi < 5; oi++) {
+        int k = order[oi];
         step(nm[k]);
         if (!gpu_ok(nm[k])) return;
         if (k == 3 && !g_vtxVram) { P("%s SKIPPED: no VRAM buffer\n", nm[k]); continue; }
@@ -562,8 +567,120 @@ static void test_w2_contention(void)
     free(b);
 }
 
+// G2b: what an extra vertex attribute costs (gcbench 4: a 4th attribute took 60k triangles from 6.0 to 3.6 Mtri/s
+// while 128 extra shader instructions cost nothing). Same triangles, 2 / 3 / 4 attributes, and the palette with its
+// index packed into position.w (3 attributes) against the 4-attribute palette.
+typedef struct { float x, y, z, idx; u8 r, g, b, a; float u, v; } VtxQ;   // 28 bytes, 3 attributes
+typedef struct { float x, y, z; u8 r, g, b, a; } VtxC;                   // 16 bytes, 2 attributes
+_Static_assert(sizeof(VtxQ) == 28, "VtxQ layout");
+_Static_assert(sizeof(VtxC) == 16, "VtxC layout");
+
+static void test_w2_attrs(void)
+{
+    P("-- W2 G2b attributes vs palette index packing (60k tris) --\n");
+    if (!g_tri || !g_triP) { P("G2b SKIPPED: alloc\n"); return; }
+    VtxQ* q = linearAlloc(TRI_VERTS * sizeof(VtxQ));
+    VtxC* c = linearAlloc(TRI_VERTS * sizeof(VtxC));
+    if (!q || !c) { P("G2b SKIPPED: alloc\n"); if (q) linearFree(q); if (c) linearFree(c); return; }
+    for (int k = 0; k < TRI_VERTS; k++) {
+        const Vtx* v = &g_tri[k];
+        q[k] = (VtxQ){ v->x, v->y, v->z, (float)(3 * ((k / 3) % 28)), v->r, v->g, v->b, v->a, v->u, v->v };
+        c[k] = (VtxC){ v->x, v->y, v->z, v->r, v->g, v->b, v->a };
+        g_triP[k].idx = (float)(3 * ((k / 3) % 28));
+    }
+    GSPGPU_FlushDataCache(q, TRI_VERTS * sizeof(VtxQ));
+    GSPGPU_FlushDataCache(c, TRI_VERTS * sizeof(VtxC));
+    GSPGPU_FlushDataCache(g_triP, TRI_VERTS * sizeof(VtxP));
+    bool drawn;
+    for (int t = 0; t < 5; t++) {
+        static const char* nm[5] = { "attr2 16B", "attr3 24B", "attr4 28B", "pal 4attr 28m", "pal3 packed 28m" };
+        step(nm[t]);
+        if (!gpu_ok(nm[t])) break;
+        C3D_AttrInfo* ai = C3D_GetAttrInfo();
+        AttrInfo_Init(ai);
+        bool ok = true;
+        switch (t) {
+        case 0:
+            use_simple(&g_projTop);
+            AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 3);
+            AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+            ok = buf_set(c, sizeof(VtxC), 2, 0x10);
+            break;
+        case 1:
+            use_simple(&g_projTop); attr_vtx(); ok = buf_vtx(g_tri);
+            break;
+        case 2:
+        case 3:
+            if (t == 3 && !g_progXOk[PX_PAL]) { ok = false; break; }
+            if (t == 3) { use_x(PX_PAL, &g_projTop); pal_identity(); } else use_simple(&g_projTop);
+            attr_vtxp();
+            ok = buf_set(g_triP, sizeof(VtxP), 4, 0x3210);
+            break;
+        default:
+            if (!g_progXOk[PX_PAL3]) { ok = false; break; }
+            use_x(PX_PAL3, &g_projTop);
+            for (int m = 0; m < 28; m++)
+                for (int r = 0; r < 3; r++)
+                    C3D_FVUnifSet(GPU_VERTEX_SHADER, g_uPal3 + 3 * m + r, r == 0, r == 1, r == 2, 0.0f);
+            AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
+            AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+            AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
+            ok = buf_set(q, sizeof(VtxQ), 3, 0x210);
+            break;
+        }
+        if (!ok) { P("%s SKIPPED: shader or BufInfo\n", nm[t]); continue; }
+        env_color();
+        double ms = measure(draw_tri_arrays, 3, true, &drawn);
+        w2_tri_line(nm[t], 3 * GRID_TRIS, ms, drawn, -1);
+    }
+    if (!g_dead) { linearFree(q); linearFree(c); }
+}
+
+// M6 again, done right: each core's counter loop checks the clock only every 64k increments.
+static volatile int g_ctrStop;
+static void ctr_worker(void* arg)
+{
+    volatile u32* p = arg;
+    while (!g_ctrStop) for (int i = 0; i < 65536; i++) (*p)++;
+}
+
+static void test_w2_falseshare(void)
+{
+    P("-- W2 M6b counters on one cache line vs separate lines --\n");
+    static volatile u32 ctrs[16] __attribute__((aligned(32)));
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    for (int far = 0; far < 2; far++) {
+        step("false sharing");
+        memset((void*)ctrs, 0, sizeof ctrs);
+        g_ctrStop = 0;
+        volatile u32* other = &ctrs[far ? 8 : 1];
+        Thread th = threadCreate(ctr_worker, (void*)other, 8 * 1024, prio, 2, false);
+        if (!th) { P("M6b SKIPPED: thread\n"); return; }
+        double t0 = now_s();
+        while (now_s() - t0 < 0.2) for (int i = 0; i < 65536; i++) ctrs[0]++;
+        double t = now_s() - t0;
+        g_ctrStop = 1;
+        threadJoin(th, U64_MAX);
+        threadFree(th);
+        P("%s: core0 %.1f M/s, core2 %.1f M/s\n", far ? "separate lines" : "same line   ", ctrs[0] / t / 1e6, *other / t / 1e6);
+    }
+}
+
 static void bench_gpu_w2(void)
 {
+    if (g_followup) {
+        P("\n== GPU follow-up (gcbench 4b) ==\n");
+        step("w2 setup");
+        w2_load_shaders();
+        w2_build();
+        test_w2_attrs();
+        test_w2_combiner();
+        test_w2_contention();
+        test_w2_falseshare();
+        test_w2_transfer();   // last: its 2x2 downscale hung the GPU in gcbench 4
+        return;
+    }
     P("\n== GPU wave 2 (gc3ds plan) ==\n");
     step("w2 setup");
     w2_load_shaders();
@@ -575,7 +692,9 @@ static void bench_gpu_w2(void)
     test_w2_draws();
     test_w2_vertex();
     test_w2_texfmt();
-    test_w2_transfer();
+    test_w2_attrs();
     test_w2_combiner();
     test_w2_contention();
+    test_w2_falseshare();
+    test_w2_transfer();   // last: its 2x2 downscale hung the GPU in gcbench 4
 }
