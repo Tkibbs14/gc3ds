@@ -109,6 +109,24 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - `tp_copies.sh A B` lists TP's EFB copies.
   - `tp_profile.sh S` gives guest hot spots.
 
+## Late 2026-10-10: the title scene's two biggest costs, fixed but not yet measured on the 2DS
+
+| Item | Measured on the 2DS (eb867fd) | Change |
+|---|---|---|
+| Float / paired-single fallbacks (`fpfb`) | 50.5% of the time, ~1.1 us each | b614a7a: compiled on VFP ("fast float"); 97.1% native under qemu |
+| Lighting (`lit`) | 17.8% (~600 cycles per light evaluation) | 3979659: light by light, four vertices interleaved, no compares in the loop |
+| Gathering vertex attributes (`dec`) | 3.9% | — |
+| Vertex position and texgen (rest of `vtx`) | ~9% | next candidate |
+
+- **Still interpreted:**
+  - `psq_st` to the write-gather pipe (non-RAM address);
+  - cache instructions (`icbi`, `dcbi`);
+  - `mfmsr` / `mtmsr`.
+- **Save states (38bf728) store events by index,** so a state now survives code changes. A struct change still
+  invalidates it; remake it with `tools/tp_run.sh --frames 901 --press A@200-206,A@400-406 --save-state 900:...`.
+- **qemu cannot catch VFPv3-only encodings.** Its `-cpu cortex-a7` accepts VFPv3, and the ARM11 only has VFPv2.
+  Check new VFP encoders by hand (b614a7a's are all VFPv2, d0-d7 only).
+
 ## Next work, ordered by speed gained per token
 
 1. **Vertices: done on the CPU instead (0b29e22, not yet measured on the 2DS).** `gx/vfast.c` replaces the
