@@ -30,6 +30,8 @@ static u32 g_presents;        // fields shown on the top screen
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
+void hwprobe_run(System* s);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt
+
 static void scan_dir(const char* dir) {
     DIR* d = opendir(dir);
     if (!d) return;
@@ -458,6 +460,8 @@ int main(void) {
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
+    printf("measuring the hardware (sdmc:/gc3ds/hw.txt)...\n");
+    hwprobe_run(&g_sys);
     g_pica = pica_attach(&g_sys);
     if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
     g_sys.on_field = on_field;
