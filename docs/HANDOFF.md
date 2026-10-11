@@ -109,6 +109,21 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - `tp_copies.sh A B` lists TP's EFB copies.
   - `tp_profile.sh S` gives guest hot spots.
 
+## Reading 2DS runs without photos (26ffafc)
+
+**Read `sdmc:/gc3ds/perf.csv` (E:\gc3ds\perf.csv when the card is in the PC) before asking the owner for photos.**
+- Each run starts with a `# run` line (program, measured CPU clock, JIT on/off) and a `# cores` line: how much work
+  threads on cores 1-3 get done compared with core 0.
+- Then one row per second:
+  - speed, fields emulated / shown / dropped, average and worst host time per field;
+  - every profile area;
+  - JIT counters, compiles, poll skips and code-buffer use;
+  - GX and disc bytes;
+  - GPU batches, submits, splits, texture decodes, EFB and XFB copies, clears;
+  - citro3d CPU and GPU ms per frame;
+  - free heap, linear memory and VRAM.
+- Every 10 s: the most frequent interpreted instructions and the CPU clock.
+
 ## Late 2026-10-10: the title scene's two biggest costs, fixed but not yet measured on the 2DS
 
 | Item | Measured on the 2DS (eb867fd) | Change |
