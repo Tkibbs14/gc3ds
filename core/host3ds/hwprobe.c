@@ -299,11 +299,13 @@ static void probe_jit(FILE* f, System* s, Jit* j) {
     for (u32 k = 0; k < sizeof kB / sizeof kB[0]; k++) {
         u32 instrs = 1000000;
         if (kB[k].n > instrs / 2) instrs = 2 * kB[k].n;
-        BenchOut on, off;
+        BenchOut on, off = { 0, 0, 0, 0, 0 };
         jit_set_linking(j, true);
         bench_run(s, j, kB[k].build, kB[k].n, instrs, &on);
-        jit_set_linking(j, false);
-        bench_run(s, j, kB[k].build, kB[k].n, instrs, &off);
+        if (kB[k].n <= 1024) {  // unlinked: the small programs only (each block compile syncs the I-cache)
+            jit_set_linking(j, false);
+            bench_run(s, j, kB[k].build, kB[k].n, instrs, &off);
+        }
         double ns = 1e9 / SYSCLOCK_ARM11 / instrs;
         fprintf(f, "  %-9s on %6.1f ns %6.1f cyc %5.2f ins %6.3f ic %6.3f dc | off %6.1f ns %6.1f cyc %5.2f ins %6.3f ic\n",
                 kB[k].name, on.ticks * ns, (double)on.cyc / instrs, (double)on.inst / instrs, (double)on.icm / instrs,

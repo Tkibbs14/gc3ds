@@ -16,7 +16,6 @@
 #define RG R11   // Gekko*
 #define RRAM R10 // host pointer to physical RAM 0
 #define RDC R9   // guest instructions left in this run (each exit subtracts what its block executed)
-#define RSTOP R5 // set to 1 by a slow memory access that requires leaving compiled code after the instruction
 
 // Blocks are linked: an exit to a known guest address starts as a branch to a stub that returns to the dispatcher,
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
@@ -241,13 +240,15 @@ static u32 jit_interp(Gekko* g, u32 pc, u32 inst) {
 // Encoding of a constant that is known to fit a data-processing immediate (checked at startup by jit_create).
 static u32 IMM(u32 v) { u32 enc = 0; arm_imm(v, &enc); return enc; }
 
-// Register cache: guest GPRs live in host registers r4, r6, r7 and r8 (callee-saved, so C helpers keep them) from
+// Register cache: guest GPRs, CR and XER live in host registers r4-r8 (callee-saved, so C helpers keep them) from
 // their first use in a block, and are written back (when changed: `dirty`) at every exit and before the interpreter
 // runs an instruction. Instructions compute straight into and from these registers, which removes most of the loads
 // and stores of guest state from compiled code.
-#define NSLOT 4
-static const int kSlot[NSLOT] = { R4, R6, R7, R8 };
-typedef struct { s8 id[NSLOT]; bool dirty[NSLOT]; u32 use[NSLOT]; } Rc;  // id: guest GPR or -1
+#define NSLOT 5
+static const int kSlot[NSLOT] = { R4, R5, R6, R7, R8 };
+enum { ID_CR = 32, ID_XER = 33 };  // cache ids beyond the GPRs
+typedef struct { s8 id[NSLOT]; bool dirty[NSLOT]; u32 use[NSLOT]; } Rc;  // id: GPR 0-31, ID_CR, ID_XER, or -1
+static u32 rc_off(u32 id) { return id < 32 ? OFF_GPR(id) : id == ID_CR ? OFF_CR : OFF_XER; }
 
 typedef struct {
     Emit e;
@@ -265,7 +266,7 @@ typedef struct {
     // flagsLive when that was the end of the previous instruction.
     u32 flagsAt, flagsFld;
     bool flagsSigned, flagsLive;
-    bool tailOn;        // set_tail
+    int tailFpr;        // set_tail: lfs's FPR, or -1
     int tailN, tailHost[2];
     u32 tailGpr[2];
     // Guest GPRs cached in host registers within the block (see "register cache" below).
@@ -322,7 +323,7 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
     for (int k = 0; k < NSLOT; k++) {
         if (rc->id[k] < 0 || !rc->dirty[k]) continue;
         if (jit_debug_plant == 4 && !skipped) { skipped = true; continue; }  // the fuzzer's self-test: lose a write
-        str_imm(&c->e, kSlot[k], RG, OFF_GPR((u32)rc->id[k]));
+        str_imm(&c->e, kSlot[k], RG, rc_off((u32)rc->id[k]));
     }
 }
 
@@ -337,7 +338,7 @@ static void rc_flush(Cg* c) {
 static void rc_after_interp(Cg* c) {
     if (c->inCold) {
         for (int k = 0; k < NSLOT; k++)
-            if (c->rc.id[k] >= 0) ldr_imm(&c->e, kSlot[k], RG, OFF_GPR((u32)c->rc.id[k]));
+            if (c->rc.id[k] >= 0) ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)c->rc.id[k]));
         return;
     }
     for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; }
@@ -353,7 +354,7 @@ static int rc_alloc(Cg* c, u32 r) {
         if (best < 0 || c->rc.use[k] < c->rc.use[best]) best = k;
     }
     if (best < 0) return -1;
-    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) str_imm(&c->e, kSlot[best], RG, OFF_GPR((u32)c->rc.id[best]));
+    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best]));
     c->rc.id[best] = (s8)r;
     c->rc.dirty[best] = false;
     return best;
@@ -367,13 +368,13 @@ static int src(Cg* c, u32 r, int tmp) {
     if (k >= 0) c->j->stats.forwards++;
     if (c->inCold) {
         if (k >= 0) return kSlot[k];
-        ldr_imm(&c->e, tmp, RG, OFF_GPR(r));
+        ldr_imm(&c->e, tmp, RG, rc_off(r));
         return tmp;
     }
     if (k < 0) {
         k = rc_alloc(c, r);
-        if (k < 0) { ldr_imm(&c->e, tmp, RG, OFF_GPR(r)); return tmp; }
-        ldr_imm(&c->e, kSlot[k], RG, OFF_GPR(r));
+        if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); return tmp; }
+        ldr_imm(&c->e, kSlot[k], RG, rc_off(r));
     }
     rc_touch(c, k);
     return kSlot[k];
@@ -392,7 +393,7 @@ static int dst(Cg* c, u32 r, int tmp) {
 static void dst_done(Cg* c, u32 r, int reg) {
     int k = slot_of(&c->rc, r);
     if (k >= 0 && kSlot[k] == reg) { c->rc.dirty[k] = true; return; }
-    str_imm(&c->e, reg, RG, OFF_GPR(r));
+    str_imm(&c->e, reg, RG, rc_off(r));
     if (k >= 0) mov_reg(&c->e, kSlot[k], reg);  // (cold code) keep the cached copy equal to memory
 }
 
@@ -459,22 +460,23 @@ static void emit_time(Cg* c) {
 }
 
 // CR field `fld` from the ARM flags of a compare already done (signed or unsigned), plus XER[SO]. The ARM flags are
-// left as the compare set them, so a conditional branch right after it on that field tests them directly (see
-// emit_branch_cond).
+// left as the compare set them (cache loads and stores and MOV / ORR / BIC / AND without S keep them), so a
+// conditional branch right after it on that field tests them directly (see emit_branch_cond).
 static void update_crf_from_flags(Cg* c, u32 fld, bool isSigned) {
     Emit* e = &c->e;
     u32 sh = 28 - 4 * fld;
     u32 enc = 0;
-    ldr_imm(e, R1, RG, OFF_CR);
-    ldr_imm(e, R3, RG, OFF_XER);
-    load_const(e, R2, 0xFu << sh);  // MOV / ORR / BIC / AND without S leave the flags alone
-    dp_reg(e, BIC, 0, R1, R1, R2);
-    arm_imm(8u << sh, &enc); dp_imm_c(e, isSigned ? C_LT : C_CC, ORR, 0, R1, R1, enc);
-    arm_imm(4u << sh, &enc); dp_imm_c(e, isSigned ? C_GT : C_HI, ORR, 0, R1, R1, enc);
-    arm_imm(2u << sh, &enc); dp_imm_c(e, C_EQ, ORR, 0, R1, R1, enc);
-    dp_imm(e, AND, 0, R3, R3, IMM(XER_SO));
-    dp_reg_c(e, C_AL, ORR, 0, R1, R1, R3, LSR, (int)(31 - sh));  // SO (bit 31) to the field's bit 0
-    str_imm(e, R1, RG, OFF_CR);
+    int cr = src(c, ID_CR, R1);
+    int xer = src(c, ID_XER, R3);
+    load_const(e, R2, 0xFu << sh);
+    int d = dst(c, ID_CR, R1);
+    dp_reg(e, BIC, 0, d, cr, R2);
+    arm_imm(8u << sh, &enc); dp_imm_c(e, isSigned ? C_LT : C_CC, ORR, 0, d, d, enc);
+    arm_imm(4u << sh, &enc); dp_imm_c(e, isSigned ? C_GT : C_HI, ORR, 0, d, d, enc);
+    arm_imm(2u << sh, &enc); dp_imm_c(e, C_EQ, ORR, 0, d, d, enc);
+    dp_imm(e, AND, 0, R3, xer, IMM(XER_SO));
+    dp_reg_c(e, C_AL, ORR, 0, d, d, R3, LSR, (int)(31 - sh));  // SO (bit 31) to the field's bit 0
+    dst_done(c, ID_CR, d);
     c->flagsAt = c->inCold ? NO_BRANCH : e->n;
     c->flagsFld = fld;
     c->flagsSigned = isSigned;
@@ -489,16 +491,17 @@ static void update_cr0(Cg* c, int r) {
 // XER[CA] from the ARM carry flag.
 static void set_ca_from_c(Cg* c) {
     Emit* e = &c->e;
-    ldr_imm(e, R3, RG, OFF_XER);
-    dp_imm(e, BIC, 0, R3, R3, IMM(XER_CA));
-    dp_imm_c(e, C_CS, ORR, 0, R3, R3, IMM(XER_CA));
-    str_imm(e, R3, RG, OFF_XER);
+    int x = src(c, ID_XER, R3);
+    int d = dst(c, ID_XER, R3);
+    dp_imm(e, BIC, 0, d, x, IMM(XER_CA));
+    dp_imm_c(e, C_CS, ORR, 0, d, d, IMM(XER_CA));
+    dst_done(c, ID_XER, d);
 }
 
 // ARM carry flag from XER[CA] (bit 29 shifted out by LSL #3). Clobbers r3.
 static void load_ca_to_c(Cg* c) {
-    ldr_imm(&c->e, R3, RG, OFF_XER);
-    mov_shift(&c->e, 1, R3, R3, LSL, 3);
+    int x = src(c, ID_XER, R3);
+    mov_shift(&c->e, 1, R3, x, LSL, 3);
 }
 
 // rd = rotl(rs, sh) & mask (rlwinm), using r12 for masks that do not encode.
@@ -517,50 +520,43 @@ static u32 ppc_mask(u32 mb, u32 me) {
     return mb <= me ? hi & ~lo : hi | ~lo;
 }
 
-// After a slow memory call whose status was not 1 (r3 = status, r12 = &g_status): status 2 sets RSTOP so the
-// instruction leaves compiled code once it has finished; the status is cleared for the next call.
-static void stop_flag_from_status(Cg* c) {
-    Emit* e = &c->e;
-    dp_imm(e, CMP, 1, 0, R3, 2);
-    dp_imm_c(e, C_EQ, MOV, 0, RSTOP, 0, 1);
-    dp_imm(e, MOV, 0, R3, 0, 0);
-    str_imm(e, R3, R12, 0);
-    c->pendingStop = true;
-}
-
 // After a slow-path helper call: g_status 1 = the access raised an exception (leave; nothing was written), 2 = it
-// completed but the block must stop after this instruction.
+// completed but compiled code must stop after this instruction. Leaves the status in r3 (0 or 2) for stop_tail and
+// clears g_status.
 static void slow_status(Cg* c) {
     Emit* e = &c->e;
     load_const(e, R12, (u32)(uintptr_t)&g_status);
     ldr_imm(e, R3, R12, 0);
+    dp_imm(e, MOV, 0, R1, 0, 0);
+    str_imm(e, R1, R12, 0);
     dp_imm(e, CMP, 1, 0, R3, 1);
-    u32 skip = branch_c(e, C_NE, 0);
-    dp_imm(e, MOV, 0, R3, 0, 0);
-    str_imm(e, R3, R12, 0);
-    exit_if(c, C_AL);
-    patch_branch(e, skip, e->n);
-    stop_flag_from_status(c);
+    exit_if(c, C_EQ);
+    c->pendingStop = true;
 }
 
-// The GPR stores that finish an integer or float memory instruction after its access (set by the caller before
-// emit_load / emit_store / emit_load64 / emit_store64). With a tail, a slow path that must leave compiled code after
-// the access (status 2) finishes the instruction itself and leaves, so the hot path needs no RSTOP check.
+// What finishes a memory instruction after its access (set by the caller before emit_load / emit_store /
+// emit_load64 / emit_store64): GPR results in host registers and, for lfs, an FPR from the single in r2. A slow path
+// that must leave compiled code after the access (r3 != 0) finishes the instruction with them and leaves.
 static void set_tail(Cg* c, int n, int h0, u32 g0, int h1, u32 g1) {
-    c->tailOn = true;
     c->tailN = n;
     c->tailHost[0] = h0; c->tailGpr[0] = g0;
     c->tailHost[1] = h1; c->tailGpr[1] = g1;
 }
 
 static void stop_tail(Cg* c) {
-    if (!c->tailOn || !c->pendingStop) return;
+    if (!c->pendingStop) return;
     Emit* e = &c->e;
-    dp_imm(e, CMP, 1, 0, RSTOP, 0);
+    dp_imm(e, CMP, 1, 0, R3, 0);
     u32 skip = branch_c(e, C_EQ, 0);
     // Write back the cache as it stands, then the instruction's results straight to memory, and leave.
     rc_emit_flush(c, &c->rc);
     for (int k = 0; k < c->tailN; k++) str_imm(e, c->tailHost[k], RG, OFF_GPR(c->tailGpr[k]));
+    if (c->tailFpr >= 0) {
+        vmov_s_r(e, 0, R2);
+        vcvt_f64_f32(e, 1, 0);
+        vstr_d(e, 1, RG, OFF_FPR((u32)c->tailFpr));
+        vstr_d(e, 1, RG, OFF_FPR((u32)c->tailFpr) + 8);
+    }
     Rc clean = c->rc;
     for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
     exit_snap(c, C_AL, false, 0, &clean);  // g->pc is already the next instruction
@@ -658,9 +654,7 @@ static void store_slow(Cg* c, u32 size, int vreg) {
         call(c, (const void*)jit_gather);
         mov_reg(e, R3, R0);
         pop_regs(e, EA_SAVE);
-        dp_imm(e, CMP, 1, 0, R3, 0);
-        dp_imm_c(e, C_NE, MOV, 0, RSTOP, 0, 1);  // leave once the instruction is done (as stop_flag_from_status)
-        c->pendingStop = true;
+        c->pendingStop = true;  // r3 != 0: leave once the instruction is done (stop_tail)
         pipeDone = branch_c(e, C_AL, 0);
         patch_branch(e, notPipe, e->n);
     }
@@ -728,10 +722,10 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
             notTaken[nNot++] = branch_c(e, (bo & 8) ? cond ^ 1 : cond, 0);  // ARM conditions invert by bit 0
             c->j->stats.fusedBranches++;
         } else {
-            ldr_imm(e, R0, RG, OFF_CR);
+            int cr = src(c, ID_CR, R0);  // after rc_flush: a slot loaded here is clean
             u32 bit = 1u << (31 - bi), enc;
             if (!arm_imm(bit, &enc)) enc = 0;
-            dp_imm(e, TST, 1, 0, R0, enc);
+            dp_imm(e, TST, 1, 0, cr, enc);
             notTaken[nNot++] = branch_c(e, (bo & 8) ? C_EQ : C_NE, 0);  // want bit set: not taken if clear
         }
     }
@@ -1001,12 +995,13 @@ static bool compile_int(Cg* c, u32 inst) {
             mov_shift(e, 1, R3, s, LSL, (int)(32 - sh));       // Z = no 1-bits shifted out
             dp_reg_c(e, C_NE, MOV, 0, R2, 0, s, LSR, 31);      // CA = sign when bits were lost
         }
+        int x = src(c, ID_XER, R3);
+        int xd = dst(c, ID_XER, R3);
+        dp_imm(e, BIC, 0, xd, x, IMM(XER_CA));
+        dp_reg_c(e, C_AL, ORR, 0, xd, xd, R2, LSL, 29);
+        dst_done(c, ID_XER, xd);
         int d = dst(c, ra, R0);
         if (sh) mov_shift(e, 0, d, s, ASR, (int)sh); else mov_reg(e, d, s);
-        ldr_imm(e, R3, RG, OFF_XER);
-        dp_imm(e, BIC, 0, R3, R3, IMM(XER_CA));
-        dp_reg_c(e, C_AL, ORR, 0, R3, R3, R2, LSL, 29);
-        str_imm(e, R3, RG, OFF_XER);
         dst_done(c, ra, d);
         if (rc) update_cr0(c, d);
         return true;
@@ -1057,7 +1052,22 @@ static bool compile_int(Cg* c, u32 inst) {
     }
     case 339: case 467: {  // mfspr / mtspr for LR, CTR, XER and SPRs that are plain storage
         u32 spr = ((inst >> 16) & 31) | ((inst >> 6) & 0x3E0);
-        u32 off = spr == 8 ? OFF_LR : spr == 9 ? OFF_CTR : spr == 1 ? OFF_XER : 0;
+        if (spr == 1) {  // XER (cached)
+            if (xo == 339) {
+                int x = src(c, ID_XER, R1);
+                int d = dst(c, rd, R0);
+                mov_reg(e, d, x);
+                dst_done(c, rd, d);
+            } else {
+                int s = src(c, rd, R0);
+                load_const(e, R2, XER_MASK);
+                int d = dst(c, ID_XER, R1);
+                dp_reg(e, AND, 0, d, s, R2);
+                dst_done(c, ID_XER, d);
+            }
+            return true;
+        }
+        u32 off = spr == 8 ? OFF_LR : spr == 9 ? OFF_CTR : 0;
         int base = RG;
         if (!off) {
             bool plain = spr == SPR_SRR0 || spr == SPR_SRR1 || spr == SPR_DAR || spr == SPR_DSISR ||
@@ -1074,14 +1084,14 @@ static bool compile_int(Cg* c, u32 inst) {
             dst_done(c, rd, d);
         } else {
             int s = src(c, rd, R0);
-            if (spr == 1) { load_const(e, R2, XER_MASK); dp_reg(e, AND, 0, R2, s, R2); s = R2; }
             str_imm(e, s, base, off);
         }
         return true;
     }
     case 19: {  // mfcr
+        int cr = src(c, ID_CR, R1);
         int d = dst(c, rd, R0);
-        ldr_imm(e, d, RG, OFF_CR);
+        mov_reg(e, d, cr);
         dst_done(c, rd, d);
         return true;
     }
@@ -1132,12 +1142,13 @@ static bool compile_int(Cg* c, u32 inst) {
         u32 crm = (inst >> 12) & 0xFF, m = 0;
         for (int i = 0; i < 8; i++) if (crm & (0x80u >> i)) m |= 0xF0000000u >> (4 * i);
         int s = src(c, rd, R0);
-        ldr_imm(e, R1, RG, OFF_CR);
+        int cr = src(c, ID_CR, R1);
         load_const(e, R2, m);
         dp_reg(e, AND, 0, R3, s, R2);
-        dp_reg(e, BIC, 0, R1, R1, R2);
-        dp_reg(e, ORR, 0, R1, R1, R3);
-        str_imm(e, R1, RG, OFF_CR);
+        int d = dst(c, ID_CR, R1);
+        dp_reg(e, BIC, 0, d, cr, R2);
+        dp_reg(e, ORR, 0, d, d, R3);
+        dst_done(c, ID_CR, d);
         return true;
     }
     }
@@ -1269,6 +1280,8 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
     switch (kind) {
     case 0:
+        set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+        c->tailFpr = (int)fr;
         emit_load(c, 4, false, R2);
         vmov_s_r(e, 0, R2);
         vcvt_f64_f32(e, 1, 0);
@@ -1366,11 +1379,12 @@ static void emit_fcmp(Cg* c, u32 crf, u32 fa, u32 fb) {
     dp_imm_c(e, C_MI, MOV, 0, R0, 0, 8);
     dp_imm_c(e, C_EQ, MOV, 0, R0, 0, 2);
     dp_imm_c(e, C_GT, MOV, 0, R0, 0, 4);
-    ldr_imm(e, R1, RG, OFF_CR);
+    int cr = src(c, ID_CR, R1);
+    int d = dst(c, ID_CR, R1);
     arm_imm(0xFu << sh, &enc);
-    dp_imm(e, BIC, 0, R1, R1, enc);
-    dp_reg_c(e, C_AL, ORR, 0, R1, R1, R0, LSL, (int)sh);
-    str_imm(e, R1, RG, OFF_CR);
+    dp_imm(e, BIC, 0, d, cr, enc);
+    dp_reg_c(e, C_AL, ORR, 0, d, d, R0, LSL, (int)sh);
+    dst_done(c, ID_CR, d);
     ldr_imm(e, R2, RG, OFF_FPSCR);
     dp_imm(e, BIC, 0, R2, R2, IMM(FPSCR_FPCC));
     dp_reg_c(e, C_AL, ORR, 0, R2, R2, R0, LSL, 12);
@@ -1588,18 +1602,14 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         // flags its last emitted instruction set are there on all of them.
         c->flagsLive = i > 0 && c->flagsAt == e->n;
         c->pinned = 0;
-        c->tailOn = false;
+        c->tailN = 0;
+        c->tailFpr = -1;
         j->stats.instrsCompiled++;
         if (is_branch(inst)) {
             if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
         } else if (compile_int(c, inst) || compile_float(c, inst)) {
             j->stats.instrsNative++;
-            if (c->pendingStop) {
-                // g->pc was set to the next instruction by the helper; the exit counts this instruction.
-                dp_imm(e, CMP, 1, 0, RSTOP, 0);
-                exit_if(c, C_NE);
-                c->pendingStop = false;
-            }
+            if (c->pendingStop) e->overflow = true;  // a slow path without stop_tail: never compile it
             continue;
         }
         count_op(&j->stats.fallback, inst);
@@ -1652,7 +1662,7 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     return fn;
 }
 
-// The shared stubs, at the start of the code buffer. Compiled code keeps RG, RRAM, RDC and RSTOP in registers
+// The shared stubs, at the start of the code buffer. Compiled code keeps RG, RRAM and RDC in registers
 // from ST_ENTER until it leaves through ST_EXIT, which returns r0 to the dispatcher (a link site or 0) and stores
 // the budget left in *left.
 //   ST_ENTER (g, fn, budget, left): saves the C registers, sets up the block registers and jumps to fn.
@@ -1669,7 +1679,6 @@ static void emit_stubs(Jit* j) {
     push_regs(e, 0x4FF8);  // {r3-r11, lr}: 10 registers keep the stack 8-byte aligned for C calls
     mov_reg(e, RG, R0);
     load_const(e, RRAM, (u32)(uintptr_t)j->ram);
-    dp_imm(e, MOV, 0, RSTOP, 0, 0);
     mov_reg(e, RDC, R2);
     bx_reg_c(e, C_AL, R1);
     j->stub[ST_EXIT] = e->n;

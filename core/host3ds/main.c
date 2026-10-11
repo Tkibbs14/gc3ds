@@ -528,7 +528,10 @@ int main(void) {
     // recompiled about a million blocks in 12 emulated seconds (35% of the time).
     g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 16u << 20);
     printf("measuring the hardware (sdmc:/gc3ds/hw.txt)...\n");
-    hwprobe_run(&g_sys, g_jit);
+    // Test builds that autorun a program (Azahar) skip the JIT benchmarks: Azahar runs them very slowly.
+    FILE* testBuild = fopen("romfs:/autorun.txt", "r");
+    if (testBuild) fclose(testBuild);
+    hwprobe_run(&g_sys, testBuild ? NULL : g_jit);
     g_pica = pica_attach(&g_sys);
     if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
     // GX on core 2 (gxthread.c); B in the menu switches it off for comparison.
