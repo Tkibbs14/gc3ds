@@ -1,5 +1,22 @@
 # GameCube and Wii: what games need, and what the 3DS still has to prove
 
+## Owner decisions pending (James decides; no session settles these on its own)
+
+1. **fres / frsqrte estimate tables.**
+   - Real hardware returns table-based estimates. Twilight Princess, Mario Sunshine, Mario Kart Double Dash, Mario
+     Galaxy and Mario Party 6/7 misbehave with exact results (Dolphin bug #7304). gc3ds computes them exactly.
+   - Dolphin's tables are GPL and gc3ds is MIT. The question is where the values come from: measured on real
+     GameCube/Wii hardware by us, a permissively licensed source, or a licence decision.
+2. **Low-level audio (DSP LLE) titles** (79 settings files, mostly SNK). Too heavy for the 3DS CPU. Options: a
+   per-game high-level path, or no sound for those titles.
+3. **Wii disc decryption.** Real-time software AES costs 61–92% of a core (measured 10.1 MB/s). Options: decrypt on
+   the PC beforehand, or keep a decrypted cache on the SD card.
+4. **Audio below full speed.**
+   - Proposed: mute below ~50% speed, time-stretch (WSOLA, measured 0.66% of a core) between 50% and 100%, and pace to
+     audio at full speed.
+   - Alternatives: pitch-down playback, or always stretch.
+5. **Game patches** such as Dolphin's two-instruction "Hyrule Field speed hack" for TP's minimap draws.
+
 Research digest, 2026-10-11, from five web-research passes:
 - Gekko/Broadway CPU accuracy;
 - Flipper/Hollywood GPU;
