@@ -461,6 +461,12 @@ renderer only):
      and store calls a shared stub for its MEM1 fast path (2 words per site instead of ~9). JIT fuzzer 20,000 cases
      0 fails, `arm_jit_check.sh` frames identical. perf.csv A/B: 20 s phases (`memstub`; each switch recompiles,
      so skip each phase's first seconds).
+   - **2DS, 3bffa35 (perf_2026-10-11_memstub.csv, ~160 rows per phase):** memory stubs on **15.26%**, off 14.72%;
+     I-cache misses 12.6 → 9.5 M/s, cycles stalled for instructions 358 → 283 M/s. On.
+   - **2DS, a5318cb (perf_2026-10-11_pipefast.csv, TP run at line 5744, ~165 rows per phase):** inline pipe
+     stores on 14.69%, off 14.16% (+3.7%): on. Both halves fell below 15.26% because the indirect-branch tables
+     went from 4 x 2048 to 2 x 8192 entries: TP uses more than two block keys, so tables were reset 186 times a
+     second (was 0), misses rose 19.6k → 24k/s and time outside compiled code 9 → 26%. Now 4 x 4096.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /

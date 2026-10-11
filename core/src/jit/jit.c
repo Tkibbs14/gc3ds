@@ -21,8 +21,8 @@
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
-#define FAST_SIZE 8192
-#define FAST_TABLES 2  // one table per block key seen recently (switching tables instead of clearing one)
+#define FAST_SIZE 4096
+#define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 640 };
@@ -1991,8 +1991,8 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;
-    mov_shift(e, 0, R1, R2, LSL, 17);  // (pc >> 2) & 8191
-    mov_shift(e, 0, R1, R1, LSR, 19);
+    mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
+    mov_shift(e, 0, R1, R1, LSR, 20);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
@@ -2022,7 +2022,7 @@ static void emit_stubs(Jit* j) {
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
-_Static_assert(FAST_SIZE == 8192, "ST_INDIRECT hashes with 13 bits");
+_Static_assert(FAST_SIZE == 4096, "ST_INDIRECT hashes with 12 bits");
 
 typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
