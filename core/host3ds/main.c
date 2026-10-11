@@ -478,11 +478,11 @@ static void run(const char* path) {
                                 (unsigned long long)js->gatherStores, (unsigned long long)js->links,
                                 g_pica ? (unsigned long)pica_queue_offset() : 0UL);
                         // Returns to the C dispatcher per second over the last 10 s, by reason, and emulation slices.
-                        static u64 last[5];
-                        u64 cur[5] = { js->dispLink, js->dispIndirect, js->dispBudget, js->dispOther, g_gekkoRuns };
+                        static u64 last[6];
+                        u64 cur[6] = { js->dispLink, js->dispIndirect, js->dispBudget, js->dispOther, g_gekkoRuns, js->fastSwitches };
                         fprintf(g_perf, "# dispatches/s: link requests %.0f, indirect misses %.0f, budget ends %.0f, other "
-                                "%.0f; gekko_run slices/s %.0f\n", (cur[0] - last[0]) / 10.0, (cur[1] - last[1]) / 10.0,
-                                (cur[2] - last[2]) / 10.0, (cur[3] - last[3]) / 10.0, (cur[4] - last[4]) / 10.0);
+                                "%.0f; gekko_run slices/s %.0f; indirect table resets/s %.0f\n", (cur[0] - last[0]) / 10.0, (cur[1] - last[1]) / 10.0,
+                                (cur[2] - last[2]) / 10.0, (cur[3] - last[3]) / 10.0, (cur[4] - last[4]) / 10.0, (cur[5] - last[5]) / 10.0);
                         memcpy(last, cur, sizeof last);
                     }
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());

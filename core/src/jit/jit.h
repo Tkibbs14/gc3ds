@@ -22,6 +22,7 @@ typedef struct {
     u64 links;      // exits patched to jump straight to their target block
     u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR reads served by the register cache
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
+    u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
     u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
     u64 slowLoads, slowStores;    // loads / stores through the C helpers (MMIO, write-gather pipe, non-standard BATs)

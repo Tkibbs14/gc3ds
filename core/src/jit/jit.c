@@ -21,7 +21,8 @@
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
-#define FAST_SIZE 4096
+#define FAST_SIZE 2048
+#define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 96 };
@@ -35,6 +36,7 @@ enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST
 #define OFF_PC ((u32)offsetof(Gekko, pc))
 #define OFF_MSR ((u32)offsetof(Gekko, msr))
 #define OFF_HOSTPC ((u32)offsetof(Gekko, hostPc))
+#define OFF_FASTBASE ((u32)offsetof(Gekko, fastBase))
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
 // FPR r: ps0 at +0 and ps1 at +8, each a host double (low word first); vldr/vstr reach 1020 bytes.
 #define OFF_FPR(r) ((u32)offsetof(Gekko, fpr) + 16u * (u32)(r))
@@ -63,8 +65,9 @@ struct Jit {
     JitStats stats;
     u32 stub[ST_INTERP + 1];    // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
-    FastEntry* fast;            // indirect-branch table, valid for blocks of key fastKey only
-    u32 fastKey;
+    FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
+    u32 fastKeys[FAST_TABLES], fastNext;
+    bool fastUsed[FAST_TABLES];
     u32 gen;                    // bumped by every flush: a pending link from before it is dropped
     bool linking;
     u32 insnsSinceFlush;        // guest instructions compiled into the code now in the buffer
@@ -1754,9 +1757,9 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;
-    mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
-    mov_shift(e, 0, R1, R1, LSR, 20);
-    load_const(e, R12, (u32)(uintptr_t)j->fast);
+    mov_shift(e, 0, R1, R2, LSL, 19);  // (pc >> 2) & 2047
+    mov_shift(e, 0, R1, R1, LSR, 21);
+    ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
@@ -1784,7 +1787,7 @@ static void emit_stubs(Jit* j) {
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
-_Static_assert(FAST_SIZE == 4096, "ST_INDIRECT hashes with 12 bits");
+_Static_assert(FAST_SIZE == 2048, "ST_INDIRECT hashes with 11 bits");
 
 typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
@@ -1833,9 +1836,38 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     return en;
 }
 
+static void fast_clear_one(FastEntry* t) {
+    for (u32 i = 0; i < FAST_SIZE; i++) { t[i].pc = 1; t[i].fn = NULL; }  // 1: never a guest PC
+}
+
 static void fast_clear(Jit* j) {
     if (!j->fast) return;
-    for (u32 i = 0; i < FAST_SIZE; i++) { j->fast[i].pc = 1; j->fast[i].fn = NULL; }  // 1: never a guest PC
+    for (u32 t = 0; t < FAST_TABLES; t++) { fast_clear_one(j->fast + t * FAST_SIZE); j->fastUsed[t] = false; }
+    j->fastNext = 0;
+    j->g->fastBase = (u32)(uintptr_t)j->fast;
+}
+
+// The indirect-branch table for blocks of key: compiled code only ever runs blocks of one key at a time, so the
+// stub reads the running key's table from Gekko.fastBase. A key not seen recently reuses the oldest table.
+static FastEntry* fast_select(Jit* j, u32 key) {
+    FastEntry* t = (FastEntry*)(uintptr_t)j->g->fastBase;
+    u32 cur = (u32)((uintptr_t)t - (uintptr_t)j->fast) / (FAST_SIZE * sizeof(FastEntry));  // a reset Gekko: out of range
+    if (cur < FAST_TABLES && t == j->fast + cur * FAST_SIZE && j->fastUsed[cur] && j->fastKeys[cur] == key) return t;
+    for (u32 i = 0; i < FAST_TABLES; i++)
+        if (j->fastUsed[i] && j->fastKeys[i] == key) {
+            t = j->fast + i * FAST_SIZE;
+            j->g->fastBase = (u32)(uintptr_t)t;
+            return t;
+        }
+    u32 i = j->fastNext;
+    j->fastNext = (i + 1) % FAST_TABLES;
+    t = j->fast + i * FAST_SIZE;
+    fast_clear_one(t);
+    j->fastUsed[i] = true;
+    j->fastKeys[i] = key;
+    j->stats.fastSwitches++;
+    j->g->fastBase = (u32)(uintptr_t)t;
+    return t;
 }
 
 static bool update_fastmem(Jit* j) {
@@ -1871,10 +1903,9 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
             total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1);
             break;
         }
-        // Compiled code only ever runs blocks of one key at a time: the indirect table holds that key's blocks.
-        if (j->fastKey != key) { fast_clear(j); j->fastKey = key; }
+        FastEntry* ft = fast_select(j, key);
         if (plain && j->linking) {
-            FastEntry* f = &j->fast[(pc >> 2) & (FAST_SIZE - 1)];
+            FastEntry* f = &ft[(pc >> 2) & (FAST_SIZE - 1)];
             f->pc = pc;
             f->fn = (void*)en->fn;
         }
@@ -1916,7 +1947,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->codeWords = codeBytes / 4;
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
-    j->fast = malloc(FAST_SIZE * sizeof(FastEntry));
+    j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
     j->linking = true;
     emit_stubs(j);
@@ -1958,7 +1989,7 @@ u32 jit_run_one_block(Jit* j) {
     update_fastmem(j);
     Entry* en = lookup(j, g->pc, msrBits);
     if (!en) return 0;
-    if (j->fastKey != msrBits) { fast_clear(j); j->fastKey = msrBits; }
+    fast_select(j, msrBits);
     u32* site;
     return run(j, en->fn, 0x3FFFFFFF, g->cycles, &site);
 }
