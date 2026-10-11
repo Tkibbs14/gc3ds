@@ -25,7 +25,12 @@
 #define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
-enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 96 };
+enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 640 };
+// The shared memory-access stubs (emit_mem_stubs): kinds load 32, 16 unsigned, 16 signed, 8; store 32, 16, 8, by the
+// register that holds the loaded value or the value to store (r2 or a cached-GPR slot, r4-r8).
+enum { MS_L32, MS_L16U, MS_L16S, MS_L8, MS_S32, MS_S16, MS_S8, MS_KINDS };
+#define MS_REGS 6
+static int ms_reg(int r) { return r == R2 ? 0 : r >= R4 && r <= R8 ? r - R4 + 1 : -1; }
 
 // Offsets into Gekko (ldr/str immediate range is 0..4095; everything used here is below that).
 #define OFF_GPR(r) ((u32)offsetof(Gekko, gpr) + 4u * (u32)(r))
@@ -67,6 +72,8 @@ struct Jit {
     JitStats stats;
     u32 stub[ST_INTERP + 1];    // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
+    u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
+    bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
     u32 fastKeys[FAST_TABLES], fastNext;
     bool fastUsed[FAST_TABLES];
@@ -636,10 +643,18 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
     if (!c->fastmem) { load_slow(c, size, sign, dreg); return; }
     u32 slow[2];
-    mem1_check(c, size, slow);
-    if (size == 4) { ldr_reg(e, dreg, RRAM, R1); rev(e, dreg, dreg); }
-    else if (size == 2) { ldrh_reg(e, dreg, RRAM, R1); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
-    else ldrb_reg(e, dreg, RRAM, R1);
+    int ri = ms_reg(dreg);
+    if (c->j->memStubs && ri >= 0) {  // the shared stub: two words here instead of the check and access inline
+        int k = size == 4 ? MS_L32 : size == 2 ? (sign ? MS_L16S : MS_L16U) : MS_L8;
+        branch_abs(e, C_AL, true, c->j->code + c->j->memStub[k][ri]);
+        slow[0] = branch_c(e, C_CS, 0);
+        slow[1] = NO_BRANCH;
+    } else {
+        mem1_check(c, size, slow);
+        if (size == 4) { ldr_reg(e, dreg, RRAM, R1); rev(e, dreg, dreg); }
+        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R1); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+        else ldrb_reg(e, dreg, RRAM, R1);
+    }
     u32 resume = e->n;
     cold_start(c, slow);
     load_slow(c, size, sign, dreg);
@@ -686,10 +701,18 @@ static void emit_store(Cg* c, u32 size, int vreg) {
     Emit* e = &c->e;
     if (!c->fastmem) { store_slow(c, size, vreg); return; }
     u32 slow[2];
-    mem1_check(c, size, slow);
-    if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R1); }
-    else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R1); }
-    else strb_reg(e, vreg, RRAM, R1);
+    int ri = ms_reg(vreg);
+    if (c->j->memStubs && ri >= 0) {
+        int k = size == 4 ? MS_S32 : size == 2 ? MS_S16 : MS_S8;
+        branch_abs(e, C_AL, true, c->j->code + c->j->memStub[k][ri]);
+        slow[0] = branch_c(e, C_CS, 0);
+        slow[1] = NO_BRANCH;
+    } else {
+        mem1_check(c, size, slow);
+        if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R1); }
+        else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R1); }
+        else strb_reg(e, vreg, RRAM, R1);
+    }
     u32 resume = e->n;
     cold_start(c, slow);
     store_slow(c, size, vreg);
@@ -1870,6 +1893,41 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
 //   ST_DYN: g->pc is already written; returns 0.
 //   ST_BUDGET: as ST_LINK's entry (literal = the block's own PC), but returns 0.
 //   ST_INDIRECT: r2 = target (g->pc already written): jumps to it through the table, or returns 0.
+// The memory-access stubs, reached with "bl" from a load or store whose guest address is in r0: emit_load's and
+// emit_store's fast path (aligned, inside MEM1 through 0x80000000 / 0xC0000000) shared instead of inlined at every
+// site, which took ~9 words each. Core 0 spent 44% of its cycles waiting for instructions on Twilight Princess's title
+// scene (2DS, 862fe63), about one instruction-cache miss per two guest instructions, so code size per guest
+// instruction is what to cut; a stub costs a predicted call and return. They return with the carry flag clear after
+// the access, or set (access not done) for the site's out-of-line slow path, with r0 kept; they clobber r1, r3 and lr.
+static void emit_mem_stubs(Jit* j, Emit* e) {
+    for (int k = 0; k < MS_KINDS; k++) {
+        for (int ri = 0; ri < MS_REGS; ri++) {
+            int r = ri == 0 ? R2 : R4 + ri - 1;
+            u32 size = k == MS_L32 || k == MS_S32 ? 4 : k == MS_L8 || k == MS_S8 ? 1 : 2;
+            j->memStub[k][ri] = (u16)e->n;
+            if (size > 1) {  // misaligned: "cmp r0, #0" sets the carry (r0 is not 0) and returns
+                dp_imm(e, TST, 1, 0, R0, size - 1);
+                dp_imm_c(e, C_NE, CMP, 1, 0, R0, 0);
+                bx_reg_c(e, C_NE, LR);
+            }
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+            bx_reg_c(e, C_CS, LR);  // outside MEM1
+            switch (k) {
+            case MS_L32: ldr_reg(e, r, RRAM, R1); rev(e, r, r); break;
+            case MS_L16U: ldrh_reg(e, r, RRAM, R1); rev16(e, r, r); break;
+            case MS_L16S: ldrh_reg(e, r, RRAM, R1); revsh(e, r, r); break;
+            case MS_L8: ldrb_reg(e, r, RRAM, R1); break;
+            case MS_S32: rev(e, R3, r); str_reg(e, R3, RRAM, R1); break;
+            case MS_S16: rev16(e, R3, r); strh_reg(e, R3, RRAM, R1); break;
+            default: strb_reg(e, r, RRAM, R1); break;
+            }
+            bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+        }
+    }
+}
+
 static void emit_stubs(Jit* j) {
     Emit em = { j->code, 0, ST_WORDS, false };
     Emit* e = &em;
@@ -1924,6 +1982,7 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, ADD, 0, LR, LR, 12);
     dp_imm(e, CMP, 1, 0, R0, 0);
     bx_reg_c(e, C_AL, LR);
+    emit_mem_stubs(j, e);
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
@@ -2091,6 +2150,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
     j->linking = true;
+    j->memStubs = true;
     emit_stubs(j);
     jit_invalidate_all(j);
     g_jit = j;
@@ -2115,6 +2175,14 @@ void jit_set_linking(Jit* j, bool on) {
 }
 
 bool jit_linking(const Jit* j) { return j->linking; }
+
+void jit_set_mem_stubs(Jit* j, bool on) {
+    if (j->memStubs == on) return;
+    j->memStubs = on;
+    jit_invalidate_all(j);  // blocks are compiled one way or the other
+}
+
+bool jit_mem_stubs(const Jit* j) { return j->memStubs; }
 
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) {
     j->gatherPut = put;

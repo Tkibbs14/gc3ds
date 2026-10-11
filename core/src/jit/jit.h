@@ -48,6 +48,10 @@ float jit_words_per_insn(const Jit* j);  // host code words per guest instructio
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
 void jit_set_linking(Jit* j, bool on);  // off: every block returns to the dispatcher (for comparison); drops all code
 bool jit_linking(const Jit* j);
+// Loads and stores call shared stubs for their MEM1 fast path (on by default) instead of inlining it; off inlines it
+// (comparison). Drops all code.
+void jit_set_mem_stubs(Jit* j, bool on);
+bool jit_mem_stubs(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));
 
 // Testing: limit blocks to this many instructions (0 = default) and run one block from g->pc, returning the

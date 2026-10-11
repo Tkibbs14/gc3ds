@@ -443,6 +443,24 @@ renderer only):
      path also leaves the gather to core 3. Early splits fire with up to 4 draws queued. Azahar: NeHe 5, 8 and 11
      correct; NeHe 11 also with `VBASE_SPAN` at 2000 (rebasing several times a frame). perf.csv phases: indexed x
      gpupos (`indexed`, `gpupos` columns), early splits always on.
+   - **2DS, 862fe63 (core/out/perf_2026-10-11_idx.csv, ~105 rows per phase, standard error ~0.27):** indexed +
+     GPU transform **14.56%** (now the default), not indexed / CPU transform 13.93%, indexed / CPU 13.75%, not
+     indexed / GPU 12.93%. With the default, core 0 waits for core 2 only 2.8%: **core 0 is the limit now.**
+     Its counters (each pair is live one second in five; average only those seconds): 767 Mcycles/s, IPC 0.31,
+     11.7 M I-cache misses/s, **340 M cycles/s (44%) stalled for instructions**, 120 M for data hazards, D-cache
+     read misses only 0.56 M/s.
+   - **Core 0's hottest code on the title scene** (`# hot guest code`, ~30% of samples): 0x8007f9a4
+     `dBgWKCol::ShdwDraw` (zeldaret/tp `config/GZ2E01/symbols.txt`, `src/d/d_bg_w_kcol.cpp`), the real-time
+     shadow projection onto terrain collision: a grid walk plus per-triangle PSVEC calls (`PSVECCrossProduct`
+     0x803471b4, `PSVECDotProduct` 0x80347194, `PSVECScale` 0x803470d8, `PSVECAdd` 0x80347090). The PC build prints
+     guest code with `DISASM=start:end`.
+   - **PC count (`MERGE_STATS=1`, TP to field 1500):** 76% of draws could join the previous draw's vertex job (same
+     format, state, arrays and matrices); 99.6% of draws are triangle strips. Merging is the next core 2 lever
+     when a scene makes core 2 the limit again.
+   - **Since then (not yet measured): JIT memory-access stubs** (`emit_mem_stubs`, `jit_set_mem_stubs`): each load
+     and store calls a shared stub for its MEM1 fast path (2 words per site instead of ~9). JIT fuzzer 20,000 cases
+     0 fails, `arm_jit_check.sh` frames identical. perf.csv A/B: 20 s phases (`memstub`; each switch recompiles,
+     so skip each phase's first seconds).
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /

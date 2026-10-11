@@ -351,6 +351,16 @@ int main(int argc, char** argv) {
                 ind, BPNZ(0x06) | BPNZ(0x09) | BPNZ(0x0C), BPNZ(0xF1), BPNZ(0xF5));
         #undef BPNZ
     }
+    // DISASM=start:end (hex): guest code in that range at exit, e.g. a hot spot the 3DS sampler names.
+    if (getenv("DISASM")) {
+        u32 a0 = 0, a1 = 0;
+        if (sscanf(getenv("DISASM"), "%x:%x", &a0, &a1) == 2)
+            for (u32 a = a0 & ~3u; a <= a1; a += 4) {
+                char dis[96];
+                disasm_at(&sys, a, dis, sizeof dis);
+                fprintf(stderr, "DISASM %08x  %s\n", a, dis);
+            }
+    }
     for (u32 a = g->pc - 16; a <= g->pc + 16; a += 4) {
         char dis[96];
         disasm_at(&sys, a, dis, sizeof dis);

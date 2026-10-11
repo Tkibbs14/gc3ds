@@ -760,6 +760,41 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
         }
     }
     vgpu_check(s, gx, &f, &sel, vat, raw, count, vsize, fast, v);
+    {  // MERGE_STATS: could this draw's vertices join the previous draw's vertex job (same format, state, matrices)?
+        static int on = -1;
+        if (on < 0) on = getenv("MERGE_STATS") != NULL;
+        if (on) {
+            static u32 prev[128], prevN;
+            static float prevM[21];
+            static u64 draws, merged, runs, prims[8], primsM[8];
+            static bool first = true;
+            u32 sig[128], n = 0;
+            sig[n++] = vat; sig[n++] = prim < 5 ? 0 : 1; sig[n++] = gx->bpVersion; sig[n++] = gx->tlutVersion;
+            sig[n++] = gx->xfLightVersion; sig[n++] = gx->cp[0x50]; sig[n++] = gx->cp[0x60];
+            sig[n++] = gx->cp[0x70 + vat]; sig[n++] = gx->cp[0x80 + vat]; sig[n++] = gx->cp[0x90 + vat];
+            sig[n++] = gx->cp[0x30]; sig[n++] = gx->cp[0x40];
+            for (u32 r = 0xA0; r < 0xAC; r++) sig[n++] = gx->cp[r];
+            for (u32 r = 0xB0; r < 0xBC; r++) sig[n++] = gx->cp[r];
+            for (u32 r = 0x1000; r < 0x1028; r++) sig[n++] = gx->xf[r];  // channels, viewport, projection
+            for (u32 r = 0x103F; r < 0x1048; r++) sig[n++] = gx->xf[r];  // texgens
+            // The default position matrix and its normal matrix (direct per-vertex matrix indices: never merged here).
+            u32 pn = gx->cp[0x30] & 63;
+            float m[21];
+            memcpy(m, &gx->xf[pn * 4], 48);
+            memcpy(m + 12, &gx->xf[0x400 + (pn & 31) * 3], 36);
+            bool ok = !first && n == prevN && !memcmp(sig, prev, n * 4) && !memcmp(m, prevM, sizeof m) && !(gx->cp[0x50] & 0x1FF);
+            draws++; prims[prim & 7]++;
+            if (ok) { merged++; primsM[prim & 7]++; } else runs++;
+            memcpy(prev, sig, n * 4); prevN = n; memcpy(prevM, m, sizeof m); first = false;
+            if (!(draws % 500000))
+                fprintf(stderr, "MERGE_STATS %llu draws: %llu could join the previous job (%.1f%%), %llu jobs; by prim "
+                        "q %llu/%llu t %llu/%llu s %llu/%llu f %llu/%llu\n", (unsigned long long)draws,
+                        (unsigned long long)merged, 100.0 * merged / draws, (unsigned long long)runs,
+                        (unsigned long long)primsM[0], (unsigned long long)prims[0], (unsigned long long)primsM[2],
+                        (unsigned long long)prims[2], (unsigned long long)primsM[3], (unsigned long long)prims[3],
+                        (unsigned long long)primsM[4], (unsigned long long)prims[4]);
+        }
+    }
     u32 numGens = gx->xf[0x103F] & 15;
     double ep = 0, ez = 0, et = 0;
     int ec = 0;

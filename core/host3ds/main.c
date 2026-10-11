@@ -233,7 +233,7 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 5  // A/B period: four phases (indexed x gpupos), short so each samples every part of a scene
+#define AB_SECS 20  // A/B period: memory stubs on and off (each switch recompiles all code)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
@@ -247,7 +247,7 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 4 phases (indexed: indexed draws, gpupos: vertex-shader transform) | hot guest code sampled\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 2 phases (memstub: JIT memory-access stubs) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -255,7 +255,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -379,7 +379,7 @@ static void run(const char* path) {
     if (g_jit) { xLast[0] = jit_stats(g_jit)->blocksCompiled; xLast[1] = jit_stats(g_jit)->pollSkips; }
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
-    if (g_jit) jit_set_linking(g_jit, true);
+    if (g_jit) { jit_set_linking(g_jit, true); jit_set_mem_stubs(g_jit, true); }
     if (g_pica) {
         pica_set_vertex_worker(true);
         pica_set_early_queue(true);
@@ -484,6 +484,7 @@ static void run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_gpu_transform() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_early_split() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -492,13 +493,11 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // A/B in four phases of AB_SECS: indexed draws (indexed column) and the vertex-shader transform (gpupos)
-                // on and off: indexed only, both, neither, transform only. Early splits stay on (they won on the 2DS).
-                if (g_pica && g_abGpuPos && perfRows % AB_SECS == 0) {
-                    u32 phase = (perfRows / AB_SECS) % 4;
-                    pica_set_indexed(!(phase & 2));
-                    pica_set_gpu_transform(phase == 1 || phase == 3);
-                }
+                // A/B in two phases of AB_SECS: the JIT's shared memory-access stubs on and off (memstub column; each
+                // switch recompiles everything, so read each phase after its first seconds). Indexed draws, the
+                // vertex-shader transform and early splits stay on (they won on the 2DS).
+                if (g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0)
+                    jit_set_mem_stubs(g_jit, !jit_mem_stubs(g_jit));
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
