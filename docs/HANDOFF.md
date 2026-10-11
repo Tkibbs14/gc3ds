@@ -194,6 +194,33 @@ per draw. The vertex setup cache hits 99.1% (setups for 0.9% of draws), so the c
 perf.csv's `# gx draws 10s` line (after b439173) splits draws by batch path (fast / key equal / new batch, with what
 changed) and counts vertex setups with their causes: read it before changing the per-draw path in pica.c / vfast.c.
 
+Build 5328b90 on the 2DS: 14.8%, core 0 waiting for core 2 22% of the time. The waits are the game's own GPU syncs (PE
+register reads and idle loops call `sync`, which drains the GX thread): core 0 waits at the end of a frame and core 2
+idles at the start of the next. Card run data: 99.0% of draws take the batch fast path; setups for 0.9%.
+**Since then (this commit):** shader-lit draws (99% of TP's) leave the vertex gather (all reads of guest memory, 20%
+of core 2) to the vertex worker on core 3: `vfast_prepare(..., defer)` reads only the matrix indices and copies the
+stream into the job, `vfast_finish` gathers. The worker reads guest memory later than the GX thread did, so the GX
+thread waits for the worker before posting a PE token / finish, and `wait_drained` also waits for it
+(`pica_vertex_worker_idle`). The PC path defers too, so `vfast_check.sh` checks it (TP 1,500 fields: 4,672,789 draws,
+3,708 over tolerance, as before). The batch fast path no longer copies the 384-byte key per draw.
+
+### Research digest (2026-10-11, five Haiku agents; facts marked SOURCED by them, TRM read here)
+
+- **Next big GX step:** Dolphin transforms on the GPU and uploads XF matrices only when a change tracker says so; the
+  CPU never transforms. PICA vertex shaders could do the same (uniform limits unverified). Dolphin's developers trace
+  TP's Hyrule Field slowdown to draw count (the minimap); Dolphin ships a two-instruction "Hyrule Field speed hack"
+  (`GZ2E01.ini`) and per-game manual vertex culling. A game patch is an owner decision.
+- citro3d writes ~13 GPU registers per `C3D_DrawArrays` (mode toggles and a post-vertex cache clear each time); the
+  `C3D_Sync*` copies split the frame and wait.
+- **JIT:** Dolphin's ARMv7 JIT reported "fairly large performance gains" from caching FPRs in VFP registers (PR
+  #1542); we load and store FPRs per instruction. ARM11 MPCore TRM (DDI 0360F ch. 15/19): LDR result latency 3 (a
+  dependent op stalls 2, 3 if used as a shifter operand or base); REV latency 1; VFP add/mul latency 8/9, FLDD 4,
+  FMRS to ARM 2, FMSR from ARM 4, FDIVD 29+ cycles blocking; register-target branches are never predicted (5-7
+  cycles); L1 4-way, 32-byte lines, round robin; store buffer forwards to loads.
+- **Already right:** threads on cores 2 and 3 (hw.txt), 804 MHz + L2 (`osSetSpeedupEnable`), FPSCR round-to-nearest
+  with flush-to-zero and default NaN (hw.txt `FPSCR 23000010`; threads start rounding to zero, main and the GX/worker
+  threads set it), mispredicts under 1% of core 0.
+
 - **Core 0 is the limit again** (waits for the GX thread ~10%). Its counters on the title scene: 769M cycles/s,
   251M instructions (IPC 0.33), **323M cycles stalled fetching instructions (42%)**, 11.8M I-cache misses/s (~0.85 per
   guest instruction, ~27 cycles each), 127M cycles of data-hazard stalls. The sampling profiler (da2aefd, `# hot guest

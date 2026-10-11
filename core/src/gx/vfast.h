@@ -40,10 +40,12 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
 // job memory `mem` of vfast_job_bytes, with copies of the matrices the vertices use; vfast_finish then fills in clip
 // positions, the shader-lighting inputs and texture coordinates from the job alone. prepare returns NULL on failure.
 typedef struct VJob VJob;
-u32 vfast_job_bytes(const GXCore* gx, u32 count);
+// defer (shader-lit draws only): leave the gather of attributes from guest memory to vfast_finish as well; the caller
+// must then run vfast_finish before the guest can change the vertex arrays (before PE tokens / finish are signalled).
+u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-                    u32 vsize, bool gpuLight, void* mem, PVert* out);
-void vfast_finish(const VJob* job, PVert* out);
+                    u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out);
+void vfast_finish(VJob* job, PVert* out);
 // Forgets the cached draw setup (call when GX state is replaced, e.g. a reset or a loaded state).
 void vfast_reset_cache(void);
 

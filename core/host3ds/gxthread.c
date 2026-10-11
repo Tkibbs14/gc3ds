@@ -7,6 +7,7 @@
 #define GC3DS_HOST_TYPES
 #include <string.h>
 #include "gxthread.h"
+#include "../src/gx/pica/pica.h"
 
 #define RING_BYTES (1u << 20)
 #define EV_N 1024u
@@ -31,6 +32,8 @@ static inline void dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : :
 // ---- GX thread ----
 static void ev_post(System* s, u32 kind, u32 value) {
     (void)s;
+    // The vertex worker reads guest vertex arrays: the program must not see this signal (and change them) first.
+    while (!pica_vertex_worker_idle()) {}
     while (g_evHead - g_evTail >= EV_N) svcSleepThread(10000);  // the CPU thread has not caught up: wait
     u32 i = g_evHead % EV_N;
     g_evKind[i] = kind;
@@ -136,11 +139,13 @@ static u32 apply_events(System* s) {
 
 static void poll(System* s) { apply_events(s); }
 
+// Everything fed so far executed, including the vertex worker's reads of guest memory (its draws are queued before
+// the GX thread publishes g_tail, so the worker check after the ring check sees them).
 static void wait_drained(void) {
-    if (g_tail == g_head) return;
+    if (g_tail == g_head && pica_vertex_worker_idle()) return;
     u64 t0 = prof_begin();
     u64 limit = svcGetSystemTick() + 2 * SYSCLOCK_ARM11;
-    while (g_tail != g_head) {
+    while (g_tail != g_head || (dmb(), !pica_vertex_worker_idle())) {
         if (svcGetSystemTick() > limit) { emu_error("GX thread: no progress for 2 s (head %08lx tail %08lx)\n",
                                                     (unsigned long)g_head, (unsigned long)g_tail); break; }
     }

@@ -269,6 +269,14 @@ struct VJob {
     VIn* in;
     float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
     float (*tex)[12];  // texture matrices (3x4), per local index
+    // The gather's inputs. A deferred job (vfast_prepare's `defer`) has only pn / tm read and a copy of the stream in
+    // `raw`; vfast_finish gathers the attributes (reading guest memory) before it transforms.
+    bool gathered, nrmUsed, nbt, index3, pnDirect;
+    u8 rasChan, pnDefault, tmDefault[8];
+    u32 texUsed, tmDirect, vsize;
+    const u8* mem1;
+    const u8* raw;
+    VAttr pos_, nrm_, col_[2], tex_[8];
 };
 
 // One generated texture coordinate (xform.c's regular texgen): texture matrix m times the input, divided by q when
@@ -299,9 +307,86 @@ static u32 tex_cap(const GXCore* gx, u32 count) {
 
 static u32 align8(u32 v) { return (v + 7) & ~7u; }
 
-u32 vfast_job_bytes(const GXCore* gx, u32 count) {
+u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
     return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(pos_cap(gx, count) * 21 * 4) +
-           tex_cap(gx, count) * 12 * 4;
+           align8(tex_cap(gx, count) * 12 * 4) + count * vsize;
+}
+
+// The vertices' matrix indices (pn, tm) from the stream or the defaults.
+static void gather_indices(VJob* job) {
+    for (u32 vi = 0; vi < job->count; vi++) {
+        const u8* p = job->raw + vi * job->vsize;
+        VIn* in = &job->in[vi];
+        in->pn = job->pnDefault;
+        if (job->pnDirect) in->pn = *p++;
+        memcpy(in->tm, job->tmDefault, 8);
+        for (u32 i = 0; i < 8; i++) if ((job->tmDirect >> i) & 1) in->tm[i] = *p++;
+    }
+}
+
+// All reads of guest memory: the attributes from the stream and the arrays (the indices too unless `indices` is
+// false, when gather_indices has already run and pn / tm may hold local matrix numbers).
+static void gather(VJob* job, bool indices) {
+    const u8* mem1 = job->mem1;
+    VAttr pos = job->pos_, nrm = job->nrm_, col[2] = { job->col_[0], job->col_[1] }, tex[8];
+    memcpy(tex, job->tex_, sizeof tex);
+    bool nrmUsed = job->nrmUsed, nbt = job->nbt, index3 = job->index3, pnDirect = job->pnDirect;
+    u32 texUsed = job->texUsed, tmDirect = job->tmDirect, skip = (pnDirect ? 1u : 0u) + (u32)__builtin_popcount(tmDirect);
+    for (u32 vi = 0; vi < job->count; vi++) {
+        const u8* p = job->raw + vi * job->vsize;
+        VIn* in = &job->in[vi];
+        if (indices) {
+            in->pn = job->pnDefault;
+            if (pnDirect) in->pn = *p++;
+            memcpy(in->tm, job->tmDefault, 8);
+            for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) in->tm[i] = *p++;
+        } else {
+            p += skip;
+        }
+        in->p[0] = in->p[1] = in->p[2] = 0;
+        if (pos.mode) {
+            const u8* src = fetch(mem1, &pos, &p, pos.n * pos.cs);
+            for (u32 k = 0; k < pos.n; k++) in->p[k] = read_comp(src + k * pos.cs, pos.fmt, pos.scale);
+        }
+        in->n[0] = in->n[1] = in->n[2] = 0;
+        if (nrm.mode) {
+            const u8* src;
+            if (nrm.mode != 1 && nbt && index3) {
+                src = fetch(mem1, &nrm, &p, 0);
+                fetch(mem1, &nrm, &p, 0);
+                fetch(mem1, &nrm, &p, 0);
+            } else {
+                src = fetch(mem1, &nrm, &p, nrm.n * nrm.cs);
+            }
+            if (nrmUsed) for (u32 k = 0; k < 3; k++) in->n[k] = read_comp(src + k * nrm.cs, nrm.fmt, nrm.scale);
+        }
+        in->col[0] = in->col[1] = 0xFFFFFFFFu;
+        in->hasColor = 0;
+        for (u32 i = 0; i < 2; i++) {
+            if (!col[i].mode) continue;
+            const u8* src = fetch(mem1, &col[i], &p, col[i].cs);
+            in->col[i] = read_color(src, col[i].fmt);
+            in->hasColor |= (u8)(1u << i);
+        }
+        for (u32 i = 0; i < 8; i++) {
+            if (!tex[i].mode) continue;
+            const u8* src = fetch(mem1, &tex[i], &p, tex[i].n * tex[i].cs);
+            if (!((texUsed >> i) & 1)) continue;
+            in->t[i][0] = read_comp(src, tex[i].fmt, tex[i].scale);
+            in->t[i][1] = tex[i].n == 2 ? read_comp(src + tex[i].cs, tex[i].fmt, tex[i].scale) : 0.0f;
+        }
+    }
+}
+
+// Shader lighting: the lit channel's raw vertex colour (eye and normal come later).
+static void gpu_colours(const VJob* job, PVert* out) {
+    u32 ch = job->rasChan & 1;
+    for (u32 vi = 0; vi < job->count; vi++) {
+        const VIn* in = &job->in[vi];
+        u32 cc = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
+        u8* o = out[vi].col;
+        o[0] = (u8)(cc >> 24); o[1] = (u8)(cc >> 16); o[2] = (u8)(cc >> 8); o[3] = (u8)cc;
+    }
 }
 
 // A draw's setup: what vfast_prepare works out from registers before it reads any vertex.
@@ -415,8 +500,7 @@ static void setup_compute(VSetup* S, const GXCore* gx, u32 vat, const VFold* f, 
 }
 
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-                    u32 vsize, bool gpuLight, void* mem, PVert* out) {
-    const u8* mem1 = s->mem1;
+                    u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out) {
     VJob* job = mem;
     u8* m = (u8*)mem + align8(sizeof(VJob));
     job->in = (VIn*)m;
@@ -476,60 +560,34 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     }
 
 
-    // Gather: all reads of guest memory (timed as "dec" on the 3DS profile).
-    u64 t0 = dprof_begin();
-    for (u32 vi = 0; vi < count; vi++) {
-        const u8* p = raw + vi * vsize;
-        VIn* in = &g_in[vi];
-        in->pn = (u8)pnDefault;
-        if (pnDirect) in->pn = *p++;
-        memcpy(in->tm, tmDefault, 8);
-        for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) in->tm[i] = *p++;
-        in->p[0] = in->p[1] = in->p[2] = 0;
-        if (pos.mode) {
-            const u8* src = fetch(mem1, &pos, &p, pos.n * pos.cs);
-            for (u32 k = 0; k < pos.n; k++) in->p[k] = read_comp(src + k * pos.cs, pos.fmt, pos.scale);
-        }
-        in->n[0] = in->n[1] = in->n[2] = 0;
-        if (nrm.mode) {
-            const u8* src;
-            if (nrm.mode != 1 && nbt && index3) {
-                src = fetch(mem1, &nrm, &p, 0);
-                fetch(mem1, &nrm, &p, 0);
-                fetch(mem1, &nrm, &p, 0);
-            } else {
-                src = fetch(mem1, &nrm, &p, nrm.n * nrm.cs);
-            }
-            if (nrmUsed) for (u32 k = 0; k < 3; k++) in->n[k] = read_comp(src + k * nrm.cs, nrm.fmt, nrm.scale);
-        }
-        in->col[0] = in->col[1] = 0xFFFFFFFFu;
-        in->hasColor = 0;
-        for (u32 i = 0; i < 2; i++) {
-            if (!col[i].mode) continue;
-            const u8* src = fetch(mem1, &col[i], &p, col[i].cs);
-            in->col[i] = read_color(src, col[i].fmt);
-            in->hasColor |= (u8)(1u << i);
-        }
-        for (u32 i = 0; i < 8; i++) {
-            if (!tex[i].mode) continue;
-            const u8* src = fetch(mem1, &tex[i], &p, tex[i].n * tex[i].cs);
-            if (!((texUsed >> i) & 1)) continue;
-            in->t[i][0] = read_comp(src, tex[i].fmt, tex[i].scale);
-            in->t[i][1] = tex[i].n == 2 ? read_comp(src + tex[i].cs, tex[i].fmt, tex[i].scale) : 0.0f;
-        }
+    job->mem1 = s->mem1;
+    job->raw = raw;
+    job->vsize = vsize;
+    job->pos_ = pos; job->nrm_ = nrm; job->col_[0] = col[0]; job->col_[1] = col[1];
+    memcpy(job->tex_, tex, sizeof tex);
+    job->nrmUsed = nrmUsed; job->nbt = nbt; job->index3 = index3; job->pnDirect = pnDirect;
+    job->texUsed = texUsed; job->tmDirect = tmDirect; job->rasChan = sel->rasChan;
+    job->pnDefault = (u8)pnDefault;
+    memcpy(job->tmDefault, tmDefault, 8);
+    // Shader-lit draws may leave the gather to vfast_finish (another core): only the matrix indices are read here,
+    // and the stream is copied into the job (it does not outlive the draw).
+    job->gathered = !(defer && gpuLight);
+    u64 t0;
+    if (!job->gathered) {
+        gather_indices(job);
+        u8* copy = (u8*)(job->tex + tex_cap(gx, count));
+        memcpy(copy, raw, count * vsize);
+        job->raw = copy;
+        goto matrices;
     }
+    t0 = dprof_begin();  // all reads of guest memory (timed as "dec" on the 3DS profile)
+    gather(job, true);
     dprof_end(PROF_VDEC, t0);
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
     t0 = dprof_begin();
-    if (gpuLight) {  // the shader lights the channel: it gets the raw vertex colour (eye and normal come later)
-        u32 ch = sel->rasChan & 1;
-        for (u32 vi = 0; vi < count; vi++) {
-            const VIn* in = &g_in[vi];
-            u32 cc = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
-            u8* o = out[vi].col;
-            o[0] = (u8)(cc >> 24); o[1] = (u8)(cc >> 16); o[2] = (u8)(cc >> 8); o[3] = (u8)cc;
-        }
+    if (gpuLight) {
+        gpu_colours(job, out);
     } else {
         if (count > g_litCap) {
             VLit* n = realloc(g_lit, count * sizeof *n);
@@ -568,6 +626,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     }
     dprof_end(PROF_VLIGHT, t0);
 
+matrices:
     // The matrices the vertices use, copied into the job: position (+ normal) matrices by pn, texture matrices by
     // the used units' tm. Vertices then index the copies.
     u8 posLocal[64], texLocal[64];
@@ -605,7 +664,12 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[in[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
 } while (0)
 
-void vfast_finish(const VJob* job, PVert* out) {
+void vfast_finish(VJob* job, PVert* out) {
+    if (!job->gathered) {
+        gather(job, false);
+        gpu_colours(job, out);
+        job->gathered = true;
+    }
     u32 count = job->count;
     const VIn* in = job->in;
     const float* P = job->P;
@@ -668,14 +732,15 @@ static u8* g_jobMem;
 static u32 g_jobCap;
 void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                u32 vsize, PVert* out, bool gpuLight) {
-    u32 bytes = vfast_job_bytes(gx, count);
+    u32 bytes = vfast_job_bytes(gx, count, vsize);
     if (bytes > g_jobCap) {
         u8* n = realloc(g_jobMem, bytes);
         if (!n) return;
         g_jobMem = n;
         g_jobCap = bytes;
     }
-    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, g_jobMem, out);
+    // Deferred like the 3DS vertex worker (finish right after), so the PC checks that path.
+    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, true, g_jobMem, out);
     if (job) vfast_finish(job, out);
 }
 

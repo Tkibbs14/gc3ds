@@ -35,4 +35,5 @@ bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it 
 void pica_set_early_queue(bool on);
 bool pica_early_queue(void);
 u32 pica_queue_offset(void);
-extern u64 g_picaDrawPaths[8];  // draws by batch path (pica.c)
+extern u64 g_picaDrawPaths[8];
+bool pica_vertex_worker_idle(void);  // no draw queued on the vertex worker (callable from any thread)  // draws by batch path (pica.c)

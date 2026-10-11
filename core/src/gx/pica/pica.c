@@ -787,6 +787,14 @@ static void vw_main(void* arg) {
     }
 }
 
+// True when the worker has no queued draw (it gathers shader-lit draws from guest memory, so the CPU thread must not
+// run on past a PE signal or a GX sync while one is queued).
+bool pica_vertex_worker_idle(void) {
+    bool idle = g_vwTail == g_vwHead;
+    vw_dmb();
+    return idle;
+}
+
 // Waits until the worker has done every queued draw, and takes over the arena again.
 static void vw_sync(void) {
     if (!g_vwReserved) return;
@@ -881,8 +889,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
                 gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && (prim >= PRIM_LINES) == g.batchLines;
     if (same) {
-        memcpy(key, g.batchKey, g.batchKeyLen * 4);
-        kn = g.batchKeyLen;
+        kn = 0;  // the open batch keeps its key (g.batchKey): not copied
         g_picaDrawPaths[0]++;
     } else {
         kn = batch_key(gx, key);
@@ -923,13 +930,13 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         workVerts = tri_verts(prim, count);
         if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
         if (!need_work(workVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
-        u32 jb = (vfast_job_bytes(gx, count) + 7) & ~7u;
+        u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
         u8* mem = vw_alloc(jb + count * (u32)sizeof(PVert) + count * 8);
         if (!mem) work = false;
         else {
             w.pv = (PVert*)(mem + jb);
             w.nd = (float (*)[2])(w.pv + count);
-            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, mem, w.pv);
+            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, true, mem, w.pv);  // the worker gathers shader-lit draws
             if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;
@@ -985,8 +992,10 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         apply_light_uniforms();
         g.batchOpen = true;
         g.batchFirst = g.arenaUsed;
-        memcpy(g.batchKey, key, kn * 4);
-        g.batchKeyLen = kn;
+        if (!same) {  // the same batch (a new frame only) already holds this key
+            memcpy(g.batchKey, key, kn * 4);
+            g.batchKeyLen = kn;
+        }
     }
     g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
     g.batchXfbSeq = g.xfbSeq; g.batchLines = prim >= PRIM_LINES;
