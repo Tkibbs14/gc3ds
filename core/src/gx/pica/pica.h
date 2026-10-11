@@ -12,6 +12,9 @@ bool pica_attach(System* s);
 bool pica_present(System* s, u32 xfbAddr);
 // Forgets every GPU-side copy and cached texture; call before booting another program.
 void pica_reset(void);
+// Saves the next presented top-screen image as a 400 x 240 BMP at `path` (ignored while one is in progress).
+// Callable from the CPU thread; the GX thread does the work at its next two presents.
+void pica_capture(const char* path);
 // Lighting in the vertex shader (on by default when the shader provides it); off lights on the CPU (comparison).
 void pica_set_shader_light(bool on);
 bool pica_shader_light(void);

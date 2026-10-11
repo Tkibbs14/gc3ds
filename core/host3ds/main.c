@@ -252,6 +252,27 @@ static void perf_open(const char* path) {
     if (g_jit) g_fbPrev = jit_stats(g_jit)->fallbackRun;
 }
 
+// Screenshots of the top screen at key points of a run (5 s, 15 s, 30 s, then every 30 s), in a ring of 16 files
+// sdmc:/gc3ds/shots/shot_NN.bmp (about 290 KB each); perf.csv names each one with its time.
+static int g_shotNext = -1;
+
+static void perf_shot(double realS, double emuS) {
+    if (!g_pica) return;
+    mkdir("sdmc:/gc3ds/shots", 0777);
+    if (g_shotNext < 0) {
+        g_shotNext = 0;
+        FILE* f = fopen("sdmc:/gc3ds/shots/next.txt", "r");
+        if (f) { if (fscanf(f, "%d", &g_shotNext) != 1) g_shotNext = 0; fclose(f); }
+    }
+    char path[64];
+    snprintf(path, sizeof path, "sdmc:/gc3ds/shots/shot_%02d.bmp", g_shotNext % 16);
+    pica_capture(path);
+    if (g_perf) fprintf(g_perf, "# shot %s at real %.1f s, emulated %.2f s\n", path + 5, realS, emuS);
+    g_shotNext = (g_shotNext + 1) % 16;
+    FILE* f = fopen("sdmc:/gc3ds/shots/next.txt", "w");
+    if (f) { fprintf(f, "%d\n", g_shotNext); fclose(f); }
+}
+
 // The 8 most frequent interpreted instructions since the last call.
 static void perf_fallbacks(void) {
     if (!g_perf || !g_jit) return;
@@ -414,7 +435,10 @@ static void run(const char* path) {
                         linearSpaceFree() / 1048576.0, vramSpaceFree() / 1024.0);
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
-                if (++perfRows % 10 == 0) {
+                ++perfRows;
+                if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
+                    perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
+                if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }

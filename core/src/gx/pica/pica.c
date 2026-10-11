@@ -22,6 +22,7 @@
 #define GC3DS_HOST_TYPES
 #include <citro3d.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "../../sys/system.h"
 #include "../tev_pica.h"
@@ -868,8 +869,54 @@ static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, 
 static const GXBackend kPica = { pica_draw, pica_efb_copy };
 
 // ---- present ----
+// ---- screenshots of what the top screen shows (sdmc:/gc3ds/shots, key points only) ----
+// The CPU cannot read VRAM: present copies the finished top-screen render target (240 x 400 RGBA8, tiled) into a
+// linear buffer with the GPU, and the next present, once that frame is complete, writes it as a 400 x 240 BMP.
+#define CAP_W 240
+#define CAP_H 400
+static u32* g_capBuf;
+static volatile int g_capState;  // 0 idle, 1 requested (CPU thread), 2 copy queued (GX thread)
+static char g_capPath[96];
+
+void pica_capture(const char* path) {
+    if (g_capState != 0) return;
+    snprintf(g_capPath, sizeof g_capPath, "%s", path);
+    __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory");  // the path before the request
+    g_capState = 1;
+}
+
+static void cap_write(void) {
+    GSPGPU_InvalidateDataCache(g_capBuf, CAP_W * CAP_H * 4);
+    FILE* f = fopen(g_capPath, "wb");
+    if (!f) return;
+    // 24-bit BMP, rows bottom-up, 400 x 240.
+    u8 hdr[54] = { 'B', 'M' };
+    u32 img = 400 * 240 * 3, v;
+    v = 54 + img; memcpy(hdr + 2, &v, 4);
+    v = 54; memcpy(hdr + 10, &v, 4);
+    v = 40; memcpy(hdr + 14, &v, 4);
+    v = 400; memcpy(hdr + 18, &v, 4);
+    v = 240; memcpy(hdr + 22, &v, 4);
+    hdr[26] = 1; hdr[28] = 24;
+    v = img; memcpy(hdr + 34, &v, 4);
+    fwrite(hdr, 1, 54, f);
+    static u8 row[400 * 3];
+    for (int y = 239; y >= 0; y--) {  // screen row y from the top
+        for (int x = 0; x < 400; x++) {
+            // The top screen's render target is rotated: target column tx = 239 - y, target row ty = x (checked
+            // against Azahar's own screenshot of graphics_gx_texturetest: text reads the right way round).
+            u32 tx = 239 - (u32)y, ty = (u32)x;
+            u32 p = g_capBuf[((ty >> 3) * (CAP_W >> 3) + (tx >> 3)) * 64 + g_morton[(ty & 7) * 8 + (tx & 7)]];
+            row[3 * x] = (u8)(p >> 8); row[3 * x + 1] = (u8)(p >> 16); row[3 * x + 2] = (u8)(p >> 24);  // B G R
+        }
+        fwrite(row, 1, sizeof row, f);
+    }
+    fclose(f);
+}
+
 bool pica_present(System* s, u32 xfbAddr) {
     (void)s;
+    if (g_capState == 2) { cap_write(); g_capState = 0; }  // the copy was queued with the previous present
     PXfb* show = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) {
         PXfb* x = &g.xfb[i];
@@ -908,6 +955,11 @@ bool pica_present(System* s, u32 xfbAddr) {
     }
     C3D_DrawArrays(GPU_TRIANGLES, (int)g.arenaUsed, 6);
     g.arenaUsed += 6;
+    if (g_capState == 1 && (g_capBuf || (g_capBuf = linearAlloc(CAP_W * CAP_H * 4)))) {
+        split(1);  // the screen quad is drawn before the copy reads the target
+        GX_TextureCopy((u32*)g.screen->frameBuf.colorBuf, 0, g_capBuf, 0, CAP_W * CAP_H * 4, GX_TRANSFER_RAW_COPY(1));
+        g_capState = 2;
+    }
     end_frame();  // queues the transfer to the top framebuffer and the swap
     return true;
 }

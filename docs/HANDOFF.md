@@ -123,6 +123,11 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - citro3d CPU and GPU ms per frame;
   - free heap, linear memory and VRAM.
 - Every 10 s: the most frequent interpreted instructions and the CPU clock.
+- Screenshots of the top screen as the 2DS drew it: `sdmc:/gc3ds/shots/shot_NN.bmp` (400 x 240, ~290 KB) at 5 s,
+  15 s and then every 30 s of a run, in a ring of 16 (`next.txt` holds the next slot), so the card never holds more
+  than ~4.6 MB of them. Each one has a `# shot` line in perf.csv with its real and emulated time. The GX thread
+  copies the screen with GX_TextureCopy after the present and writes the file at the next one (`pica_capture`).
+  Orientation checked against Azahar's own screenshot of graphics_gx_texturetest.
 
 ## GX on core 2 (068ae2f), measured on the 2DS
 
