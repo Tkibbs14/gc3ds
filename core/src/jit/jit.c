@@ -25,6 +25,10 @@
 #define OFF_CTR ((u32)offsetof(Gekko, ctr))
 #define OFF_PC ((u32)offsetof(Gekko, pc))
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
+// FPR r: ps0 at +0 and ps1 at +8, each a host double (low word first); vldr/vstr reach 1020 bytes.
+#define OFF_FPR(r) ((u32)offsetof(Gekko, fpr) + 16u * (u32)(r))
+#define OFF_FPSCR ((u32)offsetof(Gekko, fpscr))
+_Static_assert(offsetof(Gekko, fpr) + 16 * 31 + 8 + 4 < 1020, "FPRs reachable with vldr/vstr");
 
 typedef u32 (*BlockFn)(Gekko* g);
 // Every compiled block stays reachable until the code cache is flushed: entries live in a pool, chained per hash
@@ -50,6 +54,7 @@ struct Jit {
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
 u32 jit_debug_max_insns;
+u32 jit_debug_plant;
 const u32* jit_debug_last_code;  // most recently compiled block and its length in words (tests dump it)
 u32 jit_debug_last_words;
 
@@ -80,6 +85,27 @@ static void jit_store(Gekko* g, u32 ea, u32 v, u32 sizePc) {
     p->npc = pc + 4;
     bool ok = size == 1 ? gk_wr8(g, ea, v) : size == 2 ? gk_wr16(g, ea, v) : gk_wr32(g, ea, v);
     if (!ok) { g->pc = p->npc; g_status = 1; return; }
+    if (p->brk || p->stopReq) { g->pc = pc + 4; g_status = 2; }
+}
+
+// lfd / stfd slow paths (same status protocol): the helper moves the FPR itself.
+static void jit_load64(Gekko* g, u32 ea, u32 pc, u32 frd) {
+    g_jit->stats.slowLoads++;
+    GkPriv* p = GKP(g);
+    p->curPc = pc;
+    p->npc = pc + 4;
+    u64 v;
+    if (!gk_rd64(g, ea, &v)) { g->pc = p->npc; g_status = 1; return; }
+    fpr_set0(g, (int)frd, v);
+    if (p->brk || p->stopReq) { g->pc = pc + 4; g_status = 2; }
+}
+
+static void jit_store64(Gekko* g, u32 ea, u32 pc, u32 frs) {
+    g_jit->stats.slowStores++;
+    GkPriv* p = GKP(g);
+    p->curPc = pc;
+    p->npc = pc + 4;
+    if (!gk_wr64(g, ea, fpr_get0(g, (int)frs))) { g->pc = p->npc; g_status = 1; return; }
     if (p->brk || p->stopReq) { g->pc = pc + 4; g_status = 2; }
 }
 
@@ -122,6 +148,9 @@ typedef struct {
     u32 pc;          // guest address of the instruction being compiled
     u32 count;       // guest instructions compiled so far, including the current one
     bool fastmem;
+    bool fp;            // MSR[FP] set and FPSCR[RN] = 0 (round to nearest): float instructions compile natively
+    bool ps;            // ... and HID2[PSE]: paired-single instructions too
+    bool lsq;           // HID2[LSQE]: psq_l / psq_st (D forms) are legal
     bool pendingStop;   // a slow memory path was emitted: after the instruction, leave if it reported status 2
     // Out-of-line exit stubs: each returns `count` with g->pc already written.
     struct { u32 at; u32 count; } exits[MAX_BLOCK_INSNS * 4];
@@ -397,6 +426,7 @@ static bool ends_block(u32 inst) {
     if (op == 19) return xo == 50 || xo == 150;                     // rfi, isync
     if (op == 31) return xo == 146 || xo == 210 || xo == 242 || xo == 467 || xo == 982 || xo == 4 || xo == 598;
     if (op == 3) return true;                                       // twi
+    if (op == 63) return xo == 38 || xo == 70 || xo == 134 || xo == 711;  // mtfsb1 mtfsb0 mtfsfi mtfsf: rounding mode
     return false;
 }
 
@@ -667,6 +697,419 @@ static bool compile_int(Cg* c, u32 inst) {
     return false;
 }
 
+// ---- floating point and paired singles ----
+// "Fast float" accuracy model (as Dolphin's default): FPR results equal the interpreter's bit for bit for finite normal
+// operands and results, except (a) the multiply-add forms round the product before the add (VFP11 has no fused
+// multiply-add), so they may differ by 1 ulp of the result precision, and (b) denormals flush to zero and NaN payloads
+// differ (host FPSCR = 0x03000000, see jit_host_fpscr_init). FPSCR is not maintained, except FPCC and the CR field by
+// fcmpu / fcmpo. Single-precision results are computed in double and rounded to single (exact for single operands).
+// Blocks are keyed on MSR[FP], HID2[PSE, LSQE] and FPSCR[RN] != 0, so compiled code never runs under other settings. FPSCR[NI]
+// (flush denormals, which games set) matches the host and needs no guard.
+// Record forms (Rc = 1), other rounding modes and everything not listed here run on the interpreter.
+static void ld_fpr(Cg* c, int d, u32 fr, u32 lane) { vldr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane); }
+static void st_fpr(Cg* c, int d, u32 fr, u32 lane) { vstr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane); }
+
+// d = d rounded to single precision (still held as a double). Two registers at once so the conversions overlap.
+static void round_pair(Cg* c, int d0, int d1) {
+    Emit* e = &c->e;
+    if (jit_debug_plant == 1) return;
+    vcvt_f32_f64(e, 2 * d0, d0);
+    if (d1 >= 0) vcvt_f32_f64(e, 2 * d1, d1);
+    vcvt_f64_f32(e, d0, 2 * d0);
+    if (d1 >= 0) vcvt_f64_f32(e, d1, 2 * d1);
+}
+
+// d = lane of frC with its significand cut to 25 bits, which is what Gekko's single-precision multiplier sees:
+// (x + 2^27) & ~(2^28 - 1) on the 64-bit pattern (the interpreter's sf_round25; identity for exact singles). Uses r0, r1.
+static void ld_c25(Cg* c, int d, u32 fr, u32 lane) {
+    Emit* e = &c->e;
+    ldr_imm(e, R0, RG, OFF_FPR(fr) + 8u * lane);
+    ldr_imm(e, R1, RG, OFF_FPR(fr) + 8u * lane + 4);
+    dp_imm(e, ADD, 1, R0, R0, IMM(0x08000000u));
+    dp_imm(e, ADC, 0, R1, R1, 0);
+    dp_imm(e, AND, 0, R0, R0, IMM(0xF0000000u));
+    vmov_d_rr(e, d, R0, R1);
+}
+
+// dst = the word stfs / psq_st store for the double in an FPR lane: the exponent and mantissa bits are cut, not rounded
+// (PEM D.7, as the interpreter does); anything below the normal single range, zero included, becomes a signed zero.
+static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2) {
+    Emit* e = &c->e;
+    u32 o = OFF_FPR(fr) + 8u * lane;
+    ldr_imm(e, t1, RG, o);
+    ldr_imm(e, t2, RG, o + 4);
+    mov_shift(e, 0, dst, t1, LSR, 29);
+    dp_reg_c(e, C_AL, ORR, 0, dst, dst, t2, LSL, 3);
+    dp_imm(e, BIC, 0, dst, dst, IMM(0xC0000000u));
+    dp_imm(e, AND, 0, t1, t2, IMM(0xC0000000u));
+    dp_reg(e, ORR, 0, dst, dst, t1);
+    dp_imm(e, BIC, 0, t1, t2, IMM(0x80000000u));          // |x| below 2^-126 (biased exponent <= 896): signed zero
+    dp_imm(e, SUB, 1, t1, t1, IMM(0x38000000u));
+    dp_imm_c(e, C_CS, CMP, 1, 0, t1, IMM(0x00100000u));
+    dp_imm(e, AND, 0, t2, t2, IMM(0x80000000u));
+    dp_reg_c(e, C_CC, MOV, 0, dst, 0, t2, LSL, 0);
+}
+
+// After a slow-path helper call: g_status 1 = the access raised an exception (leave; nothing was written), 2 = it
+// completed but the block must stop after this instruction.
+static void slow_status(Cg* c) {
+    Emit* e = &c->e;
+    load_const(e, R12, (u32)(uintptr_t)&g_status);
+    ldr_imm(e, R3, R12, 0);
+    dp_imm(e, CMP, 1, 0, R3, 1);
+    u32 skip = branch_c(e, C_NE, 0);
+    dp_imm(e, MOV, 0, R3, 0, 0);
+    str_imm(e, R3, R12, 0);
+    exit_if(c, C_AL);
+    patch_branch(e, skip, e->n);
+    stop_flag_from_status(c);
+}
+
+// lfd: the 8-byte value at the guest address in r0 into FPR frd. The fast path needs 8-byte alignment inside MEM1.
+static void emit_load64(Cg* c, u32 frd) {
+    Emit* e = &c->e;
+    u32 slow = 0, slow2 = 0, done = 0;
+    if (c->fastmem) {
+        dp_imm(e, TST, 1, 0, R0, 7);
+        slow = branch_c(e, C_NE, 0);
+        dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+        dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+        dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+        slow2 = branch_c(e, C_CS, 0);
+        dp_reg(e, ADD, 0, R1, R1, RRAM);
+        ldmia(e, R1, (1u << R2) | (1u << R3));
+        rev(e, R2, R2);
+        rev(e, R3, R3);
+        str_imm(e, R3, RG, OFF_FPR(frd));
+        str_imm(e, R2, RG, OFF_FPR(frd) + 4);
+        done = branch_c(e, C_AL, 0);
+        patch_branch(e, slow, e->n);
+        patch_branch(e, slow2, e->n);
+    }
+    mov_reg(e, R1, R0);
+    mov_reg(e, R0, RG);
+    load_const(e, R2, c->pc);
+    load_const(e, R3, frd);
+    call(c, (const void*)jit_load64);
+    slow_status(c);
+    if (c->fastmem) patch_branch(e, done, e->n);
+}
+
+// stfd: FPR frs (ps0) to the guest address in r0.
+static void emit_store64(Cg* c, u32 frs) {
+    Emit* e = &c->e;
+    u32 slow = 0, slow2 = 0, done = 0;
+    if (c->fastmem) {
+        dp_imm(e, TST, 1, 0, R0, 7);
+        slow = branch_c(e, C_NE, 0);
+        dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+        dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+        dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+        slow2 = branch_c(e, C_CS, 0);
+        ldr_imm(e, R2, RG, OFF_FPR(frs) + 4);
+        ldr_imm(e, R3, RG, OFF_FPR(frs));
+        rev(e, R2, R2);
+        rev(e, R3, R3);
+        dp_reg(e, ADD, 0, R1, R1, RRAM);
+        stmia(e, R1, (1u << R2) | (1u << R3));
+        done = branch_c(e, C_AL, 0);
+        patch_branch(e, slow, e->n);
+        patch_branch(e, slow2, e->n);
+    }
+    mov_reg(e, R1, R0);
+    mov_reg(e, R0, RG);
+    load_const(e, R2, c->pc);
+    load_const(e, R3, frs);
+    call(c, (const void*)jit_store64);
+    slow_status(c);
+    if (c->fastmem) patch_branch(e, done, e->n);
+}
+
+// lfs lfd stfs stfd and their update / indexed forms. kind: 0 lfs, 1 lfd, 2 stfs, 3 stfd.
+static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
+    Emit* e = &c->e;
+    if (update && ra == 0) return false;  // invalid form
+    if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R6, R7);
+    if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
+    if (update) mov_reg(e, R4, R0);
+    switch (kind) {
+    case 0:
+        emit_load(c, 4, false);
+        vmov_s_r(e, 0, R2);
+        vcvt_f64_f32(e, 1, 0);
+        st_fpr(c, 1, fr, 0);
+        st_fpr(c, 1, fr, 1);
+        break;
+    case 1: emit_load64(c, fr); break;
+    case 2: emit_store(c, 4); break;
+    default: emit_store64(c, fr); break;
+    }
+    if (update) st_gpr(c, R4, ra);
+    return true;
+}
+
+// psq_l / psq_st and their update / indexed forms. Native only when the GQR says plain float for this direction and the
+// access is aligned and inside MEM1; everything else runs the interpreter for this one instruction.
+static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) {
+    Emit* e = &c->e;
+    if (!c->fastmem || !c->ps || (!indexed && !c->lsq)) return false;
+    u32 fr = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31;
+    if (update && ra == 0) return false;
+    u32 w = indexed ? (inst >> 10) & 1 : (inst >> 15) & 1, idx = indexed ? (inst >> 7) & 7 : (inst >> 12) & 7;
+    u32 gqr = (u32)offsetof(Gekko, spr) + 4u * (SPR_GQR0 + idx);
+    u32 fb[4], nfb = 0;
+    add_const(e, R1, RG, gqr & ~0xFFFu, R12);
+    ldr_imm(e, R0, R1, gqr & 0xFFFu);
+    dp_imm(e, AND, 1, R1, R0, IMM(store ? 0x3F00u : 0x3F000000u));        // scale
+    dp_imm_c(e, C_EQ, AND, 1, R1, R0, IMM(store ? 0x7u : 0x70000u));      // type
+    fb[nfb++] = branch_c(e, C_NE, 0);
+    if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, (u32)((s32)(inst << 20) >> 20));
+    if (update) mov_reg(e, R4, R0);
+    dp_imm(e, TST, 1, 0, R0, 3);
+    fb[nfb++] = branch_c(e, C_NE, 0);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    fb[nfb++] = branch_c(e, C_CS, 0);
+    if (!w) {  // the second word must be inside too
+        dp_imm(e, ADD, 0, R3, R1, 4);
+        dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
+        fb[nfb++] = branch_c(e, C_CS, 0);
+    }
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    if (!store) {
+        if (w) {
+            ldr_imm(e, R2, R1, 0);
+            rev(e, R2, R2);
+            vmov_s_r(e, 0, R2);
+            vcvt_f64_f32(e, 1, 0);
+            st_fpr(c, 1, fr, 0);
+            load_const(e, R2, 0x3FF00000u);  // ps1 = 1.0
+            dp_imm(e, MOV, 0, R3, 0, 0);
+            str_imm(e, R3, RG, OFF_FPR(fr) + 8);
+            str_imm(e, R2, RG, OFF_FPR(fr) + 12);
+        } else {
+            ldmia(e, R1, (1u << R2) | (1u << R3));
+            rev(e, R2, R2);
+            rev(e, R3, R3);
+            vmov_ss_rr(e, 0, R2, R3);
+            vcvt_f64_f32(e, 1, 0);
+            vcvt_f64_f32(e, 2, 1);
+            st_fpr(c, 1, fr, 0);
+            st_fpr(c, 2, fr, 1);
+        }
+    } else {
+        dbl_to_single_bits(c, R2, fr, 0, R6, R7);
+        rev(e, R2, R2);
+        if (w) {
+            str_imm(e, R2, R1, 0);
+        } else {
+            dbl_to_single_bits(c, R3, fr, 1, R6, R7);
+            rev(e, R3, R3);
+            stmia(e, R1, (1u << R2) | (1u << R3));
+        }
+    }
+    if (update) st_gpr(c, R4, ra);
+    u32 done = branch_c(e, C_AL, 0);
+    for (u32 k = 0; k < nfb; k++) patch_branch(e, fb[k], e->n);
+    emit_fallback(c, inst);
+    patch_branch(e, done, e->n);
+    return true;
+}
+
+// fcmpu / fcmpo: CR field and FPSCR[FPCC] = 8 less, 4 greater, 2 equal, 1 unordered (exception bits are not kept).
+static void emit_fcmp(Cg* c, u32 crf, u32 fa, u32 fb) {
+    Emit* e = &c->e;
+    u32 sh = 28 - 4 * crf, enc = 0;
+    ld_fpr(c, 0, fa, 0);
+    ld_fpr(c, 1, fb, 0);
+    vcmp_d(e, 0, 1);
+    vmrs_apsr(e);
+    dp_imm(e, MOV, 0, R0, 0, 1);
+    dp_imm_c(e, C_MI, MOV, 0, R0, 0, 8);
+    dp_imm_c(e, C_EQ, MOV, 0, R0, 0, 2);
+    dp_imm_c(e, C_GT, MOV, 0, R0, 0, 4);
+    ldr_imm(e, R1, RG, OFF_CR);
+    arm_imm(0xFu << sh, &enc);
+    dp_imm(e, BIC, 0, R1, R1, enc);
+    dp_reg_c(e, C_AL, ORR, 0, R1, R1, R0, LSL, (int)sh);
+    str_imm(e, R1, RG, OFF_CR);
+    ldr_imm(e, R2, RG, OFF_FPSCR);
+    dp_imm(e, BIC, 0, R2, R2, IMM(FPSCR_FPCC));
+    dp_reg_c(e, C_AL, ORR, 0, R2, R2, R0, LSL, 12);
+    str_imm(e, R2, RG, OFF_FPSCR);
+}
+
+// fctiw / fctiwz: low word = the int32 (saturating), high word 0xFFF80000, plus bit 32 for a zero result from a
+// negative operand (the Gekko quirk the interpreter reproduces).
+static void emit_fctiw(Cg* c, u32 frd, u32 frb, bool trunc) {
+    Emit* e = &c->e;
+    ld_fpr(c, 0, frb, 0);
+    if (trunc) vcvt_s32_f64(e, 0, 0); else vcvtr_s32_f64(e, 0, 0);
+    vmov_r_s(e, R0, 0);
+    ldr_imm(e, R1, RG, OFF_FPR(frb) + 4);
+    load_const(e, R2, 0xFFF80000u);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    dp_imm_c(e, C_NE, MOV, 0, R1, 0, 0);
+    mov_shift(e, 0, R1, R1, LSR, 31);
+    dp_reg(e, ORR, 0, R2, R2, R1);
+    str_imm(e, R0, RG, OFF_FPR(frd));
+    str_imm(e, R2, RG, OFF_FPR(frd) + 4);
+}
+
+// Paired-single arithmetic, per lane k: a_k op b_k, a_k * c', or b_k + a_k * c' (c' = frC lane rounded to 25 bits),
+// each rounded to single. xo5: 10 sum0, 11 sum1, 12 muls0, 13 muls1, 14 madds0, 15 madds1, 18 div, 20 sub, 21 add,
+// 25 mul, 28 msub, 29 madd, 30 nmsub, 31 nmadd.
+static void ps_arith(Cg* c, u32 xo5, u32 fd, u32 fa, u32 fb, u32 fc) {
+    Emit* e = &c->e;
+    if (xo5 == 10 || xo5 == 11) {  // the sum goes to one lane, frC's other lane passes through (rounded)
+        bool s0 = xo5 == 10;
+        ld_fpr(c, 0, fa, 0);
+        ld_fpr(c, 1, fb, 1);
+        ld_fpr(c, 2, fc, s0 ? 1 : 0);
+        vfp_d(e, VF_ADD, 0, 0, 1);
+        round_pair(c, 0, 2);
+        st_fpr(c, s0 ? 0 : 2, fd, 0);
+        st_fpr(c, s0 ? 2 : 0, fd, 1);
+        return;
+    }
+    bool plain = xo5 == 18 || xo5 == 20 || xo5 == 21;                  // div sub add: a op b
+    bool madd = xo5 == 14 || xo5 == 15 || xo5 >= 28;                    // b + a * c'
+    int res[2];
+    for (u32 k = 0; k < 2; k++) {
+        int d = (int)(4 * k);
+        u32 cl = (xo5 == 12 || xo5 == 14) ? 0 : (xo5 == 13 || xo5 == 15) ? 1 : k;
+        ld_fpr(c, d, fa, k);
+        if (plain) ld_fpr(c, d + 1, fb, k); else ld_c25(c, d + 1, fc, cl);
+        if (madd) ld_fpr(c, d + 2, fb, k);
+        res[k] = madd ? d + 2 : d;
+    }
+    for (u32 k = 0; k < 2; k++) {
+        int d = (int)(4 * k);
+        if (plain) vfp_d(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, d, d, d + 1);
+        else if (!madd) vfp_d(e, VF_MUL, d, d, d + 1);
+        else vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, d + 2, d, d + 1);
+        if (xo5 >= 30) vneg_d(e, res[k], res[k]);
+    }
+    round_pair(c, res[0], res[1]);
+    st_fpr(c, res[0], fd, 0);
+    st_fpr(c, res[1], fd, 1);
+}
+
+static bool compile_float(Cg* c, u32 inst) {
+    Emit* e = &c->e;
+    u32 op = inst >> 26, frd = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31, frc = (inst >> 6) & 31;
+    u32 xo = (inst >> 1) & 0x3FF, xo5 = xo & 31, simm = (u32)(s32)(s16)(inst & 0xFFFF);
+    if (!c->fp) return false;
+    switch (op) {
+    case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55:
+        return float_mem(c, (op - 48) >> 1, frd, ra, 0, simm, false, op & 1);
+    case 56: case 57: case 60: case 61:  // psq_l psq_lu psq_st psq_stu
+        return compile_psq(c, inst, op >= 60, false, op & 1);
+    case 31:  // lfsx lfsux lfdx lfdux stfsx stfsux stfdx stfdux
+        if (xo < 535 || xo > 759 || (xo - 535) % 32) return false;
+        return float_mem(c, (xo - 535) / 64, frd, ra, rb, 0, true, ((xo - 535) / 32) & 1);
+    case 59: case 63: {
+        bool single = op == 59;
+        if (op == 63) {
+            switch (xo) {
+            case 0: case 32: emit_fcmp(c, (inst >> 23) & 7, ra, rb); return true;
+            case 12: case 14: case 15: case 40: case 72: case 264:
+                if (inst & 1) return false;
+                break;
+            default: goto arith;
+            }
+            switch (xo) {
+            case 12: ld_fpr(c, 0, rb, 0); round_pair(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); break;  // frsp
+            case 14: case 15: emit_fctiw(c, frd, rb, xo == 15); break;
+            case 72: ld_fpr(c, 0, rb, 0); st_fpr(c, 0, frd, 0); break;                                              // fmr
+            default:  // fneg, fabs: the sign bit only
+                ldr_imm(e, R0, RG, OFF_FPR(rb));
+                ldr_imm(e, R1, RG, OFF_FPR(rb) + 4);
+                if (xo == 40) dp_imm(e, EOR, 0, R1, R1, IMM(0x80000000u)); else dp_imm(e, BIC, 0, R1, R1, IMM(0x80000000u));
+                str_imm(e, R0, RG, OFF_FPR(frd));
+                str_imm(e, R1, RG, OFF_FPR(frd) + 4);
+                break;
+            }
+            return true;
+        }
+    arith:
+        if (inst & 1) return false;
+        switch (xo5) { case 18: case 20: case 21: case 25: case 28: case 29: case 30: case 31: break; default: return false; }
+        int res = 0;
+        ld_fpr(c, 0, ra, 0);
+        if (xo5 == 18 || xo5 == 20 || xo5 == 21) {
+            ld_fpr(c, 1, rb, 0);
+            vfp_d(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, 0, 0, 1);
+        } else {
+            if (single) ld_c25(c, 1, frc, 0); else ld_fpr(c, 1, frc, 0);
+            if (xo5 == 25) {
+                vfp_d(e, VF_MUL, 0, 0, 1);
+            } else {  // fmsub fmadd fnmsub fnmadd: b + a*c, -b + a*c, negated for the n forms
+                ld_fpr(c, 2, rb, 0);
+                vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, 2, 0, 1);
+                if (xo5 >= 30) vneg_d(e, 2, 2);
+                res = 2;
+            }
+        }
+        if (single) { round_pair(c, res, -1); st_fpr(c, res, frd, 0); st_fpr(c, res, frd, 1); }
+        else st_fpr(c, res, frd, 0);
+        return true;
+    }
+    case 4: {
+        if (!c->ps) return false;
+        switch (xo & 63) {  // psq_lx psq_stx psq_lux psq_stux
+        case 6: return compile_psq(c, inst, false, true, false);
+        case 7: return compile_psq(c, inst, true, true, false);
+        case 38: return compile_psq(c, inst, false, true, true);
+        case 39: return compile_psq(c, inst, true, true, true);
+        }
+        if (inst & 1) return false;
+        switch (xo) {
+        case 528: case 560: case 592: case 624:  // ps_merge00 / 01 / 10 / 11
+            ld_fpr(c, 0, ra, (xo >> 6) & 1);
+            ld_fpr(c, 1, rb, (xo >> 5) & 1);
+            st_fpr(c, 0, frd, 0);
+            st_fpr(c, 1, frd, 1);
+            return true;
+        case 72:  // ps_mr
+            ld_fpr(c, 0, rb, 0);
+            ld_fpr(c, 1, rb, 1);
+            st_fpr(c, 0, frd, 0);
+            st_fpr(c, 1, frd, 1);
+            return true;
+        case 40: case 136: case 264: {  // ps_neg ps_nabs ps_abs
+            int opc = xo == 40 ? EOR : xo == 136 ? ORR : BIC;
+            ldr_imm(e, R0, RG, OFF_FPR(rb));
+            ldr_imm(e, R1, RG, OFF_FPR(rb) + 4);
+            ldr_imm(e, R2, RG, OFF_FPR(rb) + 8);
+            ldr_imm(e, R3, RG, OFF_FPR(rb) + 12);
+            dp_imm(e, opc, 0, R1, R1, IMM(0x80000000u));
+            dp_imm(e, opc, 0, R3, R3, IMM(0x80000000u));
+            str_imm(e, R0, RG, OFF_FPR(frd));
+            str_imm(e, R1, RG, OFF_FPR(frd) + 4);
+            str_imm(e, R2, RG, OFF_FPR(frd) + 8);
+            str_imm(e, R3, RG, OFF_FPR(frd) + 12);
+            return true;
+        }
+        }
+        switch (xo5) {
+        case 10: case 11: case 12: case 13: case 14: case 15: case 18: case 20: case 21: case 25: case 28: case 29: case 30: case 31:
+            ps_arith(c, xo5, frd, ra, rb, frc);
+            return true;
+        }
+        return false;
+    }
+    }
+    return false;
+}
+
+// Dispatch key of a block: the machine state compiled code depends on, beyond the guest PC.
+static u32 block_key(const Gekko* g) {
+    return (g->msr & (MSR_IR | MSR_DR | MSR_PR | MSR_FP)) | ((g->fpscr & FPSCR_RN) ? 1u << 30 : 0u) |
+           (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE));
+}
+
 // Compiles the block starting at guest PC `pc`; NULL when the code is not in RAM or the cache is full.
 static BlockFn compile_block(Jit* j, u32 pc) {
     Gekko* g = j->g;
@@ -681,6 +1124,9 @@ static BlockFn compile_block(Jit* j, u32 pc) {
     memset(c, 0, sizeof *c);
     c->e = (Emit){ j->code + j->codeUsed, 0, BLOCK_MAX_WORDS, false };
     c->fastmem = j->fastmem && (g->msr & MSR_DR);
+    c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
+    c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
+    c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     Emit* e = &c->e;
     push_regs(e, 0x4FF8);  // {r3-r11, lr}: 10 registers keep the stack 8-byte aligned for C calls
     mov_reg(e, RG, R0);
@@ -698,7 +1144,7 @@ static BlockFn compile_block(Jit* j, u32 pc) {
         j->stats.instrsCompiled++;
         if (is_branch(inst)) {
             if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
-        } else if (compile_int(c, inst)) {
+        } else if (compile_int(c, inst) || compile_float(c, inst)) {
             j->stats.instrsNative++;
             if (c->pendingStop) {
                 // g->pc was set to the next instruction by the helper; the exit counts this instruction.
@@ -779,7 +1225,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     j->fastmem = gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
                  gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0 && j->ramSize >= 0x01800000u;
     while ((s64)total < budget) {
-        u32 pc = g->pc, msrBits = g->msr & (MSR_IR | MSR_DR | MSR_PR);
+        u32 pc = g->pc, msrBits = block_key(g);
         Entry* en = lookup(j, pc, msrBits);
         if (!en) break;
         // Idle loop ("b ." with interrupts on): nothing can change until the next event, so use up the budget.
@@ -804,6 +1250,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
 Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     Jit* j = calloc(1, sizeof *j);
     if (!j) return NULL;
+    jit_host_fpscr_init();
     j->g = g;
     j->ram = ram;
     j->ramSize = ramSize;
@@ -830,7 +1277,7 @@ void jit_attach(Jit* j) { gekko_set_jit(j->g, jit_entry, j); }
 u32 jit_run_one_block(Jit* j) {
     Gekko* g = j->g;
     GKP(g)->brk = false;
-    u32 msrBits = g->msr & (MSR_IR | MSR_DR | MSR_PR);
+    u32 msrBits = block_key(g);
     u32 a, b;
     j->fastmem = gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
                  gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0 && j->ramSize >= 0x01800000u;

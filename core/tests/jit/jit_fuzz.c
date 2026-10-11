@@ -1,13 +1,18 @@
 // JIT differential fuzzer: random single instructions of every kind the JIT translates, executed by the JIT on one
 // machine and by the interpreter on another from identical random state; registers and memory must match exactly.
+// Float and paired-single instructions follow the JIT's "fast float" model (src/jit/jit.c): FPR lanes must match bit
+// for bit except fused multiply-add forms (1 ulp), NaN payloads, and denormal results or inputs that the JIT flushes.
 // Runs as an ARM Linux program under qemu-arm (tests/jit/run_jit_fuzz.sh).
-//   jit_fuzz [cases] [seed]        JIT_FUZZ_PLANT=1 corrupts one JIT result to prove the comparison can fail.
+//   jit_fuzz [cases] [seed]        JIT_FUZZ_PLANT=1 corrupts one JIT result, =2 makes the JIT skip its rounding to
+//                                  single, to prove the comparison can fail.
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include "../../src/jit/jit.h"
 #include "../../src/sys/system.h"
 
 static System A, B;
+static u64 g_in[32][2];  // the FPRs the case started from
 static Jit* jit;
 static u64 rng = 0x9E3779B97F4A7C15ull;
 static u32 rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (u32)(rng >> 16); }
@@ -18,6 +23,10 @@ static u32 CODE_PA = 0x3000u;
 #define CODE_EA (0x80000000u | CODE_PA)
 #define WIN_PA 0x100000u
 #define WIN_SIZE 0x10000u
+#define TOP_SIZE 256u  // the end of MEM1 is compared and randomized too
+
+#define MSR_BASE (MSR_IR | MSR_DR | MSR_RI)
+#define HID2_BASE (0x80000000u | 0x20000000u)  // LSQE | PSE
 
 static u32 interesting(void) {
     static const u32 v[] = { 0, 1, 2, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0xFFFF, 0x8000, 0x7FFF, 0x10000, 31, 32, 33, 63 };
@@ -34,17 +43,32 @@ static void boot_like(System* s) {
     gekko_set_spr(g, SPR_IBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_IBAT0U + 1, 0x00000002);
     gekko_set_spr(g, SPR_DBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_DBAT0U + 1, 0x00000002);
     gekko_set_spr(g, SPR_DBAT0U + 2, 0xC0001FFF); gekko_set_spr(g, SPR_DBAT0U + 3, 0x0000002A);
-    gekko_set_msr(g, MSR_FP | MSR_IR | MSR_DR | MSR_RI);
+    gekko_set_spr(g, SPR_HID2, HID2_BASE);
+    gekko_set_msr(g, MSR_FP | MSR_BASE);
 }
 
 // Random instruction from the translated set; may set up registers it needs (base addresses) in the state.
-typedef struct { u32 gpr[32], cr, xer, lr, ctr; } St;
+typedef struct {
+    u32 gpr[32], cr, xer, lr, ctr;
+    u64 fpr[32][2];
+    u32 gqr[8], fpscr;
+    bool fpOff;   // MSR[FP] = 0 (float instructions must raise the FP-unavailable exception)
+    bool fmem;    // fill the memory window with normal single-precision floats
+} St;
 
 static u32 load_base(St* st, u32 ra, u32 size) {
     u32 off = rnd() % (WIN_SIZE - 0x400) + 0x200;
     if (rnd() % 8) off &= ~(size - 1);       // mostly aligned (fast path), sometimes not (slow path)
     st->gpr[ra] = ((rnd() & 1) ? 0x80000000u : 0xC0000000u) | (WIN_PA + off);
     return st->gpr[ra];
+}
+
+// Base for float accesses: mostly the window, sometimes the last bytes of MEM1 (range checks) or a wild address (DSI).
+static u32 float_base(St* st, u32 ra, u32 size) {
+    u32 v = load_base(st, ra, size), k = rnd() % 16;
+    if (k == 0) st->gpr[ra] = ((rnd() & 1) ? 0x80000000u : 0xC0000000u) | (MEM1_SIZE - 16 + 4 * (rnd() % 4));
+    else if (k == 1) st->gpr[ra] = interesting();
+    return v;
 }
 
 static u32 gen(St* st) {
@@ -127,6 +151,170 @@ static u32 gen(St* st) {
     }
 }
 
+// ---- float instructions ----
+static u64 mk(u32 sign, int e, u64 mant52) { return ((u64)sign << 63) | ((u64)(e + 1023) << 52) | mant52; }
+static u64 rnd64(void) { return (u64)rnd() << 32 | rnd(); }
+static const u64 FRAC = (1ull << 52) - 1;
+
+// A finite normal double: exact singles and full doubles, moderate and wide exponents, zeros, small integers.
+static u64 fval(void) {
+    u32 s = rnd() & 1;
+    u64 m52 = rnd64() & FRAC, m23 = m52 & (0x7FFFFFull << 29);
+    if (rnd() % 64 == 0) return mk(s, 1024, 0);  // infinity
+    switch (rnd() % 11) {
+    case 0: return (u64)s << 63;
+    case 1: { double d = (double)((int)(rnd() % 65) - 32); u64 b; memcpy(&b, &d, 8); return b; }
+    case 2: case 3: return mk(s, (int)(rnd() % 41) - 20, m23);
+    case 4: return mk(s, (int)(rnd() % 250) - 125, m23);
+    case 5: case 6: return mk(s, (int)(rnd() % 41) - 20, m52);
+    case 7: return mk(s, (int)(rnd() % 601) - 300, m52);
+    case 8: return mk(s, (int)(rnd() % 21) - 10, m23 & ~(0x3FFFFull << 29));  // few mantissa bits: ties and cancellation
+    default: return mk(s, (int)(rnd() % 6) - 3, m23);
+    }
+}
+// A value stfs / psq_st can store without the tiny-value cases the JIT flushes (biased exponent >= 897 or zero).
+static u64 fval_st(void) {
+    for (;;) {
+        u64 v = fval();
+        u32 e = (u32)((v >> 52) & 0x7FF);
+        if (e >= 897 || (v << 1) == 0) return v;
+    }
+}
+
+static u32 gqr_rand(void) {
+    u32 q = rnd() << 16 | rnd();
+    if (rnd() & 1) q &= ~0x3F070000u;  // load direction: plain float
+    if (rnd() & 1) q &= ~0x00003F07u;  // store direction: plain float
+    if (rnd() % 4 == 0) q = 0;
+    return q;
+}
+
+static u32 genf(St* st) {
+    u32 frd = rbits(5), fra = rbits(5), frb = rbits(5), frc = rbits(5), rc = rnd() % 12 == 0;
+    for (;;) {
+        switch (rnd() % 14) {
+        case 0: case 1: {  // lfs lfsu lfd lfdu stfs stfsu stfd stfdu
+            u32 op = 48 + rnd() % 8;
+            bool dbl = op == 50 || op == 51 || op == 54 || op == 55, store = op >= 52;
+            u32 size = dbl ? 8 : 4, ra = 1 + rnd() % 31;
+            float_base(st, ra, size);
+            u32 d = (u32)(s32)((s32)(rnd() % 512) - 256);
+            if (rnd() % 8) d &= ~(size - 1);
+            if (store && !dbl) { st->fpr[frd][0] = fval_st(); }
+            st->fmem = true;
+            return (op << 26) | (frd << 21) | (ra << 16) | (d & 0xFFFF);
+        }
+        case 2: {  // lfsx lfsux lfdx lfdux stfsx stfsux stfdx stfdux
+            u32 n = rnd() % 8, xo = 535 + 32 * n, ra = 1 + rnd() % 31, rb = 1 + rnd() % 31;
+            bool dbl = (n >> 1) & 1, store = n >= 4;
+            if (rb == ra) rb = (ra % 31) + 1;
+            float_base(st, ra, dbl ? 8 : 4);
+            st->gpr[rb] = rnd() % 256;
+            if (rnd() % 8) st->gpr[rb] &= dbl ? ~7u : ~3u;
+            if (store && !dbl) st->fpr[frd][0] = fval_st();
+            st->fmem = true;
+            return (31u << 26) | (frd << 21) | (ra << 16) | (rb << 11) | (xo << 1);
+        }
+        case 3: case 4: {  // psq_l psq_lu psq_st psq_stu
+            static const u32 ops[] = { 56, 57, 60, 61 };
+            u32 op = ops[rnd() % 4], ra = 1 + rnd() % 31, w = rnd() & 1, i = rbits(3);
+            float_base(st, ra, 4);
+            u32 d = (u32)(s32)((s32)(rnd() % 256) - 128);
+            if (rnd() % 8) d &= ~3u;
+            if (op >= 60) { st->fpr[frd][0] = fval(); st->fpr[frd][1] = fval(); }
+            st->fmem = true;
+            return (op << 26) | (frd << 21) | (ra << 16) | (w << 15) | (i << 12) | (d & 0xFFF);
+        }
+        case 5: {  // psq_lx psq_stx psq_lux psq_stux
+            static const u32 xos[] = { 6, 7, 38, 39 };
+            u32 xo = xos[rnd() % 4], ra = 1 + rnd() % 31, rb = 1 + rnd() % 31, w = rnd() & 1, i = rbits(3);
+            if (rb == ra) rb = (ra % 31) + 1;
+            float_base(st, ra, 4);
+            st->gpr[rb] = rnd() % 256;
+            if (rnd() % 8) st->gpr[rb] &= ~3u;
+            if (xo & 1) { st->fpr[frd][0] = fval(); st->fpr[frd][1] = fval(); }
+            st->fmem = true;
+            return (4u << 26) | (frd << 21) | (ra << 16) | (rb << 11) | (w << 10) | (i << 7) | (xo << 1);
+        }
+        case 6: case 7: case 8: {  // single and double arithmetic, including forms left to the interpreter
+            static const u32 x59[] = { 18, 20, 21, 25, 28, 29, 30, 31, 24 };
+            static const u32 x63[] = { 18, 20, 21, 25, 28, 29, 30, 31, 23, 26 };
+            bool single = rnd() & 1;
+            u32 xo5 = single ? x59[rnd() % 9] : x63[rnd() % 10];
+            return ((single ? 59u : 63u) << 26) | (frd << 21) | (fra << 16) | (frb << 11) | (frc << 6) | (xo5 << 1) | rc;
+        }
+        case 9: {  // fcmpu fcmpo frsp fctiw fctiwz fneg fmr fabs fnabs mffs
+            static const u32 xos[] = { 0, 32, 12, 14, 15, 40, 72, 264, 136, 583 };
+            u32 xo = xos[rnd() % 10];
+            if (xo == 0 || xo == 32) {  // equal, signed-zero and unordered operands
+                u32 k = rnd() % 8;
+                if (k == 0) { st->fpr[frb][0] = st->fpr[fra][0]; }
+                else if (k == 1) { st->fpr[fra][0] = 1ull << 63; st->fpr[frb][0] = 0; }
+                else if (k == 2) { st->fpr[(rnd() & 1) ? fra : frb][0] = (rnd() & 1) ? 0x7FF8000000000000ull : 0x7FF4000000000000ull; }
+                return (63u << 26) | (rbits(3) << 23) | (fra << 16) | (frb << 11) | (xo << 1);
+            }
+            if (xo == 12) st->fpr[frb][0] = fval_st();  // frsp of a tiny double: the interpreter keeps a single denormal
+            return (63u << 26) | (frd << 21) | (frb << 11) | (xo << 1) | rc;
+        }
+        case 10: case 11: case 12: case 13: {  // paired singles
+            static const u32 x5[] = { 10, 11, 12, 13, 14, 15, 18, 20, 21, 23, 24, 25, 26, 28, 29, 30, 31 };
+            static const u32 xs[] = { 0, 32, 64, 96, 40, 72, 136, 264, 528, 560, 592, 624 };
+            if (rnd() % 3 == 0) {
+                u32 xo = xs[rnd() % 12];
+                if (xo <= 96) return (4u << 26) | (rbits(3) << 23) | (fra << 16) | (frb << 11) | (xo << 1);
+                return (4u << 26) | (frd << 21) | (fra << 16) | (frb << 11) | (xo << 1) | rc;
+            }
+            u32 xo5 = x5[rnd() % 17];
+            return (4u << 26) | (frd << 21) | (fra << 16) | (frb << 11) | (frc << 6) | (xo5 << 1) | rc;
+        }
+        default:
+            continue;
+        }
+    }
+}
+
+// ---- comparison ----
+enum { T_SINGLE_FTZ = 1, T_DOUBLE_FTZ = 2, T_FUSED_S = 4, T_FUSED_D = 8 };
+
+// What the JIT is allowed to get wrong for this instruction (see the file header).
+static int tolerance(u32 inst) {
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
+    int t = 0;
+    if (op == 48 || op == 49 || op == 56 || op == 57 || op == 4) t |= T_SINGLE_FTZ;  // lfs, psq_l, paired singles
+    if (op == 31 && (xo == 535 || xo == 567)) t |= T_SINGLE_FTZ;
+    if (op == 59) t |= T_SINGLE_FTZ;
+    if (op == 63) t |= xo == 12 ? T_SINGLE_FTZ : T_DOUBLE_FTZ;
+    if ((op == 59 || op == 63 || op == 4) && xo5 >= 28)
+        t |= op == 63 ? T_FUSED_D : T_FUSED_S;
+    if (op == 4 && (xo5 == 14 || xo5 == 15)) t |= T_FUSED_S;
+    return t;
+}
+
+static bool is_nan64(u64 v) { return (v & 0x7FF0000000000000ull) == 0x7FF0000000000000ull && (v & FRAC); }
+static u32 sbits(double d) { float f = (float)d; u32 b; memcpy(&b, &f, 4); return b; }
+static bool lane_ok(u64 jitv, u64 ref, int t, int prodExp) {
+    if (jitv == ref) return true;
+    if (is_nan64(jitv) && is_nan64(ref)) return true;
+    u64 aj = jitv & ~(1ull << 63), ar = ref & ~(1ull << 63);
+    if ((t & T_SINGLE_FTZ) && ar != 0 && ar < 0x3810000000000000ull && aj == 0) return true;  // below 2^-126 -> zero
+    if ((t & T_DOUBLE_FTZ) && ar != 0 && ar < 0x0010000000000000ull && aj == 0) return true;
+    if ((t & T_FUSED_D) && prodExp > -4000) {  // the product is rounded before the add: error up to an ulp of the product plus an ulp of the result
+        double dj, dr;
+        memcpy(&dj, &jitv, 8); memcpy(&dr, &ref, 8);
+        int er = (int)((ar >> 52) & 0x7FF) - 1023;
+        if (er > -1000 && er < 1000 && fabs(dj - dr) <= ldexp(1.0, prodExp - 51) + ldexp(1.0, er - 51)) return true;
+    }
+    if (t & T_FUSED_S) {
+        double dj, dr;
+        memcpy(&dj, &jitv, 8); memcpy(&dr, &ref, 8);
+        u32 bj = sbits(dj), br = sbits(dr);
+        if ((bj >> 31) == (br >> 31) && ((bj & 0x7FFFFFFFu) > (br & 0x7FFFFFFFu) ? (bj & 0x7FFFFFFFu) - (br & 0x7FFFFFFFu)
+                                                                                  : (br & 0x7FFFFFFFu) - (bj & 0x7FFFFFFFu)) <= 1)
+            return true;
+    }
+    return false;
+}
+
 static bool compare(u32 inst, int n) {
     Gekko* a = &A.cpu;
     Gekko* b = &B.cpu;
@@ -136,8 +324,36 @@ static bool compare(u32 inst, int n) {
     for (int r = 0; r < 32; r++)
         if (a->gpr[r] != b->gpr[r]) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  r%d jit %08x interp %08x\n", r, a->gpr[r], b->gpr[r]); ok = false; }
 #define CHK(f) if (a->f != b->f) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  " #f " jit %08x interp %08x\n", a->f, b->f); ok = false; }
-    CHK(cr) CHK(xer) CHK(lr) CHK(ctr) CHK(pc)
+    CHK(cr) CHK(xer) CHK(lr) CHK(ctr) CHK(pc) CHK(msr) CHK(spr[SPR_SRR0]) CHK(spr[SPR_SRR1]) CHK(spr[SPR_DAR]) CHK(spr[SPR_DSISR])
 #undef CHK
+    int t = tolerance(inst), prodExp = -9999;
+    if (t & T_FUSED_D) {  // exponent of a * c for the double multiply-add forms
+        u64 ia = g_in[(inst >> 16) & 31][0], ic = g_in[(inst >> 6) & 31][0];
+        prodExp = (int)((ia >> 52) & 0x7FF) + (int)((ic >> 52) & 0x7FF) - 2046 + 1;
+    }
+    for (int r = 0; r < 32; r++)
+        for (int l = 0; l < 2; l++) {
+            u64 vj, vr;
+            memcpy(&vj, l ? &a->fpr[r].ps1 : &a->fpr[r].ps0, 8);
+            memcpy(&vr, l ? &b->fpr[r].ps1 : &b->fpr[r].ps0, 8);
+            if (!lane_ok(vj, vr, t, prodExp)) {
+                if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+                printf("  f%d.ps%d jit %016llx interp %016llx\n", r, l, (unsigned long long)vj, (unsigned long long)vr);
+                ok = false;
+            }
+        }
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
+    if ((op == 63 && (xo == 0 || xo == 32)) || (op == 4 && (xo == 0 || xo == 32 || xo == 64 || xo == 96)))
+        if ((a->fpscr ^ b->fpscr) & 0xF000u) {  // FPSCR[FPCC]
+            if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+            printf("  fpscr.FPCC jit %x interp %x\n", (a->fpscr >> 12) & 15, (b->fpscr >> 12) & 15);
+            ok = false;
+        }
+    if (memcmp(A.mem1 + MEM1_SIZE - TOP_SIZE, B.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE)) {
+        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        printf("  memory at the end of MEM1 differs\n");
+        ok = false;
+    }
     if (memcmp(A.mem1 + WIN_PA, B.mem1 + WIN_PA, WIN_SIZE)) {
         if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
         for (u32 i = 0; i < WIN_SIZE; i++) if (A.mem1[WIN_PA + i] != B.mem1[WIN_PA + i]) { printf("  mem %08x jit %02x interp %02x\n", WIN_PA + i, A.mem1[WIN_PA + i], B.mem1[WIN_PA + i]); break; }
@@ -147,38 +363,66 @@ static bool compare(u32 inst, int n) {
     return ok;
 }
 
+// Memory window words that are normal single-precision floats (a quarter with any exponent).
+static void fill_floats(System* s) {
+    for (u32 i = 0; i < WIN_SIZE; i += 4) {
+        u32 e = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254;
+        u32 w = (rnd() & 1) << 31 | e << 23 | (rnd() & 0x7FFFFF);
+        mem1_write32(s, WIN_PA + i, w);
+    }
+}
+
 int main(int argc, char** argv) {
     u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 20000;
     if (argc > 2) rng ^= strtoull(argv[2], NULL, 0) * 0x2545F4914F6CDD1Dull;
-    bool plant = getenv("JIT_FUZZ_PLANT") != NULL;
+    g_logMask = 0;  // unmapped-access and reserved-GQR messages from the deliberately wild addresses
+    const char* pe = getenv("JIT_FUZZ_PLANT");
+    int plant = pe ? atoi(pe) : 0;
     if (!sys_init(&A) || !sys_init(&B)) { printf("init failed\n"); return 2; }
     boot_like(&A);
     boot_like(&B);
     jit = jit_create(&A.cpu, A.mem1, MEM1_SIZE, 4u << 20);
     if (!jit) { printf("jit_create failed\n"); return 2; }
     jit_debug_max_insns = 1;
-    u32 fails = 0;
+    if (plant == 2) jit_debug_plant = 1;
+    u32 fails = 0, floats = 0;
     for (u32 k = 0; k < cases && fails < 10; k++) {
         St st;
+        memset(&st, 0, sizeof st);
         for (int r = 0; r < 32; r++) st.gpr[r] = interesting();
         st.cr = rnd() << 16 | rnd();
         st.xer = (rnd() << 16 | rnd()) & 0xE000007Fu;
         st.lr = (rnd() << 16 | rnd()) & ~3u;
         st.ctr = rnd() << 16 | rnd();
-        u32 inst = gen(&st);
+        for (int r = 0; r < 32; r++) { st.fpr[r][0] = fval(); st.fpr[r][1] = fval(); }
+        for (int i = 0; i < 8; i++) st.gqr[i] = gqr_rand();
+        st.fpscr = rnd() % 8 == 0 ? rnd() & 7 : 0;  // RN != 0: the JIT must leave every float instruction to the interpreter; NI: flush, as the host does
+        st.fpOff = rnd() % 40 == 0;
+        bool isFloat = rnd() % 100 < 55;
+        u32 inst = isFloat ? genf(&st) : gen(&st);
+        floats += isFloat;
         CODE_PA = 0x3000u + 4 * (rnd() % 1024);
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
+        for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
+        if (st.fmem && rnd() % 8) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
         mem1_write32(&A, CODE_PA, inst);
         mem1_write32(&B, CODE_PA, inst);
+        memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };
         for (int m = 0; m < 2; m++) {
             Gekko* g = &sys[m]->cpu;
             memcpy(g->gpr, st.gpr, sizeof st.gpr);
             g->cr = st.cr; g->xer = st.xer; g->lr = st.lr; g->ctr = st.ctr; g->pc = CODE_EA;
+            for (int r = 0; r < 32; r++) { memcpy(&g->fpr[r].ps0, &st.fpr[r][0], 8); memcpy(&g->fpr[r].ps1, &st.fpr[r][1], 8); }
+            for (int i = 0; i < 8; i++) g->spr[SPR_GQR0 + i] = st.gqr[i];
+            g->fpscr = st.fpscr;
+            u32 msr = MSR_BASE | (st.fpOff ? 0 : MSR_FP);
+            if (g->msr != msr) gekko_set_msr(g, msr);
+            g->spr[SPR_SRR0] = g->spr[SPR_SRR1] = g->spr[SPR_DAR] = g->spr[SPR_DSISR] = 0;
         }
         jit_invalidate_all(jit);
         int n = (int)jit_run_one_block(jit);
-        if (plant && k == cases / 2) A.cpu.gpr[3] ^= 1;
+        if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
         bool stop;
         B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA, inst, &stop);
         if (!compare(inst, n)) {
@@ -189,6 +433,20 @@ int main(int argc, char** argv) {
             fails++;
         }
     }
-    printf("JIT FUZZ cases=%u fails=%u%s\n", cases, fails, plant ? " (planted)" : "");
+    if (getenv("JIT_FUZZ_STATS")) {  // what the JIT left to the interpreter: static = at compile time, dynamic = at run time
+        const JitStats* s = jit_stats(jit);
+        printf("native %llu of %llu compiled; run-time fallbacks %llu\n", (unsigned long long)s->instrsNative,
+               (unsigned long long)s->instrsCompiled, (unsigned long long)s->fallbacksRun);
+        for (int pass = 0; pass < 2; pass++) {
+            const JitOpCounts* t = pass ? &s->fallbackRun : &s->fallback;
+            printf("%s:", pass ? "dynamic" : "static");
+            for (int i = 48; i < 62; i++) if (t->primary[i]) printf(" op%d=%u", i, t->primary[i]);
+            for (int i = 0; i < 32; i++) if (t->x59[i]) printf(" 59.%d=%u", i, t->x59[i]);
+            for (int i = 0; i < 1024; i++) if (t->x63[i]) printf(" 63.%d=%u", i, t->x63[i]);
+            for (int i = 0; i < 1024; i++) if (t->x4[i]) printf(" 4.%d=%u", i, t->x4[i]);
+            printf("\n");
+        }
+    }
+    printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     return fails ? 1 : 0;
 }

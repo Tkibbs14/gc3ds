@@ -273,6 +273,7 @@ static void run(const char* path) {
 }
 
 int main(void) {
+    jit_host_fpscr_init();  // the kernel starts threads rounding toward zero; compiled float code assumes nearest
     gfxInitDefault();
     gfxSetDoubleBuffering(GFX_TOP, true);
     consoleInit(GFX_BOTTOM, NULL);

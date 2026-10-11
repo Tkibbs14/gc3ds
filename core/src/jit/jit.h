@@ -1,9 +1,10 @@
 #pragma once
 // Gekko -> ARMv6K JIT (32-bit ARM hosts only: the 3DS, and ARM Linux under qemu for testing).
 //
-// Level 1: blocks of guest code end at the first branch. Common integer, load/store and branch instructions are
-// translated; everything else runs through the interpreter's handler for that one instruction, so any program runs
-// correctly from the start and speed grows with coverage. Guest registers stay in the Gekko struct (no register
+// Level 1: blocks of guest code end at the first branch. Common integer, load/store, branch, float and paired-single
+// instructions are translated (floats on VFP in a "fast float" model, see jit.c); everything else runs through the
+// interpreter's handler for that one instruction, so any program runs correctly from the start and speed grows with
+// coverage. Guest registers stay in the Gekko struct (no register
 // allocation yet); blocks return to the dispatcher (no linking yet).
 #include "../cpu/gekko.h"
 
@@ -37,7 +38,17 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line));
 extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test)
 u32 jit_run_one_block(Jit* j);
+
+// Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with
+// round toward zero), flush-to-zero and default NaN (denormals and NaN payloads are not reproduced; flush-to-zero also
+// keeps VFP11 from bouncing denormals to support code). Call it in the thread that runs compiled code.
+#if defined(__arm__)
+static inline void jit_host_fpscr_init(void) { __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u)); }
+#else
+static inline void jit_host_fpscr_init(void) {}
+#endif
 
 // Host services each frontend provides: executable memory and instruction-cache maintenance.
 void* jit_host_alloc_exec(u32 bytes);

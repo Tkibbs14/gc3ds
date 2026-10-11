@@ -88,6 +88,8 @@ static inline void smull(Emit* e, int lo, int hi, int rm, int rs) { E(e, cc(C_AL
 static inline void umull(Emit* e, int lo, int hi, int rm, int rs) { E(e, cc(C_AL) | 0x00800090u | ((u32)hi << 16) | ((u32)lo << 12) | ((u32)rs << 8) | (u32)rm); }
 static inline void mrs(Emit* e, int rd) { E(e, cc(C_AL) | 0x010F0000u | ((u32)rd << 12)); }
 static inline void blx_reg(Emit* e, int rm) { E(e, cc(C_AL) | 0x012FFF30u | (u32)rm); }
+static inline void ldmia(Emit* e, int rn, u32 mask) { E(e, cc(C_AL) | 0x08900000u | ((u32)rn << 16) | mask); }
+static inline void stmia(Emit* e, int rn, u32 mask) { E(e, cc(C_AL) | 0x08800000u | ((u32)rn << 16) | mask); }
 static inline void push_regs(Emit* e, u32 mask) { E(e, cc(C_AL) | 0x092D0000u | mask); }
 static inline void pop_regs(Emit* e, u32 mask) { E(e, cc(C_AL) | 0x08BD0000u | mask); }
 
@@ -102,3 +104,31 @@ static inline void patch_branch(Emit* e, u32 at, u32 target) {
     s32 off = (s32)target - (s32)(at + 2);
     e->buf[at] = (e->buf[at] & 0xFF000000u) | ((u32)off & 0xFFFFFF);
 }
+
+// ---- VFPv2. Sn: single registers 0..31; Dn: double registers 0..15 (d0-d7 = s0-s15 are caller-saved). ----
+// Multiply-accumulate group: Vd = (+/-)Vd (+/-) Vn * Vm; the product is rounded before the add (VFP11 has no fused op).
+enum { VF_MLA = 0x00000000u, VF_MLS = 0x00000040u, VF_NMLS = 0x00100000u, VF_NMLA = 0x00100040u, VF_MUL = 0x00200000u,
+       VF_ADD = 0x00300000u, VF_SUB = 0x00300040u, VF_DIV = 0x00800000u };
+static inline u32 vf_sd(int s) { return ((u32)(s >> 1) << 12) | ((u32)(s & 1) << 22); }
+static inline u32 vf_sn(int s) { return ((u32)(s >> 1) << 16) | ((u32)(s & 1) << 7); }
+static inline u32 vf_sm(int s) { return (u32)(s >> 1) | ((u32)(s & 1) << 5); }
+static inline void vfp_d(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000B00u | op | ((u32)n << 16) | ((u32)d << 12) | (u32)m); }
+static inline void vfp_s(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000A00u | op | vf_sd(d) | vf_sn(n) | vf_sm(m)); }
+static inline void vmov_d(Emit* e, int d, int m) { E(e, 0xEEB00B40u | ((u32)d << 12) | (u32)m); }
+static inline void vneg_d(Emit* e, int d, int m) { E(e, 0xEEB10B40u | ((u32)d << 12) | (u32)m); }
+static inline void vcvt_f32_f64(Emit* e, int sd, int dm) { E(e, 0xEEB70BC0u | vf_sd(sd) | (u32)dm); }
+static inline void vcvt_f64_f32(Emit* e, int dd, int sm) { E(e, 0xEEB70AC0u | ((u32)dd << 12) | vf_sm(sm)); }
+// double -> int32: vcvt truncates toward zero, vcvtr rounds as FPSCR says.
+static inline void vcvt_s32_f64(Emit* e, int sd, int dm) { E(e, 0xEEBD0BC0u | vf_sd(sd) | (u32)dm); }
+static inline void vcvtr_s32_f64(Emit* e, int sd, int dm) { E(e, 0xEEBD0B40u | vf_sd(sd) | (u32)dm); }
+static inline void vcmp_d(Emit* e, int d, int m) { E(e, 0xEEB40B40u | ((u32)d << 12) | (u32)m); }
+static inline void vmrs_apsr(Emit* e) { E(e, 0xEEF1FA10u); }  // vmrs APSR_nzcv, fpscr
+static inline void vmsr_fpscr(Emit* e, int rt) { E(e, 0xEEE10A10u | ((u32)rt << 12)); }
+// Loads and stores with a word-multiple offset 0..1020.
+static inline void vldr_d(Emit* e, int d, int rn, u32 off) { E(e, 0xED900B00u | ((u32)rn << 16) | ((u32)d << 12) | (off >> 2)); }
+static inline void vstr_d(Emit* e, int d, int rn, u32 off) { E(e, 0xED800B00u | ((u32)rn << 16) | ((u32)d << 12) | (off >> 2)); }
+// Moves between core and VFP registers.
+static inline void vmov_s_r(Emit* e, int sn, int rt) { E(e, 0xEE000A10u | vf_sn(sn) | ((u32)rt << 12)); }
+static inline void vmov_r_s(Emit* e, int rt, int sn) { E(e, 0xEE100A10u | vf_sn(sn) | ((u32)rt << 12)); }
+static inline void vmov_d_rr(Emit* e, int dm, int rt, int rt2) { E(e, 0xEC400B10u | ((u32)rt2 << 16) | ((u32)rt << 12) | (u32)dm); }
+static inline void vmov_ss_rr(Emit* e, int sm, int rt, int rt2) { E(e, 0xEC400A10u | ((u32)rt2 << 16) | ((u32)rt << 12) | vf_sm(sm)); }  // sm, sm+1 = rt, rt2
