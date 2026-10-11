@@ -715,6 +715,9 @@ static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
 static u32 g_vwMemHead;
 static volatile u32 g_vwHead, g_vwTail, g_vwQuit, g_vwPos;
+// The worker also gathers shader-lit draws from guest memory (vfast_prepare defer). Off: measured slower on the 2DS
+// (6673eb2: 14.2% against 14.8%), because every batch draw then waits for the worker (vwait 18%).
+static const bool kVwGather = false;
 static Thread g_vwThread;
 static bool g_vwOn = true;  // pica_set_vertex_worker
 static inline void vw_dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory"); }
@@ -790,6 +793,7 @@ static void vw_main(void* arg) {
 // True when the worker has no queued draw (it gathers shader-lit draws from guest memory, so the CPU thread must not
 // run on past a PE signal or a GX sync while one is queued).
 bool pica_vertex_worker_idle(void) {
+    if (!kVwGather) return true;  // the worker reads only its jobs
     bool idle = g_vwTail == g_vwHead;
     vw_dmb();
     return idle;
@@ -936,7 +940,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         else {
             w.pv = (PVert*)(mem + jb);
             w.nd = (float (*)[2])(w.pv + count);
-            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, true, mem, w.pv);  // the worker gathers shader-lit draws
+            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, kVwGather, mem, w.pv);
             if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;

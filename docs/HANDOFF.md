@@ -203,6 +203,14 @@ stream into the job, `vfast_finish` gathers. The worker reads guest memory later
 thread waits for the worker before posting a PE token / finish, and `wait_drained` also waits for it
 (`pica_vertex_worker_idle`). The PC path defers too, so `vfast_check.sh` checks it (TP 1,500 fields: 4,672,789 draws,
 3,708 over tolerance, as before). The batch fast path no longer copies the 384-byte key per draw.
+**Measured on the 2DS (6673eb2): slower, 14.2%.** vdec fell from 20% to 2% of core 2, but the GX thread then waited
+for the worker 18% (`vwait_pct`) because each batch draw (~445/s) waits for the worker to finish the batch, and the
+worker went from 35% to 51% busy; core 0 waited 26%. Switched off (`kVwGather` in pica.c; the code and its PC check
+stay). Moving work between cores does not help while every batch flush is a join.
+
+**The GPU is mostly idle:** citro3d reports ~20 ms of GPU drawing per frame against ~190 ms of CPU work
+(`c3d_gpu_ms` / `c3d_cpu_ms`). The real lever is to give the PICA's vertex units the position transform (raw
+positions and per-draw matrices as uniforms), as Dolphin does, instead of transforming every vertex on the CPU.
 
 ### Research digest (2026-10-11, five Haiku agents; facts marked SOURCED by them, TRM read here)
 
