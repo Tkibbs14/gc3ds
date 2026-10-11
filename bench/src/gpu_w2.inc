@@ -42,6 +42,7 @@ static void w2_load_shaders(void)
     if (g_uPal3 < 0 && g_progXOk[PX_PAL3]) { shaderProgramFree(&g_progX[PX_PAL3]); g_progXOk[PX_PAL3] = false; }
 }
 
+static void w2_free5(void);
 static void w2_free(void)
 {
     if (g_triP) linearFree(g_triP);
@@ -49,6 +50,7 @@ static void w2_free(void)
     if (g_strip) linearFree(g_strip);
     if (g_w2q) linearFree(g_w2q);
     if (g_vtxVram) vramFree(g_vtxVram);
+    w2_free5();
     g_triP = NULL; g_triI = NULL; g_strip = NULL; g_w2q = NULL; g_vtxVram = NULL;
     for (int i = 0; i < PX_N; i++) {
         if (g_progXOk[i]) shaderProgramFree(&g_progX[i]);
@@ -667,8 +669,247 @@ static void test_w2_falseshare(void)
     }
 }
 
+// ==== gcbench 5: the GPU measurements still open (MEASURE_PLAN.md) ====
+static Vtx* g_dq;              // G13: 24 full-screen quads at decreasing z, then the same increasing
+static u16* g_idxShuf;         // G17: g_idxGrid with its triangles in random order
+static const u16* g_idxCur;
+static Vtx* g_clipTri;         // G19: one triangle crossing the camera plane, one fully visible
+
+static void draw_dq(int order)
+{
+    C3D_RenderTargetClear(g_tgt, C3D_CLEAR_DEPTH, 0, 0);
+    C3D_DrawArrays(GPU_TRIANGLES, order ? 24 * 6 : 0, 24 * 6);
+}
+
+static void draw_idx(int reps)
+{
+    for (int r = 0; r < reps; r++) C3D_DrawElements(GPU_TRIANGLES, GRID_TRIS * 3, C3D_UNSIGNED_SHORT, g_idxCur);
+}
+
+// g_drawN one-triangle draws, each followed by a framebuffer flush + invalidate (what an EFB copy between draws costs).
+static void draw_flushy(int flush)
+{
+    for (int i = 0; i < g_drawN; i++) {
+        C3D_DrawArrays(GPU_TRIANGLES, g_drawFirst + 3 * i, 3);
+        if (flush) { GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1); GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1); }
+    }
+}
+
+// G5 (can hang the GPU): all draws inside ONE draw window, vertex count and offset written inside it.
+static void draw_onewindow(int unused)
+{
+    (void)unused;
+    C3D_DrawArrays(GPU_TRIANGLES, g_drawFirst, 3);   // commits state and the primitive mode
+    GPUCMD_AddMaskedWrite(GPUREG_GEOSTAGE_CONFIG2, 1, 1);
+    GPUCMD_AddMaskedWrite(GPUREG_START_DRAW_FUNC0, 1, 0);
+    for (int i = 1; i < g_drawN; i++) {
+        GPUCMD_AddWrite(GPUREG_RESTART_PRIMITIVE, 1);
+        GPUCMD_AddWrite(GPUREG_NUMVERTICES, 3);
+        GPUCMD_AddWrite(GPUREG_VERTEX_OFFSET, (u32)(g_drawFirst + 3 * i));
+        GPUCMD_AddWrite(GPUREG_DRAWARRAYS, 1);
+    }
+    GPUCMD_AddMaskedWrite(GPUREG_START_DRAW_FUNC0, 1, 1);
+    GPUCMD_AddMaskedWrite(GPUREG_GEOSTAGE_CONFIG2, 1, 0);
+    GPUCMD_AddWrite(GPUREG_VTX_FUNC, 1);
+}
+
+static void test_g5_safe(void)
+{
+    P("\n-- G13 early depth (24 full-screen quads, depth GEQUAL) --\n");
+    bool drawn;
+    g_dq = linearAlloc(48 * 6 * sizeof(Vtx));
+    if (g_dq && g_quad) {
+        for (int q = 0; q < 48; q++) {
+            float z = q < 24 ? 0.95f - q * 0.035f : 0.05f + (q - 24) * 0.035f;
+            for (int k = 0; k < 6; k++) { g_dq[q * 6 + k] = g_quad[Q_FULL + k]; g_dq[q * 6 + k].z = z; }
+        }
+        GSPGPU_FlushDataCache(g_dq, 48 * 6 * sizeof(Vtx));
+        static const char* nm[5] = { "no depth", "depth, z falling", "depth, z rising", "early, z falling", "early, z rising" };
+        for (int m = 0; m < 5; m++) {
+            step(nm[m]);
+            if (!gpu_ok("early depth")) break;
+            use_simple(&g_projTop); attr_vtx(); buf_vtx(g_dq);
+            if (g_texVOk) env_tex(&g_texV, 1); else env_color();
+            if (m == 0) depth_off(); else depth_on();
+            C3D_EarlyDepthTest(m >= 3, GPU_EARLYDEPTH_GEQUAL, 0);
+            double ms = measure(draw_dq, (m == 2 || m == 4) ? 1 : 0, true, &drawn);
+            P("%-18s %6.2f ms/f  %6.1f Mpx/s%s\n", nm[m], ms, ms > 0 ? 24.0 * SCR_PX / (ms * 1000) : -1.0,
+              drawn ? "" : " INVALID");
+        }
+        C3D_EarlyDepthTest(false, GPU_EARLYDEPTH_GEQUAL, 0);
+        depth_off();
+    }
+
+    P("-- G15 framebuffer flush + invalidate between draws (1000 one-triangle draws) --\n");
+    double cpu;
+    g_drawFirst = (GRID_TRIS / 2 - 500) * 3;
+    g_drawN = 1000;
+    for (int f = 0; f < 2; f++) {
+        step(f ? "draws + fb flush" : "draws plain");
+        if (!gpu_ok("fb flush") || !g_tri) break;
+        use_simple(&g_projTop); attr_vtx(); buf_vtx(g_tri); env_color();
+        double ms = measure_cpu(draw_flushy, f, &cpu, &drawn);
+        P("%-18s gpu %6.2f ms = %.2f us/draw%s\n", f ? "with flush+inval" : "plain", ms, ms * 1000.0 / g_drawN,
+          drawn ? "" : " INVALID");
+    }
+
+    P("-- G17 post-vertex cache (indexed grid, 20k tris x3) --\n");
+    g_idxShuf = linearAlloc(TRI_VERTS * sizeof(u16));
+    if (g_idxShuf && g_idxGrid && g_grid) {
+        memcpy(g_idxShuf, g_idxGrid, TRI_VERTS * sizeof(u16));
+        u32 x = 777;
+        for (int t = GRID_TRIS - 1; t > 0; t--) {
+            x = x * 1103515245u + 12345u;
+            int o = (int)((x >> 8) % (u32)(t + 1));
+            for (int c = 0; c < 3; c++) { u16 tmp = g_idxShuf[3 * t + c]; g_idxShuf[3 * t + c] = g_idxShuf[3 * o + c]; g_idxShuf[3 * o + c] = tmp; }
+        }
+        GSPGPU_FlushDataCache(g_idxShuf, TRI_VERTS * sizeof(u16));
+        for (int s = 0; s < 2; s++) {
+            step(s ? "idx shuffled" : "idx ordered");
+            if (!gpu_ok("vertex cache")) break;
+            use_simple(&g_projTop); attr_vtx(); buf_vtx(g_grid); env_color();
+            g_idxCur = s ? g_idxShuf : g_idxGrid;
+            double ms = measure(draw_idx, 3, true, &drawn);
+            w2_tri_line(s ? "indexed shuffled" : "indexed ordered", 3 * GRID_TRIS, ms, drawn, -1);
+        }
+    }
+
+    P("-- G19 clipping: a triangle crossing the camera plane (5x9 sample map, # = drawn) --\n");
+    g_clipTri = linearAlloc(6 * sizeof(Vtx));
+    if (g_clipTri) {
+        static const float v[6][3] = { { -30, -20, -10 }, { 30, -20, -10 }, { 0, 20, 10 },     // C behind the camera
+                                       { -3, -2, -10 }, { 3, -2, -10 }, { 0, 2, -10 } };      // fully visible
+        for (int k = 0; k < 6; k++) {
+            memset(&g_clipTri[k], 0, sizeof(Vtx));
+            g_clipTri[k].x = v[k][0]; g_clipTri[k].y = v[k][1]; g_clipTri[k].z = v[k][2];
+            g_clipTri[k].r = 255; g_clipTri[k].a = 255;
+        }
+        GSPGPU_FlushDataCache(g_clipTri, 6 * sizeof(Vtx));
+        C3D_Mtx proj;
+        Mtx_PerspTilt(&proj, C3D_AngleFromDegrees(60.0f), (float)SCR_W / SCR_H, 1.0f, 100.0f, false);
+        for (int t = 0; t < 2; t++) {
+            step(t ? "clip visible" : "clip crossing");
+            if (!gpu_ok("clip") || !frame_begin()) break;
+            C3D_FrameDrawOn(g_tgt);
+            C3D_RenderTargetClear(g_tgt, C3D_CLEAR_ALL, SENTINEL, 0);
+            use_simple(&proj); attr_vtx(); buf_vtx(g_clipTri); env_color(); depth_off();
+            C3D_DrawArrays(GPU_TRIANGLES, t * 3, 3);
+            if (frame_end_timed() < 0 || !read_target(g_tgt)) break;
+            P("%s:\n", t ? "visible tri" : "crossing tri");
+            for (int r = 0; r < 5; r++) {          // target rows = screen x (400), columns = screen y (240)
+                char line[16];
+                for (int col = 0; col < 9; col++) {
+                    int bx = 12 + col * (SCR_H - 24) / 8, by = 20 + r * (SCR_W - 40) / 4;
+                    line[col] = g_rb[by * SCR_H + bx] != SENTINEL ? '#' : '.';
+                }
+                line[9] = 0;
+                P("  %s\n", line);
+            }
+        }
+    }
+
+    P("-- M2 memcpy while the GPU fills (result consumed) --\n");
+    step("contention");
+    if (gpu_ok("contention") && g_quad && g_texVOk) {
+        const u32 n = 2u << 20;
+        u8 *a = malloc(n), *b = malloc(n);
+        if (a && b) {
+            memset(a, 1, n);
+            u32 sum = 0;
+            double t0 = now_s();
+            int copies = 0;
+            while (now_s() - t0 < 0.05) { memcpy(b, a, n); sum += b[(copies * 4093) % n]; copies++; }
+            double idle = copies * (n / 1e6) / (now_s() - t0);
+            if (frame_begin()) {
+                C3D_FrameDrawOn(g_tgt);
+                use_simple(&g_projTop); attr_vtx(); buf_vtx(g_quad); env_tex(&g_texV, 1);
+                g_quadFirst = Q_FULL;
+                draw_quads(96);
+                C3D_FrameEnd(GX_CMDLIST_FLUSH);
+                t0 = now_s();
+                copies = 0;
+                while (now_s() - t0 < 0.03) { memcpy(b, a, n); sum += b[(copies * 4093) % n]; copies++; }
+                double busy = copies * (n / 1e6) / (now_s() - t0);
+                bool still = !C3D_FrameBegin(C3D_FRAME_NONBLOCK);
+                if (!still) C3D_FrameEnd(GX_CMDLIST_FLUSH);
+                double w0 = now_s();
+                while (still) {
+                    if (C3D_FrameBegin(C3D_FRAME_NONBLOCK)) { C3D_FrameEnd(GX_CMDLIST_FLUSH); break; }
+                    if (now_s() - w0 > GPU_TIMEOUT_S) { gpu_timeout(); break; }
+                    svcSleepThread(POLL_NS);
+                }
+                P("memcpy 2 MB: idle %.0f MB/s, while the GPU fills %.0f MB/s (%.0f%%)%s (sum %lu)\n", idle, busy,
+                  100.0 * busy / idle, still ? "" : " (GPU finished early)", (unsigned long)sum);
+            }
+        }
+        free(a);
+        free(b);
+    }
+}
+
+static void test_g5_risky(void)
+{
+    // Standard anti-aliasing output: a 2x target (480x800) box-downscaled 2x2 onto a 240x400 linear buffer.
+    P("-- G14b 2x2 downscale from a 2x target (citro3d anti-aliasing layout) --\n");
+    step("aa downscale");
+    if (gpu_ok("aa downscale") && g_rb) {
+        C3D_RenderTarget* big = C3D_RenderTargetCreate(SCR_H * 2, SCR_W * 2, GPU_RB_RGBA8, GPU_RB_DEPTH16);
+        if (!big) P("aa downscale SKIPPED: target alloc\n");
+        else {
+            double tot = 0;
+            int ok = 0;
+            for (int r = 0; r < 3; r++) {
+                if (!frame_begin()) break;
+                C3D_FrameDrawOn(big);
+                C3D_RenderTargetClear(big, C3D_CLEAR_ALL, 0x336699FF, 0);
+                if (frame_end_timed() < 0 || !frame_begin()) break;
+                GX_DisplayTransfer((u32*)big->frameBuf.colorBuf, GX_BUFFER_DIM(SCR_H * 2, SCR_W * 2), g_rb,
+                                   GX_BUFFER_DIM(SCR_H, SCR_W), XFER_TO_LINEAR | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_XY));
+                double t = frame_end_timed();
+                if (t < 0) break;
+                tot += t;
+                ok++;
+            }
+            if (ok == 3) P("2x2 downscale 480x800 -> 240x400: %.3f ms, centre pixel %08lx\n", tot * 1000 / 3,
+                           (unsigned long)g_rb[(SCR_W / 2) * SCR_H + SCR_H / 2]);
+            else P("2x2 downscale FAILED\n");
+            if (!g_dead) C3D_RenderTargetDelete(big);
+        }
+    }
+    P("-- G5 several draws in one draw window (1000 one-triangle draws) --\n");
+    step("one window");
+    if (gpu_ok("one window") && g_tri) {
+        bool drawn;
+        double cpu;
+        g_drawFirst = (GRID_TRIS / 2 - 500) * 3;
+        g_drawN = 1000;
+        use_simple(&g_projTop); attr_vtx(); buf_vtx(g_tri); env_color();
+        double ms = measure_cpu(draw_onewindow, 0, &cpu, &drawn);
+        if (ms < 0) P("one window FAILED (GPU)\n");
+        else P("one window: gpu %.2f ms = %.2f us/draw, cpu %.2f us/draw%s\n", ms, ms * 1000.0 / g_drawN,
+               cpu * 1000.0 / g_drawN, drawn ? "" : " INVALID");
+    }
+}
+
+static void w2_free5(void)
+{
+    if (g_dq) linearFree(g_dq);
+    if (g_idxShuf) linearFree(g_idxShuf);
+    if (g_clipTri) linearFree(g_clipTri);
+    g_dq = NULL; g_idxShuf = NULL; g_clipTri = NULL;
+}
+
 static void bench_gpu_w2(void)
 {
+    if (g_gb5) {
+        P("\n== GPU gcbench 5 (open items; risky ones last) ==\n");
+        step("w2 setup");
+        w2_load_shaders();
+        w2_build();
+        test_g5_safe();
+        test_g5_risky();
+        return;
+    }
     if (g_followup) {
         P("\n== GPU follow-up (gcbench 4b) ==\n");
         step("w2 setup");

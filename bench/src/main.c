@@ -27,7 +27,7 @@ static size_t g_outLen;
 static FILE* g_file;
 static char g_step[64] = "start";
 static int g_listen = -1;
-bool g_w2only, g_quick, g_followup;
+bool g_w2only, g_quick, g_followup, g_gb5;
 
 static void append(const char* s) {
     size_t n = strlen(s);
@@ -180,15 +180,22 @@ int main(void) {
         skipGpu = mode == 'w';
         g_quick = mode == 'q' || mode == 'w' || mode == 'F';   // F: the follow-up set, quick (emulator)
         g_followup = mode == 'f' || mode == 'F';
-        P("w2only.txt mode '%c': %s\n", mode > ' ' ? mode : '?', g_followup ? "follow-up tests (timed)" :
-          g_quick ? "wave 2, quick emulator check" : "wave 2 only");
+        g_gb5 = mode == '5' || mode == '%';   // %: gcbench 5, quick (emulator)
+        if (mode == '%') g_quick = true;
+        P("w2only.txt mode '%c': %s\n", mode > ' ' ? mode : '?', g_gb5 ? "gcbench 5 open items" :
+          g_followup ? "follow-up tests (timed)" : g_quick ? "wave 2, quick emulator check" : "wave 2 only");
     }
     if (!g_w2only) {
         run_module("CPU", cpu_module);
         run_module("SYSTEM", bench_sys);
     }
-    if (!skipGpu) run_module("GPU", bench_gpu);
-    if (!g_followup) run_module("WAVE2", bench_wave);
+    if (g_gb5) {
+        run_module("GB5 CPU/AUDIO", bench_wave5);   // before the GPU module: its last tests may hang the GPU
+        run_module("GPU", bench_gpu);
+    } else {
+        if (!skipGpu) run_module("GPU", bench_gpu);
+        if (!g_followup) run_module("WAVE2", bench_wave);
+    }
     step("done");
     P("ALL DONE in %.0f s. START exits.\n", now_s() - t0);
 

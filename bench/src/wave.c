@@ -419,6 +419,249 @@ out:
     if (cap) linearFree(cap);
 }
 
+// ==== gcbench 5: the measurements still open after gcbench 4/4b (MEASURE_PLAN.md) ====
+
+// C3: a core 0 <-> core 2 handshake through the kernel (svcArbitrateAddress), check-then-wait with barriers, a 2 ms
+// timeout per wait so a lost wake-up is counted, not hung on.
+static volatile s32 g_arbReq __attribute__((aligned(32)));
+static volatile s32 g_arbAck __attribute__((aligned(32)));
+static volatile int g_arbQuit;
+static u32 g_arbTimeouts;
+
+static void arb_partner(void* arg)
+{
+    (void)arg;
+    s32 seen = 0;
+    while (!g_arbQuit) {
+        __dmb();
+        s32 r = g_arbReq;
+        if (r == seen) {
+            if (R_DESCRIPTION(syncArbitrateAddressWithTimeout((s32*)&g_arbReq, ARBITRATION_WAIT_IF_LESS_THAN_TIMEOUT,
+                                                              seen + 1, 2000000)) == RD_TIMEOUT && !g_arbQuit)
+                g_arbTimeouts++;
+            continue;
+        }
+        seen = r;
+        g_arbAck = r;
+        __dmb();
+        syncArbitrateAddress((s32*)&g_arbAck, ARBITRATION_SIGNAL, 1);
+    }
+}
+
+static void test_arbitrate(void)
+{
+    P("-- C3 kernel wake-up round trip (svcArbitrateAddress) --\n");
+    step("arbitrate");
+    g_arbReq = 0; g_arbAck = 0; g_arbQuit = 0; g_arbTimeouts = 0;
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    Thread th = threadCreate(arb_partner, NULL, 8 * 1024, prio, 2, false);
+    if (!th) { P("C3 SKIPPED: thread\n"); return; }
+    svcSleepThread(10 * 1000 * 1000);
+    const int n = 2000;
+    u32 mainTimeouts = 0;
+    double t0 = now_s();
+    for (int i = 1; i <= n; i++) {
+        g_arbReq = i;
+        __dmb();
+        syncArbitrateAddress((s32*)&g_arbReq, ARBITRATION_SIGNAL, 1);
+        while (g_arbAck != i) {
+            if (R_DESCRIPTION(syncArbitrateAddressWithTimeout((s32*)&g_arbAck, ARBITRATION_WAIT_IF_LESS_THAN_TIMEOUT,
+                                                              i, 2000000)) == RD_TIMEOUT) mainTimeouts++;
+            __dmb();
+        }
+    }
+    double t = now_s() - t0;
+    g_arbQuit = 1;
+    g_arbReq = n + 1;
+    syncArbitrateAddress((s32*)&g_arbReq, ARBITRATION_SIGNAL, 1);
+    threadJoin(th, 1000000000ULL);
+    threadFree(th);
+    P("arbitrate round trip: %.1f us mean; waits ended by the 2 ms timeout: partner %lu, main %lu (of %d)\n",
+      t * 1e6 / n, (unsigned long)g_arbTimeouts, (unsigned long)mainTimeouts, n);
+}
+
+// C4: load-use latency (manual: LDR result latency 3). Each loop: 8 loads, each used at once vs 2 instructions later.
+static u32 __attribute__((noinline)) loaduse_now(const u32* p, u32 n)
+{
+    u32 acc = 0;
+    __asm__ volatile(
+        "1:\n\t"
+        "ldr r4, [%1]\n\tadd %0, %0, r4\n\tldr r4, [%1, #4]\n\tadd %0, %0, r4\n\t"
+        "ldr r4, [%1, #8]\n\tadd %0, %0, r4\n\tldr r4, [%1, #12]\n\tadd %0, %0, r4\n\t"
+        "ldr r4, [%1, #16]\n\tadd %0, %0, r4\n\tldr r4, [%1, #20]\n\tadd %0, %0, r4\n\t"
+        "ldr r4, [%1, #24]\n\tadd %0, %0, r4\n\tldr r4, [%1, #28]\n\tadd %0, %0, r4\n\t"
+        "subs %2, %2, #1\n\tbne 1b\n\t"
+        : "+r"(acc), "+r"(p), "+r"(n) : : "r4", "cc", "memory");
+    return acc;
+}
+static u32 __attribute__((noinline)) loaduse_later(const u32* p, u32 n)
+{
+    u32 acc = 0;
+    __asm__ volatile(
+        "1:\n\t"
+        "ldr r4, [%1]\n\tldr r5, [%1, #4]\n\tldr r6, [%1, #8]\n\tadd %0, %0, r4\n\t"
+        "ldr r4, [%1, #12]\n\tadd %0, %0, r5\n\tldr r5, [%1, #16]\n\tadd %0, %0, r6\n\t"
+        "ldr r6, [%1, #20]\n\tadd %0, %0, r4\n\tldr r4, [%1, #24]\n\tadd %0, %0, r5\n\t"
+        "ldr r5, [%1, #28]\n\tadd %0, %0, r6\n\tadd %0, %0, r4\n\tadd %0, %0, r5\n\t"
+        "subs %2, %2, #1\n\tbne 1b\n\t"
+        : "+r"(acc), "+r"(p), "+r"(n) : : "r4", "r5", "r6", "cc", "memory");
+    return acc;
+}
+
+static void test_loaduse(void)
+{
+    P("-- C4 load-use scheduling (8 loads + 8 adds per loop, L1-resident) --\n");
+    step("load-use");
+    static u32 buf[8] __attribute__((aligned(32))) = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    const u32 n = 4000000;
+    u64 t0 = svcGetSystemTick();
+    g_sink2 += loaduse_now(buf, n);
+    u64 t1 = svcGetSystemTick();
+    g_sink2 += loaduse_later(buf, n);
+    u64 t2 = svcGetSystemTick();
+    double c1 = (double)(t1 - t0) * 3.0 / n, c2 = (double)(t2 - t1) * 3.0 / n;  // 268 MHz ticks -> 804 MHz cycles
+    P("used at once: %.1f cycles/loop; used 2 later: %.1f cycles/loop (%.1f cycles per load saved)\n", c1, c2, (c1 - c2) / 8);
+}
+
+// M5: PLD prefetch on an indexed gather over 16 MB (the shape of a vertex-array gather).
+static void test_prefetch(void)
+{
+    P("-- M5 PLD on a random gather over 16 MB --\n");
+    step("prefetch");
+    const u32 words = 4u << 20, n = 1u << 20;
+    u32* big = malloc(words * 4);
+    u32* idx = malloc(n * 4);
+    if (!big || !idx) { P("M5 SKIPPED: malloc\n"); free(big); free(idx); return; }
+    for (u32 i = 0; i < words; i += 1024) big[i] = i;
+    u32 x = 12345;
+    for (u32 i = 0; i < n; i++) { x = x * 1103515245u + 12345u; idx[i] = (x >> 4) % words; }
+    for (int d = 0; d < 4; d++) {
+        static const int dist[4] = { 0, 4, 8, 16 };
+        u32 s = 0;
+        double t0 = now_s();
+        if (dist[d] == 0) for (u32 i = 0; i < n; i++) s += big[idx[i]];
+        else for (u32 i = 0; i < n; i++) {
+            if (i + dist[d] < n) __builtin_prefetch(&big[idx[i + dist[d]]]);
+            s += big[idx[i]];
+        }
+        double t = now_s() - t0;
+        g_sink2 += s;
+        P("prefetch %2d ahead: %.1f ns per gathered word\n", dist[d], t * 1e9 / n);
+    }
+    free(big);
+    free(idx);
+}
+
+// A3/A4: ndsp per-channel rate range (does a buffer at rate r play in nsamples / r seconds?) and the frame period.
+static volatile u32 g_frames;
+static void frame_cb(void* d) { (void)d; g_frames++; }
+
+static void test_ndsp_more(void)
+{
+    P("-- A3/A4 ndsp rates and frame period --\n");
+    step("ndsp rates");
+    if (R_FAILED(ndspInit())) { P("A3 SKIPPED: ndspInit\n"); return; }
+    const u32 n = 16000;
+    s16* pcm = linearAlloc(n * 2);
+    if (pcm) {
+        for (u32 i = 0; i < n; i++) pcm[i] = (s16)(i * 37);
+        DSP_FlushDataCache(pcm, n * 2);
+        float zero[12] = { 0 };
+        static const float rates[6] = { 8000, 22050, 32000, 48000, 96000, 192000 };
+        for (int r = 0; r < 6; r++) {
+            ndspChnReset(0);
+            ndspChnSetInterp(0, NDSP_INTERP_LINEAR);
+            ndspChnSetRate(0, rates[r]);
+            ndspChnSetFormat(0, NDSP_FORMAT_MONO_PCM16);
+            ndspChnSetMix(0, zero);
+            ndspWaveBuf wb;
+            memset(&wb, 0, sizeof wb);
+            wb.data_pcm16 = pcm;
+            wb.nsamples = n;
+            double t0 = now_s();
+            ndspChnWaveBufAdd(0, &wb);
+            while (wb.status != NDSP_WBUF_DONE && now_s() - t0 < 4.0) svcSleepThread(1000000);
+            double t = now_s() - t0;
+            P("rate %6.0f Hz: %u samples took %.3f s -> effective %.0f Hz%s\n", rates[r], (unsigned)n, t, n / t,
+              wb.status == NDSP_WBUF_DONE ? "" : " (not done)");
+            ndspChnWaveBufClear(0);
+        }
+        ndspChnReset(0);
+    }
+    step("ndsp frame period");
+    g_frames = 0;
+    ndspSetCallback(frame_cb, NULL);
+    svcSleepThread(1000 * 1000 * 1000);
+    u32 f = g_frames;
+    ndspSetCallback(NULL, NULL);
+    P("ndsp sound-frame callbacks: %lu per second (%.2f ms per frame)\n", (unsigned long)f, f ? 1000.0 / f : 0.0);
+    svcSleepThread(20 * 1000 * 1000);
+    ndspExit();
+    if (pcm) linearFree(pcm);
+}
+
+// A5: CPU cost of a WSOLA time-stretch (audio at normal pitch while the emulator runs slow): 32728 Hz stereo,
+// 20 ms windows, 10 ms hop, +/-5 ms search, for stretch factors 1.25, 2 and 4.
+static void test_stretch(void)
+{
+    P("-- A5 WSOLA time-stretch cost (core 0) --\n");
+    step("stretch");
+    const int rate = 32728, win = rate / 50, hop = win / 2, search = rate / 200;
+    const int inN = rate * 2;   // 2 s of input
+    s16* in = malloc((inN + win + 2 * search) * 2 * sizeof(s16));
+    s32* out = malloc((inN * 4 + win) * 2 * sizeof(s32));
+    if (!in || !out) { P("A5 SKIPPED: malloc\n"); free(in); free(out); return; }
+    for (int i = 0; i < inN + win + 2 * search; i++) {
+        s16 v = (s16)(4000 * sinf(i * 0.05f) + 2000 * sinf(i * 0.013f));
+        in[2 * i] = v; in[2 * i + 1] = v;
+    }
+    static const float factors[3] = { 1.25f, 2.0f, 4.0f };
+    for (int fi = 0; fi < 3; fi++) {
+        float f = factors[fi];
+        int outN = (int)(inN * f);
+        memset(out, 0, (outN + win) * 2 * sizeof(s32));
+        double t0 = now_s();
+        int prevEnd = 0;
+        for (int o = 0; o + win < outN; o += hop) {
+            int nominal = (int)(o / f);
+            int best = nominal;
+            if (o > 0) {
+                s64 bestC = INT64_MIN;
+                for (int d = -search; d <= search; d += 4) {   // coarse search, every 4th lag, on the left channel
+                    int c0 = nominal + d;
+                    if (c0 < 0) continue;
+                    s64 c = 0;
+                    for (int k = 0; k < hop; k += 8) c += (s32)in[2 * (c0 + k)] * in[2 * (prevEnd + k)];
+                    if (c > bestC) { bestC = c; best = c0; }
+                }
+            }
+            for (int k = 0; k < win; k++) {   // triangular window, overlap-add
+                s32 w = k < hop ? k : win - k;
+                out[2 * (o + k)] += in[2 * (best + k)] * w / hop;
+                out[2 * (o + k) + 1] += in[2 * (best + k) + 1] * w / hop;
+            }
+            prevEnd = best + hop;
+        }
+        double t = now_s() - t0;
+        double outSecs = (double)outN / rate;
+        P("stretch x%.2f: %.2f ms CPU per second of output (%.2f%% of a core)\n", f, t * 1000 / outSecs,
+          100.0 * t / outSecs);
+    }
+    free(in);
+    free(out);
+}
+
+void bench_wave5(void)
+{
+    P("== gcbench 5: CPU, memory and audio (open items) ==\n");
+    test_arbitrate();
+    test_loaduse();
+    test_prefetch();
+    test_ndsp_more();
+    test_stretch();
+}
+
 void bench_wave(void)
 {
     P("== WAVE 2: memory, cores, audio ==\n");
