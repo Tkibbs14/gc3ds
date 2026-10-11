@@ -662,6 +662,249 @@ void bench_wave5(void)
     test_stretch();
 }
 
+// ==== gcbench 6: the gaps from docs/research/GCWII.md section 6 (CPU side: H4, H5, H7, H9) ====
+
+// H4: texture hashing speed (texture-cache validation).
+static u32 g_crcTab[256];
+static u32 crc32_buf(const u8* p, u32 n)
+{
+    u32 c = 0xFFFFFFFFu;
+    for (u32 i = 0; i < n; i++) c = g_crcTab[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return ~c;
+}
+static inline u32 rotl32(u32 x, int r) { return (x << r) | (x >> (32 - r)); }
+static u32 xxh32(const u8* p, u32 n)
+{
+    const u32 P1 = 2654435761u, P2 = 2246822519u, P3 = 3266489917u, P4 = 668265263u, P5 = 374761393u;
+    u32 v1 = P1 + P2, v2 = P2, v3 = 0, v4 = 0u - P1, h;
+    const u32* w = (const u32*)p;
+    u32 i = 0;
+    for (; i + 16 <= n; i += 16, w += 4) {
+        v1 = rotl32(v1 + w[0] * P2, 13) * P1; v2 = rotl32(v2 + w[1] * P2, 13) * P1;
+        v3 = rotl32(v3 + w[2] * P2, 13) * P1; v4 = rotl32(v4 + w[3] * P2, 13) * P1;
+    }
+    h = rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18) + n;
+    h ^= h >> 15; h *= P2; h ^= h >> 13; h *= P3; h ^= h >> 16;
+    (void)P4; (void)P5;
+    return h;
+}
+static u32 sample_hash(const u8* p, u32 n, u32 samples)
+{
+    const u32* w = (const u32*)p;
+    u32 words = n / 4, step = words / samples, h = 0x811C9DC5u;
+    for (u32 i = 0; i < samples; i++) h = (h ^ w[i * step]) * 16777619u;
+    return h;
+}
+
+static void test_hash(void)
+{
+    P("-- H4 texture hashing speed --\n");
+    step("hash");
+    for (u32 i = 0; i < 256; i++) { u32 c = i; for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; g_crcTab[i] = c; }
+    static const u32 sizes[3] = { 8u << 10, 64u << 10, 512u << 10 };
+    u8* buf = malloc(512u << 10);
+    if (!buf) { P("H4 SKIPPED: malloc\n"); return; }
+    for (u32 i = 0; i < (512u << 10); i++) buf[i] = (u8)(i * 7 + (i >> 9));
+    for (int s = 0; s < 3; s++) {
+        u32 n = sizes[s];
+        double t0, t;
+        int reps;
+        u32 sink = 0;
+        t0 = now_s(); reps = 0; do { sink += crc32_buf(buf, n); reps++; } while (now_s() - t0 < 0.05); t = now_s() - t0;
+        double crc = reps * (n / 1e6) / t;
+        t0 = now_s(); reps = 0; do { sink += xxh32(buf, n); reps++; } while (now_s() - t0 < 0.05); t = now_s() - t0;
+        double xx = reps * (n / 1e6) / t;
+        t0 = now_s(); reps = 0; do { sink += sample_hash(buf, n, 512); reps++; } while (now_s() - t0 < 0.05); t = now_s() - t0;
+        double sm = t * 1e6 / reps;
+        g_sink2 += sink;
+        P("%4lu KB: CRC32 %.0f MB/s, xxHash32 %.0f MB/s, 512-sample hash %.1f us\n", (unsigned long)(n >> 10), crc, xx, sm);
+    }
+    free(buf);
+}
+
+// H5: GameCube texture decode into PICA tiled formats (256x256), Mpixels/s. GC textures are stored in blocks
+// (I4 8x8, RGB5A3 4x4, CI8 8x4, CMPR 8x8 of 4x4 DXT1); output is 8x8 PICA tiles in Morton order.
+static u8 g_mort[64];
+static inline u32 rgb5a3_to_rgba8(u16 v)
+{
+    u32 r, g, b, a;
+    if (v & 0x8000) { r = (v >> 10) & 31; g = (v >> 5) & 31; b = v & 31; r = r << 3 | r >> 2; g = g << 3 | g >> 2; b = b << 3 | b >> 2; a = 255; }
+    else { a = (v >> 12) & 7; r = (v >> 8) & 15; g = (v >> 4) & 15; b = v & 15; r *= 17; g *= 17; b *= 17; a = a << 5 | a << 2 | a >> 1; }
+    return r << 24 | g << 16 | b << 8 | a;
+}
+static inline u32* pica_px(u32* out, int x, int y, int w)   // PICA RGBA8 tiled, rows bottom-up as the transfer does
+{
+    int ty = (255 - y) >> 3, tx = x >> 3;
+    return out + ((ty * (w >> 3) + tx) << 6) + g_mort[((7 - (y & 7)) << 3) | (x & 7)];
+}
+static void dec_rgb5a3(const u8* src, u32* out)
+{
+    for (int by = 0; by < 256; by += 4)
+        for (int bx = 0; bx < 256; bx += 4)
+            for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 4; x++, src += 2) *pica_px(out, bx + x, by + y, 256) = rgb5a3_to_rgba8((u16)(src[0] << 8 | src[1]));
+}
+static void dec_ci8(const u8* src, const u32* pal, u32* out)
+{
+    for (int by = 0; by < 256; by += 4)
+        for (int bx = 0; bx < 256; bx += 8)
+            for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 8; x++) *pica_px(out, bx + x, by + y, 256) = pal[*src++];
+}
+static void dec_i4(const u8* src, u8* out)   // to PICA L4: same 4 bits, retiled (two texels per byte)
+{
+    memset(out, 0, 256 * 256 / 2);
+    for (int by = 0; by < 256; by += 8)
+        for (int bx = 0; bx < 256; bx += 8)
+            for (int y = 0; y < 8; y++)
+                for (int x = 0; x < 8; x += 2, src++) {
+                    for (int k = 0; k < 2; k++) {
+                        int px = bx + x + k, py = by + y;
+                        u32 i = ((((255 - py) >> 3) * 32 + (px >> 3)) << 6) + g_mort[((7 - (py & 7)) << 3) | (px & 7)];
+                        u8 v = k ? (*src & 15) : (*src >> 4);
+                        out[i >> 1] |= (u8)(i & 1 ? v << 4 : v);
+                    }
+                }
+}
+static void dec_cmpr(const u8* src, u32* out)
+{
+    for (int by = 0; by < 256; by += 8)
+        for (int bx = 0; bx < 256; bx += 8)
+            for (int sb = 0; sb < 4; sb++, src += 8) {
+                int x0 = bx + (sb & 1) * 4, y0 = by + (sb >> 1) * 4;
+                u16 c0 = (u16)(src[0] << 8 | src[1]), c1 = (u16)(src[2] << 8 | src[3]);
+                u32 pal[4];
+                u32 r0 = (c0 >> 11) * 255 / 31, g0 = ((c0 >> 5) & 63) * 255 / 63, b0 = (c0 & 31) * 255 / 31;
+                u32 r1 = (c1 >> 11) * 255 / 31, g1 = ((c1 >> 5) & 63) * 255 / 63, b1 = (c1 & 31) * 255 / 31;
+                pal[0] = r0 << 24 | g0 << 16 | b0 << 8 | 255;
+                pal[1] = r1 << 24 | g1 << 16 | b1 << 8 | 255;
+                if (c0 > c1) {
+                    pal[2] = ((2 * r0 + r1) / 3) << 24 | ((2 * g0 + g1) / 3) << 16 | ((2 * b0 + b1) / 3) << 8 | 255;
+                    pal[3] = ((r0 + 2 * r1) / 3) << 24 | ((g0 + 2 * g1) / 3) << 16 | ((b0 + 2 * b1) / 3) << 8 | 255;
+                } else {
+                    pal[2] = ((r0 + r1) / 2) << 24 | ((g0 + g1) / 2) << 16 | ((b0 + b1) / 2) << 8 | 255;
+                    pal[3] = 0;
+                }
+                for (int y = 0; y < 4; y++) {
+                    u8 bits = src[4 + y];
+                    for (int x = 0; x < 4; x++) *pica_px(out, x0 + x, y0 + y, 256) = pal[(bits >> (6 - 2 * x)) & 3];
+                }
+            }
+}
+
+static void test_texdecode(void)
+{
+    P("-- H5 GameCube texture decode to PICA tiled (256x256) --\n");
+    step("tex decode");
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            g_mort[y * 8 + x] = (u8)((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3));
+    u8* src = malloc(256 * 256 * 4);
+    u32* out = malloc(256 * 256 * 4);
+    u32* pal = malloc(256 * 4);
+    if (!src || !out || !pal) { P("H5 SKIPPED: malloc\n"); free(src); free(out); free(pal); return; }
+    for (u32 i = 0; i < 256 * 256 * 4; i++) src[i] = (u8)(i * 13 + (i >> 7));
+    for (int i = 0; i < 256; i++) pal[i] = rgb5a3_to_rgba8((u16)(i * 257));
+    static const char* nm[4] = { "RGB5A3 -> RGBA8", "CI8 -> RGBA8", "I4 -> L4", "CMPR -> RGBA8" };
+    for (int f = 0; f < 4; f++) {
+        int reps = 0;
+        double t0 = now_s();
+        do {
+            switch (f) {
+            case 0: dec_rgb5a3(src, out); break;
+            case 1: dec_ci8(src, pal, out); break;
+            case 2: dec_i4(src, (u8*)out); break;
+            default: dec_cmpr(src, out); break;
+            }
+            reps++;
+        } while (now_s() - t0 < 0.1);
+        double t = now_s() - t0;
+        g_sink2 += out[123];
+        P("%-16s %6.1f Mpx/s (%.2f ms per 256x256)\n", nm[f], reps * 65536.0 / t / 1e6, t * 1000 / reps);
+    }
+    free(src);
+    free(out);
+    free(pal);
+}
+
+// H7: 3DS motion sensors for Wii Remote emulation: how often do the gyroscope and accelerometer values change?
+static void test_motion(void)
+{
+    P("-- H7 gyroscope / accelerometer update rate --\n");
+    step("motion");
+    Result rg = HIDUSER_EnableGyroscope(), ra = HIDUSER_EnableAccelerometer();
+    if (R_FAILED(rg) || R_FAILED(ra)) { P("H7 SKIPPED: enable gyro %08lx accel %08lx\n", (unsigned long)rg, (unsigned long)ra); return; }
+    svcSleepThread(100 * 1000 * 1000);
+    angularRate g, lg = { 0 };
+    accelVector a, la = { 0 };
+    u32 reads = 0, gch = 0, ach = 0;
+    double t0 = now_s(), tread = 0;
+    while (now_s() - t0 < 1.0) {
+        double r0 = now_s();
+        hidScanInput();
+        hidGyroRead(&g);
+        hidAccelRead(&a);
+        tread += now_s() - r0;
+        reads++;
+        if (memcmp(&g, &lg, sizeof g)) { gch++; lg = g; }
+        if (memcmp(&a, &la, sizeof a)) { ach++; la = a; }
+    }
+    HIDUSER_DisableGyroscope();
+    HIDUSER_DisableAccelerometer();
+    P("gyro changes %lu/s, accel changes %lu/s; hidScanInput+reads %.1f us (%lu polls)\n", (unsigned long)gch,
+      (unsigned long)ach, tread * 1e6 / reads, (unsigned long)reads);
+    P("  (keep the 2DS still: changes then come from sensor noise and show the sample rate)\n");
+}
+
+// H9: a software TLB lookup per guest memory access (MMU games) against a direct masked access.
+typedef struct { u32 tag; u32 off; } TlbEnt;
+static void test_tlb(void)
+{
+    P("-- H9 software TLB lookup cost --\n");
+    step("tlb");
+    const u32 bytes = 16u << 20, n = 1u << 20;
+    u8* ram = malloc(bytes);
+    u32* addr = malloc(n * 4);
+    TlbEnt* tlb = malloc(4096 * sizeof(TlbEnt));
+    if (!ram || !addr || !tlb) { P("H9 SKIPPED: malloc\n"); free(ram); free(addr); free(tlb); return; }
+    for (u32 p = 0; p < 4096; p++) { tlb[p].tag = 0x80000000u + (p << 12); tlb[p].off = (p << 12) - (0x80000000u + (p << 12)); }
+    for (int pattern = 0; pattern < 2; pattern++) {
+        u32 x = 99;
+        for (u32 i = 0; i < n; i++) {
+            if (pattern) { x = x * 1103515245u + 12345u; addr[i] = 0x80000000u + ((x >> 6) % bytes & ~3u); }
+            else addr[i] = 0x80000000u + ((i * 64u) % bytes);
+        }
+        u32 s = 0;
+        double t0 = now_s();
+        for (u32 i = 0; i < n; i++) s += *(u32*)(ram + (addr[i] & 0x00FFFFFFu));
+        double td = now_s() - t0;
+        t0 = now_s();
+        u32 miss = 0;
+        for (u32 i = 0; i < n; i++) {
+            u32 ea = addr[i];
+            TlbEnt* e = &tlb[(ea >> 12) & 4095];
+            if ((ea & ~0xFFFu) != e->tag) { miss++; continue; }
+            s += *(u32*)(ram + ea + e->off);
+        }
+        double tt = now_s() - t0;
+        g_sink2 += s + miss;
+        P("%s: direct %.1f ns, via TLB %.1f ns per access (+%.1f ns)\n", pattern ? "random 16 MB" : "sequential  ",
+          td * 1e9 / n, tt * 1e9 / n, (tt - td) * 1e9 / n);
+    }
+    free(ram);
+    free(addr);
+    free(tlb);
+}
+
+void bench_wave6(void)
+{
+    P("== gcbench 6: CPU-side gaps (GCWII.md section 6) ==\n");
+    test_hash();
+    test_texdecode();
+    test_motion();
+    test_tlb();
+}
+
 void bench_wave(void)
 {
     P("== WAVE 2: memory, cores, audio ==\n");

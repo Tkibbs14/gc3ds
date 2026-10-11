@@ -15,9 +15,11 @@ void bench_sys(void);
 void bench_gpu(void);
 void bench_wave(void);
 void bench_wave5(void);
+void bench_wave6(void);
 // sdmc:/gcbench/w2only.txt, first character: q = wave-2 tests in quick emulator mode (3 frames, no cross-core
 // tests), w = the same without the GPU, f = the follow-up tests only, timed for real (hardware).
 extern bool g_w2only;    // the earlier modules are skipped
 extern bool g_quick;     // emulator check: 3 frames per measurement, no cross-core tests
 extern bool g_followup;  // follow-up set only
 extern bool g_gb5;       // gcbench 5: the open items (mode 5)
+extern bool g_gb6;       // gcbench 6: the gaps from GCWII.md (mode 6)

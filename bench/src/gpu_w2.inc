@@ -891,6 +891,192 @@ static void test_g5_risky(void)
     }
 }
 
+// ==== gcbench 6: GPU-side gaps (GCWII.md section 6: H1, H2, H3, H6, H10) ====
+
+static void fill_target(C3D_RenderTarget* t, u32 color)
+{
+    if (!frame_begin()) return;
+    C3D_FrameDrawOn(t);
+    C3D_RenderTargetClear(t, C3D_CLEAR_ALL, color, 0);
+    frame_end_timed();
+}
+
+// H1: an EFB copy to RAM at several sizes: GPU transfer to linear, cache invalidate, CPU conversion to a GameCube
+// RGB565 copy (as a game would read it). Sizes run from large to small (small display transfers are the risky ones).
+static void test_g6_efbcopy(void)
+{
+    P("-- H1 EFB copy to RAM by size: transfer + invalidate + CPU convert --\n");
+    static const int dims[4][2] = { { 240, 400 }, { 256, 256 }, { 128, 128 }, { 64, 64 } };
+    u16* conv = malloc(240 * 400 * 2);
+    for (int d = 0; d < 4 && conv; d++) {
+        int w = dims[d][0], h = dims[d][1];
+        char name[32];
+        snprintf(name, sizeof name, "efb copy %dx%d", w, h);
+        step(name);
+        if (!gpu_ok(name)) break;
+        C3D_RenderTarget* t = (w == SCR_H && h == SCR_W) ? g_tgt : C3D_RenderTargetCreate(w, h, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
+        if (!t) { P("%s SKIPPED: target\n", name); continue; }
+        fill_target(t, 0x40C08020);
+        double tx = 0, ti = 0, tc = 0;
+        const int reps = 5;
+        bool ok = true;
+        for (int r = 0; r < reps && ok; r++) {
+            if (!frame_begin()) { ok = false; break; }
+            GX_DisplayTransfer((u32*)t->frameBuf.colorBuf, GX_BUFFER_DIM(w, h), g_rb, GX_BUFFER_DIM(w, h), XFER_TO_LINEAR);
+            double x = frame_end_timed();
+            if (x < 0) { ok = false; break; }
+            tx += x;
+            double t0 = now_s();
+            GSPGPU_InvalidateDataCache(g_rb, w * h * 4);
+            ti += now_s() - t0;
+            t0 = now_s();
+            for (int i = 0; i < w * h; i++) {
+                u32 p = g_rb[i];
+                conv[i] = (u16)(((p >> 27) & 31) << 11 | ((p >> 18) & 63) << 5 | ((p >> 11) & 31));
+            }
+            tc += now_s() - t0;
+        }
+        if (ok) P("%-16s transfer %.3f ms, invalidate %.3f ms, convert %.3f ms (pixel %08lx)\n", name, tx * 1000 / reps,
+                  ti * 1000 / reps, tc * 1000 / reps, (unsigned long)g_rb[0]);
+        else P("%-16s FAILED\n", name);
+        if (t != g_tgt && !g_dead) C3D_RenderTargetDelete(t);
+    }
+    free(conv);
+}
+
+// H2: read the depth buffer back (raw TextureCopy of the D24S8 buffer) after drawing a full-screen quad at two
+// known depths; the most common 24-bit value should change between them.
+static void test_g6_depthread(void)
+{
+    P("-- H2 depth buffer readback (D24S8, raw copy) --\n");
+    if (!g_quad || !g_rb) return;
+    for (int k = 0; k < 2; k++) {
+        step("depth read");
+        if (!gpu_ok("depth read") || !frame_begin()) return;
+        static const float zs[2] = { 0.25f, 0.75f };
+        Vtx q[6];
+        memcpy(q, &g_quad[Q_FULL], sizeof q);
+        for (int i = 0; i < 6; i++) q[i].z = zs[k];
+        Vtx* lq = linearAlloc(sizeof q);
+        if (!lq) return;
+        memcpy(lq, q, sizeof q);
+        GSPGPU_FlushDataCache(lq, sizeof q);
+        C3D_FrameDrawOn(g_tgt);
+        C3D_RenderTargetClear(g_tgt, C3D_CLEAR_ALL, SENTINEL, 0);
+        use_simple(&g_projTop); attr_vtx(); buf_vtx(lq); env_color();
+        C3D_DepthTest(true, GPU_ALWAYS, GPU_WRITE_ALL);
+        C3D_DrawArrays(GPU_TRIANGLES, 0, 6);
+        bool ok = frame_end_timed() >= 0;
+        depth_off();
+        if (ok && frame_begin()) {
+            GX_TextureCopy((u32*)g_tgt->frameBuf.depthBuf, 0, g_rb, 0, SCR_PX * 4, COPY_RAW);
+            ok = frame_end_timed() >= 0;
+        } else ok = false;
+        if (!g_dead) linearFree(lq);
+        if (!ok) { P("depth read FAILED\n"); return; }
+        GSPGPU_InvalidateDataCache(g_rb, SCR_PX * 4);
+        u32 best = 0, bestN = 0, cur = 0, curN = 0;
+        for (int i = 0; i < SCR_PX; i += 97) {   // sample; the full-screen quad writes one depth everywhere
+            u32 v = g_rb[i] & 0xFFFFFF;
+            if (v == cur) curN++; else { cur = v; curN = 1; }
+            if (curN > bestN) { bestN = curN; best = cur; }
+        }
+        P("quad at z %.2f: depth word 0x%06lX (%.4f of full scale), stencil %02lX\n", zs[k], (unsigned long)best,
+          best / 16777215.0, (unsigned long)(g_rb[SCR_PX / 2] >> 24));
+    }
+}
+
+// H3: latency of a synchronous single-pixel read (a CPU EFB peek): copy 32 bytes of the colour buffer to linear
+// memory and wait for it, as a peek must.
+static volatile u32 g_peekSink;
+static void test_g6_peek(void)
+{
+    P("-- H3 synchronous EFB peek (32-byte copy, wait, invalidate) --\n");
+    step("efb peek");
+    u32* px = linearAlloc(64);
+    if (!px || !gpu_ok("peek")) { if (px) linearFree(px); return; }
+    const int n = 200;
+    double tot = 0, worst = 0;
+    int done = 0;
+    for (int i = 0; i < n; i++) {
+        double t0 = now_s();
+        if (!frame_begin()) break;
+        GX_TextureCopy((u32*)g_tgt->frameBuf.colorBuf + (i % 64) * 16, 0, px, 0, 32, COPY_RAW);
+        if (frame_end_timed() < 0) break;
+        GSPGPU_InvalidateDataCache(px, 32);
+        g_peekSink += px[0];
+        double t = now_s() - t0;
+        tot += t;
+        if (t > worst) worst = t;
+        done++;
+    }
+    if (done == n) P("EFB peek: %.1f us mean, %.1f us worst\n", tot * 1e6 / n, worst * 1e6);
+    else P("EFB peek FAILED after %d\n", done);
+    if (!g_dead) linearFree(px);
+}
+
+// H6: fill rate when rendering into 16-bit colour buffers (GameCube RGB565_Z16 / RGBA6 EFB formats map here).
+static void test_g6_rtformats(void)
+{
+    P("-- H6 fill rate by render-target format (24 full-screen quads, VRAM texture) --\n");
+    static const struct { GPU_COLORBUF f; const char* name; } fm[] = {
+        { GPU_RB_RGBA8, "target RGBA8" }, { GPU_RB_RGB565, "target RGB565" }, { GPU_RB_RGBA5551, "target RGB5A1" },
+        { GPU_RB_RGBA4, "target RGBA4" },
+    };
+    C3D_RenderTarget* save = g_tgt;
+    for (unsigned i = 0; i < sizeof fm / sizeof fm[0]; i++) {
+        step(fm[i].name);
+        if (!gpu_ok(fm[i].name) || !g_quad || !g_texVOk) break;
+        C3D_RenderTarget* t = i == 0 ? save : C3D_RenderTargetCreate(SCR_H, SCR_W, fm[i].f, GPU_RB_DEPTH24_STENCIL8);
+        if (!t) { P("%s SKIPPED: alloc\n", fm[i].name); continue; }
+        g_tgt = t;
+        use_simple(&g_projTop); attr_vtx(); buf_vtx(g_quad); env_tex(&g_texV, 1);
+        g_quadFirst = Q_FULL;
+        bool drawn;
+        double ms = measure(draw_quads, FILL_K, false, &drawn);
+        report_fill(fm[i].name, ms, true);
+        g_tgt = save;
+        if (t != save && !g_dead) C3D_RenderTargetDelete(t);
+    }
+    g_tgt = save;
+}
+
+// H10: near-plane clipping with a triangle whose visible part covers the centre column (one vertex behind the
+// camera). Prints the sample map for comparison with the expected wedge (and with Azahar's clipper).
+static void test_g6_clip(void)
+{
+    P("-- H10 near-plane clipping (one vertex behind the camera; 5x9 sample map) --\n");
+    Vtx* tri = linearAlloc(3 * sizeof(Vtx));
+    if (!tri) return;
+    static const float v[3][3] = { { -2, -2, -5 }, { 2, -2, -5 }, { 0, 10, 5 } };
+    for (int k = 0; k < 3; k++) {
+        memset(&tri[k], 0, sizeof(Vtx));
+        tri[k].x = v[k][0]; tri[k].y = v[k][1]; tri[k].z = v[k][2]; tri[k].r = 255; tri[k].a = 255;
+    }
+    GSPGPU_FlushDataCache(tri, 3 * sizeof(Vtx));
+    C3D_Mtx proj;
+    Mtx_PerspTilt(&proj, C3D_AngleFromDegrees(60.0f), (float)SCR_W / SCR_H, 1.0f, 100.0f, false);
+    step("clip2");
+    if (gpu_ok("clip2") && frame_begin()) {
+        C3D_FrameDrawOn(g_tgt);
+        C3D_RenderTargetClear(g_tgt, C3D_CLEAR_ALL, SENTINEL, 0);
+        use_simple(&proj); attr_vtx(); buf_vtx(tri); env_color(); depth_off();
+        C3D_DrawArrays(GPU_TRIANGLES, 0, 3);
+        if (frame_end_timed() >= 0 && read_target(g_tgt)) {
+            for (int r = 0; r < 5; r++) {
+                char line[16];
+                for (int col = 0; col < 9; col++) {
+                    int bx = 12 + col * (SCR_H - 24) / 8, by = 20 + r * (SCR_W - 40) / 4;
+                    line[col] = g_rb[by * SCR_H + bx] != SENTINEL ? '#' : '.';
+                }
+                line[9] = 0;
+                P("  %s\n", line);
+            }
+        }
+    }
+    if (!g_dead) linearFree(tri);
+}
+
 static void w2_free5(void)
 {
     if (g_dq) linearFree(g_dq);
@@ -901,6 +1087,18 @@ static void w2_free5(void)
 
 static void bench_gpu_w2(void)
 {
+    if (g_gb6) {
+        P("\n== GPU gcbench 6 (gaps from GCWII.md) ==\n");
+        step("w2 setup");
+        w2_load_shaders();
+        w2_build();
+        test_g6_peek();
+        test_g6_depthread();
+        test_g6_rtformats();
+        test_g6_clip();
+        test_g6_efbcopy();   // last: its smallest display transfers are the risky ones
+        return;
+    }
     if (g_gb5) {
         P("\n== GPU gcbench 5 (open items; risky ones last) ==\n");
         step("w2 setup");
