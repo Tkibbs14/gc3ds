@@ -39,6 +39,9 @@ typedef struct {
     bool traceDraws;     // debug: backends log every draw (LOG_GX)
     u32 xfLightVersion;  // incremented when XF lights (0x600-0x67F), channel controls (0x1009-0x1011) or texgen
                          // settings (0x103F-0x1047) change: shader lighting re-reads them then
+    // Incremented when a register of the kind changes value (BP, CP, XF registers 0x1000-): backends skip work that
+    // depends only on registers that have not changed since they last did it.
+    u32 bpVersion, cpVersion, xfRegVersion;
 } GXCore;
 
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.

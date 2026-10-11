@@ -81,6 +81,12 @@ static u32 read_color(const u8* p, u32 fmt) {
     }
 }
 
+static void attr_array(const GXCore* gx, VAttr* a, u32 arr) {
+    if (a->mode < 2) return;
+    a->base = gx->cp[CP_ARRAY_BASE + arr] & 0x03FFFFFF;
+    a->stride = gx->cp[CP_ARRAY_STRIDE + arr] & 0xFF;
+}
+
 static void attr_init(const GXCore* gx, VAttr* a, u32 mode, u32 arr, u32 fmt, u32 n, u32 cs, float scale) {
     a->mode = (u8)mode; a->fmt = (u8)fmt; a->n = (u8)n; a->cs = (u8)cs; a->scale = scale;
     a->base = gx->cp[CP_ARRAY_BASE + arr] & 0x03FFFFFF;
@@ -298,23 +304,27 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count) {
            tex_cap(gx, count) * 12 * 4;
 }
 
-VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
-                    u32 vsize, bool gpuLight, void* mem, PVert* out) {
-    const u8* mem1 = s->mem1;
-    VJob* job = mem;
-    u8* m = (u8*)mem + align8(sizeof(VJob));
-    job->in = (VIn*)m;
-    m += align8(count * (u32)sizeof(VIn));
-    job->pos = (float (*)[21])m;
-    m += align8(pos_cap(gx, count) * 21 * 4);
-    job->tex = (float (*)[12])m;
-    job->count = count;
-    job->gpuLight = gpuLight;
-    VIn* g_in = job->in;
+// A draw's setup: what vfast_prepare works out from registers before it reads any vertex.
+typedef struct {
+    u32 key[6];
+    bool valid;
+    float P[16];
+    VUnit unit[3];
+    u32 numChans, chans, genUsed, texUsed, tmDirect, pnDefault;
+    bool nrmUsed, eyeUsed, nbt, index3, pnDirect;
+    u8 tmDefault[8];
+    VHalf half[2][2];
+    VAttr pos, nrm, col[2], tex[8];
+} VSetup;
+static VSetup g_vs[2];  // by lighting mode (CPU, shader), which draws can alternate
+static u32 g_vsGen;
+void vfast_reset_cache(void) { g_vsGen++; }
+
+static void setup_compute(VSetup* S, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, bool gpuLight) {
     u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
     u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
     u32 ma = gx->cp[CP_MATINDEX_A], mb = gx->cp[CP_MATINDEX_B];
-    proj_fold(gx, f, job->P);
+    proj_fold(gx, f, S->P);
 
     // What the delivered outputs need.
     u32 numChans = gx->xf[0x1009] & 3, numGens = gx->xf[0x103F] & 15;
@@ -332,24 +342,24 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         else if (src == 1) nrmUsed = true;
         else if (src >= 5 && src <= 12) texUsed |= 1u << (src - 5);
     }
-    VHalf half[2][2];
     for (u32 ch = 0; ch < 2; ch++)
-        for (u32 k = 0; k < 2; k++) { half[ch][k].n = 0; half[ch][k].lit = 0; }
+        for (u32 k = 0; k < 2; k++) { S->half[ch][k].n = 0; S->half[ch][k].lit = 0; }
     // The shader lights from eye position and normal; it is only chosen when no colour is lit on the CPU (no
     // texgen from a lit colour), so the lights are not read here: parsing 7-8 of them per draw cost 2-4k cycles.
     if (gpuLight) nrmUsed = true;
     else
         for (u32 ch = 0; ch < 2; ch++) {
             if (!(chans & (1u << ch)) || ch >= numChans) continue;
-            half_init(gx, ch, gx->xf[0x100E + ch], &half[ch][0]);
-            half_init(gx, ch, gx->xf[0x1010 + ch], &half[ch][1]);
-            if (half[ch][0].n || half[ch][1].n) nrmUsed = eyeUsed = true;
+            half_init(gx, ch, gx->xf[0x100E + ch], &S->half[ch][0]);
+            half_init(gx, ch, gx->xf[0x1010 + ch], &S->half[ch][1]);
+            if (S->half[ch][0].n || S->half[ch][1].n) nrmUsed = eyeUsed = true;
         }
 
-    // Texture units: settled once for the draw.
+    // Texture units.
     for (u32 u = 0; u < 3; u++) {
-        VUnit* vu = &job->unit[u];
+        VUnit* vu = &S->unit[u];
         u32 gi = sel->texCoord[u] & 7;
+        memset(vu, 0, sizeof *vu);
         vu->mode = VU_ZERO;
         vu->gi = (u8)gi;
         if (u >= numTex || !((genUsed >> gi) & 1)) continue;
@@ -363,37 +373,90 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     }
 
     // Decode layout.
-    u8 tmDefault[8];
-    for (int i = 0; i < 8; i++) tmDefault[i] = (u8)(i < 4 ? (ma >> (6 + 6 * i)) & 63 : (mb >> (6 * (i - 4))) & 63);
-    u32 tmDirect = (lo >> 1) & 0xFF;
-    VAttr pos = { 0 }, nrm = { 0 }, col[2] = { { 0 }, { 0 } }, tex[8];
-    memset(tex, 0, sizeof tex);
+    for (int i = 0; i < 8; i++) S->tmDefault[i] = (u8)(i < 4 ? (ma >> (6 + 6 * i)) & 63 : (mb >> (6 * (i - 4))) & 63);
+    S->tmDirect = (lo >> 1) & 0xFF;
+    memset(&S->pos, 0, sizeof S->pos);
+    memset(&S->nrm, 0, sizeof S->nrm);
+    memset(S->col, 0, sizeof S->col);
+    memset(S->tex, 0, sizeof S->tex);
     {
         u32 fmt = (a >> 1) & 7;
-        attr_init(gx, &pos, (lo >> 9) & 3, ARR_POS, fmt, (a & 1) ? 3 : 2, comp_size(fmt),
+        attr_init(gx, &S->pos, (lo >> 9) & 3, ARR_POS, fmt, (a & 1) ? 3 : 2, comp_size(fmt),
                   fmt == 4 ? 1.0f : 1.0f / (float)(1u << ((a >> 4) & 31)));
     }
-    bool nbt = (a >> 9) & 1, index3 = (a >> 31) & 1;
+    S->nbt = (a >> 9) & 1;
+    S->index3 = (a >> 31) & 1;
     {
         static const u8 shift[4] = { 7, 6, 15, 14 };
         u32 fmt = (a >> 10) & 7;
-        attr_init(gx, &nrm, (lo >> 11) & 3, ARR_NRM, fmt, nbt ? 9 : 3, comp_size(fmt),
+        attr_init(gx, &S->nrm, (lo >> 11) & 3, ARR_NRM, fmt, S->nbt ? 9 : 3, comp_size(fmt),
                   fmt >= 4 ? 1.0f : 1.0f / (float)(1u << shift[fmt]));
     }
     for (u32 i = 0; i < 2; i++) {
         u32 fmt = (a >> (14 + 4 * i)) & 7;
-        attr_init(gx, &col[i], (lo >> (13 + 2 * i)) & 3, ARR_COL0 + i, fmt, 1, color_size(fmt), 1.0f);
+        attr_init(gx, &S->col[i], (lo >> (13 + 2 * i)) & 3, ARR_COL0 + i, fmt, 1, color_size(fmt), 1.0f);
     }
     {
         u32 tcnt[8] = { (a >> 21) & 1, b & 1, (b >> 9) & 1, (b >> 18) & 1, (b >> 27) & 1, (c >> 5) & 1, (c >> 14) & 1, (c >> 23) & 1 };
         u32 tfmt[8] = { (a >> 22) & 7, (b >> 1) & 7, (b >> 10) & 7, (b >> 19) & 7, (b >> 28) & 7, (c >> 6) & 7, (c >> 15) & 7, (c >> 24) & 7 };
         u32 tsh[8] = { (a >> 25) & 31, (b >> 4) & 31, (b >> 13) & 31, (b >> 22) & 31, c & 31, (c >> 9) & 31, (c >> 18) & 31, (c >> 27) & 31 };
         for (u32 i = 0; i < 8; i++)
-            attr_init(gx, &tex[i], (hi >> (2 * i)) & 3, ARR_TEX0 + i, tfmt[i], tcnt[i] ? 2 : 1, comp_size(tfmt[i]),
+            attr_init(gx, &S->tex[i], (hi >> (2 * i)) & 3, ARR_TEX0 + i, tfmt[i], tcnt[i] ? 2 : 1, comp_size(tfmt[i]),
                       tfmt[i] == 4 ? 1.0f : 1.0f / (float)(1u << tsh[i]));
     }
-    u32 pnDefault = ma & 63;
-    bool pnDirect = lo & 1;
+    S->pnDefault = ma & 63;
+    S->pnDirect = lo & 1;
+    S->numChans = numChans;
+    S->chans = chans;
+    S->genUsed = genUsed;
+    S->texUsed = texUsed;
+    S->nrmUsed = nrmUsed;
+    S->eyeUsed = eyeUsed;
+}
+
+VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
+                    u32 vsize, bool gpuLight, void* mem, PVert* out) {
+    const u8* mem1 = s->mem1;
+    VJob* job = mem;
+    u8* m = (u8*)mem + align8(sizeof(VJob));
+    job->in = (VIn*)m;
+    m += align8(count * (u32)sizeof(VIn));
+    job->pos = (float (*)[21])m;
+    m += align8(pos_cap(gx, count) * 21 * 4);
+    job->tex = (float (*)[12])m;
+    job->count = count;
+    job->gpuLight = gpuLight;
+    VIn* g_in = job->in;
+    // The draw's setup (decode layout, outputs needed, texture units, lighting halves, projection) depends only on
+    // registers, so it is kept until one of them changes value (GXCore versions) or the draw's format, the TEV's
+    // selection or the lighting mode differ.
+    VSetup* S = &g_vs[gpuLight ? 1 : 0];
+    u32 key[6] = { gx->cpVersion, gx->xfRegVersion, gpuLight ? 0 : gx->xfLightVersion,  // lights: CPU lighting only
+                   vat | (gpuLight ? 0x100u : 0) | ((u32)sel->rasChan << 16) | ((u32)sel->numTex << 24),
+                   (u32)sel->texCoord[0] | ((u32)sel->texCoord[1] << 8) | ((u32)sel->texCoord[2] << 16), g_vsGen };
+    if (!S->valid || memcmp(key, S->key, sizeof key)) {
+        for (int i = 0; i < 6; i++) if (!S->valid || key[i] != S->key[i]) g_vfastStats.setupWhy[i]++;
+        setup_compute(S, gx, vat, f, sel, gpuLight);
+        memcpy(S->key, key, sizeof key);
+        S->valid = true;
+        g_vfastStats.setups++;
+    }
+    memcpy(job->P, S->P, sizeof job->P);
+    memcpy(job->unit, S->unit, sizeof job->unit);
+    u32 numChans = S->numChans, chans = S->chans, genUsed = S->genUsed, texUsed = S->texUsed;
+    bool nrmUsed = S->nrmUsed, eyeUsed = S->eyeUsed, nbt = S->nbt, index3 = S->index3, pnDirect = S->pnDirect;
+    const VHalf (*half)[2] = S->half;
+    // The current matrix indices change with nearly every draw: read here, not cached.
+    u32 ma = gx->cp[CP_MATINDEX_A], mb = gx->cp[CP_MATINDEX_B];
+    u8 tmDefault[8];
+    for (int i = 0; i < 8; i++) tmDefault[i] = (u8)(i < 4 ? (ma >> (6 + 6 * i)) & 63 : (mb >> (6 * (i - 4))) & 63);
+    u32 tmDirect = S->tmDirect, pnDefault = ma & 63;
+    VAttr pos = S->pos, nrm = S->nrm, col[2] = { S->col[0], S->col[1] }, tex[8];
+    memcpy(tex, S->tex, sizeof tex);
+    // Array bases and strides change with nearly every draw: read here, not cached.
+    attr_array(gx, &pos, ARR_POS); attr_array(gx, &nrm, ARR_NRM);
+    attr_array(gx, &col[0], ARR_COL0); attr_array(gx, &col[1], ARR_COL0 + 1);
+    for (u32 i = 0; i < 8; i++) attr_array(gx, &tex[i], ARR_TEX0 + i);
     {
         VFastStats* st = &g_vfastStats;
         st->draws++;
@@ -411,6 +474,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         st->texgens += (u64)gens * count;
         st->nrmReads += nrmUsed ? count : 0;
     }
+
 
     // Gather: all reads of guest memory (timed as "dec" on the 3DS profile).
     u64 t0 = dprof_begin();

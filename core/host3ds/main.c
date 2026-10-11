@@ -234,8 +234,8 @@ static FILE* g_perf;
 #define AB_SECS 20  // the vertex worker alternates on and off in a run (the vworker column)
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait", "vwork",
-                                                "vwait", "gxpres", "gxstate" };
-_Static_assert(PROF_N == 19, "kProfNames must list every PROF_ area");
+                                                "vwait", "gxpres", "gxstate", "gxend" };
+_Static_assert(PROF_N == 20, "kProfNames must list every PROF_ area");
 static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
 static void perf_open(const char* path) {

@@ -556,8 +556,13 @@ static void vchk_report(void) {
     const VFastStats* st = &g_vfastStats;
     double v = st->verts ? (double)st->verts : 1;
     fprintf(stderr, "VFAST_STATS: per vertex: lights %.2f lit halves %.2f indexed attrs %.2f texgens %.2f normals %.2f; "
-            "matrix compositions per draw %.2f\n", st->lightEvals / v, st->litHalves / v, st->indexed / v, st->texgens / v,
-            st->nrmReads / v, st->draws ? (double)st->composes / (double)st->draws : 0.0);
+            "matrix compositions per draw %.2f; setups computed for %.1f%% of draws\n", st->lightEvals / v,
+            st->litHalves / v, st->indexed / v, st->texgens / v, st->nrmReads / v,
+            st->draws ? (double)st->composes / (double)st->draws : 0.0,
+            st->draws ? 100.0 * (double)st->setups / (double)st->draws : 0.0);
+    fprintf(stderr, "VFAST_STATS: setup changes by key part: cp %llu xf %llu lights %llu format %llu sel %llu reset %llu\n",
+            (unsigned long long)st->setupWhy[0], (unsigned long long)st->setupWhy[1], (unsigned long long)st->setupWhy[2],
+            (unsigned long long)st->setupWhy[3], (unsigned long long)st->setupWhy[4], (unsigned long long)st->setupWhy[5]);
 }
 
 static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const SVert* v) {

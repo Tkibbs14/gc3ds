@@ -80,6 +80,7 @@ static void xf_write(GXCore* gx, u32 addr, u32 v) {
     if (((addr >= 0x600 && addr < 0x680) || (addr >= 0x1009 && addr <= 0x1011) || (addr >= 0x103F && addr <= 0x1047)) &&
         gx->xf[addr] != v)
         gx->xfLightVersion++;
+    if (addr >= 0x1000 && addr != 0x1018 && addr != 0x1019 && gx->xf[addr] != v) gx->xfRegVersion++;  // not the matrix indices
     gx->xf[addr] = v;
 }
 
@@ -257,7 +258,9 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
 static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     u32 mask = gx->bpMask;
     if (reg != BP_MASK) gx->bpMask = 0xFFFFFF;
-    gx->bp[reg] = (gx->bp[reg] & ~mask) | (val & mask);
+    u32 nv = (gx->bp[reg] & ~mask) | (val & mask);
+    if (nv != gx->bp[reg]) gx->bpVersion++;
+    gx->bp[reg] = nv;
     if (gx->bp[reg]) gx->bpNonZero[reg >> 5] |= 1u << (reg & 31);
     if (reg >= 0xE0 && reg <= 0xE7) {
         u32 v = gx->bp[reg], i = (reg - 0xE0) / 2;
@@ -313,7 +316,11 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
     case 0x44: return 1;              // unknown metrics command, no payload
     case 0x08:
         if (avail < 6) return 0;
-        gx->cp[p[1]] = rd32(p + 2);
+        {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
+            u32 v = rd32(p + 2), r = p[1];
+            if (gx->cp[r] != v && (r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
+            gx->cp[r] = v;
+        }
         return 6;
     case 0x10: {
         if (avail < 5) return 0;

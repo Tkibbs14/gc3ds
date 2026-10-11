@@ -22,7 +22,7 @@ void vfast_ref(const VFold* f, const VSel* sel, const SVert* v, PVert* o);
 void vfast_attribs(const VSel* sel, const SVert* v, PVert* o);
 
 // Work counters since start (cheap; printed by the PC checker): what the vertex cost is made of.
-typedef struct { u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads; } VFastStats;
+typedef struct { u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads, setups, setupWhy[6]; } VFastStats;
 extern VFastStats g_vfastStats;
 
 // Fast path: decodes, transforms and lights `count` raw vertices (stride vsize) into `out`. Equal to vfast_ref of
@@ -41,6 +41,8 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count);
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                     u32 vsize, bool gpuLight, void* mem, PVert* out);
 void vfast_finish(const VJob* job, PVert* out);
+// Forgets the cached draw setup (call when GX state is replaced, e.g. a reset or a loaded state).
+void vfast_reset_cache(void);
 
 // Lighting in the vertex shader. The shader lights the colour channel the PICA receives (both its colour and alpha
 // halves) from the eight GX lights, with these uniforms (gxpass.v.pica; colours 0..1):

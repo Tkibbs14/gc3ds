@@ -93,6 +93,8 @@ static struct {
     // C3D_DrawArrays covers them all (Twilight Princess sends thousands of 4-6 vertex draws per field).
     bool batchOpen;
     u32 batchFirst, batchKeyLen, batchKey[96];
+    u32 batchBpVer, batchTlutVer, batchLightVer, batchXfbSeq;  // what the key was made from (pica_draw's fast path)
+    bool batchLines;
     VSel sel;
     // Lighting in the vertex shader (gxpass.v.pica): on unless pica_set_shader_light(false); the open batch's
     // decision and uniforms; uniform locations.
@@ -169,8 +171,10 @@ static void begin_frame(void) {
 static void end_frame(void) {
     if (!g.frame) return;
     flush_batch();
+    u64 t0 = prof_begin();
     flush_arena();
     C3D_FrameEnd(GX_CMDLIST_FLUSH);
+    prof_end(PROF_GXEND, t0);
     g_picaStats.submits++;
     g.frame = false;
 }
@@ -807,10 +811,21 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     // The open batch's key holds the TEV words first, so the used texture maps (from the compiled TEV) are only
     // compared once the TEV is known to be the same.
     // Lines and points are lit on the CPU (shader lighting is for triangles): they never share a batch with triangles.
-    u32 key[96], kn = batch_key(gx, key);
-    key[kn++] = prim >= PRIM_LINES;
-    bool same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
-    if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
+    // Fast path: nothing the key is made of has changed since the open batch's draw (no BP write that changed a
+    // value, same palettes, lights, XFB copies and primitive class), so it is the same batch without building the key.
+    u32 key[96], kn = 0;
+    bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
+                gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && (prim >= PRIM_LINES) == g.batchLines;
+    if (same) {
+        memcpy(key, g.batchKey, g.batchKeyLen * 4);
+        kn = g.batchKeyLen;
+    } else {
+        kn = batch_key(gx, key);
+        key[kn++] = prim >= PRIM_LINES;
+        same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
+        if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
+    }
+    // (recorded below once the batch is known to be this state)
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
     if (!same) {
         flush_batch();
@@ -901,6 +916,8 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         memcpy(g.batchKey, key, kn * 4);
         g.batchKeyLen = kn;
     }
+    g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
+    g.batchXfbSeq = g.xfbSeq; g.batchLines = prim >= PRIM_LINES;
     dprof_end(PROF_GXSTATE, tState);
     if (work) {  // the worker appends its triangles to the arena; the batch's draw call waits for it (flush_batch)
         vw_queue(&w, workVerts);
@@ -1223,6 +1240,7 @@ bool pica_shader_light(void) { return g.shaderLight; }
 
 void pica_reset(void) {
     vw_sync();
+    vfast_reset_cache();
     // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
     for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
     for (u32 i = 0; i < MAX_XFB; i++) g.xfb[i].seq = 0;
