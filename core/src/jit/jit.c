@@ -34,6 +34,7 @@ enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST
 #define OFF_CTR ((u32)offsetof(Gekko, ctr))
 #define OFF_PC ((u32)offsetof(Gekko, pc))
 #define OFF_MSR ((u32)offsetof(Gekko, msr))
+#define OFF_HOSTPC ((u32)offsetof(Gekko, hostPc))
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
 // FPR r: ps0 at +0 and ps1 at +8, each a host double (low word first); vldr/vstr reach 1020 bytes.
 #define OFF_FPR(r) ((u32)offsetof(Gekko, fpr) + 16u * (u32)(r))
@@ -1596,6 +1597,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     // Budget check: a chain of linked blocks stops here once RDC is used up.
     dp_imm(e, CMP, 1, 0, RDC, 0);
     u32 noBudget = branch_c(e, C_LE, 0);
+    str_imm(e, PC, RG, OFF_HOSTPC);  // for the sampling profiler: one store per block
     u32 startPa = pa;
     bool ended = false;
     u32 maxInsns = jit_debug_max_insns ? jit_debug_max_insns : MAX_BLOCK_INSNS;
@@ -1832,7 +1834,9 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         }
         s64 room = budget - (s64)total;
         u32 gen = j->gen, *s;
+        jit_in_run = 1;
         u32 n = run(j, en->fn, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room, g->cycles + total, &s);
+        jit_in_run = 0;
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
@@ -1923,6 +1927,31 @@ void jit_invalidate(Jit* j, u32 pa) {
     // Level 1 keeps no per-page block lists: any icbi that touches a page holding compiled code drops everything.
     j->stats.icbis++;
     if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) { j->stats.icbiFlushes++; jit_invalidate_all(j); }
+}
+
+volatile u32 jit_in_run;
+
+static const Entry* g_sortEntries;
+static int by_fn(const void* a, const void* b) {
+    uintptr_t fa = (uintptr_t)g_sortEntries[*(const u32*)a].fn, fb = (uintptr_t)g_sortEntries[*(const u32*)b].fn;
+    return fa < fb ? -1 : fa > fb;
+}
+
+void jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
+    static u32* order;
+    if (!order && !(order = malloc(MAX_ENTRIES * sizeof *order))) return;
+    u32 m = j->nEntries;
+    for (u32 i = 0; i < m; i++) order[i] = i;
+    g_sortEntries = j->table;
+    qsort(order, m, sizeof *order, by_fn);
+    for (u32 k = 0; k < n; k++) {
+        u32 a = addrs[k], lo = 0, hi = m, best = NO_ENTRY;
+        while (lo < hi) {  // the last block starting at or before a
+            u32 mid = (lo + hi) / 2;
+            if ((u32)(uintptr_t)j->table[order[mid]].fn <= a) { best = order[mid]; lo = mid + 1; } else hi = mid;
+        }
+        addrs[k] = best == NO_ENTRY ? 0 : j->table[best].pc;
+    }
 }
 
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }

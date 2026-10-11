@@ -15,6 +15,7 @@
 #include "../src/jit/jit.h"
 #include "gxthread.h"
 #include "pmu.h"
+#include "jitsample.h"
 
 #define MAX_FILES 64
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
@@ -243,7 +244,7 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx, started early alternately every %d s\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s (none set) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -360,6 +361,7 @@ static void run(const char* path) {
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) jit_set_linking(g_jit, true);
     if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); }
+    if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
@@ -461,10 +463,11 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // A/B of starting the GPU queue early (the earlyq column): on for 20 s, off for 20 s, ...
-                if (g_pica && perfRows % AB_SECS == 0) pica_set_early_queue(!pica_early_queue());
+                // (A/B comparisons: set one up here, as the vertex worker and the early GPU queue were.)
+                (void)AB_SECS;
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
+                    if (g_jit && g_useJit) jitsample_report(g_perf, g_jit);
                     if (g_jit) {
                         const JitStats* js = jit_stats(g_jit);
                         fprintf(g_perf, "# jit code: %.2f host words per guest instruction, %.0f%% of the buffer; "

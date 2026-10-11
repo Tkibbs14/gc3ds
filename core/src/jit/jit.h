@@ -66,3 +66,9 @@ static inline void jit_host_fpscr_init(void) {}
 // Host services each frontend provides: executable memory and instruction-cache maintenance.
 void* jit_host_alloc_exec(u32 bytes);
 void jit_host_sync_icache(void* start, u32 bytes);
+
+// Sampling profiler support: jit_in_run is 1 while compiled code (or a helper it called) runs; each block stores its
+// host start address in Gekko.hostPc. jit_map_hosts replaces host addresses with the guest PC of the block they are
+// in (0 when none).
+extern volatile u32 jit_in_run;
+void jit_map_hosts(const Jit* j, u32* addrs, u32 n);

@@ -47,6 +47,7 @@ typedef struct Gekko {
     FPR fpr[32];
     u32 cr, xer, lr, ctr, msr, fpscr;
     u32 pc;
+    u32 hostPc;     // JIT: where in compiled code the current block started (written by each block; the profiler samples it)
     u32 sr[16];
     u32 spr[1024];  // backing store for SPRs without dedicated fields (GQRs, HIDs, BATs, SRR0/1, SPRGs, ...)
 
