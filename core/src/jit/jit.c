@@ -178,6 +178,9 @@ static void count_op(JitOpCounts* t, u32 inst) {
 static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
     u64 n = ++g_jit->stats.fallbacksRun;
     count_op(&g_jit->stats.fallbackRun, inst);
+    u32 xo = (inst >> 1) & 0x3FF;
+    if ((inst >> 26) == 31 && (xo == 339 || xo == 467))
+        g_jit->stats.sprRun[xo == 467][((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)]++;
     bool stop;
     u32 npc;
     if (g_profClock && !(n & 63)) {  // sampled: a clock read per fallback would cost more than many fallbacks
@@ -1353,8 +1356,10 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
     return true;
 }
 
-// psq_l / psq_st and their update / indexed forms. Native only when the GQR says plain float for this direction and the
-// access is aligned and inside MEM1; everything else runs the interpreter for this one instruction.
+// psq_l / psq_st and their update / indexed forms, compiled for the GQR's quantization at compile time (plain float, or
+// u8 / u16 / s8 / s16 with its scale); a run-time check of the GQR, misaligned elements or an address outside MEM1 run
+// the interpreter for this one instruction. Quantized loads are exact (int, then times 2^-scale); quantized stores
+// round to single, scale, truncate toward zero and saturate, as the interpreter's quantize() (NaN gives 0).
 static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) {
     Emit* e = &c->e;
     if (!c->fastmem || !c->ps || (!indexed && !c->lsq)) return false;
@@ -1362,38 +1367,54 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     if (update && ra == 0) return false;
     u32 w = indexed ? (inst >> 10) & 1 : (inst >> 15) & 1, idx = indexed ? (inst >> 7) & 7 : (inst >> 12) & 7;
     u32 gqr = (u32)offsetof(Gekko, spr) + 4u * (SPR_GQR0 + idx);
+    u32 q = c->j->g->spr[SPR_GQR0 + idx], half = (store ? q : q >> 16) & 0x3F07u;
+    u32 qt = half & 7, qs = (half >> 8) & 0x3F;
+    if (qt >= 1 && qt <= 3) qt = 0;  // reserved types: the guard below fails and the interpreter logs them
+    int scale = (qs & 0x20) ? (int)qs - 64 : (int)qs;
+    u32 sz = qt == 0 ? 4 : qt == 4 || qt == 6 ? 1 : 2;
+    bool sgn = qt == 6 || qt == 7;
     u32 fb[4], nfb = 0;
     // The address first: the register cache must not change after the first branch to the cold fallback (that path
     // would skip the write-back of an evicted register).
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, (u32)((s32)(inst << 20) >> 20));
     add_const(e, R1, RG, gqr & ~0xFFFu, R12);
     ldr_imm(e, R2, R1, gqr & 0xFFFu);
-    dp_imm(e, AND, 1, R1, R2, IMM(store ? 0x3F00u : 0x3F000000u));        // scale
-    dp_imm_c(e, C_EQ, AND, 1, R1, R2, IMM(store ? 0x7u : 0x70000u));      // type
+    if (!store) mov_shift(e, 0, R2, R2, LSR, 16);
+    if (qt == 0) {
+        dp_imm(e, TST, 1, 0, R2, 7);  // plain float: the scale is not used
+    } else {
+        dp_imm(e, AND, 0, R1, R2, IMM(0x3F00u));
+        dp_imm(e, CMP, 1, 0, R1, IMM(qs << 8));
+        dp_imm_c(e, C_EQ, AND, 0, R1, R2, 7);
+        dp_imm_c(e, C_EQ, CMP, 1, 0, R1, qt);
+    }
     fb[nfb++] = branch_c(e, C_NE, 0);
-    dp_imm(e, TST, 1, 0, R0, 3);
-    fb[nfb++] = branch_c(e, C_NE, 0);
+    if (sz > 1) {
+        dp_imm(e, TST, 1, 0, R0, sz - 1);
+        fb[nfb++] = branch_c(e, C_NE, 0);
+    }
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
     dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
     fb[nfb++] = branch_c(e, C_CS, 0);
-    if (!w) {  // the second word must be inside too
-        dp_imm(e, ADD, 0, R3, R1, 4);
+    if (!w) {  // the second element must be inside too
+        dp_imm(e, ADD, 0, R3, R1, sz);
         dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
         fb[nfb++] = branch_c(e, C_CS, 0);
     }
     dp_reg(e, ADD, 0, R1, R1, RRAM);
-    if (!store) {
+    if (qt != 0 && scale != 0) {  // d2 = 2^-scale (load) or 2^scale (store)
+        dp_imm(e, MOV, 0, R2, 0, 0);
+        load_const(e, R3, (u32)(1023 + (store ? scale : -scale)) << 20);
+        vmov_d_rr(e, 2, R2, R3);
+    }
+    if (!store && qt == 0) {
         if (w) {
             ldr_imm(e, R2, R1, 0);
             rev(e, R2, R2);
             vmov_s_r(e, 0, R2);
             vcvt_f64_f32(e, 1, 0);
             st_fpr(c, 1, fr, 0);
-            load_const(e, R2, 0x3FF00000u);  // ps1 = 1.0
-            dp_imm(e, MOV, 0, R3, 0, 0);
-            str_imm(e, R3, RG, OFF_FPR(fr) + 8);
-            str_imm(e, R2, RG, OFF_FPR(fr) + 12);
         } else {
             ldmia(e, R1, (1u << R2) | (1u << R3));
             rev(e, R2, R2);
@@ -1404,7 +1425,16 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             st_fpr(c, 1, fr, 0);
             st_fpr(c, 2, fr, 1);
         }
-    } else {
+    } else if (!store) {
+        for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
+            if (sz == 1) { ldrb_imm(e, R2, R1, lane); if (sgn) sxtb(e, R2, R2); }
+            else { ldrh_imm(e, R2, R1, 2 * lane); if (sgn) revsh(e, R2, R2); else rev16(e, R2, R2); }
+            vmov_s_r(e, 0, R2);
+            vcvt_f64_s32(e, 1, 0);
+            if (scale != 0) vfp_d(e, VF_MUL, 1, 1, 2);
+            st_fpr(c, 1, fr, lane);
+        }
+    } else if (qt == 0) {
         dbl_to_single_bits(c, R2, fr, 0, R12, LR);
         rev(e, R2, R2);
         if (w) {
@@ -1414,14 +1444,46 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             rev(e, R3, R3);
             stmia(e, R1, (1u << R2) | (1u << R3));
         }
+    } else {
+        u32 bits = sz == 1 ? 8 : 16;
+        for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
+            ld_fpr(c, 0, fr, lane);
+            vcvt_f32_f64(e, 0, 0);  // round to single first
+            vcvt_f64_f32(e, 0, 0);
+            if (scale != 0) vfp_d(e, VF_MUL, 0, 0, 2);
+            vcvt_s32_f64(e, 0, 0);  // toward zero, saturating to int32; NaN gives 0
+            vmov_r_s(e, R2, 0);
+            if (sgn) ssat(e, R2, bits, R2); else usat(e, R2, bits, R2);
+            if (sz == 1) strb_imm(e, R2, R1, lane);
+            else { rev16(e, R2, R2); strh_imm(e, R2, R1, 2 * lane); }
+        }
+    }
+    if (!store && w) {
+        load_const(e, R2, 0x3FF00000u);  // ps1 = 1.0
+        dp_imm(e, MOV, 0, R3, 0, 0);
+        str_imm(e, R3, RG, OFF_FPR(fr) + 8);
+        str_imm(e, R2, RG, OFF_FPR(fr) + 12);
     }
     if (update) st_gpr(c, R0, ra);  // the access kept the effective address in r0
     u32 resume = e->n;
-    cold_begin(c);  // other quantizations, unaligned or outside MEM1: the interpreter, out of line
+    cold_begin(c);  // another quantization, misaligned or outside MEM1: the interpreter, out of line
     for (u32 k = 0; k < nfb; k++) fix_to_cold(c, fb[k]);
     emit_fallback(c, inst);
     cold_end(c, resume);
     return true;
+}
+
+// d = 1 / lane of frB, or 1 / sqrt(it) when rsqrt: what the interpreter's fres / frsqrte estimates return (the
+// correctly rounded reciprocal; 1 / sqrt in double, exact under power-of-two scaling, so equal for normal operands).
+// Uses r0, r1 and d2 (d must not be d2).
+static void emit_estimate(Cg* c, int d, u32 rb, u32 lane, bool rsqrt) {
+    Emit* e = &c->e;
+    ld_fpr(c, 2, rb, lane);
+    if (rsqrt) vsqrt_d(e, 2, 2);
+    dp_imm(e, MOV, 0, R0, 0, 0);
+    load_const(e, R1, 0x3FF00000u);
+    vmov_d_rr(e, d, R0, R1);
+    vfp_d(e, VF_DIV, d, d, 2);
 }
 
 // fcmpu / fcmpo: CR field and FPSCR[FPCC] = 8 less, 4 greater, 2 equal, 1 unordered (exception bits are not kept).
@@ -1543,6 +1605,12 @@ static bool compile_float(Cg* c, u32 inst) {
         }
     arith:
         if (inst & 1) return false;
+        if ((single && xo5 == 24) || (!single && xo5 == 26)) {  // fres (single result in both lanes) / frsqrte (ps0)
+            emit_estimate(c, 0, rb, 0, xo5 == 26);
+            if (single) { round_pair(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); }
+            else st_fpr(c, 0, frd, 0);
+            return true;
+        }
         switch (xo5) { case 18: case 20: case 21: case 25: case 28: case 29: case 30: case 31: break; default: return false; }
         int res = 0;
         ld_fpr(c, 0, ra, 0);
@@ -1602,6 +1670,13 @@ static bool compile_float(Cg* c, u32 inst) {
         }
         }
         switch (xo5) {
+        case 24: case 26:  // ps_res ps_rsqrte: each lane, rounded to single
+            emit_estimate(c, 0, rb, 0, xo5 == 26);
+            emit_estimate(c, 1, rb, 1, xo5 == 26);
+            round_pair(c, 0, 1);
+            st_fpr(c, 0, frd, 0);
+            st_fpr(c, 1, frd, 1);
+            return true;
         case 10: case 11: case 12: case 13: case 14: case 15: case 18: case 20: case 21: case 25: case 28: case 29: case 30: case 31:
             ps_arith(c, xo5, frd, ra, rb, frc);
             return true;

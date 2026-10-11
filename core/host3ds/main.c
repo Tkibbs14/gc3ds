@@ -313,6 +313,23 @@ static void perf_fallbacks(void) {
         dd[best] = 0;
     }
     fprintf(g_perf, "\n");
+    // The interpreted mfspr / mtspr by SPR number (the ones worth compiling next).
+    static u32 sprPrev[2][1024];
+    const JitStats* js = jit_stats(g_jit);
+    fprintf(g_perf, "# spr fallbacks 10s:");
+    for (int k = 0; k < 6; k++) {
+        u32 bm = 0, bs = 0, bn = 0;
+        for (u32 m = 0; m < 2; m++)
+            for (u32 s = 0; s < 1024; s++) {
+                u32 n = js->sprRun[m][s] - sprPrev[m][s];
+                if (n > bn) { bn = n; bm = m; bs = s; }
+            }
+        if (!bn) break;
+        fprintf(g_perf, " %s %lu=%lu", bm ? "mtspr" : "mfspr", (unsigned long)bs, (unsigned long)bn);
+        sprPrev[bm][bs] += bn;
+    }
+    fprintf(g_perf, "\n");
+    memcpy(sprPrev, js->sprRun, sizeof sprPrev);
 }
 
 static bool is_disc(const char* path) {

@@ -75,6 +75,14 @@ static inline void ldrb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0
 static inline void strb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07C00000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void ldrh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x019000B0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void strh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x018000B0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
+// Byte and halfword accesses with an immediate offset (0..4095 for bytes, 0..255 for halfwords).
+static inline void ldrb_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x05D00000u | ((u32)rn << 16) | ((u32)rt << 12) | off); }
+static inline void strb_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x05C00000u | ((u32)rn << 16) | ((u32)rt << 12) | off); }
+static inline void ldrh_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x01D000B0u | ((u32)rn << 16) | ((u32)rt << 12) | ((off & 0xF0u) << 4) | (off & 0xFu)); }
+static inline void strh_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x01C000B0u | ((u32)rn << 16) | ((u32)rt << 12) | ((off & 0xF0u) << 4) | (off & 0xFu)); }
+// Saturate rn to a signed / unsigned `bits`-bit range.
+static inline void ssat(Emit* e, int rd, u32 bits, int rn) { E(e, cc(C_AL) | 0x06A00010u | ((bits - 1) << 16) | ((u32)rd << 12) | (u32)rn); }
+static inline void usat(Emit* e, int rd, u32 bits, int rn) { E(e, cc(C_AL) | 0x06E00010u | (bits << 16) | ((u32)rd << 12) | (u32)rn); }
 static inline void rev(Emit* e, int rd, int rm) { E(e, cc(C_AL) | 0x06BF0F30u | ((u32)rd << 12) | (u32)rm); }
 static inline void rev16(Emit* e, int rd, int rm) { E(e, cc(C_AL) | 0x06BF0FB0u | ((u32)rd << 12) | (u32)rm); }
 static inline void revsh(Emit* e, int rd, int rm) { E(e, cc(C_AL) | 0x06FF0FB0u | ((u32)rd << 12) | (u32)rm); }
@@ -122,10 +130,12 @@ static inline u32 vf_sm(int s) { return (u32)(s >> 1) | ((u32)(s & 1) << 5); }
 static inline void vfp_d(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000B00u | op | ((u32)n << 16) | ((u32)d << 12) | (u32)m); }
 static inline void vfp_s(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000A00u | op | vf_sd(d) | vf_sn(n) | vf_sm(m)); }
 static inline void vmov_d(Emit* e, int d, int m) { E(e, 0xEEB00B40u | ((u32)d << 12) | (u32)m); }
+static inline void vsqrt_d(Emit* e, int d, int m) { E(e, 0xEEB10BC0u | ((u32)d << 12) | (u32)m); }
 static inline void vneg_d(Emit* e, int d, int m) { E(e, 0xEEB10B40u | ((u32)d << 12) | (u32)m); }
 static inline void vcvt_f32_f64(Emit* e, int sd, int dm) { E(e, 0xEEB70BC0u | vf_sd(sd) | (u32)dm); }
 static inline void vcvt_f64_f32(Emit* e, int dd, int sm) { E(e, 0xEEB70AC0u | ((u32)dd << 12) | vf_sm(sm)); }
 // double -> int32: vcvt truncates toward zero, vcvtr rounds as FPSCR says.
+static inline void vcvt_f64_s32(Emit* e, int dd, int sm) { E(e, 0xEEB80BC0u | ((u32)dd << 12) | vf_sm(sm)); }  // int32 -> double (exact)
 static inline void vcvt_s32_f64(Emit* e, int sd, int dm) { E(e, 0xEEBD0BC0u | vf_sd(sd) | (u32)dm); }
 static inline void vcvtr_s32_f64(Emit* e, int sd, int dm) { E(e, 0xEEBD0B40u | vf_sd(sd) | (u32)dm); }
 static inline void vcmp_d(Emit* e, int d, int m) { E(e, 0xEEB40B40u | ((u32)d << 12) | (u32)m); }

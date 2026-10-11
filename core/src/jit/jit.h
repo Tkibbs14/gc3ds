@@ -29,6 +29,7 @@ typedef struct {
     u64 gatherStores;             // stores to the write-gather pipe through jit_set_gather's direct path
     JitOpCounts fallback;      // static: one per compiled occurrence
     JitOpCounts fallbackRun;   // dynamic: one per execution
+    u32 sprRun[2][1024];       // dynamic: interpreted mfspr [0] / mtspr [1] by SPR number
 } JitStats;
 
 // ram/ramSize: host view of physical RAM starting at physical 0 (for the fast memory path).
