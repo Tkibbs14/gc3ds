@@ -284,3 +284,147 @@ svcFlushProcessDataCache.
 - libogc gx.h
 - RetroArch gfx/drivers/ctr_gfx.c
 - citra.azahar-emu.org "Improvements to hardware renderer"
+
+---
+
+# Part 2 (second research wave, 2026-10-11)
+
+## 7. Hardware behaviour as modelled by Azahar
+
+Azahar's `src/video_core` is the most precise public model of the GPU. It is emulator code, not a hardware test,
+and no public GPU hardware-test suite survives (citra-emu/hwtests is gone). Our own tests are the only ground truth.
+
+- **Fog index** [S] (`renderer_software/sw_rasterizer.cpp` WriteFog, `glsl_fs_shader_gen.cpp`):
+  - The index comes from the same clamped depth the depth test uses: `depth = (z/w)·scale + offset`.
+  - With W-buffering on (DEPTHMAP_ENABLE), depth is multiplied by w, so it is linear in eye distance.
+  - Then `index = depth·128` (or `(1−depth)·128` with fog_flip), and `f = lut[i] + diff·frac`.
+  - The fragment becomes `f·colour + (1−f)·fog_colour`.
+  - **For the dunes:** with z/w depth, distant terrain crowds into a few LUT entries. With W-buffering the index is
+    linear in distance. Build the LUT for whichever depth mode is in use; W-buffering is the likely fix (test G7 in
+    MEASURE_PLAN.md).
+- **Depth** [S]:
+  - Values are z/w, or w-buffered; Azahar notes "about 3 bits of precision missing" in its software depth.
+  - Order of tests: alpha test, then fog, then stencil/depth.
+  - Register 0x107: test enable bit 0, function bits 4–6, RGBA writes bits 8–11, depth write bit 12.
+- **Clipping** [S]:
+  - Planes are x,y = ±w, **z ≤ 0 and z ≥ −w** (the PICA's clip-space z range is [−w, 0], not [−w, w]), w ≥ 1e−5,
+    plus an optional user plane.
+  - Triangles crossing w = 0 are clipped. No guard band is modelled.
+  - Back-face culling uses signed area ≤ 0.
+- **Vertex loader** [S]: s8, u8, s16 and f32 attributes become floats **without normalisation** (u8 255 arrives as
+  255.0). GameCube fixed-point fractions must therefore be applied in the shader, with a scale per attribute.
+  - Missing components pad to (0,0,0,1).
+  - Unset outputs read 1.0.
+  - **Output colours are |x| clamped to 1 before interpolation.**
+- **Shader arithmetic:**
+  - Azahar computes in float32; f24 rounding is not modelled.
+  - Hardware MOVA rounding is unknown (Azahar truncates).
+  - Popping four CALL scopes at once loses the PC update (hardware bug).
+  - EX2 reads the first component.
+- **Combiners:** Azahar's software path uses integer /255; its GL path uses floats. They differ at the LSB, and
+  ADD_SIGNED differs between 127.5 and 128. Hardware rounding is untested.
+- **Fragment lighting LUT index:** unsigned floor(x·256) clamped 0..255; signed floor(x·128) clamped −128..127;
+  interpolated with the difference; sums clamped at the end.
+
+## 8. GameCube GX on the PICA200: what fits
+
+| GX feature | PICA mapping | Fit | Cost |
+|---|---|---|---|
+| TEV lerp(a,b,c) + scale 1/2/4 | INTERPOLATE (operands reordered) + scale | exact | 1 stage |
+| TEV `d` input (add/sub) | second stage with previous | exact | 2 stages |
+| TEV bias ±0.5, scale ½ | constant operand / extra stage | approximate | +1 stage |
+| TEV compare modes | none | impossible in a stage | — |
+| Konst selects (K0–K3, fractions) | one constant per stage | approximate | — |
+| Swap tables | operand channel selects | approximate | 0 |
+| > 6 active TEV stages | multipass | approximate | extra draws |
+| Indirect texturing | no dependent fetch | impossible (bump-like looks via fragment lighting) | — |
+| Z texture (depth from texture) | linear depth map only | impossible | — |
+| Alpha compare, two refs + op | alpha test + stencil, two passes | approximate | 2× draws |
+| EFB copy RGBA8/565/RGBA4 | display transfer / TextureCopy | exact | 1 transfer |
+| EFB 3-tap filter, gamma, YUV, intensity | extra fragment passes, gamma LUT texture | approximate | passes |
+| EFB Z copy | no depth formats in the engine | readback only | — |
+| GX lighting per vertex (8 lights × 2 channels) | vertex shader (DP3, RSQ, LIT, LG2, EX2) | exact modulo f24 | ~150–250 instructions [I] |
+| Per-pixel diffuse/spec | D0 LUT | exact per pixel | LUT upload |
+| Distance/spot attenuation | DA and SP LUTs | approximate | LUT upload |
+| Texgen matrix, post-matrix, normalise | DP4 + RSQ in the vertex shader | exact | ~6–20 instructions each [I] |
+| Emboss texgen | vertex shader with tangent attributes | exact if attributes exist | ~10 instructions |
+| Fog types (linear, exp, exp², backward) | 128-entry LUT sampled from GX's A, B, C | approximate (128 samples) | 128 writes per change |
+| Fog range adjust (per screen x) | none | impossible per pixel | — |
+
+- **GX TEV formula** (Dolphin PixelShaderGen.cpp, libogc gx.h): `out = clamp(((d ± lerp(a,b,c)) + bias) · scale)`.
+  Compare bias selects c by `a > b` or `a == b` on R8, GR16, BGR24 or RGB8/A8.
+- **GX fog** (Dolphin PixelShaderGen.cpp):
+  - Eye depth: `ze = A·2²⁴ / (B − (z >> Bshift))` for perspective, `A·z / 2²⁴` for orthographic.
+  - Optional range adjust: `ze *= sqrt(off² + k²)/k`.
+  - `f = clamp(ze − C, 0, 1)`.
+  - Shape by type: linear `f`; exp `1−2^(−8f)`; exp² `1−2^(−8f²)`; backward exp `2^(−8(1−f))`; backward exp²
+    `2^(−8(1−f)²)`.
+- How many TEV stages real games use: not published; read it from our own logs per game.
+
+## 9. Published performance and our own numbers
+
+- **Vendor peaks (DMP, via Wikipedia):** 15.3 Mpolygons/s + 800 Mpixels/s at 200 MHz (2010), or 40 Mtriangles/s +
+  400 Mpixels/s at 100 MHz (2008). The two conflict.
+- **3dbrew:** GPU 268 MHz (not separately confirmed); 3 vertex processors plus the primitive engine; 4 texture
+  units, the 4th procedural.
+- **DMP 2013 deck** (`sigarc.ipsj.or.jp/Presentation/arc195_katsumata.pdf`): the pipeline is TnL → post-TnL vertex
+  cache → primitive engine → raster → texture → per-fragment shading → depth/stencil/blend, with a "secondary vertex
+  cache". The paper behind it is Kazakov and Ohbuchi, HPG 2011.
+- **Flipper (GameCube):** 162 MHz, 4 pixel pipes (~648 Mpixels/s), ~20 M raw / 6–12 M realistic polygons/s,
+  16 TEV stages / 8 textures, ~2 MB EFB + ~1 MB texture cache.
+- **Measured on the owner's 2DS** (FINDINGS.md, gcbench run 3):
+  - Triangles: 6.0 Mtri/s (10 indexed); 4.3 with a 4-light vertex shader.
+  - Fill: 193 Mpixels/s with VRAM textures. Blending, depth and 1–6 combiner stages cost nothing extra.
+  - FCRAM textures are 2.5–3.6× slower.
+  - Texture upload: ~130 MB/s, more than half of it the cache flush.
+  - Readback of 256×256: 3.9 ms.
+  - **Conclusion:** GameCube geometry fits easily. The fragment side (16 TEV stages onto 6 combiners, no indirect
+    texturing) is the real mismatch.
+
+## 10. Memory system
+
+- **FCRAM:** 128 MB on Old 3DS (2 × 64 MB, 64-bit per die); New 3DS adds 128 MB at PA 0x28000000. Bandwidth isn't
+  published; we measured memcpy ~307 MB/s and a random miss of ~210 ns over 24 MB.
+- **On-chip memories:** VRAM 6 MB at PA 0x18000000 (banks A/B). AXI WRAM 512 KB (kernel). DSP RAM 512 KB. New 3DS
+  extra RAM 4 MB at VA 0x1E800000 (the first 2 MB GPU-reachable). L2C-310, 2 MB.
+- **Clocks:** ARM11 804 MHz, GPU 268 MHz, DSP 134 MHz.
+- **Address spaces:**
+  - App heap at VA 0x08000000.
+  - Linear heap at VA 0x30000000 (up to 256 MB on New 3DS), with PA = VA + 0x0C000000 (the GPU and DMA read it).
+  - Heap, linear heap and code share one APPLICATION region: 124 MB on New 3DS, or 178 MB in the "Dev1" exheader
+    mode.
+- **3dsx limits:** a 3dsx under the Homebrew Launcher cannot choose its memory mode. Nor can it get a CPU mapping of
+  VRAM: 3dbrew says VRAM access "is specified by the exheader", which probably explains our failed CPU writes. A
+  **CIA build with its own exheader** could unlock 178 MB, a VRAM mapping and the core flags, if the 3dsx limits
+  ever bite.
+- **Cache maintenance:** GSPGPU_FlushDataCache accepts linear addresses only. A RequestDMA with the flush flag
+  flushes its own source. FlushCacheRegions handles up to 3 buffers.
+- **Display transfer to FCRAM:** bursts ≤ 128 bytes; burst setting 3 gives a black screen.
+
+## 11. The four CPU cores
+
+- **Core 1:** APT_SetApplicationCpuTimeLimit caps it at 5–89% on the current 3dbrew page (80% on older ones; we
+  measured 78% of a core at 80%). It cannot go back to 0.
+- **Cores 2 and 3:** run our threads at full speed (hw.txt). The research claim that core 3 is refused to ordinary
+  apps is superseded by that measurement.
+- **Scheduling:** no timeslicing is documented. A spinning thread starves equal or lower priorities on its core.
+  User priorities are 0x18–0x3F; the main thread is ~0x30.
+- **Sync primitives:** libctru's LightLock, LightEvent and LightSemaphore never spin; they sleep in the kernel
+  (svcArbitrateAddress). Our lost cross-core wake-ups fit an ordering race.
+- **Coherency:** MESI via the SCU, with direct L1-to-L1 transfers. DMB and DSB are user-mode CP15 ops. Put one
+  handoff flag per 32-byte line.
+- **WFE/SEV** exist in hardware; whether user mode may use them is unknown. Test it: it would give a wake-up without
+  spinning.
+
+## Sources (part 2)
+
+- Azahar (`src/video_core`): renderer_software/sw_rasterizer.cpp, sw_texturing.cpp, sw_lighting.cpp,
+  pica/regs_*.h, pica/vertex_loader.*, pica/output_vertex.cpp, pica_types.h, shader/shader_interpreter.cpp,
+  shader/generator/glsl_*
+- Dolphin VideoCommon: PixelShaderGen.cpp, BPMemory.h/.cpp, VertexShaderGen.cpp, LightingShaderGen.cpp,
+  TextureDecoder.h, TextureConverterShaderGen.cpp, TextureCacheBase.cpp
+- libogc gx.h
+- 3dbrew: Hardware, Memory_layout, NCCH/Extended_Header, Multi-threading, APT:SetApplicationCpuTimeLimit, SVC,
+  GSPGPU:FlushDataCache, GX_Commands, Corelink_DMA_Engines
+- ARM DDI 0360F (MPCore TRM)
+- Wikipedia PICA200; DMP 2013 slides
