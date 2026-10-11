@@ -56,7 +56,9 @@ struct Jit {
     u8* ram;
     u32 ramSize;
     u32* code;
-    u32 codeWords, codeUsed;
+    u32 codeWords, codeUsed;    // the hot region: stubs, then each block's hot path and exit stubs, up to coldStart
+    u32 coldStart, coldUsed;    // the cold region (to codeWords): each block's slow paths, kept apart so that hot code
+                                // packs into fewer cache lines and pages
     Entry* table;          // pool of MAX_ENTRIES
     u32* buckets;          // DISPATCH_SIZE chain heads
     u32 nEntries;
@@ -283,14 +285,14 @@ typedef struct {
     // Out-of-line exit stubs: each writes back the dirty cached GPRs of `snap`, subtracts `count` from RDC and leaves
     // to the dispatcher, after writing g->pc = pc when `setPc` (otherwise g->pc is already written). inCold: the branch
     // to the stub is in the cold code.
-    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; } exits[MAX_BLOCK_INSNS * 4];
+    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; } exits[MAX_BLOCK_INSNS * 8];
     u32 nExits;
     // Cold code: slow paths are emitted into a second buffer (`alt` while hot code is current; the two Emit structs
     // swap places) and appended after the block, so hot code falls through its fast paths and packs into fewer cache
     // lines. Branches between the two are fixed up when the cold code is appended.
     Emit alt;
     bool inCold;
-    struct { u32 at, target; bool fromCold, toCold; } fix[MAX_BLOCK_INSNS * 8];
+    struct { u32 at, target; bool fromCold, toCold; } fix[MAX_BLOCK_INSNS * 16];  // a pipe psq_st takes ~8
     u32 nFix;
 } Cg;
 
@@ -416,6 +418,7 @@ static const u32* stub(const Cg* c, int k) { return c->j->code + c->j->stub[k]; 
 // Branch (if `cond`) to an exit stub that leaves with c->count instructions executed (g->pc already written),
 // writing back the dirty slots of `snap` (the current cache when NULL).
 static void exit_snap(Cg* c, int cond, bool setPc, u32 pc, const Rc* snap) {
+    if (c->nExits == sizeof c->exits / sizeof c->exits[0]) { c->e.overflow = true; return; }  // refused, see compileFails
     c->exits[c->nExits].at = branch_c(&c->e, cond, c->e.n);
     c->exits[c->nExits].count = c->count;
     c->exits[c->nExits].setPc = setPc;
@@ -1130,7 +1133,7 @@ static bool compile_int(Cg* c, u32 inst) {
         u32 off = spr == 8 ? OFF_LR : spr == 9 ? OFF_CTR : 0;
         int base = RG;
         if (!off) {
-            bool plain = spr == SPR_SRR0 || spr == SPR_SRR1 || spr == SPR_DAR || spr == SPR_DSISR ||
+            bool plain = spr == SPR_SRR0 || spr == SPR_SRR1 || spr == SPR_DAR || spr == SPR_DSISR || spr == SPR_HID0 ||
                          (spr >= SPR_SPRG0 && spr < SPR_SPRG0 + 4) || (spr >= SPR_GQR0 && spr < SPR_GQR0 + 8);
             if (!plain || ((spr & 0x10) && c->pr)) return false;
             u32 so = (u32)offsetof(Gekko, spr) + 4u * spr;
@@ -1356,6 +1359,25 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
     return true;
 }
 
+// r2 = the value psq_st stores for an FPR lane under quantization qt / scale (host order, before the byte swap; the
+// gather pipe takes the low sz bytes). Uses r12, lr, d0 and d2.
+static void psq_store_value(Cg* c, u32 fr, u32 lane, u32 qt, int scale, bool sgn, u32 sz) {
+    Emit* e = &c->e;
+    if (qt == 0) { dbl_to_single_bits(c, R2, fr, lane, R12, LR); return; }
+    ld_fpr(c, 0, fr, lane);
+    vcvt_f32_f64(e, 0, 0);
+    vcvt_f64_f32(e, 0, 0);
+    if (scale != 0) {
+        dp_imm(e, MOV, 0, R12, 0, 0);
+        load_const(e, LR, (u32)(1023 + scale) << 20);
+        vmov_d_rr(e, 2, R12, LR);
+        vfp_d(e, VF_MUL, 0, 0, 2);
+    }
+    vcvt_s32_f64(e, 0, 0);
+    vmov_r_s(e, R2, 0);
+    if (sgn) ssat(e, R2, sz == 1 ? 8 : 16, R2); else usat(e, R2, sz == 1 ? 8 : 16, R2);
+}
+
 // psq_l / psq_st and their update / indexed forms, compiled for the GQR's quantization at compile time (plain float, or
 // u8 / u16 / s8 / s16 with its scale); a run-time check of the GQR, misaligned elements or an address outside MEM1 run
 // the interpreter for this one instruction. Quantized loads are exact (int, then times 2^-scale); quantized stores
@@ -1396,7 +1418,9 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
     dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
-    fb[nfb++] = branch_c(e, C_CS, 0);
+    bool pipe = store && c->j->gatherPut;  // psq_st to the write-gather pipe: element by element, out of line
+    u32 outside = branch_c(e, C_CS, 0);
+    if (!pipe) fb[nfb++] = outside;
     if (!w) {  // the second element must be inside too
         dp_imm(e, ADD, 0, R3, R1, sz);
         dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
@@ -1458,6 +1482,33 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             else { rev16(e, R2, R2); strh_imm(e, R2, R1, 2 * lane); }
         }
     }
+    if (pipe) {
+        // Outside MEM1 with the compiled quantization: the gather pipe's address takes each element through jit_gather
+        // (r3 = its stop status, ORed over the elements); any other address joins the interpreter fallback below.
+        u32 join = e->n;
+        cold_begin(c);
+        fix_to_cold(c, outside);
+        load_const(e, R1, c->j->gatherEa);
+        dp_reg(e, CMP, 1, 0, R0, R1);
+        fb[nfb++] = branch_c(e, C_NE, 0);  // a cold-to-cold branch: fixed up with the fallback below
+        set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+        u32 sizePc = c->pc | (sz == 4 ? 2u : sz == 2 ? 1u : 0u);
+        for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
+            psq_store_value(c, fr, lane, qt, scale, sgn, sz);
+            push_regs(e, (1u << R0) | (1u << R3));
+            mov_reg(e, R1, R2);
+            mov_reg(e, R0, RG);
+            load_const(e, R2, sizePc);
+            emit_time(c);
+            call(c, (const void*)jit_gather);
+            mov_reg(e, R12, R0);
+            pop_regs(e, (1u << R0) | (1u << R3));
+            if (lane == 0) mov_reg(e, R3, R12); else dp_reg(e, ORR, 0, R3, R3, R12);
+        }
+        c->pendingStop = true;
+        stop_tail(c);
+        cold_end(c, join);
+    }
     if (!store && w) {
         load_const(e, R2, 0x3FF00000u);  // ps1 = 1.0
         dp_imm(e, MOV, 0, R3, 0, 0);
@@ -1467,7 +1518,10 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     if (update) st_gpr(c, R0, ra);  // the access kept the effective address in r0
     u32 resume = e->n;
     cold_begin(c);  // another quantization, misaligned or outside MEM1: the interpreter, out of line
-    for (u32 k = 0; k < nfb; k++) fix_to_cold(c, fb[k]);
+    for (u32 k = 0; k < nfb; k++) {
+        if (pipe && k == nfb - 1) add_fix(c, true, fb[k], true, c->e.n);  // from the pipe check, itself cold
+        else fix_to_cold(c, fb[k]);
+    }
     emit_fallback(c, inst);
     cold_end(c, resume);
     return true;
@@ -1699,7 +1753,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
     if (!gk_translate(g, pc, false, false, &pa, false) || pa >= j->ramSize) return NULL;
-    if (j->codeWords - j->codeUsed < BLOCK_MAX_WORDS) {
+    if (j->coldStart - j->codeUsed < BLOCK_MAX_WORDS || j->codeWords - j->coldUsed < BLOCK_MAX_WORDS) {
         jit_invalidate_all(j);
         j->stats.flushes++;
     }
@@ -1755,6 +1809,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
     }
     if (!ended) { rc_flush(c); exit_const(c, pc + 4 * c->count); }  // ran out of instructions (or a page end)
+    u32 hotEnd = e->n;
     // Exit stubs: subtract what the block executed from RDC and leave to the dispatcher.
     for (u32 k = 0; k < c->nExits; k++) {
         if (c->exits[k].inCold) add_fix(c, true, c->exits[k].at, false, e->n);
@@ -1767,12 +1822,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     patch_branch(e, noBudget, e->n);
     branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
     word(e, pc);
-    // The cold code goes last; then every branch between hot and cold gets its offset.
-    u32 base = e->n;
-    if (c->alt.overflow || base + c->alt.n > e->cap) e->overflow = true;
-    if (e->overflow) return NULL;
-    memcpy(e->buf + base, c->alt.buf, 4 * c->alt.n);
-    e->n += c->alt.n;
+    u32 stubEnd = e->n;
+    // The cold code goes to the cold region; then every branch between hot and cold gets its offset (base: the cold
+    // code's word index relative to this block's hot code).
+    if (c->alt.overflow || e->overflow) {
+        j->stats.compileFails[c->alt.overflow ? 1 : c->nFix == sizeof c->fix / sizeof c->fix[0] ? 2 : 0]++;
+        return NULL;
+    }
+    u32 base = j->coldUsed - j->codeUsed;
+    u32* cold = j->code + j->coldUsed;
+    memcpy(cold, c->alt.buf, 4 * c->alt.n);
     for (u32 k = 0; k < c->nFix; k++)
         patch_branch(e, c->fix[k].fromCold ? base + c->fix[k].at : c->fix[k].at,
                      c->fix[k].toCold ? base + c->fix[k].target : c->fix[k].target);
@@ -1781,10 +1840,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     jit_debug_last_words = e->n;
     if (jit_debug_on_compile) jit_debug_on_compile(fn, e->n);
     jit_host_sync_icache(fn, e->n * 4);
+    if (c->alt.n) jit_host_sync_icache(cold, c->alt.n * 4);
     j->codeUsed += e->n;
+    j->coldUsed += c->alt.n;
     for (u32 a = startPa >> 12; a <= (startPa + 4 * MAX_BLOCK_INSNS) >> 12 && a < sizeof j->codePages; a++) j->codePages[a] = 1;
     j->stats.blocksCompiled++;
     j->insnsSinceFlush += c->count;
+    j->stats.wordsHot += hotEnd;
+    j->stats.wordsExit += stubEnd - hotEnd;
+    j->stats.wordsCold += c->alt.n;
+    j->stats.insnsKept += c->count;
     return (BlockFn)fn;
 }
 
@@ -2020,6 +2085,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->ramSize = ramSize;
     j->code = jit_host_alloc_exec(codeBytes);
     j->codeWords = codeBytes / 4;
+    j->coldStart = j->codeWords / 5 * 2;  // hot paths and exit stubs measure about 40% of the code in TP
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
     j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
@@ -2074,6 +2140,7 @@ void jit_invalidate_all(Jit* j) {
     j->nEntries = 0;
     memset(j->codePages, 0, sizeof j->codePages);
     j->codeUsed = j->stubWords;
+    j->coldUsed = j->coldStart;
     j->insnsSinceFlush = 0;
     fast_clear(j);
     j->gen++;
@@ -2112,10 +2179,16 @@ void jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
 
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }
 
-float jit_code_used(const Jit* j) { return j->codeWords ? (float)j->codeUsed / (float)j->codeWords : 0.0f; }
+// The fuller of the two regions.
+float jit_code_used(const Jit* j) {
+    if (!j->codeWords) return 0.0f;
+    float hot = (float)j->codeUsed / (float)j->coldStart, cold = (float)(j->coldUsed - j->coldStart) / (float)(j->codeWords - j->coldStart);
+    return hot > cold ? hot : cold;
+}
+static u32 code_words_used(const Jit* j) { return j->codeUsed - j->stubWords + j->coldUsed - j->coldStart; }
 
 float jit_words_per_insn(const Jit* j) {
-    return j->insnsSinceFlush ? (float)(j->codeUsed - j->stubWords) / (float)j->insnsSinceFlush : 0.0f;
+    return j->insnsSinceFlush ? (float)code_words_used(j) / (float)j->insnsSinceFlush : 0.0f;
 }
 
 // The 16 most frequent opcodes in `t`, with a mnemonic from the disassembler.
@@ -2165,9 +2238,15 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->flushes);
     print(line);
     snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu cached GPR reads, %llu pipe stores",
-             s->instrsCompiled ? (double)(j->codeUsed - j->stubWords) / (double)s->instrsCompiled : 0.0,
-             (j->codeUsed * 4) >> 10, (unsigned long long)s->fusedBranches, (unsigned long long)s->forwards,
+             s->instrsCompiled ? (double)code_words_used(j) / (double)s->instrsCompiled : 0.0,
+             (code_words_used(j) * 4) >> 10, (unsigned long long)s->fusedBranches, (unsigned long long)s->forwards,
              (unsigned long long)s->gatherStores);
+    print(line);
+    double kept = s->insnsKept ? (double)s->insnsKept : 1.0;
+    snprintf(line, sizeof line, "JIT: kept blocks, host words per guest instruction: %.1f hot, %.1f exit stubs, %.1f cold; "
+             "compiles refused: %llu hot, %llu cold, %llu fix-ups", (double)s->wordsHot / kept, (double)s->wordsExit / kept,
+             (double)s->wordsCold / kept, (unsigned long long)s->compileFails[0], (unsigned long long)s->compileFails[1],
+             (unsigned long long)s->compileFails[2]);
     print(line);
     snprintf(line, sizeof line, "JIT: %llu instructions run, %llu interpreted (%.1f%%)", (unsigned long long)s->instrsRun,
              (unsigned long long)s->fallbacksRun, s->instrsRun ? 100.0 * (double)s->fallbacksRun / (double)s->instrsRun : 0.0);

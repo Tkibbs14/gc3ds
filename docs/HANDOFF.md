@@ -153,6 +153,46 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
 | 29fce90 | batch key and vertex setup cached against register versions | 12.4% |
 | bb18017 | slimmer lighting shader | 12.6% |
 | 1d45007 | citro3d's GPU queue started at each split | **15.1%** (off 12.2%) |
+| 82a091b | CR logic ops; indirect table 4096 entries, wiped on every block-key change | 12.9% (regression) |
+| b439173 | one indirect table per block key (4 x 2048, switched, not wiped); quantized psq; fres / frsqrte | 15.0% |
+
+### ARM11 MPCore facts from the TRM (ARM DDI 0360F, read 2026-10-11) and what they mean here
+
+- Branch prediction: a 128-entry direct-mapped BTAC (2-bit history, zero-cycle hits, folding in ARM state), then a
+  static predictor (backward taken, forward not taken; a statically predicted taken branch costs one cycle).
+  **Only branches with an immediate or fixed PC-relative target are predicted.** `BX r12`, `LDR pc, [r12...]` and
+  `BLX <reg>` are not (BLX reg still pushes the return stack). The return stack has 3 entries and predicts only
+  unconditional `BX r14`, `LDM sp!, {..pc}` and `LDR pc, [sp..]`.
+- So the dispatcher's indirect jumps, `call()`'s `blx r12` and ST_INDIRECT's jump are never predicted. But the 2DS
+  counters show ~0.7M mispredicted branches/s against 770M cycles/s (under 1%): **branches are not the problem,
+  instruction fetch is** (~11M I-cache misses/s, ~310M stall cycles/s, about 40% of core 0).
+- Our layout already agrees with the static rule: slow-path and exit branches go forward (predicted not taken).
+- Thumb-2 and MOVW/MOVT do not exist on ARMv6K: constants cost up to 4 instructions (`load_const`).
+
+### Code layout (2026-10-11)
+
+`JIT: kept blocks, host words per guest instruction` (qemu, TP 150 fields): **8.2 hot, 2.7 exit stubs, 17.1 cold**.
+Cold code was appended after each block, so two-thirds of the bytes between consecutive hot paths were never run.
+Since this change the code buffer has a hot region (stubs, hot paths, exit stubs: the first 40%) and a cold region
+(slow paths: the rest); `base` in compile_block is the cold code's index relative to the block. perf.csv prints the
+same breakdown (`# jit words per guest instruction`). In the same session: `psq_st` to the write-gather pipe is
+compiled (it was ~8k fallbacks/s), and mfspr / mtspr HID0 are plain (the GC SDK's `sc` sync handler at 0xC00 reads and
+writes HID0 twice per call, ~2.5k/s). `# spr fallbacks 10s` in perf.csv names the SPRs still interpreted.
+
+**Refused compiles are silent and expensive:** a block whose compile fails is interpreted whole and recompiled on
+every visit. The pipe `psq_st` path first pushed TP's vertex-submission blocks past the 256 fix-up entries (1,090
+refusals in 150 fields, seen only as "instructions compiled" doubling); `exit_snap` had no bound at all. Both tables
+are larger now, a full table refuses the block, and the qemu summary prints `compiles refused: hot, cold, fix-ups`.
+Check that line after any change that adds branches or exits per instruction.
+
+### The GX thread is the second limit (2026-10-11, build b439173)
+
+With core 0's outside-JIT time down to 18%, core 0 waits for the GX thread 17% of the time (`gxwait_pct`; it was
+2%). Core 2 is busy 75%: vertex path 47% (decode 20%, lighting 4%), state 15%, textures 6%, sync 6%. TP's title scene
+sends ~44k draws/s of ~5 vertices (the PC build: 4.67M draws, 23.2M vertices in 1,500 fields), about 17 us of core 2
+per draw. The vertex setup cache hits 99.1% (setups for 0.9% of draws), so the cost is fixed per-draw work.
+perf.csv's `# gx draws 10s` line (after b439173) splits draws by batch path (fast / key equal / new batch, with what
+changed) and counts vertex setups with their causes: read it before changing the per-draw path in pica.c / vfast.c.
 
 - **Core 0 is the limit again** (waits for the GX thread ~10%). Its counters on the title scene: 769M cycles/s,
   251M instructions (IPC 0.33), **323M cycles stalled fetching instructions (42%)**, 11.8M I-cache misses/s (~0.85 per

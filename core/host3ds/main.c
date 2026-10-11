@@ -12,6 +12,7 @@
 #include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
 #include "../src/gx/pica/pica.h"
+#include "../src/gx/vfast.h"
 #include "../src/jit/jit.h"
 #include "gxthread.h"
 #include "pmu.h"
@@ -484,6 +485,30 @@ static void run(const char* path) {
                 (void)AB_SECS;
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
+                    {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
+                        static u64 lastP[8], lastSetups, lastDraws, lastWhy[6];
+                        u64 p[8], why[6];
+                        memcpy(p, g_picaDrawPaths, sizeof p);
+                        memcpy(why, g_vfastStats.setupWhy, sizeof why);
+                        u64 setups = g_vfastStats.setups, vdraws = g_vfastStats.draws;
+                        double n = (double)(p[0] + p[1] + p[2] - lastP[0] - lastP[1] - lastP[2]);
+                        if (n < 1) n = 1;
+                        fprintf(g_perf, "# gx draws 10s: %.0f/s; batch path fast %.1f%%, key equal %.1f%%, new batch %.1f%% "
+                                "(bp %llu tlut %llu lights %llu xfb %llu); vertex setups %llu of %llu draws "
+                                "(cp %llu xf %llu lights %llu format %llu sel %llu reset %llu)\n", n / 10.0,
+                                100.0 * (double)(p[0] - lastP[0]) / n, 100.0 * (double)(p[1] - lastP[1]) / n,
+                                100.0 * (double)(p[2] - lastP[2]) / n, (unsigned long long)(p[3] - lastP[3]),
+                                (unsigned long long)(p[4] - lastP[4]), (unsigned long long)(p[5] - lastP[5]),
+                                (unsigned long long)(p[6] - lastP[6]), (unsigned long long)(setups - lastSetups),
+                                (unsigned long long)(vdraws - lastDraws), (unsigned long long)(why[0] - lastWhy[0]),
+                                (unsigned long long)(why[1] - lastWhy[1]), (unsigned long long)(why[2] - lastWhy[2]),
+                                (unsigned long long)(why[3] - lastWhy[3]), (unsigned long long)(why[4] - lastWhy[4]),
+                                (unsigned long long)(why[5] - lastWhy[5]));
+                        memcpy(lastP, p, sizeof p);
+                        memcpy(lastWhy, why, sizeof why);
+                        lastSetups = setups;
+                        lastDraws = vdraws;
+                    }
                     if (g_jit && g_useJit) jitsample_report(g_perf, g_jit);
                     if (g_jit) {
                         const JitStats* js = jit_stats(g_jit);
@@ -494,6 +519,10 @@ static void run(const char* path) {
                                 (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
                                 (unsigned long long)js->gatherStores, (unsigned long long)js->links,
                                 g_pica ? (unsigned long)pica_queue_offset() : 0UL);
+                        double kept = js->insnsKept ? (double)js->insnsKept : 1.0;
+                        fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.1f, exit stubs %.1f, "
+                                "cold %.1f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
+                                (double)js->wordsCold / kept);
                         // Returns to the C dispatcher per second over the last 10 s, by reason, and emulation slices.
                         static u64 last[6];
                         u64 cur[6] = { js->dispLink, js->dispIndirect, js->dispBudget, js->dispOther, g_gekkoRuns, js->fastSwitches };

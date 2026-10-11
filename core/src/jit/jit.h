@@ -21,6 +21,8 @@ typedef struct {
     u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
     u64 links;      // exits patched to jump straight to their target block
     u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR reads served by the register cache
+    u64 compileFails[3];  // blocks not compiled: hot code or exits overflowed (or a slow path without its tail), cold code overflowed, fix-ups overflowed
+    u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;

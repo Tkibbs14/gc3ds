@@ -234,6 +234,10 @@ static void verify_queue(bool before) {
 static void queue_run(void) { if (g_q && g_earlyRun) gxCmdQueueRun(g_q); }
 void pica_set_early_queue(bool on) { g_earlyRun = on; }
 bool pica_early_queue(void) { return g_earlyRun && g_q; }
+// Draws by batch path: [0] nothing in the key changed (fast), [1] key rebuilt and equal, [2] new batch; [3..6] new
+// batches with a changed BP / palette / light version or XFB copy since the open batch (written by the GX thread).
+u64 g_picaDrawPaths[8];
+
 u32 pica_queue_offset(void) { return g_q ? (u32)((u8*)g_q - __C3D_Context) : 0xFFFFFFFFu; }
 
 // Submits what is queued so far so that the `transfers` GX transfers queued next run after it. The GX command queue
@@ -879,11 +883,19 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     if (same) {
         memcpy(key, g.batchKey, g.batchKeyLen * 4);
         kn = g.batchKeyLen;
+        g_picaDrawPaths[0]++;
     } else {
         kn = batch_key(gx, key);
         key[kn++] = prim >= PRIM_LINES;
         same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
         if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
+        g_picaDrawPaths[same ? 1 : 2]++;
+        if (!same) {  // what made the batch key differ: BP, palettes, lights, XFB copy, primitive class
+            if (gx->bpVersion != g.batchBpVer) g_picaDrawPaths[3]++;
+            if (gx->tlutVersion != g.batchTlutVer) g_picaDrawPaths[4]++;
+            if (gx->xfLightVersion != g.batchLightVer) g_picaDrawPaths[5]++;
+            if (g.xfbSeq != g.batchXfbSeq) g_picaDrawPaths[6]++;
+        }
     }
     // (recorded below once the batch is known to be this state)
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
