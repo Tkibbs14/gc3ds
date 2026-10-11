@@ -231,7 +231,7 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // the vertex worker alternates on and off in a run (the vworker column)
+#define AB_SECS 20  // starting the GPU queue early alternates on and off in a run (the earlyq column)
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait", "vwork",
                                                 "vwait", "gxpres", "gxstate", "gxend" };
@@ -243,15 +243,15 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | vertex worker on core 3 alternates every %d s\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx, started early alternately every %d s\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
-            g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), AB_SECS, g_coreLine);
+            g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -359,7 +359,7 @@ static void run(const char* path) {
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) jit_set_linking(g_jit, true);
-    if (g_pica) pica_set_vertex_worker(true);
+    if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); }
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
@@ -452,6 +452,7 @@ static void run(const char* path) {
                 u64 links = g_jit ? jit_stats(g_jit)->links : 0;
                 fprintf(g_perf, ",%d,%.0f,%d", g_jit && jit_linking(g_jit) ? 1 : 0, (links - linksLast) / secs,
                         g_pica && pica_vertex_worker_wanted() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_early_queue() ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -460,17 +461,19 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // A/B of the vertex worker in the same run (the vworker column): on for 20 s, off for 20 s, ...
-                if (g_pica && perfRows % AB_SECS == 0) pica_set_vertex_worker(!pica_vertex_worker_wanted());
+                // A/B of starting the GPU queue early (the earlyq column): on for 20 s, off for 20 s, ...
+                if (g_pica && perfRows % AB_SECS == 0) pica_set_early_queue(!pica_early_queue());
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     if (g_jit) {
                         const JitStats* js = jit_stats(g_jit);
                         fprintf(g_perf, "# jit code: %.2f host words per guest instruction, %.0f%% of the buffer; "
-                                "fused compare-branches %llu, cached GPR reads %llu, pipe stores %llu, links %llu\n",
+                                "fused compare-branches %llu, cached GPR reads %llu, pipe stores %llu, links %llu; "
+                                "GPU queue at %lx\n",
                                 jit_words_per_insn(g_jit), 100.0 * jit_code_used(g_jit),
                                 (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
-                                (unsigned long long)js->gatherStores, (unsigned long long)js->links);
+                                (unsigned long long)js->gatherStores, (unsigned long long)js->links,
+                                g_pica ? (unsigned long)pica_queue_offset() : 0UL);
                     }
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }

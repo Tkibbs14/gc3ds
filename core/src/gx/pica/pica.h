@@ -29,3 +29,9 @@ extern PicaStats g_picaStats;
 void pica_set_vertex_worker(bool on);
 bool pica_vertex_worker(void);
 bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it at its next draw)
+// Starting citro3d's GX queue at each split (on by default when the queue was found), so the GPU overlaps the GX
+// thread; off waits for C3D_FrameEnd as citro3d does (comparison). pica_queue_offset: where the queue was found in
+// citro3d's context (0xFFFFFFFF: not found, never started early).
+void pica_set_early_queue(bool on);
+bool pica_early_queue(void);
+u32 pica_queue_offset(void);

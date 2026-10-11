@@ -179,6 +179,63 @@ static void end_frame(void) {
     g.frame = false;
 }
 
+// citro3d's GX command queue, found in its context at attach (citro3d keeps it private): citro3d starts it only at
+// C3D_FrameEnd, so the GPU sat idle while this thread recorded a whole frame and the next C3D_FrameBegin then waited
+// for all of it. Starting it at each split lets the GPU work on the frame's first part meanwhile. Entries run in
+// order; citro3d's queue-finished callback only swaps screens after a real frame end.
+static gxCmdQueue_s* g_q;
+static bool g_earlyRun = true;  // pica_set_early_queue
+extern u8 __C3D_Context[];
+
+// Candidates: words of the context that look like a gxCmdQueue_s (heap entries, sane counts, a callback in code). The
+// splits pick the one whose entry count grows by exactly one (verify_queue); until then nothing starts early.
+static u32 g_qCand[16], g_qCandN, g_qCandCount[16], g_qTries;
+static bool g_qChecked;
+
+static void find_c3d_queue(void) {
+    g_qCandN = 0;
+    for (u32 off = 0; off + sizeof(gxCmdQueue_s) <= 0x2D0 && g_qCandN < 16; off += 4) {
+        gxCmdQueue_s* q = (gxCmdQueue_s*)(__C3D_Context + off);
+        u32 e = (u32)q->entries, cb = (u32)q->callback;
+        if (e >= 0x08000000u && e < 0x40000000u && q->maxEntries >= 8 && q->maxEntries <= 1024 &&
+            q->numEntries <= q->maxEntries && q->curEntry <= q->numEntries && cb >= 0x00100000u && cb < 0x08000000u)
+            g_qCand[g_qCandN++] = off;
+    }
+}
+
+// Around the first C3D_FrameSplit: before = true snapshots the candidates' entry counts, before = false keeps the
+// one that grew by one.
+static void verify_queue(bool before) {
+    if (g_qChecked) return;
+    for (u32 i = 0; i < g_qCandN; i++) {
+        gxCmdQueue_s* q = (gxCmdQueue_s*)(__C3D_Context + g_qCand[i]);
+        if (before) g_qCandCount[i] = q->numEntries;
+        else if (q->numEntries == g_qCandCount[i] + 1 && !g_q) g_q = q;
+    }
+    if (!before && (g_q || ++g_qTries == 50)) {  // an empty split adds no entry: keep looking for a while
+        g_qChecked = true;
+        emu_log(LOG_GX, "pica: %u GX queue candidates in citro3d's context, %s\n", (unsigned)g_qCandN,
+                g_q ? "found" : "none grew by one in 50 splits");
+        for (u32 i = 0; i < g_qCandN; i++) {
+            const gxCmdQueue_s* q = (const gxCmdQueue_s*)(__C3D_Context + g_qCand[i]);
+            emu_log(LOG_GX, "  +%03lx entries %08lx max %u num %u (was %u) cur %u\n", (unsigned long)g_qCand[i],
+                    (unsigned long)(u32)q->entries, q->maxEntries, q->numEntries, (unsigned)g_qCandCount[i], q->curEntry);
+        }
+        if (!g_qCandN) {  // nothing looked like a queue: dump the context's words for the next look
+            const u32* w = (const u32*)__C3D_Context;
+            for (u32 i = 0; i < 0x2D0 / 4; i += 8)
+                emu_log(LOG_GX, "  ctx+%03lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx\n", (unsigned long)(i * 4),
+                        (unsigned long)w[i], (unsigned long)w[i + 1], (unsigned long)w[i + 2], (unsigned long)w[i + 3],
+                        (unsigned long)w[i + 4], (unsigned long)w[i + 5], (unsigned long)w[i + 6], (unsigned long)w[i + 7]);
+        }
+    }
+}
+
+static void queue_run(void) { if (g_q && g_earlyRun) gxCmdQueueRun(g_q); }
+void pica_set_early_queue(bool on) { g_earlyRun = on; }
+bool pica_early_queue(void) { return g_earlyRun && g_q; }
+u32 pica_queue_offset(void) { return g_q ? (u32)((u8*)g_q - __C3D_Context) : 0xFFFFFFFFu; }
+
 // Submits what is queued so far so that the `transfers` GX transfers queued next run after it. The GX command queue
 // holds 32 entries (citro3d) and runs only at C3D_FrameEnd; libctru panics when it is full, so a frame that has
 // queued many splits and transfers (several emulated fields between presents) is submitted early.
@@ -187,9 +244,12 @@ static void split(u32 transfers) {
     flush_batch();
     if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { end_frame(); begin_frame(); }
     flush_arena();
+    verify_queue(true);
     C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    verify_queue(false);
     g_picaStats.splits++;
     g.queued += 1 + transfers;
+    if (!transfers) queue_run();  // with transfers, the caller runs the queue once it has added them
 }
 
 // Makes room for `verts` more vertices and keeps the command buffer from overflowing (libctru drops commands
@@ -982,6 +1042,7 @@ static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
     if (!x) for (u32 i = 0; i < MAX_XFB; i++) if (!x || g.xfb[i].seq < x->seq) x = &g.xfb[i];
     split(1);  // the draws so far reach the EFB before the copy reads it
     GX_TextureCopy((u32*)g.efbTex.data, 0, (u32*)x->tex.data, 0, TW * TH * 4, GX_TRANSFER_RAW_COPY(1));
+    queue_run();
     x->addr = dest; x->x0 = x0; x->y0 = y0; x->w = w; x->h = h; x->seq = ++g.xfbSeq;
 }
 
@@ -1224,6 +1285,7 @@ bool pica_present(System* s, u32 xfbAddr) {
     if (g_capState == 1 && (g_capBuf || (g_capBuf = linearAlloc(CAP_W * CAP_H * 4)))) {
         split(1);  // the screen quad is drawn before the copy reads the target
         GX_TextureCopy((u32*)g.screen->frameBuf.colorBuf, 0, g_capBuf, 0, CAP_W * CAP_H * 4, GX_TRANSFER_RAW_COPY(1));
+        queue_run();
         g_capState = 2;
     }
     end_frame();  // queues the transfer to the top framebuffer and the swap
@@ -1254,6 +1316,7 @@ bool pica_attach(System* s) {
             for (u32 x = 0; x < 8; x++)
                 g_morton[y * 8 + x] = (u8)((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3));
         if (!C3D_Init(CMDBUF_BYTES)) return false;
+        find_c3d_queue();
         g.dvlb = DVLB_ParseFile((u32*)gxpass_shbin, gxpass_shbin_size);
         if (!g.dvlb) return false;
         shaderProgramInit(&g.prog);
