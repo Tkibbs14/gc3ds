@@ -124,6 +124,25 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   - free heap, linear memory and VRAM.
 - Every 10 s: the most frequent interpreted instructions and the CPU clock.
 
+## First perf.csv run (2026-10-10, a copy is in core/out/perf_2026-10-10_run1.csv, not tracked)
+
+- **Clock:** 268 MHz at start, 804 after `osSetSpeedupEnable`. The clock was never the problem; the loop estimate
+  reads 5% high.
+- **Cores:** threads on core 1 / 2 / 3 do 75% / 95% / 92% of core 0's work. **Core 2 is available nearly at full
+  speed.**
+- **TP title scene:**
+  - 4.2-4.9% speed, about 330 ms per field, alternating ~650 ms and light fields (TP runs at 30 fps).
+  - The field splits about 50% GX work on the CPU (vtx 38%, of which lighting 19%) and about 48% CPU emulation.
+  - About 12.8k draws/s become ~140 `C3D_DrawArrays`/s.
+  - GPU drawing time is about 2.3 ms per frame, so the PICA is nearly idle.
+  - VRAM has about 1.2 MB free. The JIT code buffer is 91% full and still growing; a full buffer drops all code.
+  - `c3d_cpu_ms` is meaningless here, because our frames span a whole field.
+- **Next: GX on core 2, as Dolphin's dual-core mode.** The CPU thread on core 0 queues write-gather bursts and
+  display-list calls into a ring buffer. A GX thread on core 2 parses them, runs vfast and does all citro3d work,
+  including present. Sync points are CP/PE register reads, PE token and finish interrupts, EFB peeks and copies the
+  CPU reads, and boot/reset. Expected gain: up to ~2x where GX and CPU are balanced, as in the title scene.
+  - Check `hw.txt`'s handoff latency first (written by 0611f54 at startup).
+
 ## Late 2026-10-10: the title scene's two biggest costs, fixed but not yet measured on the 2DS
 
 | Item | Measured on the 2DS (eb867fd) | Change |
