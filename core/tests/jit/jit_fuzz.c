@@ -83,7 +83,7 @@ static u32 gen(St* st) {
     u32 rd = rbits(5), ra = rbits(5), rb = rbits(5), rc = rbits(1);
     u32 imm = rnd() & 0xFFFF;
     for (;;) {
-        switch (rnd() % 16) {
+        switch (rnd() % 17) {
         case 0: {  // D-form arithmetic / logic / compare
             static const u32 ops[] = { 14, 15, 12, 13, 8, 7, 24, 25, 26, 27, 28, 29, 10, 11 };
             u32 op = ops[rnd() % 14];
@@ -184,6 +184,13 @@ static u32 gen(St* st) {
             u32 d = (u32)(s32)((s32)(rnd() % 64) - 32) & ~3u;
             st->gpr[ra] = GP_WGP_EA - d + ((rnd() % 4 == 0) ? 4u : 0u);
             return (op << 26) | (rd << 21) | (ra << 16) | (d & 0xFFFF);
+        }
+        case 16: {  // CR logic and mcrf (bits and fields 0-31 / 0-7, including the last ones)
+            static const u32 xos[] = { 257, 129, 289, 225, 33, 449, 417, 193, 0 };
+            u32 xo = xos[rnd() % 9];
+            if (xo == 0) return (19u << 26) | (rbits(3) << 23) | (rbits(3) << 18);
+            u32 d = (rnd() % 4) ? rbits(5) : 31, a = (rnd() % 4) ? rbits(5) : 31, b = (rnd() % 4) ? rbits(5) : 31;
+            return (19u << 26) | (d << 21) | (a << 16) | (b << 11) | (xo << 1);
         }
         case 14: {  // mfspr / mtspr of plain-storage SPRs
             static const u32 sprs[] = { 26, 27, 18, 19, 272, 273, 274, 275, 912, 913, 914, 915, 916, 917, 918, 919 };

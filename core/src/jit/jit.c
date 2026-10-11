@@ -21,7 +21,7 @@
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
-#define FAST_SIZE 512
+#define FAST_SIZE 4096
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 96 };
@@ -824,6 +824,11 @@ static void int_store(Cg* c, u32 size, u32 rs, u32 ra, bool update) {
     if (update) st_gpr(c, R0, ra);
 }
 
+// rd = rs >> n (logical); a plain move for n = 0 (LSR #0 encodes a shift by 32).
+static void lsr_or_mov(Cg* c, int rd, int rs, u32 n) {
+    if (n) mov_shift(&c->e, 0, rd, rs, LSR, (int)n); else mov_reg(&c->e, rd, rs);
+}
+
 static bool compile_int(Cg* c, u32 inst) {
     Emit* e = &c->e;
     u32 op = inst >> 26, rd = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31;
@@ -933,6 +938,47 @@ static bool compile_int(Cg* c, u32 inst) {
         if (update && ra == 0) return false;
         ea_disp(c, ra, simm);
         int_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, update);
+        return true;
+    }
+    case 19: {  // CR logic (crand crandc creqv crnand crnor cror crorc crxor) and mcrf, on the cached CR
+        u32 xo19 = (inst >> 1) & 0x3FF;
+        if (xo19 == 0) {  // mcrf: field crfS to crfD
+            u32 fd = rd >> 2, fs = ra >> 2;
+            int cr = src(c, ID_CR, R1);
+            if (fd == fs) return true;
+            lsr_or_mov(c, R0, cr, 28 - 4 * fs);
+            dp_imm(e, AND, 0, R0, R0, 15);
+            int d = dst(c, ID_CR, R1);
+            op_imm(c, BIC, d, cr, 0xFu << (28 - 4 * fd));
+            if (fd < 7) dp_reg_c(e, C_AL, ORR, 0, d, d, R0, LSL, (int)(28 - 4 * fd));
+            else dp_reg(e, ORR, 0, d, d, R0);
+            dst_done(c, ID_CR, d);
+            return true;
+        }
+        int opc, inv;  // the ARM op on bits a, b; inv: complement b first (1) or the result (2)
+        switch (xo19) {
+        case 257: opc = AND; inv = 0; break;  // crand
+        case 129: opc = BIC; inv = 0; break;  // crandc: a & ~b
+        case 289: opc = EOR; inv = 2; break;  // creqv
+        case 225: opc = AND; inv = 2; break;  // crnand
+        case 33: opc = ORR; inv = 2; break;   // crnor
+        case 449: opc = ORR; inv = 0; break;  // cror
+        case 417: opc = ORR; inv = 1; break;  // crorc: a | ~b
+        case 193: opc = EOR; inv = 0; break;  // crxor
+        default: return false;
+        }
+        int cr = src(c, ID_CR, R1);
+        lsr_or_mov(c, R0, cr, 31 - ra);  // bit a in bit 0 (above it: other CR bits)
+        lsr_or_mov(c, R2, cr, 31 - rb);
+        if (inv == 1) dp_reg(e, MVN, 0, R2, 0, R2);
+        dp_reg(e, opc, 0, R0, R0, R2);
+        if (inv == 2) dp_reg(e, MVN, 0, R0, 0, R0);
+        dp_imm(e, AND, 0, R0, R0, 1);
+        int d = dst(c, ID_CR, R1);
+        op_imm(c, BIC, d, cr, 1u << (31 - rd));
+        if (rd < 31) dp_reg_c(e, C_AL, ORR, 0, d, d, R0, LSL, (int)(31 - rd));
+        else dp_reg(e, ORR, 0, d, d, R0);
+        dst_done(c, ID_CR, d);
         return true;
     }
     case 31:
@@ -1708,14 +1754,14 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;
-    mov_shift(e, 0, R1, R2, LSL, 21);  // (pc >> 2) & 511
-    mov_shift(e, 0, R1, R1, LSR, 23);
+    mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
+    mov_shift(e, 0, R1, R1, LSR, 20);
     load_const(e, R12, (u32)(uintptr_t)j->fast);
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     bx_reg_c(e, C_EQ, R1);
-    dp_imm(e, MOV, 0, R0, 0, 0);
+    dp_imm(e, MOV, 0, R0, 0, 1);  // 1: a miss in the table (the dispatcher counts it)
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     // ST_INTERP: reached with "bl" followed by three literals: guest pc, instruction, and the block's instructions before it.
     // Runs the instruction in the interpreter at the exact guest time and returns past the literals with the flags of
@@ -1738,7 +1784,7 @@ static void emit_stubs(Jit* j) {
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
-_Static_assert(FAST_SIZE == 512, "ST_INDIRECT hashes with 9 bits");
+_Static_assert(FAST_SIZE == 4096, "ST_INDIRECT hashes with 12 bits");
 
 typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
@@ -1841,7 +1887,11 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
         j->stats.instrsRun += n;
-        if (s && j->linking && gen == j->gen) { site = s; siteGen = gen; siteKey = key; }
+        if (s == (u32*)1) j->stats.dispIndirect++;
+        else if (s) j->stats.dispLink++;
+        else if ((s64)n >= room) j->stats.dispBudget++;
+        else j->stats.dispOther++;
+        if (s > (u32*)1 && j->linking && gen == j->gen) { site = s; siteGen = gen; siteKey = key; }
         // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
             if (gekko_idle_hook(g)) { GKP(g)->brk = true; break; }

@@ -143,6 +143,28 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   0.36, 6.4M I-cache misses/s, 143M cycles/s stalled for instructions, 188M for data hazards, 383k mispredictions/s.
 - Fallbacks left at run time (10 s): cror 215k, psq_l / psq_st ~47k each, mtspr 27k, frsqrte 19k, fres 17k, rfi 15k.
 
+## Title scene on the 2DS through 2026-10-11 (each line its own run; A/B halves of one run where given)
+
+| Build | Change | Title scene |
+|---|---|---|
+| 4bf5279..bb7267c | JIT level 2: linking, register cache, guest time | 9.2% (linking off 8.0%) |
+| ab635d0 | vertex worker on core 3 (kept triangles only) | 9.9% (off 8.3%) |
+| e4fa5a1 | no CPU light setup for shader-lit draws | 11.6% (worker off 9.4%) |
+| 29fce90 | batch key and vertex setup cached against register versions | 12.4% |
+| bb18017 | slimmer lighting shader | 12.6% |
+| 1d45007 | citro3d's GPU queue started at each split | **15.1%** (off 12.2%) |
+
+- **Core 0 is the limit again** (waits for the GX thread ~10%). Its counters on the title scene: 769M cycles/s,
+  251M instructions (IPC 0.33), **323M cycles stalled fetching instructions (42%)**, 11.8M I-cache misses/s (~0.85 per
+  guest instruction, ~27 cycles each), 127M cycles of data-hazard stalls. The sampling profiler (da2aefd, `# hot guest
+  code` lines) shows no hot spot: the top block is 0.2-0.3%, the top 16 about 2%, 14-20% outside compiled code. So
+  what counts is the code footprint per guest instruction (compiled code and the C code core 0 runs next to it), not
+  one routine. Fallbacks left: cror ~40k/s (compiled since), psq_l / psq_st with quantized GQRs ~15k/s, frsqrte and
+  fres ~6k/s (Gekko's estimate tables), mtspr / mfspr ~5k/s.
+- perf.csv's `# dispatches/s` line (after da2aefd) splits the returns to the C dispatcher (~174k/s on the title scene)
+  into link requests, indirect-table misses (blr / bctr; the table is now 4096 entries), budget ends and others, with
+  gekko_run slices per second.
+
 ## Vertex worker on core 3
 
 - **2DS, 7f2033e (degenerate triangles):** worker on 8.83% vs off 8.62%. Writing culled triangles as degenerate

@@ -355,7 +355,10 @@ u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop) {
     return p->npc;
 }
 
+u64 g_gekkoRuns;
+
 u32 gekko_run(Gekko* g, u32 cycles) {
+    g_gekkoRuns++;
     GkPriv* p = GKP(g);
     u64 start = g->cycles;
     g->downcount = cycles;
