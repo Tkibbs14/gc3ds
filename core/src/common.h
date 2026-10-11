@@ -37,10 +37,17 @@ extern u32 g_logMask;  // bit per LogCat
 // compiled code (float and paired-single / other), timed on 1 in 64 and scaled.
 // GXTHREAD: busy time of the GX thread when GX runs on another core; GXWAIT: the CPU thread waiting for it (ring
 // full, or a sync before a PE read or an idle skip). VWORK: busy time of the vertex worker (core 3); VWAIT: the GX
-// thread waiting for it before the GPU reads the vertex arena.
+// thread waiting for it before the GPU reads the vertex arena. GXPRES: the GX thread presenting a field; GXSTATE: the
+// draw path deciding and applying GPU state (batch key, TEV, fragment state, textures bound, uniforms).
 enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT,
-       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_N };
+       PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_GXPRES, PROF_GXSTATE, PROF_N };
 extern u64 g_hostProf[PROF_N];
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
 static inline void prof_end(int area, u64 t0) { if (g_profClock) g_hostProf[area] += g_profClock() - t0; }
+// Per-draw areas (GX thread): the 3DS backend times one draw in 16 and scales (g_drawScale = 16), because a clock
+// read costs 0.25 us on the 2DS and a draw is ~5 vertices; it sets g_drawTimed for each draw.
+extern bool g_drawTimed;
+extern u32 g_drawScale;
+static inline u64 dprof_begin(void) { return g_drawTimed ? prof_begin() : 0; }
+static inline void dprof_end(int area, u64 t0) { if (g_drawTimed && g_profClock) g_hostProf[area] += (g_profClock() - t0) * g_drawScale; }

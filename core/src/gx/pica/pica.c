@@ -702,13 +702,14 @@ static void vw_do(const VWork* w) {
 static void vw_main(void* arg) {
     (void)arg;
     __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));  // as the GX thread: round to nearest, flush to zero
-    u32 idle = 0;
+    u32 idle = 0, jobs = 0;
     while (!g_vwQuit) {
         if (g_vwTail != g_vwHead) {
             vw_dmb();
-            u64 t0 = prof_begin();
+            bool timed = !(++jobs & 15);  // timed on one job in 16 (a clock read costs 0.25 us)
+            u64 t0 = timed ? prof_begin() : 0;
             vw_do(&g_vw[g_vwTail % VW_SLOTS]);
-            prof_end(PROF_VWORK, t0);
+            if (timed && g_profClock) g_hostProf[PROF_VWORK] += (g_profClock() - t0) * 16;
             vw_dmb();
             g_vwTail = g_vwTail + 1;
             idle = 0;
@@ -786,6 +787,9 @@ bool pica_vertex_worker_wanted(void) { return g_vwWant; }
 static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     vw_apply();
+    static u32 drawN;
+    g_drawScale = 16;
+    g_drawTimed = !(++drawN & 15);  // per-draw timers on one draw in 16
     GXCore* gx = &s->gx.core;
     if (count > g_vcap) {
         SVert* sv = realloc(g_sv, count * sizeof *sv);
@@ -798,6 +802,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         g_vcap = count;
     }
     begin_frame();
+    u64 tState = dprof_begin();
     u32 frameBefore = g.frameNo;  // looking up textures can also start a frame (texture graveyard full)
     // The open batch's key holds the TEV words first, so the used texture maps (from the compiled TEV) are only
     // compared once the TEV is known to be the same.
@@ -813,12 +818,13 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         kn = batch_key(gx, key);
         key[kn++] = prim >= PRIM_LINES;
         tex_key(gx, key, &kn);
-        u64 t0 = prof_begin();
+        u64 t0 = dprof_begin();
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
-        prof_end(PROF_GXTEX, t0);
+        dprof_end(PROF_GXTEX, t0);
         g.batchGpuLight = g.shaderLight && prim < PRIM_LINES && vfast_gpu_light(gx, &g.sel, &g.lu);
     }
-    u64 t0 = prof_begin();
+    dprof_end(PROF_GXSTATE, tState);
+    u64 t0 = dprof_begin();
     VFold f;
     vfold_init(gx, SX * 2.0f / TW, SY * 2.0f / TH, FLIP_Y, &f);
     bool lines = prim >= PRIM_LINES;
@@ -828,7 +834,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     u32 workVerts = 0;
     if (work) {
         workVerts = tri_verts(prim, count);
-        if (!workVerts) { prof_end(PROF_GXVTX, t0); return; }
+        if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
         if (!need_work(workVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
         u32 jb = (vfast_job_bytes(gx, count) + 7) & ~7u;
         u8* mem = vw_alloc(jb + count * (u32)sizeof(PVert) + count * 8);
@@ -837,7 +843,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             w.pv = (PVert*)(mem + jb);
             w.nd = (float (*)[2])(w.pv + count);
             w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, mem, w.pv);
-            if (!w.job) { prof_end(PROF_GXVTX, t0); return; }
+            if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;
             w.count = count;
@@ -866,9 +872,10 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
                 g_nd[i][0] = g_pv[i].pos[0] * iw; g_nd[i][1] = g_pv[i].pos[1] * iw;
             }
     }
-    prof_end(PROF_GXVTX, t0);
+    dprof_end(PROF_GXVTX, t0);
     u32 maxVerts = lines ? count * 6 : count * 3;
     if (!work && !need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
+    tState = dprof_begin();
     if (g.frameNo != frameBefore || !same) {
         if (g.frameNo != frameBefore) {  // a new frame resets citro3d's state tracking; textures stay live
             update_tev(gx);
@@ -894,6 +901,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         memcpy(g.batchKey, key, kn * 4);
         g.batchKeyLen = kn;
     }
+    dprof_end(PROF_GXSTATE, tState);
     if (work) {  // the worker appends its triangles to the arena; the batch's draw call waits for it (flush_batch)
         vw_queue(&w, workVerts);
         return;

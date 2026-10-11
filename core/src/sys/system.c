@@ -4,6 +4,8 @@
 #include <string.h>
 
 u64 g_hostProf[PROF_N];
+bool g_drawTimed = true;
+u32 g_drawScale = 1;
 u64 (*g_profClock)(void);
 
 // ---- physical bus ----

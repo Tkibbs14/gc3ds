@@ -333,13 +333,18 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         else if (src >= 5 && src <= 12) texUsed |= 1u << (src - 5);
     }
     VHalf half[2][2];
-    for (u32 ch = 0; ch < 2; ch++) {
-        if (!(chans & (1u << ch)) || ch >= numChans) continue;
-        half_init(gx, ch, gx->xf[0x100E + ch], &half[ch][0]);
-        half_init(gx, ch, gx->xf[0x1010 + ch], &half[ch][1]);
-        if (half[ch][0].n || half[ch][1].n) nrmUsed = eyeUsed = true;
-    }
-    if (gpuLight) { nrmUsed = true; eyeUsed = false; }  // the shader lights from eye position and normal
+    for (u32 ch = 0; ch < 2; ch++)
+        for (u32 k = 0; k < 2; k++) { half[ch][k].n = 0; half[ch][k].lit = 0; }
+    // The shader lights from eye position and normal; it is only chosen when no colour is lit on the CPU (no
+    // texgen from a lit colour), so the lights are not read here: parsing 7-8 of them per draw cost 2-4k cycles.
+    if (gpuLight) nrmUsed = true;
+    else
+        for (u32 ch = 0; ch < 2; ch++) {
+            if (!(chans & (1u << ch)) || ch >= numChans) continue;
+            half_init(gx, ch, gx->xf[0x100E + ch], &half[ch][0]);
+            half_init(gx, ch, gx->xf[0x1010 + ch], &half[ch][1]);
+            if (half[ch][0].n || half[ch][1].n) nrmUsed = eyeUsed = true;
+        }
 
     // Texture units: settled once for the draw.
     for (u32 u = 0; u < 3; u++) {
@@ -408,7 +413,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     }
 
     // Gather: all reads of guest memory (timed as "dec" on the 3DS profile).
-    u64 t0 = prof_begin();
+    u64 t0 = dprof_begin();
     for (u32 vi = 0; vi < count; vi++) {
         const u8* p = raw + vi * vsize;
         VIn* in = &g_in[vi];
@@ -449,10 +454,10 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
             in->t[i][1] = tex[i].n == 2 ? read_comp(src + tex[i].cs, tex[i].fmt, tex[i].scale) : 0.0f;
         }
     }
-    prof_end(PROF_VDEC, t0);
+    dprof_end(PROF_VDEC, t0);
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
-    t0 = prof_begin();
+    t0 = dprof_begin();
     if (gpuLight) {  // the shader lights the channel: it gets the raw vertex colour (eye and normal come later)
         u32 ch = sel->rasChan & 1;
         for (u32 vi = 0; vi < count; vi++) {
@@ -497,7 +502,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
             if (chans & 1) { g_in[vi].c0[0] = lv[vi].lc[0][0]; g_in[vi].c0[1] = lv[vi].lc[0][1]; }
         }
     }
-    prof_end(PROF_VLIGHT, t0);
+    dprof_end(PROF_VLIGHT, t0);
 
     // The matrices the vertices use, copied into the job: position (+ normal) matrices by pn, texture matrices by
     // the used units' tm. Vertices then index the copies.

@@ -68,7 +68,12 @@ static void gx_main(void* arg) {
                 // Presenting more than once per 3DS refresh floods the GPU service (FINDINGS); skip instead.
                 u64 now = svcGetSystemTick();
                 if (now - g_lastPresent < SYSCLOCK_ARM11 / 62) g_gxPresentsSkipped++;
-                else { g_present(s, &p); g_lastPresent = svcGetSystemTick(); }
+                else {
+                    u64 tp = prof_begin();
+                    g_present(s, &p);
+                    prof_end(PROF_GXPRES, tp);
+                    g_lastPresent = svcGetSystemTick();
+                }
             }
             tail += 4 + ((len + 3) & ~3u);
         }
