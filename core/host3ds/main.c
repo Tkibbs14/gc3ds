@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
@@ -183,6 +184,63 @@ static int pick(void) {
 
 static Disc g_disc;
 
+// ---- performance log: sdmc:/gc3ds/perf.csv ----
+// One row per second with everything the bottom-screen profile shows, so a run can be read from the card instead of
+// photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
+// interpreted instructions of the last 10 s.
+static FILE* g_perf;
+static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
+                                                "vdec", "vlight", "cpu", "fbfp", "fb" };
+_Static_assert(PROF_N == 13, "kProfNames must list every PROF_ area");
+static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
+
+static void perf_open(const char* path) {
+    mkdir("sdmc:/gc3ds", 0777);
+    g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
+    if (!g_perf) return;
+    fprintf(g_perf, "# run %s | %s | jit %s\n", strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off");
+    fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s");
+    for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
+    fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct\n");
+    fflush(g_perf);
+    if (g_jit) g_fbPrev = jit_stats(g_jit)->fallbackRun;
+}
+
+// The 8 most frequent interpreted instructions since the last call.
+static void perf_fallbacks(void) {
+    if (!g_perf || !g_jit) return;
+    static JitOpCounts d;
+    const JitOpCounts* c = &jit_stats(g_jit)->fallbackRun;
+    const u32* cur = (const u32*)c;
+    u32* prev = (u32*)&g_fbPrev;
+    u32* dd = (u32*)&d;
+    u32 n = sizeof d / 4;
+    for (u32 i = 0; i < n; i++) { dd[i] = cur[i] - prev[i]; prev[i] = cur[i]; }
+    fprintf(g_perf, "# fallbacks 10s:");
+    // Index i of the flattened table: primary[64], x31[1024], x19[1024], x63[1024], x59[32], x4[1024].
+    for (int k = 0; k < 8; k++) {
+        u32 best = 0;
+        for (u32 i = 1; i < n; i++) if (dd[i] > dd[best]) best = i;
+        if (!dd[best]) break;
+        u32 op, xo;
+        if (best < 64) { op = best; xo = 0; }
+        else if (best < 64 + 1024) { op = 31; xo = best - 64; }
+        else if (best < 64 + 2048) { op = 19; xo = best - 64 - 1024; }
+        else if (best < 64 + 3072) { op = 63; xo = best - 64 - 2048; }
+        else if (best < 64 + 3072 + 32) { op = 59; xo = best - 64 - 3072; }
+        else { op = 4; xo = best - 64 - 3072 - 32; }
+        char dis[64];
+        gekko_disasm(0, (op << 26) | (xo << 1), dis, sizeof dis);
+        char* sp = strchr(dis, ' ');
+        if (sp) *sp = 0;
+        // Primary-opcode totals double-count the grouped ones; list groups by their extended opcode only.
+        if (best < 64 && (op == 31 || op == 19 || op == 63 || op == 59 || op == 4)) { dd[best] = 0; k--; continue; }
+        fprintf(g_perf, " %s=%lu", dis, (unsigned long)dd[best]);
+        dd[best] = 0;
+    }
+    fprintf(g_perf, "\n");
+}
+
 static bool is_disc(const char* path) {
     size_t n = strlen(path);
     return n > 4 && (!strcasecmp(path + n - 4, ".iso") || !strcasecmp(path + n - 4, ".gcm"));
@@ -210,6 +268,8 @@ static void run(const char* path) {
     free(dol);
     if (!booted) { printf("boot failed: %s\n", err); return; }
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
+    perf_open(path);
+    u32 perfRows = 0;
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
     u32 fieldsLast = 0;
@@ -249,13 +309,38 @@ static void run(const char* path) {
                 printf("JIT %llu blocks, %.1f%% native   \n", (unsigned long long)js->blocksCompiled,
                        js->instrsCompiled ? 100.0 * (double)js->instrsNative / (double)js->instrsCompiled : 0.0);
             }
-            if (g_profClock) {
-                // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
-                double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
-                for (int k = 0; k < PROF_N; k++) {
-                    p[k] = 100.0 * (double)g_hostProf[k] / tot;
-                    if (k <= PROF_PRESENT) rest -= p[k];  // the others are nested inside GX or are overlapping views
+            // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
+            double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
+            for (int k = 0; k < PROF_N; k++) {
+                p[k] = 100.0 * (double)g_hostProf[k] / tot;
+                if (k <= PROF_PRESENT) rest -= p[k];  // the others are nested inside GX or are overlapping views
+            }
+            // Thousands per second: guest instructions run by compiled blocks, interpreted ones among them, blocks
+            // entered, and loads / stores through the C helpers (MMIO, write-gather pipe).
+            double k[5] = { 0, 0, 0, 0, 0 }, native = 0;
+            if (g_jit && g_useJit) {
+                const JitStats* js = jit_stats(g_jit);
+                u64 now5[5] = { js->instrsRun, js->fallbacksRun, js->blocksRun, js->slowLoads, js->slowStores };
+                for (int i = 0; i < 5; i++) k[i] = (double)(now5[i] - jLast[i]) / secs / 1000.0;
+                memcpy(jLast, now5, sizeof jLast);
+                native = js->instrsCompiled ? 100.0 * (double)js->instrsNative / (double)js->instrsCompiled : 0.0;
+            }
+            double draws = (double)(g_sys.gx.core.draws - drawsLast) / secs, verts = (double)(g_sys.gx.core.vertices - vertsLast) / secs;
+            if (g_perf) {
+                u64 t0p = prof_begin();
+                fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f", (double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ,
+                        100.0 * mips / 486.0, fps);
+                for (int i = 0; i < PROF_N; i++) fprintf(g_perf, ",%.1f", g_profClock ? p[i] : 0.0);
+                fprintf(g_perf, ",%.1f,%.1f,%.0f,%.0f,%.0f,%.0f,%.0f,%.1f,%.1f,%.1f\n", 100.0 * (double)waitTicks / tot,
+                        g_profClock ? rest : 0.0, draws, verts, k[0], k[1], k[2], k[3], k[4], native);
+                if (++perfRows % 10 == 0) {
+                    perf_fallbacks();
+                    fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }
+                fflush(g_perf);
+                prof_end(PROF_LOG, t0p);
+            }
+            if (g_profClock) {
                 // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
                 printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
                        p[PROF_GXSYNC]);
@@ -267,18 +352,10 @@ static void run(const char* path) {
                 // cpu: inside gekko_run (includes GX and disc work the guest triggers); fpfb / fb: interpreted
                 // float and other instructions from compiled code (sampled)
                 printf("cpu%5.1f fpfb%5.1f fb%5.1f    \n", p[PROF_CPU], p[PROF_FBFP], p[PROF_FB]);
-                printf("draws/s %5.0f  verts/s %6.0f   \n", (double)(g_sys.gx.core.draws - drawsLast) / secs,
-                       (double)(g_sys.gx.core.vertices - vertsLast) / secs);
+                printf("draws/s %5.0f  verts/s %6.0f   \n", draws, verts);
                 if (g_jit && g_useJit) {
-                    // Thousands per second: guest instructions run by compiled blocks, interpreted ones among them,
-                    // blocks entered, and loads / stores through the C helpers (MMIO, write-gather pipe).
-                    const JitStats* js = jit_stats(g_jit);
-                    u64 now5[5] = { js->instrsRun, js->fallbacksRun, js->blocksRun, js->slowLoads, js->slowStores };
-                    double k[5];
-                    for (int i = 0; i < 5; i++) k[i] = (double)(now5[i] - jLast[i]) / secs / 1000.0;
                     printf("k/s ins %5.0f fb %4.0f blk %5.0f   \n", k[0], k[1], k[2]);
-                    printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)js->icbiFlushes);
-                    memcpy(jLast, now5, sizeof jLast);
+                    printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)jit_stats(g_jit)->icbiFlushes);
                 }
             }
             vertsLast = g_sys.gx.core.vertices;
@@ -288,6 +365,7 @@ static void run(const char* path) {
             tLast = now; cycLast = g_sys.cpu.cycles; fieldsLast = g_fields;
         }
     }
+    if (g_perf) { fclose(g_perf); g_perf = NULL; }
     printf("\nPress A to return to the menu\n");
     while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & (KEY_A | KEY_START)) break; gspWaitForVBlank(); }
 }
