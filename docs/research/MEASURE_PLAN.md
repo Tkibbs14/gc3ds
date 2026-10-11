@@ -40,6 +40,24 @@ TextureCopy, false sharing, and the attribute-packing test.
 
 The guidance drawn from both runs: GPU_GUIDANCE.md.
 
+### gcbench 5 (open items, local copy bench/results/gcbench5_2026-10-11.txt); no hang this time
+
+| Test | Result |
+|---|---|
+| G5 several draws in one draw window | **works** (drawn, no hang): **0.34 µs CPU** per draw (raw 0.74, citro3d 3.25), GPU 0.66 µs |
+| G13 early depth | 24 full-screen layers: 11.98 ms without depth; **0.99 ms with early depth when the front layer comes first (11.6× faster)**; no gain in the other order |
+| G15 framebuffer flush + invalidate between draws | +0.8 µs GPU per draw (0.77 → 1.58 µs) |
+| G17 post-vertex cache | indexed grid in order 10.05 Mtri/s; **same triangles shuffled 3.73** |
+| G19 near-plane clipping | inconclusive: the test triangle was off-screen. Redo with one whose visible part covers the samples |
+| G14b 2×2 downscale from a 2× target (480×800 → 240×400) | **works**, 0.154 ms. The hang was specific to 240×400 → 120×200 |
+| M2 memcpy while the GPU fills | 414 MB/s busy against 376 idle: **no contention** |
+| C3 svcArbitrateAddress round trip core 0 ↔ core 2 | 2.5 µs, but **501 of 2000 wake-ups per side hit the 2 ms timeout**: kernel cross-core wakes are lost about 1 in 4 (as sys.c's LightEvent test, which failed at trip 4) |
+| C4 load-use | 8 loads used at once: 33 cycles; used 2 instructions later: 17. **+2 cycles per load used immediately** |
+| M5 PLD | random 16 MB gather: 236 → 203 ns per word with prefetch (−14%); latency-bound |
+| A3 ndsp rates | 8–192 kHz all play, effective rate ~97% of requested (start/poll overhead) |
+| A4 ndsp frame | 205 callbacks/s = 4.88 ms per sound frame |
+| A5 WSOLA time-stretch | **0.66% of a core** at ×1.25, ×2 and ×4 |
+
 
 Research (PICA200.md, AUDIO.md) answers what the hardware *can* do. This plan covers what nobody has published:
 each test settles one open question on James's New 2DS XL.

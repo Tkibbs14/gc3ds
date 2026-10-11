@@ -85,6 +85,30 @@ everything we can onto the GPU"), it says so.
 19. **GameCube DSP-ADPCM plays on the 3DS DSP directly** (matched our decoder exactly), and 24 channels cost the ARM11
     nothing measurable. See AUDIO.md for the plan.
 
+## Added after gcbench 5
+
+20. **Several draws can share one draw window.**
+    - Open GEOSTAGE_CONFIG2 / START_DRAW_FUNC0=0 once, then per draw write only RESTART_PRIMITIVE, NUMVERTICES,
+      VERTEX_OFFSET and DRAWARRAYS; close the window after the last draw.
+    - Measured: **0.34 µs CPU per draw** (raw 0.74, citro3d 3.25), GPU 0.66 µs. Drawn correctly, no hang.
+    - Reference: `draw_onewindow` in `bench/src/gpu_w2.inc`.
+    - It does not cover changes of state between draws (uniforms, textures): those still close the window.
+21. **Early depth works and is large:** 11.6× less fill time when occluded layers are rejected early (front layers
+    first). It matters only when fill is the limit; consider it for GX's early-Z (zcomploc) opaque passes.
+22. **A framebuffer flush + invalidate between draws costs ~0.8 µs GPU.** An EFB copy mid-frame is cheap on the GPU
+    side.
+23. **Vertex order matters for indexed draws:** 10.1 Mtri/s with good reuse order against 3.7 shuffled. Keep GX's
+    index order (strips and fans already have good locality); never reorder indices randomly.
+24. **The 2×2 downscale works from a 2× target** (480×800 → 240×400, 0.15 ms). Only the small 240×400 → 120×200
+    case hangs. For EFB half-scale copies, test the exact dimensions first.
+25. **The GPU does not slow CPU memory:** memcpy ran at 414 MB/s with the GPU filling, against 376 idle.
+26. **For the JIT:** a load whose result is used by the very next instruction costs 2 extra cycles. Emit loads
+    (register-cache fills, memory fast paths) two instructions before their use where possible.
+27. **Kernel cross-core wake-ups are lost about 1 in 4** (svcArbitrateAddress, as LightEvent before). Spin for
+    cross-core handoffs, or always wait with a timeout.
+28. **Audio:** time-stretching (WSOLA) costs 0.66% of a core, so normal-pitch audio below full speed is affordable.
+    ndsp plays 8–192 kHz; its sound frame is 4.88 ms.
+
 ## Not yet measured
 
 - CPU memcpy speed while the GPU fills: the test was invalid, because the compiler removed the copies.
