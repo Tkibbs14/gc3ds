@@ -346,6 +346,7 @@ static void run(const char* path) {
     u32 perfRows = 0;
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
+    u64 tPace = t0, cycPace = cyc0;  // origin of the real-time pacing (moves when emulation falls behind)
     u32 fieldsLast = 0;
     u64 waitTicks = 0, drawsLast = g_sys.gx.core.draws, vertsLast = g_sys.gx.core.vertices;
     u64 jLast[5] = { 0 };  // instructions run, interpreted, blocks run, slow loads, slow stores (JIT, per second)
@@ -371,7 +372,13 @@ static void run(const char* path) {
         // Pace to real time: when emulation is ahead, present and wait for the next 3DS refresh; when behind,
         // present at most once per refresh and keep going.
         u64 now = svcGetSystemTick();
-        double emulated = (double)(g_sys.cpu.cycles - cyc0) / GEKKO_HZ, real = (double)(now - t0) / SYSCLOCK_ARM11;
+        double emulated = (double)(g_sys.cpu.cycles - cycPace) / GEKKO_HZ, real = (double)(now - tPace) / SYSCLOCK_ARM11;
+        // Time lost while emulation was slower than real time is not made up afterwards (the logos ran at 144% after
+        // a slow load): the pacing origin follows, keeping at most 50 ms of lag.
+        if (real - emulated > 0.05) {
+            tPace += (u64)((real - emulated - 0.05) * SYSCLOCK_ARM11);
+            real = emulated + 0.05;
+        }
         if (emulated > real) {
             if (g_frameReady) present(&g_sys);
             u64 w0 = svcGetSystemTick();
