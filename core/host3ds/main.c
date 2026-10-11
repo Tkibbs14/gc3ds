@@ -22,6 +22,7 @@ static u32 g_fields;
 static Jit* g_jit;
 static bool g_useJit = true;
 static bool g_pica;  // GX draws on the PICA200 (false: software renderer)
+static char g_clockLine[96];  // measured CPU clock at startup (menu)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
@@ -74,6 +75,24 @@ static void present(System* s) {
 }
 
 static u64 prof_clock(void) { return svcGetSystemTick(); }
+
+// CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
+// iteration on the ARM11), timed with the system tick. Tells 268 MHz from 804 MHz apart, not more.
+static double cpu_mhz(void) {
+    u32 n = 1000000;
+    u32 x = 0;
+    u64 t0 = svcGetSystemTick();
+    __asm__ volatile(
+        "1:\n"
+        "add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n"
+        "add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n"
+        "add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n"
+        "add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n add %1, %1, #1\n"
+        "subs %0, %0, #1\n bne 1b\n"
+        : "+r"(n), "+r"(x) : : "cc");
+    double secs = (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11;
+    return 18e6 / secs / 1e6;
+}
 
 static void present_field(System* s) {
     g_frameReady = false;
@@ -140,7 +159,8 @@ static int pick(void) {
         consoleClear();
         printf("gc3ds - A run, Y JIT on/off, START quit\n");
         printf("GPU: %s\n", g_pica ? "PICA200" : "software");
-        printf("CPU: %s\n\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
+        printf("CPU: %s\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
+        printf("%s\n\n", g_clockLine);
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
         int first = sel > 20 ? sel - 20 : 0;
         for (int i = first; i < g_nFiles && i < first + 24; i++) {
@@ -277,7 +297,16 @@ int main(void) {
     gfxInitDefault();
     gfxSetDoubleBuffering(GFX_TOP, true);
     consoleInit(GFX_BOTTOM, NULL);
+    double mhzBefore = cpu_mhz();
     osSetSpeedupEnable(true);
+    double mhzSpeedup = cpu_mhz();
+    // The explicit request gcbench used (it measured 109 vs 329 MIPS between the clocks), in case the libctru call
+    // above has no effect for this app.
+    bool ptm = R_SUCCEEDED(ptmSysmInit());
+    Result cfg = ptm ? PTMSYSM_ConfigureNew3DSCPU(3) : -1;
+    if (ptm) ptmSysmExit();
+    snprintf(g_clockLine, sizeof g_clockLine, "clock MHz: start %.0f, speedup %.0f, ptm %.0f (%s %08lx)",
+             mhzBefore, mhzSpeedup, cpu_mhz(), ptm ? "ok" : "none", (unsigned long)cfg);
     romfsInit();
     scan_dir("romfs:/dols");
     scan_dir("sdmc:/gc3ds");
