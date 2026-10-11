@@ -4,6 +4,9 @@
 // worked out once: the decode layout, projection x viewport x PICA fold composed into one 4x4, and the light
 // parameters. Per vertex it reads only the attributes the draw uses and lights only the
 // colour channel the PICA receives. Checked against the reference on the PC with VFAST_CHECK (soft.c).
+// sqrtf as the bare instruction: with errno handling it carries a branch, which stops the compiler interleaving
+// the lighting loop's independent vertices.
+#pragma GCC optimize("no-math-errno")
 #include <math.h>
 #include <stdlib.h>
 #include "../sys/system.h"
@@ -125,43 +128,89 @@ static void half_init(const GXCore* gx, u32 ch, u32 ctrl, VHalf* h) {
             l->a[k] = xf_f(gx, base + 4 + k); l->k[k] = xf_f(gx, base + 7 + k);
             l->lp[k] = xf_f(gx, base + 10 + k); l->ld[k] = xf_f(gx, base + 13 + k);
         }
+        // The reference divides by 1 where the attenuation denominator is 0, which happens when all three distance
+        // coefficients are 0; doing that here keeps the per-vertex loop free of a float compare (a pipeline stall).
+        if (l->k[0] == 0 && l->k[1] == 0 && l->k[2] == 0) l->k[0] = 1;
     }
 }
 
-// Components k0..k1-1 of a lit channel, as xform.c's light_channel.
-static void half_run(const VHalf* h, const float vc[4], const float eye[3], const float n[3], int k0, int k1, float out[4]) {
-    const float* mat = h->matVtx ? vc : h->mat;
-    if (!h->lit) { for (int k = k0; k < k1; k++) out[k] = mat[k]; return; }
-    const float* amb = h->ambVtx ? vc : h->amb;
-    float lit[4];
-    for (int k = k0; k < k1; k++) lit[k] = amb[k];
-    for (u32 i = 0; i < h->n; i++) {
-        const VLight* l = &h->l[i];
-        float L[3] = { l->lp[0] - eye[0], l->lp[1] - eye[1], l->lp[2] - eye[2] };
-        float dist2 = L[0] * L[0] + L[1] * L[1] + L[2] * L[2], dist = sqrtf(dist2);
-        if (dist > 0) { L[0] /= dist; L[1] /= dist; L[2] /= dist; }
-        float dot = n[0] * L[0] + n[1] * L[1] + n[2] * L[2];
-        float diff = h->diffFn == 0 ? 1.0f : h->diffFn == 1 ? dot : (dot < 0 ? 0 : dot);
+// Lighting runs light by light over all the draw's vertices, four vertices at a time with branch-free bodies
+// specialised per light mode: the VFP11 needs 8 cycles before a result can be used (19 for divide and square root)
+// but starts a new add or multiply every cycle, so one vertex's dependent chain mostly waits, and four independent
+// chains fill the gaps. It follows xform.c's light_channel; reciprocals replace divides (within float rounding).
+typedef struct { float eye[3], n[3], vc[2][4], lc[2][4], lit[4]; } VLit;  // per-vertex lighting state
+static VLit* g_lit;
+static u32 g_litCap;
+
+#define VF_INLINE static inline __attribute__((always_inline))
+VF_INLINE float pos0(float x) { return 0.5f * (x + fabsf(x)); }  // max(x, 0), exact and without a branch
+
+// One light on one vertex, adding lc * diffuse * attenuation to lit[K0..K1). D: diffuse function (0 one, 1 signed,
+// 2 clamped); A: attenuation (0 none, 1 spot: angle and distance, 2 specular).
+VF_INLINE void light_one(const VLight* l, int D, int A, int K0, int K1, VLit* v) {
+    float da = 1.0f;
+    if (D || A) {
+        float L0 = l->lp[0] - v->eye[0], L1 = l->lp[1] - v->eye[1], L2 = l->lp[2] - v->eye[2];
+        float dist2 = L0 * L0 + L1 * L1 + L2 * L2, dist = sqrtf(dist2);
+        float inv = 1.0f / (dist + 1e-30f);  // a light at the vertex leaves L at zero, as the reference does
+        L0 *= inv; L1 *= inv; L2 *= inv;
+        float diff = 1.0f;
+        if (D) { float dot = v->n[0] * L0 + v->n[1] * L1 + v->n[2] * L2; diff = D == 1 ? dot : pos0(dot); }
         float att = 1.0f;
-        if (h->atten) {
-            if (h->spot) {
-                float cs = -(L[0] * l->ld[0] + L[1] * l->ld[1] + L[2] * l->ld[2]);
-                float aa = l->a[0] + l->a[1] * cs + l->a[2] * cs * cs;
-                float dd = l->k[0] + l->k[1] * dist + l->k[2] * dist2;
-                att = (aa < 0 ? 0 : aa) / (dd != 0 ? dd : 1);
-            } else {
-                float hh = n[0] * l->ld[0] + n[1] * l->ld[1] + n[2] * l->ld[2];
-                hh = hh < 0 ? 0 : hh;
-                float aa = l->a[0] + l->a[1] * hh + l->a[2] * hh * hh, dd = l->k[0] + l->k[1] * hh + l->k[2] * hh * hh;
-                att = (aa < 0 ? 0 : aa) / (dd != 0 ? dd : 1);
-            }
+        if (A == 1) {
+            float cs = -(L0 * l->ld[0] + L1 * l->ld[1] + L2 * l->ld[2]);
+            float aa = l->a[0] + l->a[1] * cs + l->a[2] * cs * cs, dd = l->k[0] + l->k[1] * dist + l->k[2] * dist2;
+            att = pos0(aa) / dd;
+        } else if (A == 2) {
+            float hh = pos0(v->n[0] * l->ld[0] + v->n[1] * l->ld[1] + v->n[2] * l->ld[2]);
+            float aa = l->a[0] + l->a[1] * hh + l->a[2] * hh * hh, dd = l->k[0] + l->k[1] * hh + l->k[2] * hh * hh;
+            att = pos0(aa) / dd;
         }
-        float da = diff * att;
-        for (int k = k0; k < k1; k++) lit[k] += l->lc[k] * da;
+        da = diff * att;
     }
-    for (int k = k0; k < k1; k++) {
-        float v = lit[k] < 0 ? 0 : lit[k] > 255 ? 255 : lit[k];
-        out[k] = mat[k] * v / 255.0f;
+    for (int k = K0; k < K1; k++) v->lit[k] += l->lc[k] * da;
+}
+
+#define LIGHT_LOOP(D, A, K0, K1) do { \
+    u32 i = 0; \
+    for (; i + 4 <= count; i += 4) { \
+        light_one(&l, D, A, K0, K1, &v[i]); light_one(&l, D, A, K0, K1, &v[i + 1]); \
+        light_one(&l, D, A, K0, K1, &v[i + 2]); light_one(&l, D, A, K0, K1, &v[i + 3]); \
+    } \
+    for (; i < count; i++) light_one(&l, D, A, K0, K1, &v[i]); \
+} while (0)
+
+#define LIGHT_MODES(K0, K1) switch (mode) { \
+    case 0: LIGHT_LOOP(0, 0, K0, K1); break; case 1: LIGHT_LOOP(0, 1, K0, K1); break; \
+    case 2: LIGHT_LOOP(0, 2, K0, K1); break; case 3: LIGHT_LOOP(1, 0, K0, K1); break; \
+    case 4: LIGHT_LOOP(1, 1, K0, K1); break; case 5: LIGHT_LOOP(1, 2, K0, K1); break; \
+    case 6: LIGHT_LOOP(2, 0, K0, K1); break; case 7: LIGHT_LOOP(2, 1, K0, K1); break; \
+    default: LIGHT_LOOP(2, 2, K0, K1); break; }
+
+static void light_rgb(const VLight* lp, int mode, VLit* v, u32 count) { const VLight l = *lp; LIGHT_MODES(0, 3) }
+static void light_alpha(const VLight* lp, int mode, VLit* v, u32 count) { const VLight l = *lp; LIGHT_MODES(3, 4) }
+
+// One half (colour: components 0-2, or alpha: 3) of channel `ch` for every vertex, into v[i].lc[ch].
+static void light_half(const VHalf* h, u32 ch, bool alpha, VLit* v, u32 count) {
+    int k0 = alpha ? 3 : 0, k1 = alpha ? 4 : 3;
+    for (u32 i = 0; i < count; i++) {
+        const float* mat = h->matVtx ? v[i].vc[ch] : h->mat;
+        const float* amb = h->ambVtx ? v[i].vc[ch] : h->amb;
+        for (int k = k0; k < k1; k++) { if (h->lit) v[i].lit[k] = amb[k]; else v[i].lc[ch][k] = mat[k]; }
+    }
+    if (!h->lit) return;
+    int mode = 3 * (h->diffFn >= 2 ? 2 : h->diffFn) + (!h->atten ? 0 : h->spot ? 1 : 2);
+    for (u32 li = 0; li < h->n; li++) {
+        if (alpha) light_alpha(&h->l[li], mode, v, count);
+        else light_rgb(&h->l[li], mode, v, count);
+    }
+    for (u32 i = 0; i < count; i++) {
+        const float* mat = h->matVtx ? v[i].vc[ch] : h->mat;
+        for (int k = k0; k < k1; k++) {
+            float x = v[i].lit[k];
+            x = x < 0 ? 0 : x > 255 ? 255 : x;
+            v[i].lc[ch][k] = mat[k] * x * (1.0f / 255.0f);
+        }
     }
 }
 
@@ -336,32 +385,39 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
     t0 = prof_begin();
+    if (count > g_litCap) {
+        VLit* n = realloc(g_lit, count * sizeof *n);
+        if (!n) return;
+        g_lit = n;
+        g_litCap = count;
+    }
+    VLit* lv = g_lit;
     for (u32 vi = 0; vi < count; vi++) {
-        VIn* in = &g_in[vi];
-        PVert* o = &out[vi];
-        u32 pn = in->pn;
-        float eye[3] = { 0, 0, 0 }, n[3] = { 0, 0, 0 };
+        const VIn* in = &g_in[vi];
+        VLit* v = &lv[vi];
         if (eyeUsed) {
-            u32 pm = pn * 4;
+            u32 pn = in->pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
+            float* n = v->n;
             for (int r = 0; r < 3; r++)
-                eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
-            u32 nm = 0x400 + (pn & 31) * 3;
+                v->eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
             for (int r = 0; r < 3; r++) n[r] = xf_f(gx, nm + 3 * r) * in->n[0] + xf_f(gx, nm + 3 * r + 1) * in->n[1] + xf_f(gx, nm + 3 * r + 2) * in->n[2];
-            float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-            if (nl > 0) { n[0] /= nl; n[1] /= nl; n[2] /= nl; }
+            float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), inl = nl > 0 ? 1.0f / nl : 0.0f;
+            if (nl > 0) { n[0] *= inl; n[1] *= inl; n[2] *= inl; }
         }
-        float lc[2][4];
-        for (u32 ch = 0; ch < 2; ch++) {
-            if (!(chans & (1u << ch))) continue;
-            float vc[4];
-            unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], vc);
-            if (ch >= numChans) { memcpy(lc[ch], vc, sizeof vc); continue; }
-            half_run(&half[ch][0], vc, eye, n, 0, 3, lc[ch]);
-            half_run(&half[ch][1], vc, eye, n, 3, 4, lc[ch]);
-        }
-        const float* oc = lc[sel->rasChan & 1];
+        for (u32 ch = 0; ch < 2; ch++)
+            if (chans & (1u << ch)) unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], v->vc[ch]);
+    }
+    for (u32 ch = 0; ch < 2; ch++) {
+        if (!(chans & (1u << ch))) continue;
+        if (ch >= numChans) { for (u32 vi = 0; vi < count; vi++) memcpy(lv[vi].lc[ch], lv[vi].vc[ch], sizeof lv[vi].vc[ch]); continue; }
+        light_half(&half[ch][0], ch, false, lv, count);
+        light_half(&half[ch][1], ch, true, lv, count);
+    }
+    for (u32 vi = 0; vi < count; vi++) {
+        const float* oc = lv[vi].lc[sel->rasChan & 1];
+        PVert* o = &out[vi];
         o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
-        if (chans & 1) { in->c0[0] = lc[0][0]; in->c0[1] = lc[0][1]; }
+        if (chans & 1) { g_in[vi].c0[0] = lv[vi].lc[0][0]; g_in[vi].c0[1] = lv[vi].lc[0][1]; }
     }
     prof_end(PROF_VLIGHT, t0);
 
