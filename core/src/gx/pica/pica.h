@@ -12,3 +12,9 @@ bool pica_attach(System* s);
 bool pica_present(System* s, u32 xfbAddr);
 // Forgets every GPU-side copy and cached texture; call before booting another program.
 void pica_reset(void);
+
+// Work counters since start (the frontend logs them per second): C3D_DrawArrays calls (batches), command-list
+// submits (C3D_FrameEnd) and splits, textures decoded from RAM and their size in VRAM/FCRAM, EFB -> texture and
+// EFB -> XFB copies, EFB clears.
+typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears; } PicaStats;
+extern PicaStats g_picaStats;

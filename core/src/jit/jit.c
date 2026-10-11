@@ -1300,6 +1300,8 @@ void jit_invalidate(Jit* j, u32 pa) {
 
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }
 
+float jit_code_used(const Jit* j) { return j->codeWords ? (float)j->codeUsed / (float)j->codeWords : 0.0f; }
+
 // The 16 most frequent opcodes in `t`, with a mnemonic from the disassembler.
 static void print_top(const JitOpCounts* t, const char* title, void (*print)(const char* line)) {
     static JitOpCounts c;

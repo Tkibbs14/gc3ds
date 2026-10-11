@@ -31,6 +31,7 @@ void jit_attach(Jit* j);                 // installs the JIT into the CPU's run 
 void jit_invalidate(Jit* j, u32 pa);     // the 32-byte line at physical pa may hold changed code (icbi)
 void jit_invalidate_all(Jit* j);
 const JitStats* jit_stats(const Jit* j);
+float jit_code_used(const Jit* j);  // fraction of the code buffer in use (a full buffer drops all compiled code)
 void jit_print_stats(const Jit* j, void (*print)(const char* line));
 
 // Testing: limit blocks to this many instructions (0 = default) and run one block from g->pc, returning the

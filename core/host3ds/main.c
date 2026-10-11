@@ -1,6 +1,7 @@
 // gc3ds for the New 3DS: program picker, emulation loop, video output to the top screen, pad input, stats.
 // Programs are listed from romfs:/dols (bundled test programs) and sdmc:/gc3ds (the user's own files).
 #include <3ds.h>
+#include <citro3d.h>
 #define GC3DS_HOST_TYPES
 #include <dirent.h>
 #include <stdio.h>
@@ -24,6 +25,8 @@ static Jit* g_jit;
 static bool g_useJit = true;
 static bool g_pica;  // GX draws on the PICA200 (false: software renderer)
 static char g_clockLine[96];  // measured CPU clock at startup (menu)
+static char g_coreLine[160];  // which CPU cores our threads can use, and how fast (startup probe)
+static u32 g_presents;        // fields shown on the top screen
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
@@ -71,6 +74,7 @@ static void on_field(System* s, void* user) {
 static void present_field(System* s);
 static void present(System* s) {
     u64 t0 = prof_begin();
+    g_presents++;
     present_field(s);
     prof_end(PROF_PRESENT, t0);
 }
@@ -93,6 +97,32 @@ static double cpu_mhz(void) {
         : "+r"(n), "+r"(x) : : "cc");
     double secs = (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11;
     return 18e6 / secs / 1e6;
+}
+
+// Which CPU cores can run our threads, and how much work each gets done in 50 ms (a counting loop) compared with
+// the main thread's core 0: the New 3DS has four cores, core 1 needs APT_SetAppCpuTimeLimit and core 3 belongs to
+// the system. Decides whether vertex or GPU work can move to another core.
+static volatile u32 g_coreCount[4];
+static void core_spin(void* arg) {
+    u32 c = (u32)arg;
+    u64 end = svcGetSystemTick() + SYSCLOCK_ARM11 / 20;
+    while (svcGetSystemTick() < end) g_coreCount[c]++;
+}
+
+static void probe_cores(void) {
+    APT_SetAppCpuTimeLimit(80);
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    core_spin((void*)0);
+    int n = snprintf(g_coreLine, sizeof g_coreLine, "cores (work in 50 ms vs core 0):");
+    for (u32 c = 1; c < 4; c++) {
+        Thread t = threadCreate(core_spin, (void*)c, 4096, prio, (int)c, false);
+        if (!t) { n += snprintf(g_coreLine + n, sizeof g_coreLine - n, " c%lu none", (unsigned long)c); continue; }
+        bool done = R_SUCCEEDED(threadJoin(t, 500000000ULL));
+        n += snprintf(g_coreLine + n, sizeof g_coreLine - n, " c%lu %.2f%s", (unsigned long)c,
+                      g_coreCount[0] ? (double)g_coreCount[c] / g_coreCount[0] : 0.0, done ? "" : " (stuck)");
+        if (done) threadFree(t);
+    }
 }
 
 static void present_field(System* s) {
@@ -161,7 +191,7 @@ static int pick(void) {
         printf("gc3ds - A run, Y JIT on/off, START quit\n");
         printf("GPU: %s\n", g_pica ? "PICA200" : "software");
         printf("CPU: %s\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
-        printf("%s\n\n", g_clockLine);
+        printf("%s\n%s\n\n", g_clockLine, g_coreLine);
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
         int first = sel > 20 ? sel - 20 : 0;
         for (int i = first; i < g_nFiles && i < first + 24; i++) {
@@ -198,10 +228,14 @@ static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
-    fprintf(g_perf, "# run %s | %s | jit %s\n", strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off");
-    fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s");
+    fprintf(g_perf, "# run %s | %s | jit %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off",
+            g_coreLine);
+    fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
-    fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct\n");
+    fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct"
+                    ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
+                    ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb\n");
     fflush(g_perf);
     if (g_jit) g_fbPrev = jit_stats(g_jit)->fallbackRun;
 }
@@ -275,12 +309,20 @@ static void run(const char* path) {
     u32 fieldsLast = 0;
     u64 waitTicks = 0, drawsLast = g_sys.gx.core.draws, vertsLast = g_sys.gx.core.vertices;
     u64 jLast[5] = { 0 };  // instructions run, interpreted, blocks run, slow loads, slow stores (JIT, per second)
+    // Per second: host time per emulated field (excluding the wait for the 3DS refresh), fields shown, and the other
+    // counters' previous values.
+    u64 fieldMax = 0, fieldSum = 0;
+    u32 fieldN = 0, presentsLast = g_presents;
+    u64 xLast[4] = { 0, 0, g_sys.gx.bytesReceived, g_sys.di.bytesRead };  // compiles, polls, GX bytes, disc bytes
+    if (g_jit) { xLast[0] = jit_stats(g_jit)->blocksCompiled; xLast[1] = jit_stats(g_jit)->pollSkips; }
+    PicaStats pLast = g_picaStats;
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
         if (hidKeysDown() & KEY_X) { g_profClock = g_profClock ? NULL : prof_clock; printf("\x1b[9;0H\x1b[0J"); }
+        u64 it0 = svcGetSystemTick(), waitBefore = waitTicks;
         sys_run(&g_sys, CYCLES_PER_FIELD);
         if (g_sys.stopRequested) { printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc); break; }
         // Pace to real time: when emulation is ahead, present and wait for the next 3DS refresh; when behind,
@@ -298,6 +340,10 @@ static void run(const char* path) {
             tPresent = now;
         }
         now = svcGetSystemTick();
+        u64 fieldTicks = now - it0 - (waitTicks - waitBefore);
+        fieldSum += fieldTicks;
+        fieldN++;
+        if (fieldTicks > fieldMax) fieldMax = fieldTicks;
         if (now - tLast > SYSCLOCK_ARM11) {  // once a second
             double secs = (double)(now - tLast) / SYSCLOCK_ARM11;
             double mips = (double)(g_sys.cpu.cycles - cycLast) / secs / 1e6;
@@ -328,11 +374,29 @@ static void run(const char* path) {
             double draws = (double)(g_sys.gx.core.draws - drawsLast) / secs, verts = (double)(g_sys.gx.core.vertices - vertsLast) / secs;
             if (g_perf) {
                 u64 t0p = prof_begin();
-                fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f", (double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ,
-                        100.0 * mips / 486.0, fps);
+                double shown = (double)(g_presents - presentsLast) / secs, tickMs = 1000.0 / SYSCLOCK_ARM11;
+                fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f", (double)(now - t0) / SYSCLOCK_ARM11,
+                        (double)g_sys.cpu.cycles / GEKKO_HZ, 100.0 * mips / 486.0, fps, shown, fps > shown ? fps - shown : 0.0,
+                        fieldN ? (double)fieldSum / fieldN * tickMs : 0.0, (double)fieldMax * tickMs);
                 for (int i = 0; i < PROF_N; i++) fprintf(g_perf, ",%.1f", g_profClock ? p[i] : 0.0);
-                fprintf(g_perf, ",%.1f,%.1f,%.0f,%.0f,%.0f,%.0f,%.0f,%.1f,%.1f,%.1f\n", 100.0 * (double)waitTicks / tot,
+                fprintf(g_perf, ",%.1f,%.1f,%.0f,%.0f,%.0f,%.0f,%.0f,%.1f,%.1f,%.1f", 100.0 * (double)waitTicks / tot,
                         g_profClock ? rest : 0.0, draws, verts, k[0], k[1], k[2], k[3], k[4], native);
+                u64 x[4] = { 0, 0, g_sys.gx.bytesReceived, g_sys.di.bytesRead };
+                if (g_jit) { x[0] = jit_stats(g_jit)->blocksCompiled; x[1] = jit_stats(g_jit)->pollSkips; }
+                const PicaStats* ps = &g_picaStats;
+                fprintf(g_perf, ",%.0f,%.0f,%.1f,%llu,%.1f,%.1f", (x[0] - xLast[0]) / secs, (x[1] - xLast[1]) / secs,
+                        g_jit ? 100.0 * jit_code_used(g_jit) : 0.0, g_jit ? (unsigned long long)jit_stats(g_jit)->icbiFlushes : 0ULL,
+                        (x[2] - xLast[2]) / secs / 1024.0, (x[3] - xLast[3]) / secs / 1024.0);
+                fprintf(g_perf, ",%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f", (ps->drawCalls - pLast.drawCalls) / secs,
+                        (ps->submits - pLast.submits) / secs, (ps->splits - pLast.splits) / secs,
+                        (ps->texDecodes - pLast.texDecodes) / secs, (ps->texDecodeBytes - pLast.texDecodeBytes) / secs / 1024.0,
+                        (ps->efbCopies - pLast.efbCopies) / secs, (ps->xfbCopies - pLast.xfbCopies) / secs,
+                        (ps->clears - pLast.clears) / secs);
+                fprintf(g_perf, ",%.2f,%.2f,%.1f,%.1f,%.0f\n", g_pica ? C3D_GetProcessingTime() : 0.0f,
+                        g_pica ? C3D_GetDrawingTime() : 0.0f, osGetMemRegionFree(MEMREGION_APPLICATION) / 1048576.0,
+                        linearSpaceFree() / 1048576.0, vramSpaceFree() / 1024.0);
+                memcpy(xLast, x, sizeof xLast);
+                pLast = *ps;
                 if (++perfRows % 10 == 0) {
                     perf_fallbacks();
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
@@ -359,6 +423,9 @@ static void run(const char* path) {
                 }
             }
             vertsLast = g_sys.gx.core.vertices;
+            presentsLast = g_presents;
+            fieldMax = fieldSum = 0;
+            fieldN = 0;
             memset(g_hostProf, 0, sizeof g_hostProf);
             waitTicks = 0;
             drawsLast = g_sys.gx.core.draws;
@@ -385,6 +452,7 @@ int main(void) {
     if (ptm) ptmSysmExit();
     snprintf(g_clockLine, sizeof g_clockLine, "clock MHz: start %.0f, speedup %.0f, ptm %.0f (%s %08lx)",
              mhzBefore, mhzSpeedup, cpu_mhz(), ptm ? "ok" : "none", (unsigned long)cfg);
+    probe_cores();
     romfsInit();
     scan_dir("romfs:/dols");
     scan_dir("sdmc:/gc3ds");

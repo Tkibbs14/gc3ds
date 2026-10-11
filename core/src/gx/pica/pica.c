@@ -95,6 +95,7 @@ static struct {
     VSel sel;
 } g;
 
+PicaStats g_picaStats;
 static u8 g_morton[64];
 static SVert* g_sv;
 static PVert* g_pv;
@@ -105,7 +106,10 @@ static u32 g_scratchCap;
 // ---- frames ----
 // Issues the open batch's triangles; call before anything changes GPU state or submits.
 static void flush_batch(void) {
-    if (g.batchOpen && g.arenaUsed > g.batchFirst) C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
+    if (g.batchOpen && g.arenaUsed > g.batchFirst) {
+        C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
+        g_picaStats.drawCalls++;
+    }
     g.batchOpen = false;
 }
 
@@ -155,6 +159,7 @@ static void end_frame(void) {
     flush_batch();
     flush_arena();
     C3D_FrameEnd(GX_CMDLIST_FLUSH);
+    g_picaStats.submits++;
     g.frame = false;
 }
 
@@ -167,6 +172,7 @@ static void split(u32 transfers) {
     if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { end_frame(); begin_frame(); }
     flush_arena();
     C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    g_picaStats.splits++;
     g.queued += 1 + transfers;
 }
 
@@ -237,6 +243,8 @@ static void evict_unused(u32 want) {
 
 static bool decode(System* s, const GXCore* gx, PTex* e) {
     u32 W = pow2(e->w), H = pow2(e->h), bytes = W * H * 4;
+    g_picaStats.texDecodes++;
+    g_picaStats.texDecodeBytes += bytes;
     evict_unused(bytes);
     C3D_Tex nt;
     if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) return false;
@@ -698,6 +706,7 @@ static float efb_t(float y) { return y * SY / TH; }
 static float ndc_y(float t) { return FLIP_Y ? 1.0f - 2.0f * t : 2.0f * t - 1.0f; }
 
 static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    g_picaStats.xfbCopies++;
     PXfb* x = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) if (g.xfb[i].seq && g.xfb[i].addr == dest) x = &g.xfb[i];
     if (!x) for (u32 i = 0; i < MAX_XFB; i++) if (!x || g.xfb[i].seq < x->seq) x = &g.xfb[i];
@@ -708,6 +717,7 @@ static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
 
 // Copy-unit formats (fifo.c): R4, R8 alias, RA4, RA8, RGB565, RGB5A3, RGBA8, A8, R8, G8, B8, RG8, GB8.
 static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    g_picaStats.efbCopies++;
     u32 field = (ctl >> 3) & 15, fmt = (field >> 1) | ((field & 1) << 3);
     bool half = (ctl >> 9) & 1, intensity = (ctl >> 15) & 1, depth = (gx->bp[0x43] & 7) == 3, hasAlpha = (gx->bp[0x43] & 7) == 1;
     u32 ow = half ? (w + 1) / 2 : w, oh = half ? (h + 1) / 2 : h;
@@ -798,6 +808,7 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
 }
 
 static void clear_efb(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h) {
+    g_picaStats.clears++;
     u32 ar = gx->bp[0x4F], gb = gx->bp[0x50], cmode = gx->bp[0x41];
     u32 a = (gx->bp[0x43] & 7) == 1 ? (ar >> 8) & 0xFF : 0xFF;
     u32 rgba = ((ar & 0xFF) << 24) | (((gb >> 8) & 0xFF) << 16) | ((gb & 0xFF) << 8) | a;
