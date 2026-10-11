@@ -111,7 +111,9 @@ static u32 g_scratchCap;
 
 // ---- frames ----
 // Issues the open batch's triangles; call before anything changes GPU state or submits.
+static void vw_sync(void);
 static void flush_batch(void) {
+    vw_sync();  // the batch's last triangles may still be on the vertex worker
     if (g.batchOpen && g.arenaUsed > g.batchFirst) {
         C3D_DrawArrays(GPU_TRIANGLES, (int)g.batchFirst, (int)(g.arenaUsed - g.batchFirst));
         g_picaStats.drawCalls++;
@@ -119,9 +121,9 @@ static void flush_batch(void) {
     g.batchOpen = false;
 }
 
-static void vw_drain(void);
+static void vw_sync(void);
 static void flush_arena(void) {
-    vw_drain();  // the vertex worker must have filled the arena before the GPU reads it
+    vw_sync();  // the vertex worker must have filled the arena before the GPU reads it
     if (g.arenaUsed > g.arenaFlushed)
         GSPGPU_FlushDataCache(g.arena + g.arenaFlushed, (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
     g.arenaFlushed = g.arenaUsed;
@@ -188,10 +190,21 @@ static void split(u32 transfers) {
 
 // Makes room for `verts` more vertices and keeps the command buffer from overflowing (libctru drops commands
 // silently when it is full).
+static u32 g_vwReserved;  // arena vertices the vertex worker's queued draws may write (vertex worker below)
+
 static bool need(u32 verts) {
     if (verts > ARENA_VERTS) return false;
     begin_frame();
+    vw_sync();  // this thread writes the arena itself
     if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+    return true;
+}
+
+// Room for a draw the vertex worker will append, without waiting for it.
+static bool need_work(u32 verts) {
+    if (verts > ARENA_VERTS) return false;
+    begin_frame();
+    if (g.arenaUsed + g_vwReserved + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
     return true;
 }
 
@@ -614,23 +627,26 @@ static void tex_key(const GXCore* gx, u32* k, u32* n) {
 
 // ---- vertex worker (core 3) ----
 // The second half of each triangle draw's vertex work runs on core 3 while this thread goes on parsing: vfast_finish,
-// the Z-texture depth, culling and triangle assembly into the arena. A draw's place in the arena is fixed when it is
-// queued (culled triangles are written as degenerate ones), so its batch is recorded at once; the arena only has to be
-// complete when the GPU reads it, and flush_arena waits for the worker first. Jobs live in a ring of memory that the
-// worker frees in order.
-#define VW_SLOTS 4096
-#define VW_MEM (4u << 20)
+// the Z-texture depth, culling and triangle assembly. The worker appends the triangles it keeps to the arena at
+// g_vwPos, in queue order; this thread syncs with it (vw_sync: wait, then take g_vwPos as arenaUsed) before it records
+// a batch's draw call, writes the arena itself, or hands the arena to the GPU. A batch holds ~90 of Twilight
+// Princess's draws, so the worker keeps the overlap within a batch. (2DS, 7f2033e: writing culled triangles as
+// degenerate ones instead, to fix each draw's place when queued, tripled the GPU's time per frame: the vertex shader
+// still runs for every vertex.) Jobs live in a ring of memory the worker frees in order, small enough to stay in the
+// L2 cache (a 4 MB ring made the GX thread's vertex time grow).
+#define VW_SLOTS 1024
+#define VW_MEM (256u << 10)
 typedef struct {
     VJob* job;
     PVert* pv;         // the draw's vertices (colours from vfast_prepare)
     float (*nd)[2];    // NDC x, y per vertex for culling
-    u32 memStart, dst, prim, count, cull, ztexOp;
+    u32 memStart, prim, count, cull, ztexOp;
     float ztexZ;
 } VWork;
 static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
 static u32 g_vwMemHead;
-static volatile u32 g_vwHead, g_vwTail, g_vwQuit;
+static volatile u32 g_vwHead, g_vwTail, g_vwQuit, g_vwPos;
 static Thread g_vwThread;
 static bool g_vwOn = true;  // pica_set_vertex_worker
 static inline void vw_dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory"); }
@@ -644,18 +660,19 @@ static u32 tri_verts(u32 prim, u32 count) {
     }
 }
 
-// tri() for the worker: a culled triangle becomes a degenerate one (three copies of its first vertex).
-static void vw_tri(const VWork* w, PVert* o, u32 a, u32 b, u32 c) {
+// tri() for the worker: appends the triangle at *o unless it is culled.
+static void vw_tri(const VWork* w, PVert** o, u32 a, u32 b, u32 c) {
+    if (w->cull == 3) return;
     const PVert *va = &w->pv[a], *vb = &w->pv[b], *vc = &w->pv[c];
-    bool culled = w->cull == 3;
-    if (!culled && w->cull && va->pos[3] > 0 && vb->pos[3] > 0 && vc->pos[3] > 0) {
+    if (w->cull && va->pos[3] > 0 && vb->pos[3] > 0 && vc->pos[3] > 0) {
         const float *na = w->nd[a], *nb = w->nd[b], *nc = w->nd[c];
         float area = (nb[0] - na[0]) * (nc[1] - na[1]) - (nc[0] - na[0]) * (nb[1] - na[1]);
         if (FLIP_Y) area = -area;
-        culled = area == 0 || (w->cull == 1 && area < 0) || (w->cull == 2 && area > 0);
+        if (area == 0 || (w->cull == 1 && area < 0) || (w->cull == 2 && area > 0)) return;
     }
-    if (culled) { o[0] = o[1] = o[2] = *va; return; }
-    o[0] = *va; o[1] = *vb; o[2] = *vc;
+    PVert* p = *o;
+    p[0] = *va; p[1] = *vb; p[2] = *vc;
+    *o = p + 3;
 }
 
 static void vw_do(const VWork* w) {
@@ -667,18 +684,19 @@ static void vw_do(const VWork* w) {
             float wv = w->pv[i].pos[3], iw = wv > 0 ? 1.0f / wv : 0;
             w->nd[i][0] = w->pv[i].pos[0] * iw; w->nd[i][1] = w->pv[i].pos[1] * iw;
         }
-    PVert* o = g.arena + w->dst;
+    PVert* o = g.arena + g_vwPos;
     switch (w->prim) {
     case PRIM_QUADS: case PRIM_QUADS2:
-        for (u32 i = 0; i + 3 < count; i += 4) { vw_tri(w, o, i, i + 1, i + 2); vw_tri(w, o + 3, i, i + 2, i + 3); o += 6; }
+        for (u32 i = 0; i + 3 < count; i += 4) { vw_tri(w, &o, i, i + 1, i + 2); vw_tri(w, &o, i, i + 2, i + 3); }
         break;
-    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3, o += 3) vw_tri(w, o, i, i + 1, i + 2); break;
+    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) vw_tri(w, &o, i, i + 1, i + 2); break;
     case PRIM_STRIP:
-        for (u32 i = 0; i + 2 < count; i++, o += 3) { if (i & 1) vw_tri(w, o, i + 1, i, i + 2); else vw_tri(w, o, i, i + 1, i + 2); }
+        for (u32 i = 0; i + 2 < count; i++) { if (i & 1) vw_tri(w, &o, i + 1, i, i + 2); else vw_tri(w, &o, i, i + 1, i + 2); }
         break;
-    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++, o += 3) vw_tri(w, o, 0, i, i + 1); break;
+    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) vw_tri(w, &o, 0, i, i + 1); break;
     default: break;
     }
+    g_vwPos = (u32)(o - g.arena);
 }
 
 static void vw_main(void* arg) {
@@ -700,13 +718,17 @@ static void vw_main(void* arg) {
     }
 }
 
-// Waits until the worker has done every queued draw (before the GPU reads the arena).
-static void vw_drain(void) {
-    if (g_vwTail == g_vwHead) return;
-    u64 t0 = prof_begin();
-    while (g_vwTail != g_vwHead) {}
+// Waits until the worker has done every queued draw, and takes over the arena again.
+static void vw_sync(void) {
+    if (!g_vwReserved) return;
+    if (g_vwTail != g_vwHead) {
+        u64 t0 = prof_begin();
+        while (g_vwTail != g_vwHead) {}
+        prof_end(PROF_VWAIT, t0);
+    }
     vw_dmb();
-    prof_end(PROF_VWAIT, t0);
+    g.arenaUsed = g_vwPos;
+    g_vwReserved = 0;
 }
 
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
@@ -731,6 +753,15 @@ static u8* vw_alloc(u32 bytes) {
     return g_vwMem + start;
 }
 
+// Queues a prepared draw that may write up to `verts` arena vertices.
+static void vw_queue(const VWork* w, u32 verts) {
+    if (!g_vwReserved) g_vwPos = g.arenaUsed;  // synced: the worker starts where this thread is
+    g_vwReserved += verts;
+    g_vw[g_vwHead % VW_SLOTS] = *w;
+    vw_dmb();
+    g_vwHead = g_vwHead + 1;
+}
+
 static bool vw_start(void) {
     if (g_vwThread) return true;
     g_vwMem = malloc(VW_MEM);
@@ -746,7 +777,7 @@ static volatile bool g_vwWant = true;  // the GX thread applies it at its next d
 void pica_set_vertex_worker(bool on) { g_vwWant = on; }
 static void vw_apply(void) {
     if (g_vwWant == g_vwOn || !g_vwThread) return;
-    vw_drain();
+    vw_sync();
     g_vwOn = g_vwWant;
 }
 bool pica_vertex_worker(void) { return g_vwOn && g_vwThread; }
@@ -798,7 +829,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     if (work) {
         workVerts = tri_verts(prim, count);
         if (!workVerts) { prof_end(PROF_GXVTX, t0); return; }
-        if (!need(workVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
+        if (!need_work(workVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
         u32 jb = (vfast_job_bytes(gx, count) + 7) & ~7u;
         u8* mem = vw_alloc(jb + count * (u32)sizeof(PVert) + count * 8);
         if (!mem) work = false;
@@ -863,12 +894,8 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         memcpy(g.batchKey, key, kn * 4);
         g.batchKeyLen = kn;
     }
-    if (work) {  // its triangles go to arena[dst, dst + workVerts), filled by the worker before the GPU reads it
-        w.dst = g.arenaUsed;
-        g.arenaUsed += workVerts;
-        g_vw[g_vwHead % VW_SLOTS] = w;
-        vw_dmb();
-        g_vwHead = g_vwHead + 1;
+    if (work) {  // the worker appends its triangles to the arena; the batch's draw call waits for it (flush_batch)
+        vw_queue(&w, workVerts);
         return;
     }
     switch (prim) {
@@ -1163,7 +1190,7 @@ void pica_set_shader_light(bool on) {
 bool pica_shader_light(void) { return g.shaderLight; }
 
 void pica_reset(void) {
-    vw_drain();
+    vw_sync();
     // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
     for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
     for (u32 i = 0; i < MAX_XFB; i++) g.xfb[i].seq = 0;

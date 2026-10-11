@@ -143,7 +143,21 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   0.36, 6.4M I-cache misses/s, 143M cycles/s stalled for instructions, 188M for data hazards, 383k mispredictions/s.
 - Fallbacks left at run time (10 s): cror 215k, psq_l / psq_st ~47k each, mtspr 27k, frsqrte 19k, fres 17k, rfi 15k.
 
-## Vertex worker on core 3 (after cbff68c), not yet measured on the 2DS
+## Vertex worker on core 3
+
+- **2DS, 7f2033e (degenerate triangles):** worker on 8.83% vs off 8.62%. Writing culled triangles as degenerate
+  ones (to fix each draw's arena place when queued) tripled the GPU's time per frame (87 vs 30 ms): the lighting
+  vertex shader still runs for every vertex. GX-thread vertex time also grew (51% vs 44%) with a 4 MB job ring.
+- **Since then:** the worker appends only the triangles it keeps (`g_vwPos`); the GX thread syncs with it
+  (`vw_sync`) before recording a batch's draw call, writing the arena itself (`need`) or handing the arena to the
+  GPU; worker draws reserve arena room without waiting (`need_work`, `g_vwReserved`). The job ring is 256 KB (stays
+  in the L2). Not yet measured on the 2DS. NeHe 7's crate shows diagonal seams in Azahar with the worker on and off
+  alike (an older rendering artifact, to look at separately).
+- 2DS logs of that run: core/out/perf_2026-10-11_vw1.csv (not tracked). Its log.txt has four "GX thread: no
+  progress for 2 s" warnings; the run before (no worker) had the same ~1 s stalls after a JIT compile spike at the
+  title scene's loop point (jitc 60-66%, then GX 99%): look at them next.
+
+### The worker's design (7f2033e)
 
 - `vfast_run` is now `vfast_prepare` (GX thread: everything that reads the stream, RAM, CP and XF state: gather,
   lighting, and copies of the matrices the vertices use) plus `vfast_finish` (positions, shader-lighting inputs,
