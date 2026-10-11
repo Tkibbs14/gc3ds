@@ -1229,7 +1229,12 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         Entry* en = lookup(j, pc, msrBits);
         if (!en) break;
         // Idle loop ("b ." with interrupts on): nothing can change until the next event, so use up the budget.
-        if (en->idle && (g->msr & MSR_EE)) { total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1); break; }
+        if (en->idle && (g->msr & MSR_EE)) {
+            // Back to gekko_run without skipping, which takes the interrupt that may now be pending.
+            if (gekko_idle_hook(g)) { GKP(g)->brk = true; total += 1; break; }
+            total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1);
+            break;
+        }
         u32 n = en->fn(g);
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
@@ -1237,6 +1242,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         j->stats.instrsRun += n;
         // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
+            if (gekko_idle_hook(g)) { GKP(g)->brk = true; break; }
             j->stats.pollSkips++;
             if ((s64)total < budget) total = (u32)budget;
             break;

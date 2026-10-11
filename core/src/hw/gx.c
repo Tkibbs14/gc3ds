@@ -27,7 +27,10 @@ void cp_write16(System* s, u32 off, u16 v) {
     if (off < 0x80) s->gx.cpRegs[off / 2] = v;
 }
 
-u16 pe_read16(System* s, u32 off) { return off < 0x100 ? s->gx.peRegs[off / 2] : 0; }
+u16 pe_read16(System* s, u32 off) {
+    if (s->gxAsync) s->gxAsync->sync(s);  // tokens and finish flags of everything sent so far
+    return off < 0x100 ? s->gx.peRegs[off / 2] : 0;
+}
 
 void pe_write16(System* s, u32 off, u16 v) {
     if (off >= 0x100) return;
@@ -54,7 +57,8 @@ static void gp_burst(System* s, const u8* data) {
     }
     pi->fifoWrite = wp | wrap;
     s->gx.bytesReceived += 32;
-    gxcore_feed(s, &s->gx.core, data, 32);
+    if (s->gxAsync) s->gxAsync->feed(s, data, 32);
+    else gxcore_feed(s, &s->gx.core, data, 32);
 }
 
 // CPU stores to the write-gather pipe. As on the hardware, the GP sees them only in whole 32-byte bursts; programs

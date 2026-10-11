@@ -78,19 +78,27 @@ static void xf_write(GXCore* gx, u32 addr, u32 v) {
     if (addr < sizeof gx->xf / 4) gx->xf[addr] = v;
 }
 
-static void pe_finish(System* s) {
+void gx_pe_signal(System* s, u32 kind, u32 value) {
     u16* ctrl = &s->gx.peRegs[0x0A / 2];
-    *ctrl |= 0x08;
-    if (*ctrl & 0x02) pi_raise(s, PI_INT_PE_FINISH);
-}
-
-static void pe_token(System* s, u32 token, bool irq) {
-    s->gx.peRegs[0x0E / 2] = (u16)token;
-    if (!irq) return;
-    u16* ctrl = &s->gx.peRegs[0x0A / 2];
+    if (kind == GXEV_FINISH) {
+        *ctrl |= 0x08;
+        if (*ctrl & 0x02) pi_raise(s, PI_INT_PE_FINISH);
+        return;
+    }
+    s->gx.peRegs[0x0E / 2] = (u16)value;
+    if (kind != GXEV_TOKEN_IRQ) return;
     *ctrl |= 0x04;
     if (*ctrl & 0x01) pi_raise(s, PI_INT_PE_TOKEN);
 }
+
+// PE signals touch PI and PE state, which belong to the CPU thread: with asynchronous GX they are posted to it.
+static void pe_signal(System* s, u32 kind, u32 value) {
+    if (s->gxAsync) s->gxAsync->event(s, kind, value);
+    else gx_pe_signal(s, kind, value);
+}
+
+static void pe_finish(System* s) { pe_signal(s, GXEV_FINISH, 0); }
+static void pe_token(System* s, u32 token, bool irq) { pe_signal(s, irq ? GXEV_TOKEN_IRQ : GXEV_TOKEN, token); }
 
 static u8 clamp8(int v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v); }
 

@@ -311,6 +311,7 @@ void sys_run(System* s, u64 cycles) {
     u64 end = sys_now(s) + cycles;
     s->stopRequested = false;
     while (!s->stopRequested && sys_now(s) < end) {
+        if (s->gxAsync) s->gxAsync->poll(s);
         run_due_events(s);
         u64 now = sys_now(s);
         u64 until = s->nextEvent < end ? s->nextEvent : end;

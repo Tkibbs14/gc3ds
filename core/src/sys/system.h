@@ -150,7 +150,25 @@ struct System {
     // icbi: code at physical pa may have changed (the JIT drops compiled blocks there).
     void (*icbiHook)(void* ctx, u32 pa);
     void* icbiCtx;
+    // GX on another thread (the 3DS frontend runs it on core 2), NULL to run it inline. See GXAsync.
+    const struct GXAsync* gxAsync;
 };
+
+// Asynchronous GX. The CPU thread hands write-gather bursts to feed() instead of executing them. The GX thread posts
+// PE token / finish signals with event() instead of touching PI and PE state. The CPU thread applies posted events
+// in poll() (between run slices) and, in sync(), waits until the GX thread has executed everything fed so far;
+// sync() runs before PE register reads and before idle skips (returning true when it applied an event, so a skip
+// is abandoned and the interrupt it may have raised is taken). Emulated time is therefore the same as with inline
+// GX: the GPU looks infinitely fast to the program.
+enum { GXEV_TOKEN, GXEV_TOKEN_IRQ, GXEV_FINISH };
+typedef struct GXAsync {
+    void (*feed)(System* s, const u8* data, u32 len);
+    void (*event)(System* s, u32 kind, u32 value);
+    void (*poll)(System* s);
+    bool (*sync)(System* s);
+} GXAsync;
+// Applies a PE signal on the CPU thread (the inline path calls it directly).
+void gx_pe_signal(System* s, u32 kind, u32 value);
 
 bool sys_init(System* s);
 void sys_free(System* s);

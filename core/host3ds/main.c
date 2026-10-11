@@ -13,6 +13,7 @@
 #include "../src/gx/gx.h"
 #include "../src/gx/pica/pica.h"
 #include "../src/jit/jit.h"
+#include "gxthread.h"
 
 #define MAX_FILES 64
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
@@ -27,6 +28,7 @@ static bool g_pica;  // GX draws on the PICA200 (false: software renderer)
 static char g_clockLine[96];  // measured CPU clock at startup (menu)
 static char g_coreLine[160];  // which CPU cores our threads can use, and how fast (startup probe)
 static u32 g_presents;        // fields shown on the top screen
+static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
@@ -73,11 +75,17 @@ static void on_field(System* s, void* user) {
 // Shows the field the VI scans out. With the GPU backend the image never left the GPU (virtual XFB); otherwise, and
 // for programs that draw the XFB with the CPU, the XFB in RAM (YUYV, 640 wide) is scaled to the 400x240 top screen.
 // The top framebuffer is stored rotated: column-major, 240 pixels per column, BGR8.
-static void present_field(System* s);
+static void present_field(System* s, const GXPresent* p);
+
+// The VI state is read here on the CPU thread; drawing happens where GX runs (the GX thread when it is on).
 static void present(System* s) {
     u64 t0 = prof_begin();
     g_presents++;
-    present_field(s);
+    g_frameReady = false;
+    GXPresent p = { 0, 0, 0, 0, 0, false };
+    p.valid = vi_get_xfb(s, &p.top, &p.bottom, &p.w, &p.h, &p.stride) && p.w;
+    if (gxthread_enabled()) gxthread_present(&p);
+    else present_field(s, &p);
     prof_end(PROF_PRESENT, t0);
 }
 
@@ -127,16 +135,14 @@ static void probe_cores(void) {
     }
 }
 
-static void present_field(System* s) {
-    g_frameReady = false;
-    u32 top = 0, bottom, w = 0, h, stride;
-    bool vi = vi_get_xfb(s, &top, &bottom, &w, &h, &stride) && w;
+static void present_field(System* s, const GXPresent* p) {
+    u32 top = p->top, w = p->w, h = p->h, stride = p->stride;
     if (g_pica && pica_present(s, top)) return;
-    if (!vi) return;
+    if (!p->valid) return;
     u16 fbW, fbH;
     u8* fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &fbW, &fbH);
     u32 lines = h / 2 < 240 ? h / 2 : 240;
-    (void)fbW; (void)fbH; (void)bottom;
+    (void)fbW; (void)fbH;
     for (u32 y = 0; y < lines; y++) {
         u32 line = top + y * stride;
         if (line + w * 2 > PA_MEM1_END) break;
@@ -190,8 +196,8 @@ static int pick(void) {
     int sel = 0;
     for (;;) {
         consoleClear();
-        printf("gc3ds - A run, Y JIT on/off, START quit\n");
-        printf("GPU: %s\n", g_pica ? "PICA200" : "software");
+        printf("gc3ds - A run, Y JIT, B GX thread, START quit\n");
+        printf("GPU: %s, GX %s\n", g_pica ? "PICA200" : "software", gxthread_enabled() ? "on core 2" : "inline");
         printf("CPU: %s\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
         printf("%s\n%s\n\n", g_clockLine, g_coreLine);
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
@@ -207,6 +213,7 @@ static int pick(void) {
             if (d & KEY_START) return -1;
             if ((d & KEY_A) && g_nFiles) return sel;
             if ((d & KEY_Y) && g_jit) { g_useJit = !g_useJit; break; }
+            if ((d & KEY_B) && g_gxThread) { gxthread_enable(&g_sys, !gxthread_enabled()); break; }
             if ((d & KEY_DDOWN) && sel + 1 < g_nFiles) { sel++; break; }
             if ((d & KEY_DUP) && sel > 0) { sel--; break; }
             gspWaitForVBlank();
@@ -222,16 +229,16 @@ static Disc g_disc;
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
-                                                "vdec", "vlight", "cpu", "fbfp", "fb" };
-_Static_assert(PROF_N == 13, "kProfNames must list every PROF_ area");
+                                                "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait" };
+_Static_assert(PROF_N == 15, "kProfNames must list every PROF_ area");
 static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
 static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
-    fprintf(g_perf, "# run %s | %s | jit %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off",
-            g_coreLine);
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine,
+            g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline", g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct"
@@ -295,6 +302,7 @@ static void run(const char* path) {
         dol = load_file(path, &size);
         if (!dol) { printf("cannot read %s\n", path); return; }
     }
+    gxthread_drain();  // the GX thread must be idle before the GPU backend and the machine are reset
     if (g_pica) pica_reset();
     if (g_jit) {
         jit_invalidate_all(g_jit);
@@ -359,10 +367,14 @@ static void run(const char* path) {
             }
             // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
             double tot = (double)(now - tLast), p[PROF_N], rest = 100.0 - 100.0 * (double)waitTicks / tot;
+            // The CPU thread's own areas; with the GX thread on, GX runs on core 2 and the CPU thread's GX cost is the
+            // time it waits for it.
+            bool async = gxthread_enabled();
             for (int k = 0; k < PROF_N; k++) {
                 p[k] = 100.0 * (double)g_hostProf[k] / tot;
-                if (k <= PROF_PRESENT) rest -= p[k];  // the others are nested inside GX or are overlapping views
+                if (k <= PROF_PRESENT && !(async && k == PROF_GX)) rest -= p[k];  // others are nested or views
             }
+            if (async) rest -= p[PROF_GXWAIT];
             // Thousands per second: guest instructions run by compiled blocks, interpreted ones among them, blocks
             // entered, and loads / stores through the C helpers (MMIO, write-gather pipe).
             double k[5] = { 0, 0, 0, 0, 0 }, native = 0;
@@ -418,6 +430,8 @@ static void run(const char* path) {
                 // cpu: inside gekko_run (includes GX and disc work the guest triggers); fpfb / fb: interpreted
                 // float and other instructions from compiled code (sampled)
                 printf("cpu%5.1f fpfb%5.1f fb%5.1f    \n", p[PROF_CPU], p[PROF_FBFP], p[PROF_FB]);
+                // core 2: the GX thread's busy time, and the CPU thread waiting for it
+                printf("GX thread%5.1f%%  cpu waits%5.1f%%  \n", p[PROF_GXTHREAD], p[PROF_GXWAIT]);
                 printf("draws/s %5.0f  verts/s %6.0f   \n", draws, verts);
                 if (g_jit && g_useJit) {
                     printf("k/s ins %5.0f fb %4.0f blk %5.0f   \n", k[0], k[1], k[2]);
@@ -435,6 +449,7 @@ static void run(const char* path) {
         }
     }
     if (g_perf) { fclose(g_perf); g_perf = NULL; }
+    gxthread_drain();
     printf("\nPress A to return to the menu\n");
     while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & (KEY_A | KEY_START)) break; gspWaitForVBlank(); }
 }
@@ -464,6 +479,8 @@ int main(void) {
     hwprobe_run(&g_sys);
     g_pica = pica_attach(&g_sys);
     if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
+    // GX on core 2 (gxthread.c); B in the menu switches it off for comparison.
+    g_gxThread = g_pica && gxthread_start(&g_sys, present_field);
     g_sys.on_field = on_field;
     // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
     // recompiled about a million blocks in 12 emulated seconds (35% of the time).

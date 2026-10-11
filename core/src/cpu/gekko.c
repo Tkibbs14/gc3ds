@@ -65,6 +65,8 @@ void gekko_reset(Gekko* g) {
     GekkoJitFn jit = p->jit;  // an attached JIT stays attached across resets (it drops its own blocks)
     void* jitCtx = p->jitCtx;
     u32 pollRam = p->pollRam;  // so does the polling-loop setting
+    bool (*idleHook)(void*) = p->idleHook;
+    void* idleCtx = p->idleCtx;
     memset(g->gpr, 0, sizeof g->gpr);
     memset(g->fpr, 0, sizeof g->fpr);
     memset(g->sr, 0, sizeof g->sr);
@@ -83,6 +85,8 @@ void gekko_reset(Gekko* g) {
     p->jit = jit;
     p->jitCtx = jitCtx;
     p->pollRam = pollRam;
+    p->idleHook = idleHook;
+    p->idleCtx = idleCtx;
     p->fetchBlk = 0xFFFFFFFFu;
     g->bus = bus;
     gk_map_init(g);
@@ -318,6 +322,13 @@ static bool fetch_refill(Gekko* g, u32 pc) {
     return true;
 }
 
+void gekko_set_idle_hook(Gekko* g, bool (*hook)(void* ctx), void* ctx) {
+    GKP(g)->idleHook = hook;
+    GKP(g)->idleCtx = ctx;
+}
+
+bool gekko_idle_hook(Gekko* g) { GkPriv* p = GKP(g); return p->idleHook && p->idleHook(p->idleCtx); }
+
 void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx) {
     GKP(g)->jit = fn;
     GKP(g)->jitCtx = ctx;
@@ -381,6 +392,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             // Idle loop: "b ." with interrupts enabled can only be left by an interrupt, and nothing changes until
             // the next scheduled event or decrementer edge, so time jumps there instead of spinning.
             if (inst == 0x48000000u && (g->msr & MSR_EE)) {
+                if (gekko_idle_hook(g)) break;  // something the program waits for may have happened: no skip
                 s64 skip = g->downcount;
                 if ((s64)(limit - g->cycles) < skip) skip = (s64)(limit - g->cycles);
                 if (skip < 1) skip = 1;
@@ -399,6 +411,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                 (g->msr & MSR_EE)) {
                 u32 n = poll_len_cached(g, g->pc);
                 if (n && g->pc + 4 * (n - 1) == pc && gekko_poll_loop_ram(g, g->pc, n, p->pollRam)) {
+                    if (gekko_idle_hook(g)) break;
                     s64 skip = g->downcount;
                     if ((s64)(limit - g->cycles) < skip) skip = (s64)(limit - g->cycles);
                     if (skip > 0) { g->cycles += (u64)skip; g->downcount -= skip; p->pollSkipped += (u64)skip; }

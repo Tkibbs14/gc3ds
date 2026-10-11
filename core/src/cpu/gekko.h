@@ -107,6 +107,11 @@ void gekko_poll_stats(Gekko* g, u64* skips, u64* cycles);  // interpreter pollin
 // executed (0 = let the interpreter execute the instruction at g->pc). Interrupts are taken between calls.
 typedef u32 (*GekkoJitFn)(Gekko* g, s64 budget, void* ctx);
 void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx);
+// Optional: asked before an idle loop or polling loop is skipped to the next event. Returning true means state the
+// program may be waiting for has just changed (e.g. another thread finished GPU work and raised an interrupt), so
+// the skip is abandoned and interrupts are checked. gekko_idle_hook calls it (the JIT uses it too).
+void gekko_set_idle_hook(Gekko* g, bool (*hook)(void* ctx), void* ctx);
+bool gekko_idle_hook(Gekko* g);
 // Interpreter access for a JIT's fallback path: execute the single instruction `inst` located at `pc` with the
 // interpreter. Returns the next PC (pc + 4 unless it branched or raised an exception); sets *stop when execution
 // must leave compiled code (interrupt-relevant state changed, or a stop was requested).
