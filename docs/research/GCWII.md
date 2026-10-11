@@ -216,3 +216,17 @@ flushes, cores, audio.
 | H9 | Cost of a software-TLB lookup per memory access | MMU games (32) | cycles per access, TLB vs direct |
 | H10 | Near-plane clipping, done right | GameCube near-plane geometry | a triangle whose visible part covers the samples |
 | — | DSP LLE | 79 titles | not benchmarkable usefully; see §5 |
+
+### Answers: gcbench 6 on the 2DS (2026-10-11, local copy bench/results/gcbench6_2026-10-11.txt)
+
+| Gap | Result | Consequence |
+|---|---|---|
+| H1 EFB copy to RAM | 240×400: transfer 0.48 + invalidate 0.47 + CPU convert 1.98 = **2.9 ms**; 256²: 1.9 ms; 128²: 0.65 ms; 64²: **0.2 ms**. 64×64 transfers did not hang | feasible for the 157 games. The CPU conversion dominates large copies: let the display transfer convert (→RGB565 measured at 0.27 ms for 400×240) |
+| H2 depth readback | raw TextureCopy of D24S8 returns the exact values: z 0.25 → 0xC00000, z 0.75 → 0x400000 (24-bit, reversed mapping) | Z copies and Z peeks are possible (tiled data: untile on the CPU) |
+| H3 EFB peek | **93 µs mean**, 712 µs worst per synchronous single-pixel read | a few peeks per frame are fine (TP Wii, lens flares); many need batching or one cached readback per frame |
+| H4 hashing | xxHash32 **~230 MB/s**, CRC32 ~60 MB/s, 512-sample hash ~23 µs per texture (cache misses) | hash full textures with xxHash32 (64 KB in ~0.3 ms) or sample; never CRC32 |
+| H5 texture decode | RGB5A3→RGBA8 17 Mpx/s (3.9 ms per 256²), CI8 35 (1.9 ms), I4→L4 32 (2.0 ms), CMPR→RGBA8 28 (2.3 ms) | decoded textures must be cached; decode cost is milliseconds per texture |
+| H6 render-target formats | RGBA8 = RGB565 = RGB5A1 = RGBA4 = 193.6 Mpx/s | EFB pixel-format changes cost nothing in fill |
+| H7 motion sensors | gyroscope ~90 updates/s, accelerometer ~98/s; poll 0.8 µs | adequate for Wii Remote motion (Dolphin runs remotes at 200 Hz; interpolate or repeat) |
+| H9 software TLB | +7.9 ns per access sequential, +38.8 ns random 16 MB | MMU games are affordable: a few cycles per access when hot |
+| H10 near-plane clipping | the triangle crossing the camera plane draws its expected visible wedge | the PICA clips crossing triangles correctly; no CPU clipping needed |
