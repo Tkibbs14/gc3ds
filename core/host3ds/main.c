@@ -14,6 +14,7 @@
 #include "../src/gx/pica/pica.h"
 #include "../src/jit/jit.h"
 #include "gxthread.h"
+#include "pmu.h"
 
 #define MAX_FILES 64
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
@@ -32,7 +33,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
-void hwprobe_run(System* s);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt
+void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
 static void scan_dir(const char* dir) {
     DIR* d = opendir(dir);
@@ -230,6 +231,7 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
+#define LINK_AB_SECS 20
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait" };
 _Static_assert(PROF_N == 15, "kProfNames must list every PROF_ area");
@@ -239,15 +241,18 @@ static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s\n# %s\n", strrchr(path, '/') + 1, g_clockLine,
-            g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
-            g_pica && pica_shader_light() ? "shader" : "cpu", g_coreLine);
+    pmu_init();
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | jit linking alternates every %d s\n# %s\n",
+            strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
+            g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), LINK_AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
-    fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,blk_k,slowld_k,slowst_k,native_pct"
+    fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb\n");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s");
+    // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
+    fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
     if (g_jit) g_fbPrev = jit_stats(g_jit)->fallbackRun;
 }
@@ -350,6 +355,8 @@ static void run(const char* path) {
     u64 xLast[4] = { 0, 0, g_sys.gx.bytesReceived, g_sys.di.bytesRead };  // compiles, polls, GX bytes, disc bytes
     if (g_jit) { xLast[0] = jit_stats(g_jit)->blocksCompiled; xLast[1] = jit_stats(g_jit)->pollSkips; }
     PicaStats pLast = g_picaStats;
+    u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
+    if (g_jit) jit_set_linking(g_jit, true);
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
@@ -430,16 +437,31 @@ static void run(const char* path) {
                         (ps->texDecodes - pLast.texDecodes) / secs, (ps->texDecodeBytes - pLast.texDecodeBytes) / secs / 1024.0,
                         (ps->efbCopies - pLast.efbCopies) / secs, (ps->xfbCopies - pLast.xfbCopies) / secs,
                         (ps->clears - pLast.clears) / secs);
-                fprintf(g_perf, ",%.2f,%.2f,%.1f,%.1f,%.0f\n", g_pica ? C3D_GetProcessingTime() : 0.0f,
+                fprintf(g_perf, ",%.2f,%.2f,%.1f,%.1f,%.0f", g_pica ? C3D_GetProcessingTime() : 0.0f,
                         g_pica ? C3D_GetDrawingTime() : 0.0f, osGetMemRegionFree(MEMREGION_APPLICATION) / 1048576.0,
                         linearSpaceFree() / 1048576.0, vramSpaceFree() / 1024.0);
+                u64 links = g_jit ? jit_stats(g_jit)->links : 0;
+                fprintf(g_perf, ",%d,%.0f", g_jit && jit_linking(g_jit) ? 1 : 0, (links - linksLast) / secs);
+                linksLast = links;
+                pmu_row(g_perf, secs);
+                fputc('\n', g_perf);
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
+                // A/B of block linking in the same run (the jit_link column): on for 20 s, off for 20 s, ...
+                if (g_jit && g_useJit && perfRows % LINK_AB_SECS == 0) jit_set_linking(g_jit, !jit_linking(g_jit));
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
+                    if (g_jit) {
+                        const JitStats* js = jit_stats(g_jit);
+                        fprintf(g_perf, "# jit code: %.2f host words per guest instruction, %.0f%% of the buffer; "
+                                "fused compare-branches %llu, forwarded loads %llu, pipe stores %llu, links %llu\n",
+                                jit_words_per_insn(g_jit), 100.0 * jit_code_used(g_jit),
+                                (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
+                                (unsigned long long)js->gatherStores, (unsigned long long)js->links);
+                    }
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }
                 fflush(g_perf);
@@ -461,7 +483,7 @@ static void run(const char* path) {
                 printf("GX thread%5.1f%%  cpu waits%5.1f%%  \n", p[PROF_GXTHREAD], p[PROF_GXWAIT]);
                 printf("draws/s %5.0f  verts/s %6.0f   \n", draws, verts);
                 if (g_jit && g_useJit) {
-                    printf("k/s ins %5.0f fb %4.0f blk %5.0f   \n", k[0], k[1], k[2]);
+                    printf("k/s ins %5.0f fb %4.0f disp %5.0f %s\n", k[0], k[1], k[2], jit_linking(g_jit) ? "L" : "-");
                     printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)jit_stats(g_jit)->icbiFlushes);
                 }
             }
@@ -502,17 +524,17 @@ int main(void) {
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
+    // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
+    // recompiled about a million blocks in 12 emulated seconds (35% of the time).
+    g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 16u << 20);
     printf("measuring the hardware (sdmc:/gc3ds/hw.txt)...\n");
-    hwprobe_run(&g_sys);
+    hwprobe_run(&g_sys, g_jit);
     g_pica = pica_attach(&g_sys);
     if (!g_pica) { printf("GPU backend unavailable, using the software renderer\n"); gx_soft_attach(&g_sys); }
     // GX on core 2 (gxthread.c); B in the menu switches it off for comparison.
     g_gxThread = g_pica && gxthread_start(&g_sys, present_field);
     g_sys.on_field = on_field;
-    // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
-    // recompiled about a million blocks in 12 emulated seconds (35% of the time).
-    g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 16u << 20);
-    if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; }
+    if (g_jit) { g_sys.icbiHook = on_icbi; g_sys.icbiCtx = g_jit; jit_set_gather(g_jit, gp_wgp_put, &g_sys, GP_WGP_EA); }
     // romfs:/autorun.txt (test builds) names a program to start without the menu.
     FILE* ar = fopen("romfs:/autorun.txt", "r");
     if (ar) {

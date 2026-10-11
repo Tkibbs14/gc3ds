@@ -4,8 +4,9 @@
 // Level 1: blocks of guest code end at the first branch. Common integer, load/store, branch, float and paired-single
 // instructions are translated (floats on VFP in a "fast float" model, see jit.c); everything else runs through the
 // interpreter's handler for that one instruction, so any program runs correctly from the start and speed grows with
-// coverage. Guest registers stay in the Gekko struct (no register
-// allocation yet); blocks return to the dispatcher (no linking yet).
+// coverage. Guest registers stay in the Gekko struct (no register allocation yet). Blocks are linked: an exit to a
+// constant address jumps straight to the next block once that is compiled, and blr / bctr go through a small table,
+// so compiled code returns to the C dispatcher only when the budget is used up or for something it must handle.
 #include "../cpu/gekko.h"
 
 typedef struct Jit Jit;
@@ -16,10 +17,14 @@ typedef struct {
 } JitOpCounts;
 
 typedef struct {
-    u64 blocksCompiled, blocksRun, instrsCompiled, instrsNative, flushes;
+    u64 blocksCompiled, instrsCompiled, instrsNative, flushes;
+    u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
+    u64 links;      // exits patched to jump straight to their target block
+    u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR loads taken from a register
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
     u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
     u64 slowLoads, slowStores;    // loads / stores through the C helpers (MMIO, write-gather pipe, non-standard BATs)
+    u64 gatherStores;             // stores to the write-gather pipe through jit_set_gather's direct path
     JitOpCounts fallback;      // static: one per compiled occurrence
     JitOpCounts fallbackRun;   // dynamic: one per execution
 } JitStats;
@@ -32,6 +37,12 @@ void jit_invalidate(Jit* j, u32 pa);     // the 32-byte line at physical pa may 
 void jit_invalidate_all(Jit* j);
 const JitStats* jit_stats(const Jit* j);
 float jit_code_used(const Jit* j);  // fraction of the code buffer in use (a full buffer drops all compiled code)
+float jit_words_per_insn(const Jit* j);  // host code words per guest instruction compiled since the last flush
+// Stores to exactly guest address `ea` (the write-gather pipe) skip translation and the bus: compiled code hands the
+// value to put(ctx, value, size) directly. Only for blocks compiled with the standard mappings.
+void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
+void jit_set_linking(Jit* j, bool on);  // off: every block returns to the dispatcher (for comparison); drops all code
+bool jit_linking(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));
 
 // Testing: limit blocks to this many instructions (0 = default) and run one block from g->pc, returning the
@@ -39,7 +50,8 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line));
 extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
-extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test)
+extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = forwarded GPRs come from the wrong register
 u32 jit_run_one_block(Jit* j);
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with

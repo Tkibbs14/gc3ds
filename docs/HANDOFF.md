@@ -129,6 +129,42 @@ The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the ow
   copies the screen with GX_TextureCopy after the present and writes the file at the next one (`pica_capture`).
   Orientation checked against Azahar's own screenshot of graphics_gx_texturetest.
 
+## JIT level 2 and the ARM11 counters (2026-10-11), not yet measured on the 2DS
+
+On the title scene core 0 ran ~8.0M guest instructions/s in ~1.3M blocks/s (~6 instructions per block, ~650 host
+cycles per block): the level-1 dispatcher (C hash lookup, 10-register save/restore, return per block) dominated.
+- **Block linking** (`jit.c`): shared stubs at the start of the code buffer (ST_ENTER/EXIT/LINK/DYN/BUDGET/INDIRECT)
+  keep RG, RRAM, RDC (budget left), RFAST and RSTOP in registers. A constant exit is a link site that the dispatcher
+  patches to the target block once compiled; blr/bctr go through a 512-entry table (`fast`, valid for one block key);
+  every block starts with `cmp r9, #0; ble`. Never linked: polling-loop blocks (the dispatcher must see each round),
+  idle blocks, and exits after instructions that change the block key (mtmsr, mtspr HID2, ...). A flush bumps `gen` so
+  a pending link from before it is dropped. qemu: test DOLs return to C once per ~50 instructions (was 6).
+- **Native now:** mfmsr; mtmsr (stays in the block unless more than EE changes or EE is set with an interrupt pending:
+  `jit_mtmsr`); dcbst/dcbf/dcbi/dcbz on MEM1; sync, eieio, dcbt, dcbtst; isync (ends the block, linkable); mfspr/mtspr
+  of SRR0/1, DAR, DSISR, SPRG0-3, GQR0-7. These were TP's top fallbacks (dcbi ~150k/s, mfmsr/mtmsr ~40k/s each).
+- **Compare + branch fusion:** CR updates no longer clobber the ARM flags (SO is or-ed in with a shift), and a `bc`
+  right after the compare that set its field branches on the flags.
+- **Store-to-load forwarding:** an instruction whose code ended with `st_gpr` leaves that value in a host register;
+  the next instruction's first `ld_gpr` of the same GPR takes it (`fwd*` in Cg).
+- **Cold code:** memory slow paths (MMIO, unaligned, faults), psq/dcb fallbacks and the pipe path are emitted into a
+  second buffer and appended after the block, with branches fixed up (`cold_begin`/`cold_end`/`fix`). Fast paths fall
+  through. The working hypothesis is that TP's JIT is bound by instruction fetch (1.5M guest instructions per field,
+  ~10 host words each, against a 16 KB I-cache and 2 MB L2); the counters below test it.
+- **Write-gather pipe:** compiled stores to exactly 0xCC008000 call `gp_wgp_put` (`jit_set_gather`) instead of
+  translation + bus + MMIO (TP: ~136k stores/s).
+- **Checks:** `run_jit_fuzz.sh` now also generates the new instructions, pipe stores, user mode and two-instruction
+  blocks (so forwarding and fusion are exercised), with planted bugs 3 (wrong fused condition) and 4 (wrong forwarded
+  register) that must be caught. `JIT_FUZZ_TRACE=1` prints each case and saves each compiled block to
+  /tmp/jit_last.bin; `gdb-multiarch` is installed in WSL (`qemu-arm -g PORT` + `target remote`).
+- **perf.csv:** `disp_k` (was `blk_k`) counts entries from the C dispatcher; `jit_link` and `links_s` follow the
+  automatic A/B (linking alternates every 20 s, `LINK_AB_SECS` in main.c, so one run compares both).
+- **ARM11 performance counters** (`host3ds/pmu.c`, svcControlPerformanceCounter): perf.csv gets `pmu_mcyc` (core 0
+  cycles/s) every second, two core events per second in rotation (instructions, mispredicted branches, I/D cache
+  misses, stalls for instructions / data hazards / LSU, D-cache write misses, main TLB misses, branches), and the SCU's
+  line-fill misses from cores 0 and 2 and external reads/writes. hw.txt has a self-test (a 20M-instruction loop and a
+  4 MB read) that shows whether the counters are per core and what clock they count. Azahar does not emulate the SVC
+  (its values are garbage).
+
 ## GX on core 2 (068ae2f), measured on the 2DS
 
 | TP title scene | GX inline | GX on core 2 |

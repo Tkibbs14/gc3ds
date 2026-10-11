@@ -330,7 +330,7 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         if (avail < 9) return 0;
         u32 addr = rd32(p + 1) & 0x03FFFFE0, size = rd32(p + 5);
         if (inList) emu_log(LOG_GX, "nested display list call ignored\n");
-        else if (addr + size <= PA_MEM1_END) run_list(s, gx, s->mem1 + addr, size, true);
+        else if (size <= PA_MEM1_END && addr <= PA_MEM1_END - size) run_list(s, gx, s->mem1 + addr, size, true);  // no wrap
         else emu_log(LOG_GX, "display list %08x+%x out of range\n", addr, size);
         return 9;
     }

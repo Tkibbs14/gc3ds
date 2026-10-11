@@ -13,6 +13,8 @@
 #define GC3DS_HOST_TYPES
 #include "../src/gx/vfast.h"
 #include "../src/sys/system.h"
+#include "../src/jit/jit.h"
+#include "pmu.h"
 
 static double ns_since(u64 t0) { return (double)(svcGetSystemTick() - t0) * 1e9 / SYSCLOCK_ARM11; }
 
@@ -187,7 +189,135 @@ static void probe_memory(FILE* f) {
     }
 }
 
-void hwprobe_run(System* s) {
+// ---- the JIT on synthetic guest code ----
+// Small PowerPC programs run through the JIT on core 0 for a fixed number of guest instructions: ns and host cycles
+// per guest instruction, with block linking on and off, and from the ARM11 counters the host instructions, I-cache
+// misses and D-cache read misses per guest instruction. The straight-line programs (n x addi, then a branch back)
+// are sized so their compiled code fits the 16 KB L1 I-cache, overflows it, fits the 2 MB L2, and overflows that: the
+// cost of fetching compiled code from each level.
+#define BENCH_CODE 0x00100000u  // physical; executed at 0x80000000 | BENCH_CODE
+#define BENCH_DATA 0x00300000u
+static u32 g_at;
+static void put(System* s, u32 w) { mem1_write32(s, BENCH_CODE + 4 * g_at++, w); }
+static u32 here(void) { return 0x80000000u | (BENCH_CODE + 4 * g_at); }
+static u32 i_addi(u32 d, u32 a, s32 v) { return (14u << 26) | (d << 21) | (a << 16) | ((u32)v & 0xFFFF); }
+static u32 i_x(u32 xo, u32 d, u32 a, u32 b) { return (31u << 26) | (d << 21) | (a << 16) | (b << 11) | (xo << 1); }
+static u32 i_b(u32 from, u32 to, bool link) { return (18u << 26) | ((to - from) & 0x03FFFFFCu) | (link ? 1u : 0u); }
+
+static void build_alu(System* s, u32 n) {
+    (void)n;
+    u32 top = here();
+    put(s, i_addi(3, 3, 1));
+    put(s, i_addi(4, 4, 3));
+    put(s, (31u << 26) | (3u << 21) | (5u << 16) | (4u << 11) | (316u << 1));  // xor r5, r3, r4
+    put(s, i_x(266, 6, 5, 3));                                               // add r6, r5, r3
+    put(s, i_b(here(), top, false));
+}
+static void build_mem(System* s, u32 n) {  // r7 = data; a read-modify-write walk over 4 KB
+    (void)n;
+    u32 top = here();
+    put(s, (32u << 26) | (5u << 21) | (4u << 16));                      // lwz r5, 0(r4)
+    put(s, i_addi(5, 5, 1));
+    put(s, (36u << 26) | (5u << 21) | (4u << 16));                      // stw r5, 0(r4)
+    put(s, i_addi(6, 6, 4));
+    put(s, (21u << 26) | (6u << 21) | (6u << 16) | (20u << 6) | (29u << 1));  // rlwinm r6, r6, 0, 20, 29
+    put(s, i_x(266, 4, 7, 6));                                          // add r4, r7, r6
+    put(s, i_b(here(), top, false));
+}
+static void build_call(System* s, u32 n) {  // bl / blr: the return goes through the indirect-branch table
+    (void)n;
+    u32 top = here();
+    u32 at = here();
+    put(s, 0);  // bl f, patched below
+    put(s, i_addi(3, 3, 1));
+    put(s, i_b(here(), top, false));
+    u32 f = here();
+    put(s, i_addi(4, 4, 1));
+    put(s, 0x4E800020u);  // blr
+    mem1_write32(s, at & 0x01FFFFFFu, i_b(at, f, true));
+}
+static void build_cmp(System* s, u32 n) {  // compare + conditional branch (fused), never taken
+    (void)n;
+    u32 top = here();
+    put(s, i_addi(3, 3, 1));
+    put(s, (11u << 26) | (3u << 16) | 0x8000u);  // cmpwi r3, -32768
+    u32 at = here();
+    put(s, 0);  // beq top (never: r3 counts up from 0)
+    put(s, i_addi(4, 4, 1));
+    put(s, i_b(here(), top, false));
+    mem1_write32(s, at & 0x01FFFFFFu, (16u << 26) | (12u << 21) | (2u << 16) | ((top - at) & 0xFFFC));
+}
+static void build_straight(System* s, u32 n) {
+    u32 top = here();
+    for (u32 i = 0; i < n; i++) put(s, i_addi(3, 3, 1));
+    put(s, i_b(here(), top, false));
+}
+
+typedef struct { u64 ticks, cyc, inst, icm, dcm; } BenchOut;
+
+// Runs `instrs` guest instructions from the bench code (after a warm-up pass that compiles it) and measures it twice,
+// once per counter pair.
+static void bench_run(System* s, Jit* j, void (*build)(System*, u32), u32 n, u32 instrs, BenchOut* o) {
+    Gekko* g = &s->cpu;
+    sys_reset(s);
+    g_at = 0;
+    build(s, n);
+    gekko_set_spr(g, SPR_IBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_IBAT0U + 1, 0x00000002);
+    gekko_set_spr(g, SPR_DBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_DBAT0U + 1, 0x00000002);
+    gekko_set_spr(g, SPR_DBAT0U + 2, 0xC0001FFF); gekko_set_spr(g, SPR_DBAT0U + 3, 0x0000002A);
+    gekko_set_spr(g, SPR_HID2, 0xA0000000u);
+    gekko_set_msr(g, (1u << 13) | (1u << 5) | (1u << 4) | (1u << 1));  // FP, IR, DR, RI; EE off
+    g->pc = 0x80000000u | BENCH_CODE;
+    g->gpr[7] = 0x80000000u | BENCH_DATA;
+    g->gpr[4] = g->gpr[7];
+    jit_invalidate_all(j);
+    gekko_run(g, n + 64);  // compiles everything
+    unsigned long long cyc, a, b;
+    pmu_select(0);
+    u64 t0 = svcGetSystemTick();
+    gekko_run(g, instrs);
+    o->ticks = svcGetSystemTick() - t0;
+    pmu_read(&cyc, &a, &b);
+    o->cyc = cyc; o->inst = a;
+    pmu_select(1);
+    gekko_run(g, instrs);
+    pmu_read(&cyc, &a, &b);
+    o->icm = a; o->dcm = b;
+    pmu_select(0);
+}
+
+static void probe_jit(FILE* f, System* s, Jit* j) {
+    if (!j) { fprintf(f, "jit: not available\n"); return; }
+    static const struct { const char* name; void (*build)(System*, u32); u32 n; } kB[] = {
+        { "alu", build_alu, 0 }, { "mem", build_mem, 0 }, { "call", build_call, 0 }, { "cmp", build_cmp, 0 },
+        { "line1k", build_straight, 1024 }, { "line8k", build_straight, 8192 }, { "line64k", build_straight, 65536 },
+        { "line256k", build_straight, 262144 },
+    };
+    jit_attach(j);
+    fprintf(f, "jit benchmarks (ns / host cycles / host instructions / I-cache misses / D-cache read misses, per guest "
+               "instruction; linking on, then off):\n");
+    for (u32 k = 0; k < sizeof kB / sizeof kB[0]; k++) {
+        u32 instrs = 1000000;
+        if (kB[k].n > instrs / 2) instrs = 2 * kB[k].n;
+        BenchOut on, off;
+        jit_set_linking(j, true);
+        bench_run(s, j, kB[k].build, kB[k].n, instrs, &on);
+        jit_set_linking(j, false);
+        bench_run(s, j, kB[k].build, kB[k].n, instrs, &off);
+        double ns = 1e9 / SYSCLOCK_ARM11 / instrs;
+        fprintf(f, "  %-9s on %6.1f ns %6.1f cyc %5.2f ins %6.3f ic %6.3f dc | off %6.1f ns %6.1f cyc %5.2f ins %6.3f ic\n",
+                kB[k].name, on.ticks * ns, (double)on.cyc / instrs, (double)on.inst / instrs, (double)on.icm / instrs,
+                (double)on.dcm / instrs, off.ticks * ns, (double)off.cyc / instrs, (double)off.inst / instrs,
+                (double)off.icm / instrs);
+        fflush(f);
+    }
+    jit_set_linking(j, true);
+    jit_invalidate_all(j);
+    gekko_set_jit(&s->cpu, NULL, NULL);
+    sys_reset(s);
+}
+
+void hwprobe_run(System* s, Jit* j) {
     mkdir("sdmc:/gc3ds", 0777);
     FILE* f = fopen("sdmc:/gc3ds/hw.txt", "w");
     if (!f) return;
@@ -207,6 +337,10 @@ void hwprobe_run(System* s) {
     probe_vertices(f, s);
     fflush(f);
     probe_memory(f);
+    fflush(f);
+    pmu_probe(f);
+    fflush(f);
+    probe_jit(f, s, j);
     fprintf(f, "hwprobe total %.0f ms\n", ns_since(t0) / 1e6);
     fclose(f);
 }

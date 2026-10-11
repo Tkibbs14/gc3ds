@@ -28,6 +28,12 @@ static u32 CODE_PA = 0x3000u;
 #define MSR_BASE (MSR_IR | MSR_DR | MSR_RI)
 #define HID2_BASE (0x80000000u | 0x20000000u)  // LSQE | PSE
 
+// JIT_FUZZ_TRACE: every compiled block goes to /tmp/jit_last.bin before it runs (disassemble it after a crash).
+static void dump_block(const u32* code, u32 words) {
+    FILE* d = fopen("/tmp/jit_last.bin", "wb");
+    if (d) { fwrite(code, 4, words, d); fclose(d); }
+}
+
 static u32 interesting(void) {
     static const u32 v[] = { 0, 1, 2, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0xFFFF, 0x8000, 0x7FFF, 0x10000, 31, 32, 33, 63 };
     switch (rnd() % 4) {
@@ -54,6 +60,8 @@ typedef struct {
     u32 gqr[8], fpscr;
     bool fpOff;   // MSR[FP] = 0 (float instructions must raise the FP-unavailable exception)
     bool fmem;    // fill the memory window with normal single-precision floats
+    bool irq;     // an external interrupt is pending (mtmsr setting EE must leave compiled code)
+    bool user;    // MSR[PR] = 1 (supervisor instructions must raise the program exception)
 } St;
 
 static u32 load_base(St* st, u32 ra, u32 size) {
@@ -145,10 +153,91 @@ static u32 gen(St* st) {
             if (rnd() % 3 == 0) st->ctr = rnd() % 3;
             return (19u << 26) | (bo << 21) | (bi << 16) | ((toCtr ? 528u : 16u) << 1) | (rnd() & 1);
         }
+        case 12: {  // mfmsr, mtmsr (EE toggles, sometimes other bits, sometimes with an interrupt pending), sync, isync
+            switch (rnd() % 5) {
+            case 0: return (31u << 26) | (rd << 21) | (83u << 1);
+            case 1: case 2: {
+                u32 msr = MSR_BASE | (st->fpOff ? 0 : MSR_FP) | (st->user ? MSR_PR : 0);
+                u32 v = msr ^ ((rnd() & 1) ? MSR_EE : 0) ^ ((rnd() % 4 == 0) ? MSR_FP : 0) ^ ((rnd() % 8 == 0) ? MSR_RI : 0);
+                st->gpr[rd] = v;
+                st->irq = rnd() % 3 == 0;
+                return (31u << 26) | (rd << 21) | (146u << 1);
+            }
+            case 3: return (31u << 26) | (((rnd() & 1) ? 598u : 854u) << 1);
+            default: return (19u << 26) | (150u << 1);
+            }
+        }
+        case 13: {  // dcbst dcbf dcbi dcbz dcbt: window, end of MEM1 or a wild address
+            static const u32 xos[] = { 54, 86, 470, 1014, 278 };
+            u32 xo = xos[rnd() % 5];
+            ra = 1 + rnd() % 31;
+            rb = 1 + rnd() % 31;
+            if (rb == ra) rb = (ra % 31) + 1;
+            float_base(st, ra, 4);
+            st->gpr[rb] = rnd() % 256;
+            return (31u << 26) | (ra << 16) | (rb << 11) | (xo << 1);
+        }
+        case 15: {  // stores to the write-gather pipe (the JIT's direct path) and next to it (the MMIO path)
+            static const u32 ops[] = { 36, 38, 44, 37, 39, 45 };
+            u32 op = ops[rnd() % 6];
+            ra = 1 + rnd() % 31;
+            u32 d = (u32)(s32)((s32)(rnd() % 64) - 32) & ~3u;
+            st->gpr[ra] = GP_WGP_EA - d + ((rnd() % 4 == 0) ? 4u : 0u);
+            return (op << 26) | (rd << 21) | (ra << 16) | (d & 0xFFFF);
+        }
+        case 14: {  // mfspr / mtspr of plain-storage SPRs
+            static const u32 sprs[] = { 26, 27, 18, 19, 272, 273, 274, 275, 912, 913, 914, 915, 916, 917, 918, 919 };
+            u32 spr = sprs[rnd() % 16];
+            u32 xo = (rnd() & 1) ? 339 : 467;
+            return (31u << 26) | (rd << 21) | ((spr & 31) << 16) | ((spr >> 5) << 11) | (xo << 1);
+        }
         default:
             continue;
         }
     }
+}
+
+// ---- two-instruction blocks ----
+// The JIT carries state from one instruction to the next (a GPR it just stored is reused; a compare's ARM flags drive
+// the following bc), so some cases are pairs. These help the pair touch that state.
+static bool is_branch_op(u32 in) {
+    u32 op = in >> 26, xo = (in >> 1) & 0x3FF;
+    return op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528 || xo == 150));
+}
+// GPR written by an integer instruction (-1 when none or unknown).
+static int dest_gpr(u32 in) {
+    u32 op = in >> 26, rd = (in >> 21) & 31, ra = (in >> 16) & 31;
+    if (op == 7 || op == 8 || (op >= 12 && op <= 15) || (op >= 32 && op <= 35) || (op >= 40 && op <= 43)) return (int)rd;
+    if (op == 20 || op == 21 || op == 23 || (op >= 24 && op <= 29)) return (int)ra;
+    if (op == 31) {
+        u32 xo = (in >> 1) & 0x3FF;
+        if (xo == 28 || xo == 60 || xo == 444 || xo == 412 || xo == 316 || xo == 124 || xo == 476 || xo == 284 ||
+            xo == 24 || xo == 536 || xo == 824 || xo == 26 || xo == 954 || xo == 922) return (int)ra;
+        if (xo == 266 || xo == 10 || xo == 138 || xo == 202 || xo == 40 || xo == 8 || xo == 136 || xo == 104 ||
+            xo == 235 || xo == 75 || xo == 11 || xo == 19 || xo == 339 || xo == 83) return (int)rd;
+    }
+    return -1;
+}
+// Makes the second instruction read GPR r where its first source operand is (arithmetic and logic only).
+static u32 read_gpr(u32 in, u32 r) {
+    u32 op = in >> 26;
+    if (op == 7 || op == 8 || (op >= 10 && op <= 15)) return (in & ~(31u << 16)) | (r << 16);
+    if (op == 20 || op == 21 || op == 23 || (op >= 24 && op <= 29)) return (in & ~(31u << 21)) | (r << 21);
+    if (op == 31) {
+        u32 xo = (in >> 1) & 0x3FF;
+        if (xo == 28 || xo == 60 || xo == 444 || xo == 316 || xo == 24 || xo == 536 || xo == 824 || xo == 26) return (in & ~(31u << 21)) | (r << 21);
+        if (xo == 266 || xo == 10 || xo == 40 || xo == 8 || xo == 235 || xo == 0 || xo == 32) return (in & ~(31u << 16)) | (r << 16);
+    }
+    return in;
+}
+// CR field a compare or record form sets (-1 when none).
+static int crf_set(u32 in) {
+    u32 op = in >> 26, xo = (in >> 1) & 0x3FF;
+    if (op == 10 || op == 11) return (int)((in >> 23) & 7);
+    if (op == 31 && (xo == 0 || xo == 32)) return (int)((in >> 23) & 7);
+    if (op == 28 || op == 29 || op == 13) return 0;
+    if ((op == 20 || op == 21 || op == 23 || op == 31) && (in & 1)) return 0;
+    return -1;
 }
 
 // ---- float instructions ----
@@ -315,7 +404,7 @@ static bool lane_ok(u64 jitv, u64 ref, int t, int prodExp) {
     return false;
 }
 
-static bool compare(u32 inst, int n) {
+static bool compare(u32 inst, u32 inst2, int n, int expect) {
     Gekko* a = &A.cpu;
     Gekko* b = &B.cpu;
     bool ok = true;
@@ -325,6 +414,7 @@ static bool compare(u32 inst, int n) {
         if (a->gpr[r] != b->gpr[r]) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  r%d jit %08x interp %08x\n", r, a->gpr[r], b->gpr[r]); ok = false; }
 #define CHK(f) if (a->f != b->f) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  " #f " jit %08x interp %08x\n", a->f, b->f); ok = false; }
     CHK(cr) CHK(xer) CHK(lr) CHK(ctr) CHK(pc) CHK(msr) CHK(spr[SPR_SRR0]) CHK(spr[SPR_SRR1]) CHK(spr[SPR_DAR]) CHK(spr[SPR_DSISR])
+    CHK(spr[SPR_SPRG0]) CHK(spr[SPR_SPRG0 + 3]) CHK(spr[SPR_GQR0]) CHK(spr[SPR_GQR0 + 5]) CHK(spr[SPR_GQR0 + 7])
 #undef CHK
     int t = tolerance(inst), prodExp = -9999;
     if (t & T_FUSED_D) {  // exponent of a * c for the double multiply-add forms
@@ -359,7 +449,16 @@ static bool compare(u32 inst, int n) {
         for (u32 i = 0; i < WIN_SIZE; i++) if (A.mem1[WIN_PA + i] != B.mem1[WIN_PA + i]) { printf("  mem %08x jit %02x interp %02x\n", WIN_PA + i, A.mem1[WIN_PA + i], B.mem1[WIN_PA + i]); break; }
         ok = false;
     }
-    if (n != 1) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  JIT executed %d instructions\n", n); ok = false; }
+    if (A.gx.wgpLen != B.gx.wgpLen || memcmp(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp) || A.gx.bytesReceived != B.gx.bytesReceived) {
+        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        printf("  write-gather pipe differs (jit %u bytes pending, interp %u)\n", A.gx.wgpLen, B.gx.wgpLen);
+        ok = false;
+    }
+    if (n != expect) {
+        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        printf("  JIT executed %d instructions, expected %d (second %08x)\n", n, expect, inst2);
+        ok = false;
+    }
     return ok;
 }
 
@@ -384,7 +483,10 @@ int main(int argc, char** argv) {
     jit = jit_create(&A.cpu, A.mem1, MEM1_SIZE, 4u << 20);
     if (!jit) { printf("jit_create failed\n"); return 2; }
     jit_debug_max_insns = 1;
+    jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
+    if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
     if (plant == 2) jit_debug_plant = 1;
+    if (plant >= 3) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;
     for (u32 k = 0; k < cases && fails < 10; k++) {
         St st;
@@ -398,15 +500,23 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 8; i++) st.gqr[i] = gqr_rand();
         st.fpscr = rnd() % 8 == 0 ? rnd() & 7 : 0;  // RN != 0: the JIT must leave every float instruction to the interpreter; NI: flush, as the host does
         st.fpOff = rnd() % 40 == 0;
+        st.user = rnd() % 30 == 0;
         bool isFloat = rnd() % 100 < 55;
-        u32 inst = isFloat ? genf(&st) : gen(&st);
+        u32 inst = isFloat ? genf(&st) : gen(&st), inst2 = 0;
+        bool pair = !isFloat && rnd() % 3 == 0 && !is_branch_op(inst);
+        if (pair) {  // a second instruction, often reading what the first wrote or branching on its compare
+            inst2 = gen(&st);
+            int d = dest_gpr(inst), f = crf_set(inst);
+            if (d >= 0 && (rnd() & 1)) inst2 = read_gpr(inst2, (u32)d);
+            if (f >= 0 && (inst2 >> 26) == 16 && rnd() % 4) inst2 = (inst2 & ~(31u << 16)) | (((u32)f * 4 + rnd() % 4) << 16);
+        }
         floats += isFloat;
-        CODE_PA = 0x3000u + 4 * (rnd() % 1024);
+        CODE_PA = 0x3000u + 4 * (rnd() % 1023);
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         if (st.fmem && rnd() % 8) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
-        mem1_write32(&A, CODE_PA, inst);
-        mem1_write32(&B, CODE_PA, inst);
+        mem1_write32(&A, CODE_PA, inst); mem1_write32(&A, CODE_PA + 4, inst2);
+        mem1_write32(&B, CODE_PA, inst); mem1_write32(&B, CODE_PA + 4, inst2);
         memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };
         for (int m = 0; m < 2; m++) {
@@ -416,16 +526,27 @@ int main(int argc, char** argv) {
             for (int r = 0; r < 32; r++) { memcpy(&g->fpr[r].ps0, &st.fpr[r][0], 8); memcpy(&g->fpr[r].ps1, &st.fpr[r][1], 8); }
             for (int i = 0; i < 8; i++) g->spr[SPR_GQR0 + i] = st.gqr[i];
             g->fpscr = st.fpscr;
-            u32 msr = MSR_BASE | (st.fpOff ? 0 : MSR_FP);
+            u32 msr = MSR_BASE | (st.fpOff ? 0 : MSR_FP) | (st.user ? MSR_PR : 0);
             if (g->msr != msr) gekko_set_msr(g, msr);
             g->spr[SPR_SRR0] = g->spr[SPR_SRR1] = g->spr[SPR_DAR] = g->spr[SPR_DSISR] = 0;
+            for (int i = 0; i < 4; i++) g->spr[SPR_SPRG0 + i] = 0;
+            gekko_set_external_irq(g, st.irq);
         }
         jit_invalidate_all(jit);
+        jit_debug_max_insns = pair ? 2 : 1;
+        u32 msrBefore = B.cpu.msr;
+        if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x\n", k, inst, inst2); fflush(stdout); }  // finds a crash
         int n = (int)jit_run_one_block(jit);
         if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
         bool stop;
         B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA, inst, &stop);
-        if (!compare(inst, n)) {
+        int expect = 1;
+        // The second instruction runs unless the first left pc + 4 or must stop compiled code: an mtmsr that changed more
+        // than EE or set EE with an interrupt pending (other stops are the JIT's choice and need n == 2 to continue).
+        bool mtmsr = (inst >> 26) == 31 && ((inst >> 1) & 0x3FF) == 146;
+        bool mustStop = stop && mtmsr && (((msrBefore ^ B.cpu.msr) & ~MSR_EE) || (st.irq && (B.cpu.msr & ~msrBefore & MSR_EE)));
+        if (pair && B.cpu.pc == CODE_EA + 4 && !mustStop && (!stop || n == 2)) { B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA + 4, inst2, &stop); expect = 2; }
+        if (!compare(inst, inst2, n, expect)) {
             if (!fails && !plant) {  // keep the first failing block for disassembly
                 FILE* d = fopen("/tmp/jit_fail.bin", "wb");
                 if (d) { fwrite(jit_debug_last_code, 4, jit_debug_last_words, d); fclose(d); }

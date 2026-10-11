@@ -104,6 +104,13 @@ static inline void patch_branch(Emit* e, u32 at, u32 target) {
     s32 off = (s32)target - (s32)(at + 2);
     e->buf[at] = (e->buf[at] & 0xFF000000u) | ((u32)off & 0xFFFFFF);
 }
+// Branch (or branch with link) to an absolute host address outside the buffer being emitted (the JIT's shared stubs).
+static inline void branch_abs(Emit* e, int cond, bool link, const u32* dest) {
+    s32 off = (s32)(dest - (e->buf + e->n + 2));
+    E(e, cc(cond) | (link ? 0x0B000000u : 0x0A000000u) | ((u32)off & 0xFFFFFF));
+}
+static inline void bx_reg_c(Emit* e, int cond, int rm) { E(e, cc(cond) | 0x012FFF10u | (u32)rm); }
+static inline void word(Emit* e, u32 w) { E(e, w); }  // a literal in the instruction stream
 
 // ---- VFPv2. Sn: single registers 0..31; Dn: double registers 0..15 (d0-d7 = s0-s15 are caller-saved). ----
 // Multiply-accumulate group: Vd = (+/-)Vd (+/-) Vn * Vm; the product is rounded before the add (VFP11 has no fused op).

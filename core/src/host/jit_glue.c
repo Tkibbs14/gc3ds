@@ -1,6 +1,7 @@
 // JIT glue for the PC runner. The JIT exists only on 32-bit ARM hosts (here: ARM Linux under qemu-arm); on other
 // hosts host_jit_enable reports that it is unavailable.
 #include <stdio.h>
+#include <stdlib.h>
 #include "../sys/system.h"
 
 #if defined(__arm__)
@@ -22,6 +23,8 @@ bool host_jit_enable(System* s) {
     if (!g_hostJit) return false;
     jit_attach(g_hostJit);
     s->icbiHook = on_icbi;
+    jit_set_gather(g_hostJit, gp_wgp_put, s, GP_WGP_EA);
+    if (getenv("GC3DS_JIT_NOLINK")) jit_set_linking(g_hostJit, false);  // comparison runs
     s->icbiCtx = g_hostJit;
     return true;
 }

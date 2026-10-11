@@ -71,3 +71,16 @@ void gp_fifo_write(System* s, const u8* data, u32 len) {
         if (gx->wgpLen == 32) { gx->wgpLen = 0; gp_burst(s, gx->wgp); }
     }
 }
+
+// One CPU store of `size` (1, 2 or 4) bytes to the pipe, the value's low bytes in console order (the JIT's direct path).
+void gp_wgp_put(void* ctx, u32 v, u32 size) {
+    System* s = ctx;
+    GXState* gx = &s->gx;
+    if (gx->wgpLen + size < 32) {
+        for (u32 i = 0; i < size; i++) gx->wgp[gx->wgpLen++] = (u8)(v >> (8 * (size - 1 - i)));
+        return;
+    }
+    u8 b[4];
+    for (u32 i = 0; i < size; i++) b[i] = (u8)(v >> (8 * (size - 1 - i)));
+    gp_fifo_write(s, b, size);
+}
