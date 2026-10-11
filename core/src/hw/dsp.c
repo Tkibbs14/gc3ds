@@ -40,7 +40,7 @@ static void aram_dma(System* s) {
 
 // Audio DMA: plays aiDmaLen 32-byte blocks from aiDmaStart at 32 kHz stereo 16-bit (8 samples per block), then
 // raises AIDINT and restarts with the latched values, as the hardware does.
-static void aid_event(System* s, u64 now, u32 arg) {
+void dsp_aid_event(System* s, u64 now, u32 arg) {
     (void)arg;
     DSPState* d = &s->dsp;
     if (!(d->aiDmaLen & 0x8000)) return;
@@ -49,7 +49,7 @@ static void aid_event(System* s, u64 now, u32 arg) {
     u32 blocks = d->aiDmaLen & 0x7FFF;
     d->aiDmaBlocksLeft = (u16)blocks;
     u64 cycles = (u64)blocks * 8 * GEKKO_HZ / 32000;
-    sched_add(s, now + (cycles ? cycles : 1000), aid_event, 0);
+    sched_add(s, now + (cycles ? cycles : 1000), dsp_aid_event, 0);
 }
 
 void dsp_reset(System* s) {
@@ -124,8 +124,8 @@ void dsp_write16(System* s, u32 off, u16 v) {
     case AID_LEN: {
         bool was = d->aiDmaLen & 0x8000;
         d->aiDmaLen = v;
-        if ((v & 0x8000) && !was) { sched_remove(s, aid_event); aid_event(s, sys_now(s), 0); }
-        else if (!(v & 0x8000)) sched_remove(s, aid_event);
+        if ((v & 0x8000) && !was) { sched_remove(s, dsp_aid_event); dsp_aid_event(s, sys_now(s), 0); }
+        else if (!(v & 0x8000)) sched_remove(s, dsp_aid_event);
         break;
     }
     default: emu_log(LOG_DSP, "DSP write %03x = %04x\n", off, v); break;

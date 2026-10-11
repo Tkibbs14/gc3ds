@@ -49,7 +49,7 @@ void di_reset_drive(System* s) {
     if (s->disc) s->di.state = DRIVE_ID_NOT_READ;
 }
 
-static void complete(System* s, u64 now, u32 arg) {
+void di_complete_event(System* s, u64 now, u32 arg) {
     (void)now; (void)arg;
     DIState* d = &s->di;
     if (!d->busy) return;
@@ -65,8 +65,8 @@ static void finish(System* s, u32 error, u64 delay) {
     d->error = error;
     d->pendingSr = error ? SR_DEINT : SR_TCINT;
     d->busy = true;
-    sched_remove(s, complete);
-    sched_add(s, sys_now(s) + delay, complete, 0);
+    sched_remove(s, di_complete_event);
+    sched_add(s, sys_now(s) + delay, di_complete_event, 0);
 }
 
 static u8* dma_target(System* s, u32 len) {
@@ -157,7 +157,7 @@ void di_write32(System* s, u32 off, u32 v) {
         u32 w1c = SR_DEINT | SR_TCINT | SR_BRKINT;
         d->sr = (d->sr & w1c & ~(v & w1c)) | (v & (SR_DEINTMASK | SR_TCINTMASK | SR_BRKINTMASK));
         if ((v & SR_BRK) && d->busy) {  // break: abandon the running command
-            sched_remove(s, complete);
+            sched_remove(s, di_complete_event);
             d->busy = false;
             d->cr &= ~CR_TSTART;
             d->sr |= SR_BRKINT;

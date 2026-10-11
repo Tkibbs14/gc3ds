@@ -164,6 +164,10 @@ void sys_stop(System* s, const char* why);
 
 void sched_add(System* s, u64 when, EventFn fn, u32 arg);
 void sched_remove(System* s, EventFn fn);
+// Every function ever scheduled (save states store an event as its index in savestate.c's list).
+void vi_line_event(System* s, u64 now, u32 arg);
+void di_complete_event(System* s, u64 now, u32 arg);
+void dsp_aid_event(System* s, u64 now, u32 arg);
 static inline u64 sys_now(System* s) { return s->cpu.cycles; }
 
 // Interrupts.

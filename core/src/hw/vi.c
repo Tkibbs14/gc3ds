@@ -21,7 +21,7 @@ static void update_irq(System* s) {
     if (any) pi_raise(s, PI_INT_VI); else pi_clear(s, PI_INT_VI);
 }
 
-static void line_event(System* s, u64 now, u32 arg) {
+void vi_line_event(System* s, u64 now, u32 arg) {
     (void)arg;
     VIState* v = &s->vi;
     v->line++;
@@ -39,7 +39,7 @@ static void line_event(System* s, u64 now, u32 arg) {
         u16* hi = &v->regs[(VI_DI0 + 4 * i) / 2];
         if ((*hi & 0x1000) && (*hi & 0x3FF) == v->line) { *hi |= 0x8000; update_irq(s); }
     }
-    sched_add(s, now + CYCLES_PER_LINE, line_event, 0);
+    sched_add(s, now + CYCLES_PER_LINE, vi_line_event, 0);
 }
 
 void vi_reset(System* s) {
@@ -48,7 +48,7 @@ void vi_reset(System* s) {
     s->vi.regs[VI_VISEL / 2] = 0;                      // composite cable, NTSC
     s->vi.regs[VI_VTR / 2] = (240u << 4) | 6;           // 240 active lines per field, as the IPL leaves it
     s->vi.regs[VI_HSW / 2] = (40u << 8) | 80;           // 640 pixels wide, field stride two lines
-    sched_add(s, sys_now(s) + CYCLES_PER_LINE, line_event, 0);
+    sched_add(s, sys_now(s) + CYCLES_PER_LINE, vi_line_event, 0);
 }
 
 u16 vi_read16(System* s, u32 off) {
