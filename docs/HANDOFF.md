@@ -144,18 +144,29 @@ cycles per block): the level-1 dispatcher (C hash lookup, 10-register save/resto
   of SRR0/1, DAR, DSISR, SPRG0-3, GQR0-7. These were TP's top fallbacks (dcbi ~150k/s, mfmsr/mtmsr ~40k/s each).
 - **Compare + branch fusion:** CR updates no longer clobber the ARM flags (SO is or-ed in with a shift), and a `bc`
   right after the compare that set its field branches on the flags.
-- **Register cache** (replaced the store-to-load forwarding of 4bf5279): guest GPRs live in r4, r6, r7, r8 from their
+- **Register cache** (replaced the store-to-load forwarding of 4bf5279; CR and XER and the fifth slot r5 since
+  b3275ef): guest GPRs, CR (id 32) and XER (id 33) live in r4-r8 from their
   first use in a block (`src`/`dst`/`dst_done`, LRU, pinned per instruction), written back when dirty at every exit
   (each exit stub carries a snapshot), before every interpreter fallback (hot code then forgets the cache, cold code
   reloads it) and at branches. Update forms keep the effective address in r0 (slow paths push it around their helper
   call). **Rule:** no cache allocation between a branch into cold code and that cold code (the cold path would skip an
-  eviction's write-back); psq computes its address before its GQR check for this reason. CR, XER, LR, CTR stay in
-  memory (next: CR in a slot; r5 is still RSTOP).
+  eviction's write-back); psq computes its address before its GQR check for this reason. LR and CTR stay in memory.
+  There is no stop-flag register any more: slow paths keep the stop status in r3 and every memory instruction has a
+  tail (`set_tail`, lfs's FPR in `tailFpr`) that finishes it when it must leave; a slow path without one refuses to
+  compile the block.
+- **Interpreter fallbacks** go through the shared stub ST_INTERP (`bl` + pc, instruction and instruction count as
+  literals; 4 words instead of ~20).
 - **Guest time inside compiled code:** `g->cycles` only advances when a run returns, so helpers (MMIO, the
   interpreter: timebase, decrementer, event scheduling) used to see time frozen for a whole run. Compiled code now
   stores its budget left in `g_jitLeft` before each helper call (`emit_time`) and the helpers run with the exact time
   (`time_enter`/`time_leave`). Found because TP under the qemu JIT reached field 500 with 739 draws and 15,262 DSP
   mails where the qemu and PC interpreters both had 1,270 and 28,051 (linking on/off identical: not the linking).
+  **After the fix (e689553) the JIT matches: 28,051 mails, 1,268 draws** (the last few from runs overshooting their
+  budget by up to one block), with 3.5M dispatches instead of 578M and 9.9 host words per guest instruction compiled
+  instead of 23.6; qemu took 23 min instead of 32. Check a JIT change on TP by running
+  `qemu-arm -cpu cortex-a7 build-arm/gcemu ISO --frames 500 --jit --press A@200-206,A@400-406 --out DIR` (~25 min)
+  against the interpreter (WSL `/root/tpC/out.txt`, the same command without `--jit`): the DI, DSP and GX counts on
+  the last lines must agree.
 - **Cold code:** memory slow paths (MMIO, unaligned, faults), psq/dcb fallbacks and the pipe path are emitted into a
   second buffer and appended after the block, with branches fixed up (`cold_begin`/`cold_end`/`fix`). Fast paths fall
   through. The working hypothesis is that TP's JIT is bound by instruction fetch (1.5M guest instructions per field,
