@@ -625,7 +625,7 @@ static void vgpu_check(System* s, GXCore* gx, const VFold* f, const VSel* sel, u
     if (!gp) return;
     VLightUniforms lu;
     bool lit = vfast_gpu_light(gx, sel, &lu);
-    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, lit, false, mem, gp);
+    VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, lit, true, mem, gp);
     if (!job) { free(gp); return; }
     const float (*pos)[21];
     u32 n = vfast_job_matrices(job, &pos);

@@ -233,7 +233,7 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // A/B period: the vertex-shader transform alternates on and off (the gpupos column)
+#define AB_SECS 20  // A/B period (four phases: gpupos x esplit)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
@@ -247,7 +247,7 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s (gpupos: vertex-shader transform) | hot guest code sampled\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 4 phases (gpupos: vertex-shader transform, esplit: periodic splits) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -255,7 +255,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -380,7 +380,7 @@ static void run(const char* path) {
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) jit_set_linking(g_jit, true);
-    if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); pica_set_gpu_transform(g_gpuPosFixed); }
+    if (g_pica) { pica_set_vertex_worker(true); pica_set_early_queue(true); pica_set_gpu_transform(g_gpuPosFixed); pica_set_early_split(true); }
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
@@ -476,7 +476,7 @@ static void run(const char* path) {
                         g_pica && pica_vertex_worker_wanted() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_early_queue() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_gpu_transform() ? 1 : 0);
-                fprintf(g_perf, ",%d", g_pica && pica_gpu_transform() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_early_split() ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -485,8 +485,13 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // A/B: the position transform in the vertex shader alternates on and off every AB_SECS (gpupos column).
-                if (g_pica && g_abGpuPos && perfRows % AB_SECS == 0) pica_set_gpu_transform(!pica_gpu_transform());
+                // A/B in four phases of AB_SECS: the vertex-shader transform (gpupos column) and the periodic frame
+                // splits (esplit) on and off: both, transform off, splits off, both off.
+                if (g_pica && g_abGpuPos && perfRows % AB_SECS == 0) {
+                    u32 phase = (perfRows / AB_SECS) % 4;
+                    pica_set_gpu_transform(!(phase & 1));
+                    pica_set_early_split(!(phase & 2));
+                }
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)

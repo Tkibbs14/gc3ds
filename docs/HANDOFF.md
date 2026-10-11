@@ -413,10 +413,20 @@ renderer only):
      line (palette uploads, extra draw calls, overflows). Test builds fix it with `GPUPOS=0|1` (`az_test.ps1
      -GpuPos`); `az_test.ps1` now also saves the program's own screenshot (`*_shot.png`), which works whatever
      window is in front.
-   - **Next:** read the A/B halves for core 2's `gxvtx` / `vwait`, core 3's `vwork`, and `c3d_gpu_ms` (the GPU now
-     shades back faces too). Then try the worker gather again (`kVwGather`: batch flushes no longer join the
-     worker; it needs origin 0, so add the origin to deferred jobs first). From gcbench (GPU_GUIDANCE 20, 23, 6,
-     8): several draws in one draw window, GX strips as strips, raw draw commands.
+   - **2DS, 29a22f7 (core/out/perf_2026-10-11_gpupos.csv, title scene, 80 / 98 rows):** slower. Transform on 11.3%,
+     off 12.7%. Core 2's vertex share did not drop (50 → 56%): its cost is per draw (~12 us of ~20 us per draw,
+     the gather ~5 us of it), not the vertex maths, which ran on core 3 (34 → 30% busy). Core 0 waited for core 2
+     28 → 36%. `gxsync` 7 → 14%: the GPU shades back faces too (30 → 40 ms per frame), and C3D_FrameBegin waits for
+     everything after the frame's last split. Palette: ~2,150 uploads/s, 116 extra draw calls/s, no overflows.
+     (That run printed `gpupos` twice per row, so its PMU columns are shifted by one.)
+   - **Since then (not yet measured):** GPU-transformed shader-lit draws are gathered on core 3 (deferred jobs;
+     their batches never wait for the worker, and only PE tokens / finish wait for the reads, `g_vwDeferEnd`).
+     The origin of a deferred job comes from its first vertex alone. A one-matrix draw repeating the previous
+     draw's matrix and origin skips the palette search. The frame is split every 8,192 arena vertices so the GPU
+     starts sooner (`split_early`). Arena and texture cache flushes use `svcFlushProcessDataCache`. perf.csv
+     cycles four 20 s phases: both on, transform off, splits off, both off (`gpupos`, `esplit`).
+   - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
+     triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /
    normal from the CPU; texgen is 1.69 per vertex in TP).
 3. **Less CPU decode:** where a GX attribute is byte / short / float, the PICA can read that type with a scale in

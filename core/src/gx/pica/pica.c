@@ -78,7 +78,7 @@ static struct {
     C3D_RenderTarget* efb;
     C3D_RenderTarget* screen;
     PVert* arena;
-    u32 arenaUsed, arenaFlushed;
+    u32 arenaUsed, arenaFlushed, splitArena;  // splitArena: arenaUsed at the last split (split_early)
     PTex tex[MAX_TEX];
     u32 texBytes, frameNo;
     C3D_Tex grave[MAX_GRAVE];
@@ -112,6 +112,11 @@ static struct {
     float proj[16];
     float pal[PAL_SLOTS][12];
     u32 palUse[PAL_SLOTS], palSerial, palNext, palLast, palValid;
+    // The last one-matrix job (pal_assign's fast path): its raw matrix and origin, and the slot it got while that slot
+    // still holds it (palGen counts each slot's uploads).
+    u32 palGen[PAL_SLOTS], lastSlot, lastGen;
+    float lastRaw[12], lastOrigin[3];
+    bool lastValid;
 } g;
 
 PicaStats g_picaStats;
@@ -138,7 +143,9 @@ static void flush_batch(void) {
 static void flush_arena(void) {
     vw_sync_all();  // the vertex worker must have filled the arena before the GPU reads it
     if (g.arenaUsed > g.arenaFlushed)
-        GSPGPU_FlushDataCache(g.arena + g.arenaFlushed, (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
+        // svcFlushProcessDataCache: 1.5-8x faster than GSPGPU_FlushDataCache (gcbench, GPU_GUIDANCE rule 14).
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)(g.arena + g.arenaFlushed),
+                                 (g.arenaUsed - g.arenaFlushed) * sizeof(PVert));
     g.arenaFlushed = g.arenaUsed;
 }
 
@@ -155,7 +162,7 @@ static void begin_frame(void) {
     prof_end(PROF_GXSYNC, t0);
     g.frame = true;
     g.frameNo++;
-    g.arenaUsed = g.arenaFlushed = g.queued = 0;
+    g.arenaUsed = g.arenaFlushed = g.queued = g.splitArena = 0;
     g.batchOpen = false;
     for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
     g.nGrave = 0;
@@ -264,7 +271,22 @@ static void split(u32 transfers) {
     verify_queue(false);
     g_picaStats.splits++;
     g.queued += 1 + transfers;
+    g.splitArena = g.arenaUsed;
     if (!transfers) queue_run();  // with transfers, the caller runs the queue once it has added them
+}
+
+// Splits the frame every SPLIT_VERTS arena vertices so the GPU works on the frame while this thread records the
+// rest: C3D_FrameBegin waits for everything after the last split, and without these the main scene came after the
+// last EFB copy (2DS, 29a22f7: this thread waited for the GPU 7-14% of the time). Called between batches; keeps queue
+// entries for the frame's copies and clears.
+#define SPLIT_VERTS 8192
+static bool g_earlySplit = true;  // pica_set_early_split
+void pica_set_early_split(bool on) { g_earlySplit = on; }
+bool pica_early_split(void) { return g_earlySplit; }
+static void split_early(void) {
+    if (!g_earlySplit || !g_q || !g.frame || g.arenaUsed - g.splitArena < SPLIT_VERTS || g.queued + 8 > GXQUEUE_BUDGET)
+        return;
+    split(0);
 }
 
 // Makes room for `verts` more vertices and keeps the command buffer from overflowing (libctru drops commands
@@ -326,7 +348,7 @@ static void upload(C3D_Tex* t, const u32* rgba, u32 w, u32 h) {
         const u8* m = &g_morton[(y & 7) * 8];
         for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[x * w / W];
     }
-    GSPGPU_FlushDataCache(t->data, t->size);
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)t->data, t->size);
 }
 
 static void evict_unused(u32 want) {
@@ -747,6 +769,7 @@ static void pal_upload(u32 k, const float* m) {
     C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + 3 * (int)k, 3);
     for (int r = 0; r < 3; r++) u[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
     g.palValid |= 1u << k;
+    g.palGen[k]++;
     g_picaStats.palUploads++;
 }
 
@@ -764,8 +787,6 @@ static bool pal_assign(VJob* job) {
     const float (*raw)[21];
     u32 n = vfast_job_matrices(job, &raw);
     if (n > PAL_SLOTS) return false;
-    float pos[PAL_SLOTS][12];  // the matrices with the job's origin folded in: what the palette holds
-    vfast_job_origin(job, pos);
     const float* P = vfast_job_proj(job);
     if (!g.projValid || memcmp(P, g.proj, sizeof g.proj)) {
         flush_sub();
@@ -774,6 +795,17 @@ static bool pal_assign(VJob* job) {
         for (int r = 0; r < 4; r++) u[r] = FVec4_New(P[4 * r], P[4 * r + 1], P[4 * r + 2], P[4 * r + 3]);
         g.projValid = true;
     }
+    // Fast path (most of TP's draws): one matrix, the previous job's, same origin, in a slot that still holds it.
+    const float* o = vfast_job_origin(job, NULL);
+    if (n == 1 && g.lastValid && g.palGen[g.lastSlot] == g.lastGen && !memcmp(raw[0], g.lastRaw, sizeof g.lastRaw) &&
+        !memcmp(o, g.lastOrigin, sizeof g.lastOrigin)) {
+        u8 s1 = (u8)g.lastSlot;
+        g.palUse[s1] = g.palSerial;
+        vfast_job_gpu_pos(job, &s1);
+        return true;
+    }
+    float pos[PAL_SLOTS][12];  // the matrices with the job's origin folded in: what the palette holds
+    vfast_job_origin(job, pos);
     int slot[PAL_SLOTS];
     u32 misses = 0, busy = 0;
     for (u32 i = 0; i < n; i++) {
@@ -800,6 +832,13 @@ static bool pal_assign(VJob* job) {
     u8 slots8[PAL_SLOTS];
     for (u32 i = 0; i < n; i++) slots8[i] = (u8)slot[i];
     if (n) g.palLast = (u32)slot[n - 1];
+    g.lastValid = n == 1;
+    if (n == 1) {
+        memcpy(g.lastRaw, raw[0], sizeof g.lastRaw);
+        memcpy(g.lastOrigin, o, sizeof g.lastOrigin);
+        g.lastSlot = (u32)slot[0];
+        g.lastGen = g.palGen[slot[0]];
+    }
     vfast_job_gpu_pos(job, slots8);
     return true;
 }
@@ -852,14 +891,17 @@ typedef struct {
     float ztexZ;
     bool fixed;        // GPU-transformed: every triangle is kept, written at arena index dst (the GPU culls)
     u32 dst;
+    bool deferred;     // the worker gathers the attributes from guest memory (vfast_prepare defer)
 } VWork;
 static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
 static u32 g_vwMemHead;
 static volatile u32 g_vwHead, g_vwTail, g_vwQuit, g_vwPos;
-// The worker also gathers shader-lit draws from guest memory (vfast_prepare defer). Off: measured slower on the 2DS
-// (6673eb2: 14.2% against 14.8%), because every batch draw then waits for the worker (vwait 18%).
-static const bool kVwGather = false;
+// The worker also gathers shader-lit draws from guest memory (vfast_prepare defer) when they are GPU-transformed:
+// their batches never wait for the worker. For CPU-transformed draws it measured slower on the 2DS (6673eb2: 14.2%
+// against 14.8%), because every batch flush then waits for the worker (vwait 18%).
+static const bool kVwGather = false;  // CPU-transformed draws
+static volatile u32 g_vwDeferEnd;     // the queue index after the last queued draw that reads guest memory
 static Thread g_vwThread;
 static bool g_vwOn = true;  // pica_set_vertex_worker
 static inline void vw_dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory"); }
@@ -935,8 +977,7 @@ static void vw_main(void* arg) {
 // True when the worker has no queued draw (it gathers shader-lit draws from guest memory, so the CPU thread must not
 // run on past a PE signal or a GX sync while one is queued).
 bool pica_vertex_worker_idle(void) {
-    if (!kVwGather) return true;  // the worker reads only its jobs
-    bool idle = g_vwTail == g_vwHead;
+    bool idle = (s32)(g_vwTail - g_vwDeferEnd) >= 0;  // past the last draw that reads guest memory
     vw_dmb();
     return idle;
 }
@@ -998,6 +1039,7 @@ static void vw_queue(const VWork* w, u32 verts) {
         g_vwReserved += verts;
     }
     g_vw[g_vwHead % VW_SLOTS] = *w;
+    if (w->deferred) g_vwDeferEnd = g_vwHead + 1;
     vw_dmb();
     g_vwHead = g_vwHead + 1;
 }
@@ -1081,6 +1123,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
     if (!same) {
         flush_batch();
+        split_early();
         update_tev(gx);
         kn = batch_key(gx, key);
         key[kn++] = cls;
@@ -1111,7 +1154,8 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         else {
             w.pv = (PVert*)(mem + jb);
             w.nd = (float (*)[2])(w.pv + count);
-            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, kVwGather, mem, w.pv);
+            w.deferred = (gpuPos || kVwGather) && g.batchGpuLight;  // vfast_prepare defers shader-lit draws only
+            w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, gpuPos || kVwGather, mem, w.pv);
             if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
             w.memStart = (u32)(mem - g_vwMem);
             w.prim = prim;
@@ -1520,6 +1564,7 @@ void pica_reset(void) {
     vfast_reset_cache();
     g.palValid = 0;
     g.projValid = false;
+    g.lastValid = false;
     // Copy and XFB records are only bookkeeping and go now; textures are freed once the GPU is idle.
     for (u32 i = 0; i < MAX_COPIES; i++) g.copies[i].used = false;
     for (u32 i = 0; i < MAX_XFB; i++) g.xfb[i].seq = 0;

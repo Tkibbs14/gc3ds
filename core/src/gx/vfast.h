@@ -53,9 +53,9 @@ void vfast_finish(VJob* job, PVert* out);
 // is M * p).
 u32 vfast_job_matrices(const VJob* job, const float (**pos)[21]);  // position matrix (3x4) + normal matrix (3x3)
 const float* vfast_job_proj(const VJob* job);                       // P: projection x viewport x fold, rows of 4
-// The job's origin (its first vertex's model position; 0 for a deferred job), which vfast_finish subtracts from
-// every position, and in m[i] each position matrix with the origin folded into its translation: the palette's
-// contents. Returns the origin.
+// The job's origin (its first vertex's position on a grid, deferred jobs included), which vfast_finish subtracts
+// from every position, and in m[i] (unless m is NULL) each position matrix with the origin folded into its
+// translation: the palette's contents. Returns the origin.
 const float* vfast_job_origin(const VJob* job, float m[][12]);
 void vfast_job_gpu_pos(VJob* job, const u8* slots);                // slots[i]: palette slot of matrix i (< 42)
 // The shader's position computation in C: clip and eye position of a vertex vfast_finish wrote with slots. f24:

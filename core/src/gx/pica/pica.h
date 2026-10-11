@@ -38,6 +38,10 @@ bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it 
 // thread; off waits for C3D_FrameEnd as citro3d does (comparison). pica_queue_offset: where the queue was found in
 // citro3d's context (0xFFFFFFFF: not found, never started early).
 void pica_set_early_queue(bool on);
+// Splitting the frame every few thousand vertices so the GPU starts on it sooner (on by default); off splits only at
+// EFB copies and clears (comparison).
+void pica_set_early_split(bool on);
+bool pica_early_split(void);
 bool pica_early_queue(void);
 u32 pica_queue_offset(void);
 extern u64 g_picaDrawPaths[8];
