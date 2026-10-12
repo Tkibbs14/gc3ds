@@ -7,12 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #define GC3DS_HOST_TYPES
+#include "../src/common.h"
 #include "../src/jit/jit.h"
 #include "jitsample.h"
 
 #define MAX_SAMPLES 200000
 static u32* g_samples;
-static volatile u32 g_n, g_outside;
+static volatile u32 g_n, g_outside, g_whereN[WH_N];
 static volatile bool g_quit;
 static Thread g_thread;
 static const Gekko* g_g;
@@ -25,6 +26,8 @@ static void sampler(void* arg) {
             if (n < MAX_SAMPLES) { g_samples[n] = g_g->hostPc; g_n = n + 1; }
         } else {
             g_outside = g_outside + 1;
+            unsigned char w = g_where;
+            g_whereN[w < WH_N ? w : 0]++;
         }
         svcSleepThread(100000);
     }
@@ -73,6 +76,16 @@ void jitsample_report(FILE* f, const Jit* j) {
     for (u32 i = 0; i < np && i < 16; i++)
         fprintf(f, " %08lx %.1f%%", (unsigned long)pairs[2 * i], tot > 0 ? 100.0 * pairs[2 * i + 1] / tot : 0.0);
     fprintf(f, "\n");
+    {  // where core 0 was when it was not in compiled code (common.h: WH_*), as a share of all samples
+        static const char* const kWh[WH_N] = { "none", "gekko_run", "dispatch", "compile", "sys_run", "events", "gx_poll", "hle",
+                                               "interp", "frontend", "present", "vblank_wait", "perf_log" };
+        fprintf(f, "# core0 outside compiled code 10s:");
+        for (int k = 0; k < WH_N; k++) {
+            if (g_whereN[k]) fprintf(f, " %s %.1f%%", kWh[k], tot > 0 ? 100.0 * g_whereN[k] / tot : 0.0);
+            g_whereN[k] = 0;
+        }
+        fprintf(f, "\n");
+    }
     g_n = 0;
     g_outside = 0;
 }

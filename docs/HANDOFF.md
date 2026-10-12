@@ -490,6 +490,52 @@ renderer only):
      limit - cycles)) is used up. PC `HLE_CHECK`: 6,129 calls to field 2500, 0 differences. **JIT-path check under qemu
      pending** (`/root/hlejit2.txt`, also saves `/root/tp_arm_850.state`); nothing goes on the card before it passes.
      Judge the next run by the cutscene's `fields_s`, not `speed_pct` alone.
+   - **Where the time goes (2026-10-12 analysis, perf_2026-10-12_hle*.csv; read before choosing the next step):**
+     - *GPU:* 6-7 ms per submitted frame (max ~15), so ~40% busy at full speed (60 fields/s): it looks idle only because
+       core 0 feeds it ~7x too slowly. The GPU can only draw, so only drawing-shaped work can move to it (done: GX
+       draws, TEV, lighting, copies; the vertex transform lost on the 2DS). Core 2 per draw cost is the GPU-side lever
+       (draw merging: 76% of TP's draws could share a job; 99.6% of draws are strips) and only matters once core 0 is not
+       the limit.
+     - *Core 0:* IPC 0.31, 44% of cycles stalled on instruction fetch. Hot guest code in the title scene is spread thin
+       (hundreds of functions, none >1%); only the Link/Epona cutscene has one: `dBgWKCol::ShdwDraw` 12.5% (the HLE
+       stand-in). **23% of core 0's time is outside compiled code** (dispatcher, events, GX poll, frontend, JIT
+       compile) and was not attributable: `g_where` markers (common.h `WH_*`) and `# core0 outside compiled code 10s:`
+       lines in perf.csv now name it (needs a card run).
+     - *Compiled code size* (`JIT: compiled code by opcode` in the qemu stats; per-opcode hot / cold words): compares
+       took 10-11 hot words each (CR update), `bc` 12, `b` 10, `bclr` 7.6 (every branch flushed the register cache
+       and spent two 4-word link sites). Next candidates, in order: CR-field dead-store elimination (a compare whose
+       field is overwritten before it is read), `bl` (8 words), float loads / stores (`stfs` 15, `lfs` 10, `psq_st` 42),
+       register pinning across blocks.
+   - **JIT traces (not yet measured on the 2DS): blocks follow `b` and continue past `bc` / conditional `blr` / `bctr`**
+     (`trace_branch`, `emit_branch_side`, `exit_kind_if`; EXIT_LINK / EXIT_INDIRECT stubs): the taken side is an
+     out-of-line stub that writes back the register cache as it stood and leaves through a link site (or the indirect
+     table); no flush or reload at branches. MAX_BLOCK_INSNS 32 -> 64. Controlled qemu comparison on 150 TP fields:
+     hot words per guest instruction 6.0 -> 4.9, total code 4,598 -> 4,090 KB, cached GPR reads +58%, instructions
+     run identical. JIT fuzzer: random programs with mid-trace branches, 30,000 cases x 3 seeds, 0 differences; planted
+     bugs 5 (a followed b skips an instruction) and 6 (a side exit miscounts) are caught. perf.csv A/B: `traces` column,
+     20 s phases (`kTraceAb` in main.c); the shadow-scan stand-in is off in this build (`kHleAb`).
+   - **qemu ARM state for fast JIT-path tests:** `/root/tp_arm_850.state` (TP at field 850, just before the shadow scene),
+     made by `HLE_CHECK=1 qemu-arm ... --jit --save-state 850:...`; `--load-state` it with the same build layout.
+     `JIT_DUMP=big|<pc>` prints blocks' guest instructions and ARM words; `GC3DS_JIT_NOTRACE=1` turns traces off.
+   - **Remote runs (2026-10-12): the 2DS takes jobs from anywhere.** `core/host3ds/relay.c` (libcurl + mbedTLS from
+     portlibs, roots in `host3ds/certs/relay_ca.pem`) talks to nakama-backend `/api/devrelay` (`src/routes/devRelay.js`,
+     tables in its `sql/2026-10-12_devrelay.sql`, builds in the private storage bucket `devrelay`). On the PC:
+     `bash core/tools/relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces`
+     uploads this build if new, queues the job and follows its perf log into `core/out/relay_<job>.csv`. On the 2DS:
+     menu L (or `auto 1` in `sdmc:/gc3ds/relay.txt`) polls every 10 s; a job for another build downloads it over the
+     running `.3dsx`, keeps the job, and asks for one restart. Run options (also as 3dslink arguments,
+     `3dslink -a <ip> gc3ds.3dsx -- --game ...`): `--game`, `--state`, `--save-state FIELD:PATH`, `--seconds`,
+     `--ab traces|hle|none`, `--traces on|off`, `--hle on|off`; relay jobs default to 600 s. `relay.txt` (url + token)
+     is ignored by git; the token's sha256 is in `devrelay_tokens`. Checked end to end in Azahar (job claimed, run,
+     log streamed, done) and every endpoint against the live database.
+   - **Save states load on the 2DS:** `System` is 0x6b78 bytes and `GXCore` 0x4a68 in both the qemu ARM build and the
+     3DS build (same ARM EABI), so a state written under qemu (`--save-state 850:...`) loads with `--state`. A build that
+     changes either size refuses old states; then make a new one (qemu, or a 2DS job with `--save-state`).
+   - **ARM11 fetch facts (DDI 0360F, read 2026-10-12):** 16 KB 4-way I-cache, 32 B lines, round-robin, virtually indexed
+     (code 4 KB apart shares a set); 128-entry direct-mapped BTAC indexed by VA[9:3] (branches 1 KB apart alias);
+     3-entry return stack (BL pushes, BX LR pops); folded B costs 0 cycles, unfolded predicted 1, mispredict 5-7.
+     Program-flow prediction is off at reset (CP15 c1 Z bit): check it is on for our process. L2C-310 instruction
+     prefetch exists but is secure-write only (not reachable from an app).
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /

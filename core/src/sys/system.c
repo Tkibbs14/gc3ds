@@ -5,6 +5,7 @@
 #include <string.h>
 
 u64 g_hostProf[PROF_N];
+volatile unsigned char g_where;
 bool g_drawTimed = true;
 u32 g_drawScale = 1;
 u64 (*g_profClock)(void);
@@ -317,14 +318,20 @@ void sys_run(System* s, u64 cycles) {
     u64 end = sys_now(s) + cycles;
     s->stopRequested = false;
     while (!s->stopRequested && sys_now(s) < end) {
+        g_where = WH_GXPOLL;
         if (s->gxAsync) s->gxAsync->poll(s);
+        g_where = WH_EVENTS;
         run_due_events(s);
+        g_where = WH_SYSRUN;
         u64 now = sys_now(s);
         u64 until = s->nextEvent < end ? s->nextEvent : end;
         if (until <= now) continue;
         u64 slice = until - now;
         u64 t0 = prof_begin();
+        g_where = WH_GEKKO;
         gekko_run(&s->cpu, slice > 1000000 ? 1000000u : (u32)slice);
+        g_where = WH_SYSRUN;
         prof_end(PROF_CPU, t0);
     }
+    g_where = WH_FRONT;
 }

@@ -21,6 +21,7 @@ typedef struct {
     u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
     u64 links;      // exits patched to jump straight to their target block
     u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR reads served by the register cache
+    u64 traceFollowed, traceSideExits;  // compile time: unconditional branches followed, conditional branches compiled as side exits
     u64 compileFails[3];  // blocks not compiled: hot code or exits overflowed (or a slow path without its tail), cold code overflowed, fix-ups overflowed
     u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
@@ -54,6 +55,10 @@ bool jit_linking(const Jit* j);
 // Loads and stores call shared stubs for their MEM1 fast path (on by default) instead of inlining it; off inlines it
 // (comparison). Drops all code.
 void jit_set_mem_stubs(Jit* j, bool on);
+// Traces (on by default): blocks follow unconditional branches and continue past conditional ones, instead of ending at
+// every branch. Off ends each block at its first branch (comparison). Drops all code.
+void jit_set_traces(Jit* j, bool on);
+bool jit_traces(const Jit* j);
 bool jit_mem_stubs(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));
 

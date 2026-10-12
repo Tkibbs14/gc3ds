@@ -26,7 +26,7 @@ CFLAGS   := -g -Wall -Wextra -Wno-unused-parameter -O2 -mword-relocations -ffunc
 CFLAGS   += $(INCLUDE) -D__3DS__ -std=gnu11
 ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS     := -lcitro3d -lctru -lm
+LIBS     := -lcitro3d -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lctru -lm
 LIBDIRS  := $(CTRULIB) $(PORTLIBS)
 
 #---------------------------------------------------------------------------------

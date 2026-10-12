@@ -27,3 +27,7 @@ core/host3ds/*.elf
 core/host3ds/*.smdh
 core/host3ds/*.map
 core/build-arm/
+
+# Dev relay access token (core/tools/relay.sh, sdmc:/gc3ds/relay.txt): never committed
+core/host3ds/relay.txt
+core/build-arm*/

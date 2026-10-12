@@ -8,7 +8,7 @@
 #include "arm_emit.h"
 #include "jit.h"
 
-#define MAX_BLOCK_INSNS 32
+#define MAX_BLOCK_INSNS 64  // a trace (blocks follow unconditional branches and fall through conditional ones) is up to this long
 #define DISPATCH_BITS 16
 #define DISPATCH_SIZE (1u << DISPATCH_BITS)
 #define BLOCK_MAX_WORDS 4096  // worst-case host words for one block (checked against remaining space)
@@ -27,6 +27,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 640 };
+enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT };
 // The shared memory-access stubs (emit_mem_stubs): kinds load 32, 16 unsigned, 16 signed, 8; store 32, 16, 8, by the
 // register that holds the loaded value or the value to store (r2 or a cached-GPR slot, r4-r8).
 enum { MS_L32, MS_L16U, MS_L16S, MS_L8, MS_S32, MS_S16, MS_S8, MS_KINDS };
@@ -75,6 +76,7 @@ struct Jit {
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
+    bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
     u32 fastKeys[FAST_TABLES], fastNext;
     bool fastUsed[FAST_TABLES];
@@ -296,6 +298,8 @@ typedef struct {
     bool pendingStop;   // a slow memory path was emitted: after the instruction, leave if it reported status 2
     bool pr;            // MSR[PR]: supervisor-only instructions are left to the interpreter (it raises the exception)
     bool noLink;        // the block is a polling loop: its exits always return to the dispatcher, which skips the loop
+    bool trace;         // blocks follow unconditional branches and continue past conditional ones (side exits), see trace_branch
+    u32 gpc[MAX_BLOCK_INSNS], gpa[MAX_BLOCK_INSNS];  // guest address and physical address of each compiled instruction (a trace is not linear)
     Jit* j;
     // ARM flags still holding the compare behind CR field flagsFld: set where update_crf_from_flags ends (flagsAt);
     // flagsLive when that was the end of the previous instruction.
@@ -311,7 +315,9 @@ typedef struct {
     // Out-of-line exit stubs: each writes back the dirty cached GPRs of `snap`, subtracts `count` from RDC and leaves
     // to the dispatcher, after writing g->pc = pc when `setPc` (otherwise g->pc is already written). inCold: the branch
     // to the stub is in the cold code.
-    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; } exits[MAX_BLOCK_INSNS * 8];
+    // kind: EXIT_DISPATCH (to the dispatcher, g->pc = pc when setPc), EXIT_LINK (a link site to guest address pc: a conditional
+    // branch out of a trace), EXIT_INDIRECT (through the indirect table to the guest address in the Gekko word at offset pc: lr / ctr).
+    struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; u8 kind; } exits[MAX_BLOCK_INSNS * 8];
     u32 nExits;
     // Cold code: slow paths are emitted into a second buffer (`alt` while hot code is current; the two Emit structs
     // swap places) and appended after the block, so hot code falls through its fast paths and packs into fewer cache
@@ -451,6 +457,21 @@ static void exit_snap(Cg* c, int cond, bool setPc, u32 pc, const Rc* snap) {
     c->exits[c->nExits].inCold = c->inCold;
     c->exits[c->nExits].pc = pc;
     c->exits[c->nExits].snap = snap ? *snap : c->rc;
+    c->exits[c->nExits].kind = EXIT_DISPATCH;
+    c->nExits++;
+}
+// A conditional exit from the middle of a trace (the hot path continues after the branch): to the stub, which writes back
+// the cache as it stands here and leaves through a link site to guest address `pc` (EXIT_LINK) or through the indirect table
+// to the address in the Gekko word at offset `pc` (EXIT_INDIRECT).
+static void exit_kind_if(Cg* c, int cond, int kind, u32 pc) {
+    if (c->nExits == sizeof c->exits / sizeof c->exits[0]) { c->e.overflow = true; return; }
+    c->exits[c->nExits].at = branch_c(&c->e, cond, c->e.n);
+    c->exits[c->nExits].count = c->count;
+    c->exits[c->nExits].setPc = false;
+    c->exits[c->nExits].inCold = c->inCold;
+    c->exits[c->nExits].pc = pc;
+    c->exits[c->nExits].snap = c->rc;
+    c->exits[c->nExits].kind = (u8)kind;
     c->nExits++;
 }
 static void exit_if(Cg* c, int cond) { exit_snap(c, cond, false, 0, NULL); }
@@ -849,6 +870,100 @@ static bool compile_branch(Cg* c, u32 inst) {
             exit_const(c, c->pc + 4);
             return true;
         }
+    }
+    return false;
+}
+
+// ---- traces ----
+// Level 2 blocks do not end at every branch. An unconditional b is followed: compilation goes on at its target, with
+// the register cache and ARM flags intact and no exit at all. A conditional branch becomes a side exit: one host
+// branch in the hot path to an out-of-line stub (which writes back the cache as it stood there and leaves through a link
+// site, or the indirect table for blr / bctr), and compilation goes on with the instruction after it. Compiled code
+// then spends its words on guest instructions instead of on a flush, two link sites and a reload per branch.
+typedef struct {
+    Jit* j;
+    u32 nextPc, nextPa;   // where compilation goes on (the instruction after the last one, or a followed branch's target)
+    u32 segPage;          // the 4 KB page of the current straight run: crossing it ends the trace
+    u32 visited[24];      // the guest address of every run's first instruction (a trace never loops back into itself)
+    u32 nVisited;
+    u32 maxInsns;
+} Trace;
+
+// Conditional branch whose taken side leaves the trace: bc (target), bclr / bcctr (indirect through the Gekko word at
+// offset indOff). The fall-through side continues in place. Not taken when the CTR / CR condition fails.
+static void emit_branch_side(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, u32 indOff) {
+    Emit* e = &c->e;
+    bool hasCtr = !(bo & 4), hasCr = !(bo & 16);
+    int takenCond = C_AL, cr = -1;
+    u32 skip = NO_BRANCH;
+    bool fused = false;
+    if (hasCr) {
+        if (!hasCtr && c->flagsLive && (bi >> 2) == c->flagsFld && (bi & 3) != 3) {
+            // The previous instruction was the compare that set this CR field and left its ARM flags: branch on them.
+            static const int kSigned[3] = { C_LT, C_GT, C_EQ }, kUnsigned[3] = { C_CC, C_HI, C_EQ };
+            int cond = (c->flagsSigned ? kSigned : kUnsigned)[bi & 3];
+            if (jit_debug_plant == 3) cond ^= 1;  // the fuzzer's self-test: a wrong fused branch must be caught
+            takenCond = (bo & 8) ? cond : cond ^ 1;  // ARM conditions invert by bit 0
+            c->j->stats.fusedBranches++;
+            fused = true;
+        } else {
+            cr = src(c, ID_CR, R0);  // before any branch over code: the cache state must not differ between the two paths
+        }
+    }
+    if (hasCtr) {
+        ldr_imm(e, R3, RG, OFF_CTR);
+        dp_imm(e, SUB, 1, R3, R3, 1);
+        str_imm(e, R3, RG, OFF_CTR);
+        int ctrTaken = (bo & 2) ? C_EQ : C_NE;  // taken when CTR == 0 (bo & 2) / != 0
+        if (hasCr) skip = branch_c(e, ctrTaken ^ 1, 0);  // the CTR condition fails: not taken, skip the CR test
+        else takenCond = ctrTaken;
+    }
+    if (hasCr && !fused) {
+        u32 bit = 1u << (31 - bi), enc;
+        if (!arm_imm(bit, &enc)) enc = 0;
+        dp_imm(e, TST, 1, 0, cr, enc);
+        takenCond = (bo & 8) ? C_NE : C_EQ;  // wanted bit set: taken if it is set
+    }
+    exit_kind_if(c, takenCond, indirect ? EXIT_INDIRECT : EXIT_LINK, indirect ? indOff : target);
+    if (skip != NO_BRANCH) patch_branch(e, skip, e->n);
+    c->j->stats.traceSideExits++;
+}
+
+// Compiles a branch inside a trace if it can stay one; false when the branch ends the block (the caller then compiles
+// it as before). Unconditional b to a place not in the trace yet is followed; bc and conditional bclr / bcctr (without
+// LK, which would also write LR) become side exits.
+static bool trace_branch(Cg* c, u32 inst, Trace* t) {
+    Jit* j = t->j;
+    Gekko* g = j->g;
+    u32 op = inst >> 26, lk = inst & 1;
+    if (lk || !c->trace || c->noLink) return false;
+    if (op == 18) {  // b, ba
+        s32 li = ((s32)(inst << 6)) >> 6 & ~3;
+        u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li;
+        if (t->nVisited == sizeof t->visited / sizeof t->visited[0] || c->count + 1 >= t->maxInsns) return false;
+        for (u32 k = 0; k < t->nVisited; k++) if (t->visited[k] == target) return false;
+        u32 tpa;
+        if (!gk_translate(g, target, false, false, &tpa, false) || tpa + 4 > j->ramSize || hle_is_hook(g, target)) return false;
+        t->visited[t->nVisited++] = target;
+        t->nextPc = target + (jit_debug_plant == 5 ? 4 : 0);  // plant 5 (the fuzzer self-test): a followed b skips an instruction
+        t->nextPa = tpa + (jit_debug_plant == 5 ? 4 : 0);
+        t->segPage = target >> 12;
+        j->stats.traceFollowed++;
+        return true;
+    }
+    u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (op == 16) {  // bc, bca
+        if ((bo & 20) == 20) return false;  // branch always (no CTR, no CR test): ends the block like b
+        s32 bd = (s32)(s16)(inst & 0xFFFC);
+        emit_branch_side(c, bo, bi, false, (inst & 2) ? (u32)bd : c->pc + (u32)bd, 0);
+        return true;
+    }
+    if (op == 19) {
+        u32 xo = (inst >> 1) & 0x3FF;
+        if ((xo != 16 && xo != 528) || (bo & 20) == 20) return false;  // blr / bctr always: ends the block
+        if (xo == 528 && !(bo & 4)) return false;                        // invalid form: the interpreter handles it
+        emit_branch_side(c, bo, bi, true, 0, xo == 16 ? OFF_LR : OFF_CTR);
+        return true;
     }
     return false;
 }
@@ -1813,6 +1928,13 @@ static u32 block_key(const Gekko* g) {
 
 // Compiles the block starting at guest PC `pc`; NULL when the code is not in RAM or the cache is full. `noLink`: the
 // block is a polling loop, so none of its exits is ever linked (the dispatcher must see every round to skip it).
+#ifndef __3DS__
+// Per guest opcode (gekko_op_key): instructions compiled and the host words they took in the hot path and in cold code,
+// printed with the JIT statistics, so the opcodes that bloat compiled code can be found.
+static u32 g_opN[65536], g_opHot[65536], g_opCold[65536];
+static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] += hot; g_opCold[key] += cold; }
+#endif
+
 static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
@@ -1830,6 +1952,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (int k = 0; k < NSLOT; k++) c->rc.id[k] = -1;
     c->j = j;
     c->noLink = noLink;
+    c->trace = j->traces && !noLink;
     c->fastmem = j->fastmem && (g->msr & MSR_DR);
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
@@ -1854,13 +1977,27 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         ended = true;
     }
     u32 maxInsns = jit_debug_max_insns ? jit_debug_max_insns : MAX_BLOCK_INSNS;
+    if (maxInsns > MAX_BLOCK_INSNS) maxInsns = MAX_BLOCK_INSNS;
+#ifndef __3DS__
+    u32 prevInst = 0, prevHot = 0, prevCold = 0;
+#endif
+    Trace t = { j, pc, startPa, pc >> 12, { pc }, 1, maxInsns };
     for (u32 i = 0; i < maxInsns && !ended; i++) {
-        c->pc = pc + 4 * i;
-        u32 ipa = startPa + 4 * i;
+        c->pc = t.nextPc;
+        u32 ipa = t.nextPa;
         if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
-        if ((((c->pc ^ pc) >> 12) != 0 && i > 0) || ipa + 4 > j->ramSize) break;  // one 4 KB page, inside RAM
+        if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
         u32 inst = ((u32)j->ram[ipa] << 24) | ((u32)j->ram[ipa + 1] << 16) | ((u32)j->ram[ipa + 2] << 8) | j->ram[ipa + 3];
         c->count = i + 1;
+        c->gpc[i] = c->pc;
+        c->gpa[i] = ipa;
+        if ((ipa >> 12) < sizeof j->codePages) j->codePages[ipa >> 12] = 1;
+        t.nextPc = c->pc + 4;  // a followed branch changes these
+        t.nextPa = ipa + 4;
+#ifndef __3DS__
+        if (i > 0) op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold);
+        prevInst = inst; prevHot = e->n; prevCold = c->alt.n;
+#endif
         // The ARM flags the previous instruction left: every path through an instruction's code reaches its end, so
         // flags its last emitted instruction set are there on all of them.
         c->flagsLive = i > 0 && c->flagsAt == e->n;
@@ -1869,6 +2006,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         c->tailFpr = -1;
         j->stats.instrsCompiled++;
         if (is_branch(inst)) {
+            if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
             if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
         } else if (compile_int(c, inst) || compile_float(c, inst)) {
             j->stats.instrsNative++;
@@ -1884,13 +2022,31 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             ended = true;
         }
     }
-    if (!ended) { rc_flush(c); exit_const(c, pc + 4 * c->count); }  // ran out of instructions (or a page end)
+#ifndef __3DS__
+    if (c->count) op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold);
+#endif
+    if (!ended) { rc_flush(c); exit_const(c, t.nextPc); }  // ran out of instructions (or a page end)
     u32 hotEnd = e->n;
     // Exit stubs: subtract what the block executed from RDC and leave to the dispatcher.
     for (u32 k = 0; k < c->nExits; k++) {
         if (c->exits[k].inCold) add_fix(c, true, c->exits[k].at, false, e->n);
         else patch_branch(e, c->exits[k].at, e->n);
         rc_emit_flush(c, &c->exits[k].snap);
+        if (c->exits[k].kind == EXIT_LINK) {  // a conditional branch out of a trace: a link site to the target block
+            dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count - (jit_debug_plant == 6 ? 1 : 0));  // plant 6: a side exit miscounts
+            branch_c(e, C_AL, e->n + 1);
+            branch_abs(e, C_AL, true, stub(c, ST_LINK));
+            word(e, c->exits[k].pc);
+            continue;
+        }
+        if (c->exits[k].kind == EXIT_INDIRECT) {  // blr / bctr taken: through the indirect table to the address in LR / CTR
+            ldr_imm(e, R2, RG, c->exits[k].pc);
+            dp_imm(e, BIC, 0, R2, R2, 3);
+            str_imm(e, R2, RG, OFF_PC);
+            dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
+            branch_abs(e, C_AL, false, stub(c, ST_INDIRECT));
+            continue;
+        }
         if (c->exits[k].setPc) { load_const(e, R1, c->exits[k].pc); str_imm(e, R1, RG, OFF_PC); }
         dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
@@ -1927,11 +2083,11 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
         if (want && (big ? c->count >= 16 && big-- > 0 : pc == dumpPc)) {
             fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, stubEnd - hotEnd, c->alt.n);
-            for (u32 k = 0; k < c->count && startPa + 4 * k + 4 <= j->ramSize; k++) {
-                const u8* w = j->ram + startPa + 4 * k;
+            for (u32 k = 0; k < c->count && c->gpa[k] + 4 <= j->ramSize; k++) {
+                const u8* w = j->ram + c->gpa[k];
                 char dis[96];
-                gekko_disasm(pc + 4 * k, ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], dis, sizeof dis);
-                fprintf(stderr, "JIT_GUEST %08x %s\n", pc + 4 * k, dis);
+                gekko_disasm(c->gpc[k], ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], dis, sizeof dis);
+                fprintf(stderr, "JIT_GUEST %08x %s\n", c->gpc[k], dis);
             }
             for (u32 k = 0; k < e->n; k++) fprintf(stderr, "JIT_HOT %08x\n", ((const u32*)fn)[k]);
             for (u32 k = 0; k < c->alt.n; k++) fprintf(stderr, "JIT_COLD %08x\n", cold[k]);
@@ -2096,7 +2252,10 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     if (j->nEntries == MAX_ENTRIES) { jit_invalidate_all(j); j->stats.flushes++; }
     Gekko* g = j->g;
     u32 poll = gekko_poll_loop_len(g, pc);
+    unsigned char wasWhere = g_where;
+    g_where = WH_COMPILE;
     BlockFn fn = compile(j, pc, poll != 0);
+    g_where = wasWhere;
     if (!fn) return NULL;
     // compile() may have flushed the whole cache (code space full), which also emptied the chains.
     head = &j->buckets[bucket_of(pc, msrBits)];
@@ -2159,6 +2318,7 @@ static bool update_fastmem(Jit* j) {
 static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     Jit* j = ctx;
     u32 total = 0;
+    g_where = WH_DISPATCH;
     update_fastmem(j);
     u32* site = NULL;  // the link site the last run left through, patched once its target is known
     u32 siteGen = 0, siteKey = 0;
@@ -2189,6 +2349,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         jit_in_run = 1;
         u32 n = run(j, en->fn, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room, g->cycles + total, &s);
         jit_in_run = 0;
+        g_where = WH_DISPATCH;
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
@@ -2208,6 +2369,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         GkPriv* p = GKP(g);
         if (p->brk || p->stopReq) break;
     }
+    g_where = WH_GEKKO;
     return total;
 }
 
@@ -2227,6 +2389,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
     j->linking = true;
     j->memStubs = true;
+    j->traces = true;
     emit_stubs(j);
     jit_invalidate_all(j);
     g_jit = j;
@@ -2251,6 +2414,14 @@ void jit_set_linking(Jit* j, bool on) {
 }
 
 bool jit_linking(const Jit* j) { return j->linking; }
+
+void jit_set_traces(Jit* j, bool on) {
+    if (j->traces == on) return;
+    j->traces = on;
+    jit_invalidate_all(j);  // blocks are compiled one way or the other
+}
+
+bool jit_traces(const Jit* j) { return j->traces; }
 
 void jit_set_mem_stubs(Jit* j, bool on) {
     if (j->memStubs == on) return;
@@ -2398,10 +2569,41 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (double)s->wordsCold / kept, (unsigned long long)s->compileFails[0], (unsigned long long)s->compileFails[1],
              (unsigned long long)s->compileFails[2]);
     print(line);
+    snprintf(line, sizeof line, "JIT: traces %s: %llu unconditional branches followed, %llu conditional branches as side exits", j->traces ? "on" : "off",
+             (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits);
+    print(line);
     snprintf(line, sizeof line, "JIT: %llu instructions run, %llu interpreted (%.1f%%)", (unsigned long long)s->instrsRun,
              (unsigned long long)s->fallbacksRun, s->instrsRun ? 100.0 * (double)s->fallbacksRun / (double)s->instrsRun : 0.0);
     print(line);
     print_top(&s->fallback, "compiled-but-interpreted (static)", print);
     print_top(&s->fallbackRun, "interpreted at run time (dynamic)", print);
+#ifndef __3DS__
+    {  // the opcodes that take the most compiled code
+        char l2[256];
+        u64 totHot = 0, totCold = 0, totN = 0;
+        for (u32 k = 0; k < 65536; k++) { totHot += g_opHot[k]; totCold += g_opCold[k]; totN += g_opN[k]; }
+        snprintf(l2, sizeof l2, "  compiled code by opcode (hot words / cold words / count; of %llu hot, %llu cold words, %llu instructions):",
+                 (unsigned long long)totHot, (unsigned long long)totCold, (unsigned long long)totN);
+        print(l2);
+        static bool done[65536];
+        memset(done, 0, sizeof done);
+        for (int rank = 0; rank < 30; rank++) {
+            u32 best = 0, key = 0;
+            for (u32 k = 0; k < 65536; k++) if (!done[k] && g_opHot[k] > best) { best = g_opHot[k]; key = k; }
+            if (!best) break;
+            done[key] = true;
+            u32 op = key >> 10, xo = key & 1023;
+            char dis[64];
+            gekko_disasm(0, (op == 31 || op == 19 || op == 63 || op == 59 || op == 4) ? (op << 26) | (xo << 1) : op << 26, dis, sizeof dis);
+            char* sp = strchr(dis, ' ');
+            if (sp) *sp = 0;
+            snprintf(l2, sizeof l2, "    %-9s op %2u xo %4u: %6.2f%% of hot words, %5.1f hot + %5.1f cold words each, %llu compiled",
+                     dis, op, xo, 100.0 * (double)g_opHot[key] / (double)(totHot ? totHot : 1),
+                     (double)g_opHot[key] / (double)g_opN[key], (double)g_opCold[key] / (double)g_opN[key],
+                     (unsigned long long)g_opN[key]);
+            print(l2);
+        }
+    }
+#endif
 }
 #endif

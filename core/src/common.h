@@ -46,6 +46,11 @@ enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_G
        PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_GXPRES, PROF_GXSTATE, PROF_GXEND,
        PROF_VPREP, PROF_VPAL, PROF_VQUEUE, PROF_N };
 extern u64 g_hostProf[PROF_N];
+// Where core 0 is when it is not inside compiled code (host3ds/jitsample.c reports how often the sampler finds it at each): the
+// code that runs there sets this one byte on entry. WH_NONE is compiled code and its helpers (the sampler uses jit_in_run for those).
+enum { WH_NONE, WH_GEKKO, WH_DISPATCH, WH_COMPILE, WH_SYSRUN, WH_EVENTS, WH_GXPOLL, WH_HLE, WH_INTERP, WH_FRONT, WH_PRESENT, WH_WAIT,
+       WH_PERF, WH_N };
+extern volatile unsigned char g_where;
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
 static inline void prof_end(int area, u64 t0) { if (g_profClock) g_hostProf[area] += g_profClock() - t0; }

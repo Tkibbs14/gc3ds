@@ -478,6 +478,25 @@ static void fill_floats(System* s) {
     }
 }
 
+// ---- traces ----
+// The JIT follows an unconditional b and compiles a conditional branch as a side exit, so a branch can sit in the middle
+// of a block. A program is a few instructions in which some are b / bc / bclr / bcctr that jump forward inside it (or
+// not at all); the interpreter is run along the same path for as many instructions as the JIT ran.
+static u32 gen_trace_branch(u32 i, u32 len, u32 prev) {
+    static const u32 kBo[] = { 0, 2, 4, 8, 10, 12, 16, 18 };  // none of them "branch always"
+    u32 kind = rnd() % 5;
+    u32 target = i + 2 + rnd() % 4;
+    if (target > len) target = len;
+    u32 delta = ((target - i) * 4) & 0x03FFFFFCu;
+    if (kind == 0) return (18u << 26) | delta;                         // b
+    u32 bo = kBo[rnd() % 8], bi = rnd() % 32;
+    int f = crf_set(prev);
+    if (f >= 0 && rnd() % 3) { bo = (rnd() & 1) ? 4 : 12; bi = (u32)f * 4 + rnd() % 3; }  // branch on the compare just before
+    if (kind <= 2) return (16u << 26) | (bo << 21) | (bi << 16) | (delta & 0xFFFCu);       // bc
+    if (kind == 3) return (19u << 26) | (bo << 21) | (bi << 16) | (16u << 1);            // bclr
+    return (19u << 26) | ((rnd() & 1 ? 4u : 12u) << 21) | (bi << 16) | (528u << 1);       // bcctr (no CTR decrement)
+}
+
 int main(int argc, char** argv) {
     u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 20000;
     if (argc > 2) rng ^= strtoull(argv[2], NULL, 0) * 0x2545F4914F6CDD1Dull;
@@ -511,8 +530,19 @@ int main(int argc, char** argv) {
         bool isFloat = rnd() % 100 < 55;
         // Integer cases are often blocks of 2-4 instructions: each later one often reads a GPR an earlier one wrote,
         // or branches on its compare (the JIT's register cache, forwarding of flags and write-back at exits).
-        u32 seq[4] = { isFloat ? genf(&st) : gen(&st), 0, 0, 0 }, len = 1;
-        if (!isFloat && rnd() % 2 == 0 && !is_branch_op(seq[0])) {
+        u32 seq[16] = { isFloat ? genf(&st) : gen(&st), 0 }, len = 1;
+        bool traceCase = !isFloat && rnd() % 100 < 30 && !is_branch_op(seq[0]);
+        if (traceCase) {
+            len = 4 + rnd() % 8;
+            for (u32 i = 1; i < len; i++) {
+                if (rnd() % 100 < 28) { seq[i] = gen_trace_branch(i, len, seq[i - 1]); continue; }
+                u32 next = gen(&st);
+                while (is_branch_op(next)) next = gen(&st);
+                int d = dest_gpr(seq[i - 1 - (rnd() % i)]);
+                if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
+                seq[i] = next;
+            }
+        } else if (!isFloat && rnd() % 2 == 0 && !is_branch_op(seq[0])) {
             u32 want = 2 + rnd() % 3;
             while (len < want && !is_branch_op(seq[len - 1])) {
                 u32 next = gen(&st);
@@ -528,7 +558,7 @@ int main(int argc, char** argv) {
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         if (st.fmem && rnd() % 8) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
-        for (u32 i = 0; i < 4; i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
+        for (u32 i = 0; i < 16; i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
         memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };
         for (int m = 0; m < 2; m++) {
@@ -553,7 +583,15 @@ int main(int argc, char** argv) {
         // must stop after an mtmsr that changed more than EE or set EE with an interrupt pending (other stops are the
         // JIT's choice: the interpreter goes on only as far as the JIT did).
         int expect = 0;
-        for (u32 i = 0; i < len; i++) {
+        if (traceCase) {  // follow the interpreter along the same path, for as many instructions as the JIT ran
+            for (int step = 0; step < n; step++) {
+                bool stop;
+                u32 w = mem1_read32(&B, (B.cpu.pc & 0x01FFFFFFu));
+                B.cpu.pc = gekko_interp_one(&B.cpu, B.cpu.pc, w, &stop);
+                expect++;
+            }
+        }
+        for (u32 i = 0; !traceCase && i < len; i++) {
             bool stop;
             u32 msrBefore = B.cpu.msr;
             B.cpu.pc = gekko_interp_one(&B.cpu, CODE_EA + 4 * i, seq[i], &stop);
@@ -583,6 +621,11 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 1024; i++) if (t->x4[i]) printf(" 4.%d=%u", i, t->x4[i]);
             printf("\n");
         }
+    }
+    {
+        const JitStats* s = jit_stats(jit);
+        printf("trace cases: %llu unconditional branches followed, %llu conditional branches as side exits, %llu fused compare-branches\n",
+               (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->fusedBranches);
     }
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     return fails ? 1 : 0;

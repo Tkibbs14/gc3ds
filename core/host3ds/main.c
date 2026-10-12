@@ -18,6 +18,7 @@
 #include "gxthread.h"
 #include "pmu.h"
 #include "jitsample.h"
+#include "relay.h"
 
 #define MAX_FILES 64
 #define CYCLES_PER_FIELD (GEKKO_HZ / 60)
@@ -84,6 +85,7 @@ static void present_field(System* s, const GXPresent* p);
 // The VI state is read here on the CPU thread; drawing happens where GX runs (the GX thread when it is on).
 static void present(System* s) {
     u64 t0 = prof_begin();
+    g_where = WH_PRESENT;
     g_presents++;
     g_frameReady = false;
     GXPresent p = { 0, 0, 0, 0, 0, false };
@@ -91,6 +93,7 @@ static void present(System* s) {
     if (gxthread_enabled()) gxthread_present(&p);
     else present_field(s, &p);
     prof_end(PROF_PRESENT, t0);
+    g_where = WH_FRONT;
 }
 
 static u64 prof_clock(void) { return svcGetSystemTick(); }
@@ -204,7 +207,8 @@ static int pick(void) {
         printf("GPU: %s, GX %s, lighting %s\n", g_pica ? "PICA200" : "software", gxthread_enabled() ? "on core 2" : "inline",
                g_pica && pica_shader_light() ? "shader" : "CPU");
         printf("CPU: %s\n", !g_jit ? "interpreter (JIT unavailable)" : g_useJit ? "JIT" : "interpreter");
-        printf("%s\n%s\n\n", g_clockLine, g_coreLine);
+        printf("%s\n%s\n", g_clockLine, g_coreLine);
+        printf("%s\n", relay_configured() ? "L: remote runs (jobs from the PC through the relay)\n" : "");
         if (!g_nFiles) printf("No programs in romfs:/dols, sdmc:/gc3ds or sdmc:/gc3ds/games\n");
         int first = sel > 20 ? sel - 20 : 0;
         for (int i = first; i < g_nFiles && i < first + 24; i++) {
@@ -217,6 +221,7 @@ static int pick(void) {
             u32 d = hidKeysDown();
             if (d & KEY_START) return -1;
             if ((d & KEY_A) && g_nFiles) return sel;
+            if ((d & KEY_L) && relay_configured()) return -2;
             if ((d & KEY_Y) && g_jit) { g_useJit = !g_useJit; break; }
             if ((d & KEY_B) && g_gxThread) { gxthread_enable(&g_sys, !gxthread_enabled()); break; }
             if ((d & KEY_X) && g_pica) { pica_set_shader_light(!pica_shader_light()); break; }
@@ -234,11 +239,54 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // A/B period: inline pipe stores on and off (each switch recompiles all code)
+#define AB_SECS 20  // A/B period: JIT traces on and off (each switch recompiles all code)
 // The native shadow-scan stand-in (hle_tp.c) alternates on and off in the A/B. Its first version froze Twilight Princess at
 // the first Link and Epona close-up (2DS, 9d7c239: the hook read a stale PC); the fix was proven under qemu with the JIT:
-// 1,235 calls to field 1100, all identical to the interpreter. Set false to keep it off.
-static const bool kHleAb = true;
+// 1,235 calls to field 1100, all identical to the interpreter. Off here until the budget fix (e7e7cbe) has had the same
+// check; --ab hle puts it back in the A/B.
+// The A/Bs and start values are run options (RunOpts below): menu runs use the defaults.
+
+// One run's settings: the defaults for menu runs, or from 3dslink arguments / a relay job (relay.c), e.g.
+//   --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces
+typedef struct {
+    char game[96];       // --game: the first program whose path contains this (case-insensitive)
+    char state[160];     // --state PATH: load this save state right after boot (a state from the qemu ARM build works)
+    u32 saveAt;          // --save-state FIELD:PATH: save the machine when the VI reaches FIELD
+    char savePath[160];
+    u32 seconds;         // --seconds N: end the run after N real seconds
+    bool abTraces, abHle;  // --ab traces|hle|none: which setting alternates every AB_SECS
+    bool traces, hle;    // --traces on|off, --hle on|off: start values (an A/B flips them)
+    bool unattended;     // arguments or relay: no "press A" at the end
+} RunOpts;
+static RunOpts g_opt;
+
+static void opts_default(RunOpts* o) {
+    memset(o, 0, sizeof *o);
+    o->abTraces = true;
+    o->traces = true;
+}
+
+static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
+    for (int i = 0; i < argc; i++) {
+        const char* a = argv[i];
+        const char* v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!strncmp(a, "--", 2) && !v) { snprintf(err, n, "%s needs a value", a); return false; }
+        if (!strcmp(a, "--game")) snprintf(o->game, sizeof o->game, "%s", v);
+        else if (!strcmp(a, "--state")) snprintf(o->state, sizeof o->state, "%s", v);
+        else if (!strcmp(a, "--save-state")) {
+            const char* c = strchr(v, ':');
+            if (!c) { snprintf(err, n, "--save-state FIELD:PATH"); return false; }
+            o->saveAt = (u32)strtoul(v, NULL, 10);
+            snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
+        } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); }
+        else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
+        else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
+        else { snprintf(err, n, "unknown option %s", a); return false; }
+        i++;
+    }
+    return true;
+}
 static bool g_pipeFast = true;  // compiled code appends pipe stores itself (jit_set_gather_buffer)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
@@ -252,8 +300,9 @@ static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
+    g_perf = relay_tee(g_perf);  // a relay job also streams the log (relay.c)
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 2 phases (hle: native shadow scan) | hot guest code sampled\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 2 phases (traces: blocks follow branches) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -261,7 +310,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -346,18 +395,22 @@ static bool is_disc(const char* path) {
     return n > 4 && (!strcasecmp(path + n - 4, ".iso") || !strcasecmp(path + n - 4, ".gcm"));
 }
 
-static void run(const char* path) {
+static char g_runErr[400];  // why the last run failed (relay jobs report it)
+
+// Runs one program with g_opt; returns "done" (time limit or SELECT), "stopped" (the machine stopped) or "failed".
+static const char* run(const char* path) {
     size_t size = 0;
     u8* dol = NULL;
     char err[256];
+    g_runErr[0] = 0;
     consoleClear();
     if (g_disc.file) disc_close(&g_disc);
     if (is_disc(path)) {
         printf("opening disc...\n");
-        if (!disc_open(&g_disc, path, err, sizeof err)) { printf("disc: %s\n", err); return; }
+        if (!disc_open(&g_disc, path, err, sizeof err)) { snprintf(g_runErr, sizeof g_runErr, "disc: %s", err); printf("%s\n", g_runErr); return "failed"; }
     } else {
         dol = load_file(path, &size);
-        if (!dol) { printf("cannot read %s\n", path); return; }
+        if (!dol) { snprintf(g_runErr, sizeof g_runErr, "cannot read %s", path); printf("%s\n", g_runErr); return "failed"; }
     }
     gxthread_drain();  // the GX thread must be idle before the GPU backend and the machine are reset
     if (g_pica) pica_reset();
@@ -367,9 +420,23 @@ static void run(const char* path) {
     }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
     free(dol);
-    if (!booted) { printf("boot failed: %s\n", err); return; }
+    if (!booted) { snprintf(g_runErr, sizeof g_runErr, "boot failed: %s", err); printf("%s\n", g_runErr); return "failed"; }
+    if (g_opt.state[0]) {
+        // A save state replaces the booted machine (its disc stays the one just opened); compiled code is dropped.
+        gxthread_drain();
+        if (!sys_load_state(&g_sys, g_opt.state)) {
+            snprintf(g_runErr, sizeof g_runErr, "cannot load state %s (missing, or written by a build with other structures)", g_opt.state);
+            printf("%s\n", g_runErr);
+            return "failed";
+        }
+        if (g_jit) jit_invalidate_all(g_jit);
+        printf("loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
+    }
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     perf_open(path);
+    if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
+    const char* result = "done";
+    bool saved = false;
     u32 perfRows = 0;
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
@@ -390,7 +457,8 @@ static void run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
-        hle_set_enabled(kHleAb);
+        hle_set_enabled(g_opt.hle || g_opt.abHle);
+        jit_set_traces(g_jit, g_opt.traces);
         jit_invalidate_all(g_jit);
     }
     if (g_pica) {
@@ -404,12 +472,26 @@ static void run(const char* path) {
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
+        g_where = WH_FRONT;
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
+        if (g_opt.seconds && svcGetSystemTick() - t0 >= (u64)g_opt.seconds * SYSCLOCK_ARM11) break;
         if (hidKeysDown() & KEY_X) { g_profClock = g_profClock ? NULL : prof_clock; printf("\x1b[9;0H\x1b[0J"); }
         u64 it0 = svcGetSystemTick(), waitBefore = waitTicks;
         sys_run(&g_sys, CYCLES_PER_FIELD);
-        if (g_sys.stopRequested) { printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc); break; }
+        if (g_sys.stopRequested) {
+            printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc);
+            if (g_perf) fprintf(g_perf, "# machine stopped at pc=%08x\n", (unsigned)g_sys.cpu.pc);
+            result = "stopped";
+            break;
+        }
+        if (g_opt.saveAt && !saved && g_sys.vi.field >= g_opt.saveAt) {
+            gxthread_drain();  // GX state must be complete before it is written
+            bool ok = sys_save_state(&g_sys, g_opt.savePath);
+            saved = true;
+            printf("save state %s at field %lu: %s\n", g_opt.savePath, (unsigned long)g_sys.vi.field, ok ? "ok" : "FAILED");
+            if (g_perf) fprintf(g_perf, "# save state %s at field %lu: %s\n", g_opt.savePath, (unsigned long)g_sys.vi.field, ok ? "ok" : "FAILED");
+        }
         // Pace to real time: when emulation is ahead, present and wait for the next 3DS refresh; when behind,
         // present at most once per refresh and keep going.
         u64 now = svcGetSystemTick();
@@ -423,7 +505,9 @@ static void run(const char* path) {
         if (emulated > real) {
             if (g_frameReady) present(&g_sys);
             u64 w0 = svcGetSystemTick();
+            g_where = WH_WAIT;
             gspWaitForVBlank();
+            g_where = WH_FRONT;
             waitTicks += svcGetSystemTick() - w0;
             tPresent = svcGetSystemTick();
         } else if (g_frameReady && now - tPresent > SYSCLOCK_ARM11 / 60) {
@@ -436,6 +520,7 @@ static void run(const char* path) {
         fieldN++;
         if (fieldTicks > fieldMax) fieldMax = fieldTicks;
         if (now - tLast > SYSCLOCK_ARM11) {  // once a second
+            g_where = WH_PERF;
             double secs = (double)(now - tLast) / SYSCLOCK_ARM11;
             double mips = (double)(g_sys.cpu.cycles - cycLast) / secs / 1e6;
             double fps = (g_fields - fieldsLast) / secs;
@@ -500,6 +585,7 @@ static void run(const char* path) {
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
                 fprintf(g_perf, ",%d", hle_enabled() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -510,10 +596,14 @@ static void run(const char* path) {
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
                 // and off (hle column; each switch drops all compiled code, so read each phase after its first seconds).
-                if (kHleAb && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
+                if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
                     hle_set_enabled(!hle_enabled());
                     jit_invalidate_all(g_jit);
                 }
+                // A/B in two phases of AB_SECS: JIT traces (blocks follow branches, conditional ones become side exits) on
+                // and off (traces column; each switch drops all compiled code, so read each phase after its first seconds).
+                if (g_opt.abTraces && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0)
+                    jit_set_traces(g_jit, !jit_traces(g_jit));
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
@@ -611,11 +701,126 @@ static void run(const char* path) {
     }
     if (g_perf) { fclose(g_perf); g_perf = NULL; }
     gxthread_drain();
+    if (g_opt.unattended) return result;
     printf("\nPress A to return to the menu\n");
     while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & (KEY_A | KEY_START)) break; gspWaitForVBlank(); }
+    return result;
 }
 
-int main(void) {
+// The first program whose path contains `name` (ignoring case), or -1.
+static int find_program(const char* name) {
+    size_t n = strlen(name);
+    for (int i = 0; i < g_nFiles && n; i++)
+        for (const char* p = g_files[i]; *p; p++)
+            if (!strncasecmp(p, name, n)) return i;
+    return -1;
+}
+
+static void wait_key(u32 keys) {
+    while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & keys) return; gspWaitForVBlank(); }
+}
+
+static bool g_quitApp;  // remote mode installed a new build: leave so it can be started
+
+// A comment line in the current relay job's log (errors before the run's perf log exists).
+static void relay_note(const char* msg) {
+    FILE* t = relay_tee(NULL);
+    if (t) { fprintf(t, "# %s\n", msg); fclose(t); }
+}
+
+// A job whose build had to be downloaded first is kept here across the restart into the new build.
+#define RELAY_PENDING "sdmc:/gc3ds/relay_pending.txt"
+static void save_pending(const RelayJob* j) {
+    FILE* f = fopen(RELAY_PENDING, "w");
+    if (f) { fprintf(f, "%u\n%s\n%s\n", j->id, j->build, j->args); fclose(f); }
+}
+static bool load_pending(RelayJob* j) {
+    FILE* f = fopen(RELAY_PENDING, "r");
+    if (!f) return false;
+    char line[16];
+    memset(j, 0, sizeof *j);
+    bool ok = fgets(line, sizeof line, f) && fgets(j->build, sizeof j->build, f) && fgets(j->args, sizeof j->args, f);
+    fclose(f);
+    remove(RELAY_PENDING);
+    j->id = (unsigned)strtoul(line, NULL, 10);
+    j->build[strcspn(j->build, "\r\n")] = 0;
+    j->args[strcspn(j->args, "\r\n")] = 0;
+    return ok && j->id;
+}
+
+// Remote runs: jobs queued from the PC through the relay (relay.c, core/tools/relay.sh) run one after another, each
+// streaming its perf log back; a job for another build downloads it, keeps the job and asks for a restart.
+// SELECT leaves. Jobs default to 600 s so a forgotten --seconds cannot run forever.
+static void remote_mode(const char* selfPath) {
+    char err[256];
+    consoleClear();
+    printf("Remote runs: starting the network...\n");
+    if (!relay_start(err, sizeof err)) { printf("relay: %s\n\nPress A\n", err); wait_key(KEY_A); return; }
+    const char* self = relay_self_id(selfPath);
+    RelayJob job;
+    bool have = load_pending(&job), fromPending = have;
+    u64 lastPoll = 0;
+    u32 polls = 0;
+    for (;;) {
+        if (!have) {
+            if (!aptMainLoop()) { g_quitApp = true; return; }
+            hidScanInput();
+            if (hidKeysDown() & KEY_SELECT) return;
+            if (lastPoll && svcGetSystemTick() - lastPoll < 10ull * SYSCLOCK_ARM11) { gspWaitForVBlank(); continue; }
+            lastPoll = svcGetSystemTick();
+            int r = relay_next(&job, err, sizeof err);
+            consoleClear();
+            printf("Remote runs - this build %s\nSELECT: back to the menu\n\n", self);
+            if (r < 0) { printf("relay error (retrying every 10 s):\n%s\n", err); continue; }
+            if (r == 0) { printf("waiting for jobs (checked %lu times)\n", (unsigned long)++polls); continue; }
+            have = true;
+            fromPending = false;
+        }
+        have = false;
+        printf("job %u: %s\n", job.id, job.args);
+        relay_job_begin(job.id);
+        if (strcmp(job.build, "-") && strcmp(job.build, self)) {
+            if (fromPending) {
+                snprintf(err, sizeof err, "still build %s after the update to %s", self, job.build);
+                printf("%s\n", err); relay_note(err); relay_job_end("failed");
+                continue;
+            }
+            printf("downloading build %s...\n", job.build);
+            if (!relay_fetch_build(job.build, selfPath, err, sizeof err)) {
+                printf("%s\n", err); relay_note(err); relay_job_end("failed");
+                continue;
+            }
+            save_pending(&job);
+            printf("\nNew build installed at %s.\nPress START, then open gc3ds again:\nthe job runs when Remote runs starts.\n", selfPath);
+            wait_key(KEY_START);
+            g_quitApp = true;
+            return;
+        }
+        RunOpts o;
+        opts_default(&o);
+        o.unattended = true;
+        o.seconds = 600;
+        char args[sizeof job.args], *av[64];
+        int ac = 0;
+        snprintf(args, sizeof args, "%s", job.args);
+        for (char* t = strtok(args, " "); t && ac < 64; t = strtok(NULL, " ")) av[ac++] = t;
+        int gi = -1;
+        if (!opts_parse(&o, ac, av, err, sizeof err)) {}
+        else if ((gi = find_program(o.game)) < 0) snprintf(err, sizeof err, "no program matches --game \"%s\"", o.game);
+        if (gi < 0) { printf("%s\n", err); relay_note(err); relay_job_end("failed"); continue; }
+        g_opt = o;
+        const char* result = run(g_files[gi]);
+        if (g_runErr[0]) relay_note(g_runErr);
+        relay_job_end(result);
+        opts_default(&g_opt);
+        lastPoll = 0;
+    }
+}
+
+int main(int argc, char** argv) {
+    opts_default(&g_opt);
+    // Our own .3dsx (a relay job for another build replaces it). 3dslink runs us from memory ("3dslink:/...").
+    const char* selfPath = argc > 0 && argv[0] && !strncmp(argv[0], "sdmc:/", 6) ? argv[0] : "sdmc:/3ds/gc3ds.3dsx";
     jit_host_fpscr_init();  // the kernel starts threads rounding toward zero; compiled float code assumes nearest
     gfxInitDefault();
     gfxSetDoubleBuffering(GFX_TOP, true);
@@ -668,11 +873,36 @@ int main(void) {
         }
         fclose(ar);
     }
-    for (;;) {
+    // Arguments (3dslink -a <ip> gc3ds.3dsx -- --game Twilight --seconds 120 ...): one run, then back to the launcher.
+    if (argc > 1) {
+        char err[160];
+        g_opt.unattended = true;
+        int gi = -1;
+        if (!opts_parse(&g_opt, argc - 1, argv + 1, err, sizeof err)) printf("%s\n", err);
+        else if ((gi = find_program(g_opt.game)) < 0) printf("no program matches --game \"%s\"\n", g_opt.game);
+        else run(g_files[gi]);
+        if (gi < 0) { printf("Press A\n"); wait_key(KEY_A); }
+        g_quitApp = true;
+    }
+    // relay.txt "auto 1": remote runs start by themselves (B within 3 s for the menu), so the 2DS can be left waiting.
+    if (!g_quitApp && relay_auto()) {
+        printf("\nRemote runs start in 3 s (B: menu)\n");
+        u64 t = svcGetSystemTick();
+        bool menu = false;
+        while (!menu && aptMainLoop() && svcGetSystemTick() - t < 3ull * SYSCLOCK_ARM11) {
+            hidScanInput();
+            menu = hidKeysDown() & KEY_B;
+            gspWaitForVBlank();
+        }
+        if (!menu) remote_mode(selfPath);
+    }
+    while (!g_quitApp) {
         int i = pick();
+        if (i == -2) { remote_mode(selfPath); continue; }
         if (i < 0) break;
         run(g_files[i]);
     }
+    relay_stop();
     sys_free(&g_sys);
     romfsExit();
     gfxExit();
