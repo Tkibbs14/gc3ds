@@ -4,12 +4,18 @@
 // before an event function changed size).
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
 #include "system.h"
 
 #define STATE_MAGIC 0x47433353u  // "GC3S"
 #define ARAM_BYTES (16u * 1024 * 1024)
 
-#define STATE_VERSION 2
+// 3: Gekko gained jitLeft, jitStatus and jitFn[16] (JIT runtime words, refilled on every JIT entry). Version 2 files
+// load with those inserted as zeros, so states made before still work (a qemu-made state takes hours to remake).
+#define STATE_VERSION 3
+#define V2_INSERT_AT ((u32)offsetof(System, cpu) + (u32)offsetof(Gekko, jitLeft))
+#define V2_INSERTED ((u32)(offsetof(Gekko, sr) - offsetof(Gekko, jitLeft)))
 
 typedef struct { u32 magic, sysSize, gxSize, version; u8 eventFn[MAX_EVENTS]; u32 pendingLen, pad; } StateHeader;
 
@@ -44,8 +50,13 @@ bool sys_load_state(System* s, const char* path) {
     StateHeader h;
     System* t = malloc(sizeof *t);
     GXCore* gx = &s->gx.core;
-    bool ok = t && get(f, &h, sizeof h) && h.magic == STATE_MAGIC && h.version == STATE_VERSION && h.sysSize == sizeof *s &&
-              h.gxSize == sizeof *gx && get(f, t, sizeof *t);
+    bool ok = t && get(f, &h, sizeof h) && h.magic == STATE_MAGIC && h.gxSize == sizeof *gx;
+    if (ok && h.version == STATE_VERSION && h.sysSize == sizeof *s) ok = get(f, t, sizeof *t);
+    else if (ok && h.version == 2 && h.sysSize == sizeof *s - V2_INSERTED) {
+        u8* d = (u8*)t;
+        memset(t, 0, sizeof *t);
+        ok = get(f, d, V2_INSERT_AT) && get(f, d + V2_INSERT_AT + V2_INSERTED, h.sysSize - V2_INSERT_AT);
+    } else ok = false;
     for (int i = 0; ok && i < MAX_EVENTS; i++) ok = !t->events[i].used || h.eventFn[i] < NUM_EVENT_FNS;
     if (ok && h.pendingLen > gx->pendingCap) {
         u8* p = realloc(gx->pending, h.pendingLen);

@@ -49,6 +49,9 @@ typedef struct Gekko {
     u32 pc;
     u32 hostPc;     // JIT: where in compiled code the current block started (written by each block; the profiler samples it)
     u32 fastBase;   // JIT: the blr / bctr table of the running blocks' key (read by the shared indirect-branch stub)
+    s32 jitLeft;    // JIT: budget left at the instruction calling a helper (compiled code stores it; see jit.c time_enter)
+    u32 jitStatus;  // JIT: slow-path helper result (1 exception, 2 finish the instruction and leave), cleared by compiled code
+    u32 jitFn[16];  // JIT: helper and shared-stub addresses and pipe pointers, read with ldr rX, [RG, #off] (ARMv6 has no MOVW)
     u32 sr[16];
     u32 spr[1024];  // backing store for SPRs without dedicated fields (GQRs, HIDs, BATs, SRR0/1, SPRGs, ...)
 

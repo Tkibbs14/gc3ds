@@ -67,6 +67,9 @@ bool jit_traces(const Jit* j);
 enum { TRACE_SIDE_CR = 1, TRACE_SIDE_CTR = 2, TRACE_SIDE_IND = 4, TRACE_SIDE_FUSED = 8, TRACE_SIDE_ALL = 15 };
 void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns);
 u32 jit_entries(const Jit* j);  // blocks in the cache now
+// Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
+void jit_set_slow_inline(Jit* j, bool on);
+bool jit_slow_inline(const Jit* j);
 bool jit_mem_stubs(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));
 

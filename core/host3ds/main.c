@@ -170,6 +170,8 @@ static void present_field(System* s, const GXPresent* p) {
 
 // 3DS controls -> GameCube pad: A/B/X/Y as labelled, L/R -> L/R, ZR -> Z, Start, D-pad, Circle Pad -> main stick,
 // C-Stick -> C stick.
+static u16 scripted_buttons(void);  // --press (after RunOpts)
+
 static void update_input(System* s) {
     hidScanInput();
     u32 k = hidKeysHeld();
@@ -186,6 +188,7 @@ static void update_input(System* s) {
     if (k & KEY_X) b |= 0x0400;
     if (k & KEY_Y) b |= 0x0800;
     if (k & KEY_START) b |= 0x1000;
+    b |= scripted_buttons();
     s->si.buttons[0] = b;
     circlePosition cp, cs;
     hidCircleRead(&cp);
@@ -260,10 +263,20 @@ typedef struct {
     u32 traceSide;       // --trace-side on|off|MASK: side exits (TRACE_SIDE_*: 1 bc on CR, 2 bc with CTR, 4 blr/bctr, 8 fused flags)
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
     bool gxInline;       // --gx inline|thread: GX on the CPU thread instead of core 2
+    bool slowInline;     // --slow inline|stub: memory slow paths per site (old) or through the shared stubs
+    struct { u32 from, to; u16 bits; } press[16];  // --press A@200-206,START@900-905: buttons held over field ranges
+    u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
 } RunOpts;
 static RunOpts g_opt;
+
+static u16 scripted_buttons(void) {
+    u16 b = 0;
+    for (u32 i = 0; i < g_opt.nPress; i++)
+        if (g_fields >= g_opt.press[i].from && g_fields <= g_opt.press[i].to) b |= g_opt.press[i].bits;
+    return b;
+}
 
 static void opts_default(RunOpts* o) {
     memset(o, 0, sizeof *o);
@@ -293,6 +306,26 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on") ? TRACE_SIDE_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
+        else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
+        else if (!strcmp(a, "--press")) {
+            static const struct { const char* name; u16 bit; } kButtons[] = {
+                { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
+                { "L", 0x0040 }, { "A", 0x0100 }, { "B", 0x0200 }, { "X", 0x0400 }, { "Y", 0x0800 }, { "START", 0x1000 },
+            };
+            for (const char* q = v; *q && o->nPress < sizeof o->press / sizeof o->press[0];) {
+                char name[16];
+                unsigned from, to;
+                int k = 0;
+                u16 bit = 0;
+                if (sscanf(q, "%15[A-Za-z]@%u-%u%n", name, &from, &to, &k) != 3) { snprintf(err, n, "--press BUTTON@from-to,..."); return false; }
+                for (size_t b = 0; b < sizeof kButtons / sizeof kButtons[0]; b++) if (!strcmp(name, kButtons[b].name)) bit = kButtons[b].bit;
+                if (!bit) { snprintf(err, n, "--press: unknown button %s", name); return false; }
+                o->press[o->nPress].from = from; o->press[o->nPress].to = to; o->press[o->nPress].bits = bit;
+                o->nPress++;
+                q += k;
+                if (*q == ',') q++;
+            }
+        }
         else if (!strcmp(a, "--trace-len")) o->traceLen = (u32)strtoul(v, NULL, 10);
         else { snprintf(err, n, "unknown option %s", a); return false; }
         i++;
@@ -466,6 +499,7 @@ static const char* run(const char* path) {
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) {
         jit_set_linking(g_jit, g_opt.link);
+        jit_set_slow_inline(g_jit, g_opt.slowInline);
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;

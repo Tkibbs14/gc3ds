@@ -26,7 +26,8 @@
 #define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
-enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_WORDS = 640 };
+enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_N,
+       ST_WORDS = 768 };
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT };
 // The shared memory-access stubs (emit_mem_stubs): kinds load 32, 16 unsigned, 16 signed, 8; store 32, 16, 8, by the
 // register that holds the loaded value or the value to store (r2 or a cached-GPR slot, r4-r8).
@@ -44,6 +45,9 @@ static int ms_reg(int r) { return r == R2 ? 0 : r >= R4 && r <= R8 ? r - R4 + 1 
 #define OFF_MSR ((u32)offsetof(Gekko, msr))
 #define OFF_HOSTPC ((u32)offsetof(Gekko, hostPc))
 #define OFF_FASTBASE ((u32)offsetof(Gekko, fastBase))
+#define OFF_JITLEFT ((u32)offsetof(Gekko, jitLeft))
+#define OFF_JITSTATUS ((u32)offsetof(Gekko, jitStatus))
+#define OFF_JITFN(k) ((u32)offsetof(Gekko, jitFn) + 4u * (u32)(k))
 _Static_assert(offsetof(Gekko, pc) < 4096, "Gekko.pc reachable with ldr immediate");
 // FPR r: ps0 at +0 and ps1 at +8, each a host double (low word first); vldr/vstr reach 1020 bytes.
 #define OFF_FPR(r) ((u32)offsetof(Gekko, fpr) + 16u * (u32)(r))
@@ -73,7 +77,7 @@ struct Jit {
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
     u8* compiledPc;             // one bit per guest word of MEM1: a block started there since the last flush (stats)
     JitStats stats;
-    u32 stub[ST_INTERP + 1];    // word offsets of the shared stubs in `code`
+    u32 stub[ST_N];             // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
@@ -92,6 +96,7 @@ struct Jit {
     u32 gatherEa;
     u8* gatherBuf;              // jit_set_gather_buffer: the pipe's partial burst and its length, appended to inline
     u32* gatherLen;
+    bool slowInline;            // jit_set_slow_inline: the old per-site slow paths instead of the shared stubs (A/B)
 };
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
@@ -109,7 +114,7 @@ u32 jit_debug_last_words;
 // and they run with g->cycles = start of the run + instructions executed.
 static u64 g_runStart;    // g->cycles + instructions already run by this jit_entry, when the run started
 static s32 g_runBudget;   // the run's budget
-static s32 g_jitLeft;
+#define g_jitLeft (g_jit->g->jitLeft)  // in the Gekko: compiled code reaches it RG-relative in one instruction
 typedef struct { Gekko* g; u64 saved; } GuestTime;
 static GuestTime time_enter(Gekko* g) {
     GuestTime t = { g, g->cycles };
@@ -122,7 +127,7 @@ static void time_leave(GuestTime t) { t.g->cycles = t.saved; }
 // Memory slow path: anything the inline fast path does not handle (MMIO, unaligned, other mappings). g_status:
 // 1 = the access raised an exception (g->pc = handler; the instruction has no effect), 2 = it completed but
 // interrupt-relevant state changed (g->pc = next instruction; finish the instruction, then leave compiled code).
-static u32 g_status;
+#define g_status (g_jit->g->jitStatus)
 
 static u32 jit_load_at(Gekko* g, u32 ea, u32 size, u32 pc) {
     g_jit->stats.slowLoads++;
@@ -508,7 +513,18 @@ static void exit_indirect(Cg* c) {
 }
 
 // Call a C helper with up to 4 word arguments already in r0-r3.
+// Helpers compiled code calls, by their index in Gekko.jitFn (filled by jit_create): two words per call instead of
+// a 32-bit constant (MOV + up to three ORRs) and BLX.
+static const void* const kJitFns[] = { (const void*)jit_load, (const void*)jit_store, (const void*)jit_gather,
+                                       (const void*)jit_interp, (const void*)jit_mtmsr, (const void*)jit_load64,
+                                       (const void*)jit_store64, (const void*)jit_hle };
+// Gekko.jitFn after the C helpers: the shared slow-path stubs, and the write-gather pipe's address, length and buffer.
+enum { JF_LOADSLOW = 8, JF_STORESLOW, JF_STOREPIPE, JF_GATHER_EA, JF_GATHER_LEN, JF_GATHER_BUF, JF_N };
+_Static_assert(sizeof kJitFns / sizeof kJitFns[0] <= JF_LOADSLOW, "kJitFns overlaps the stub slots");
+_Static_assert(JF_N <= sizeof ((Gekko*)0)->jitFn / sizeof(u32), "Gekko.jitFn too small");
 static void call(Cg* c, const void* fn) {
+    for (u32 k = 0; k < sizeof kJitFns / sizeof kJitFns[0]; k++)
+        if (kJitFns[k] == fn) { ldr_imm(&c->e, R12, RG, OFF_JITFN(k)); blx_reg(&c->e, R12); return; }
     load_const(&c->e, R12, (u32)(uintptr_t)fn);
     blx_reg(&c->e, R12);
 }
@@ -516,8 +532,7 @@ static void call(Cg* c, const void* fn) {
 // Before a helper that runs at guest time: the budget left at this instruction to g_jitLeft (clobbers lr and r12).
 static void emit_time(Cg* c) {
     dp_imm(&c->e, SUB, 0, LR, RDC, c->count - 1);
-    load_const(&c->e, R12, (u32)(uintptr_t)&g_jitLeft);
-    str_imm(&c->e, LR, R12, 0);
+    str_imm(&c->e, LR, RG, OFF_JITLEFT);
 }
 
 // CR field `fld` from the ARM flags of a compare already done (signed or unsigned), plus XER[SO]. The ARM flags are
@@ -586,10 +601,9 @@ static u32 ppc_mask(u32 mb, u32 me) {
 // clears g_status.
 static void slow_status(Cg* c) {
     Emit* e = &c->e;
-    load_const(e, R12, (u32)(uintptr_t)&g_status);
-    ldr_imm(e, R3, R12, 0);
+    ldr_imm(e, R3, RG, OFF_JITSTATUS);
     dp_imm(e, MOV, 0, R1, 0, 0);
-    str_imm(e, R1, R12, 0);
+    str_imm(e, R1, RG, OFF_JITSTATUS);
     dp_imm(e, CMP, 1, 0, R3, 1);
     exit_if(c, C_EQ);
     c->pendingStop = true;
@@ -662,19 +676,39 @@ static void cold_start(Cg* c, const u32 slow[2]) {
 // the slow paths save it around their helper call.
 #define EA_SAVE ((1u << R0) | (1u << R1))  // two registers keep the stack 8-byte aligned
 
+// Calls a shared slow-path stub (ST_LOADSLOW / ST_STORESLOW / ST_STOREPIPE) with its literal after the call; the
+// stub returns past it with the status in r3 (1 exception, 2 finish and leave), r0 (the address) preserved. Five words
+// per site instead of about 25: no 32-bit constants (the PC is the literal) and the helper call is shared.
+static void call_slow_stub(Cg* c, int jf, u32 literal) {
+    Emit* e = &c->e;
+    emit_time(c);
+    ldr_imm(e, R12, RG, OFF_JITFN(jf));
+    blx_reg(e, R12);
+    word(e, literal);
+}
+static void stub_status(Cg* c) {
+    dp_imm(&c->e, CMP, 1, 0, R3, 1);
+    exit_if(c, C_EQ);
+    c->pendingStop = true;
+}
+
 static void load_slow(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
-    // r0 = ea; jit_load(g, ea, size, pc).
-    push_regs(e, EA_SAVE);
-    mov_reg(e, R1, R0);
-    mov_reg(e, R0, RG);
-    load_const(e, R2, size);
-    load_const(e, R3, c->pc);
-    emit_time(c);
-    call(c, (const void*)jit_load);
-    mov_reg(e, R2, R0);
-    pop_regs(e, EA_SAVE);
-    slow_status(c);  // a fault leaves before dreg (maybe a cached GPR) changes
+    if (c->j->slowInline) {  // the old per-site slow path (A/B): r0 = ea; jit_load(g, ea, size, pc)
+        push_regs(e, EA_SAVE);
+        mov_reg(e, R1, R0);
+        mov_reg(e, R0, RG);
+        load_const(e, R2, size);
+        load_const(e, R3, c->pc);
+        emit_time(c);
+        call(c, (const void*)jit_load);
+        mov_reg(e, R2, R0);
+        pop_regs(e, EA_SAVE);
+        slow_status(c);
+    } else {  // r0 = ea; the stub calls jit_load(g, ea, size, pc) and returns the value in r2
+        call_slow_stub(c, JF_LOADSLOW, c->pc | (size == 4 ? 2u : size == 2 ? 1u : 0u));
+        stub_status(c);  // a fault leaves before dreg (maybe a cached GPR) changes
+    }
     if (sign && size == 2) sxth(e, R2, R2);
     stop_tail(c);
     mov_reg(e, dreg, R2);
@@ -708,8 +742,14 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
 static void store_slow(Cg* c, u32 size, int vreg) {
     Emit* e = &c->e;
     u32 sizePc = c->pc | (size == 4 ? 2u : size == 2 ? 1u : 0u);  // pc is word aligned
-    u32 pipeDone = NO_BRANCH;
     mov_reg(e, R2, vreg);
+    if (!c->j->slowInline) {  // the shared stubs (see call_slow_stub); the pipe one also appends to the write-gather pipe
+        call_slow_stub(c, c->fastmem && c->j->gatherPut ? JF_STOREPIPE : JF_STORESLOW, sizePc);
+        stub_status(c);
+        stop_tail(c);
+        return;
+    }
+    u32 pipeDone = NO_BRANCH;
     if (c->fastmem && c->j->gatherPut) {
         // The write-gather pipe (the graphics command stream, written a few bytes at a time): straight to the GP.
         load_const(e, R1, c->j->gatherEa);
@@ -2212,8 +2252,7 @@ static void emit_stubs(Jit* j) {
     ldr_imm(e, R2, LR, 4);
     ldr_imm(e, R3, LR, 8);
     dp_reg(e, SUB, 0, R3, RDC, R3);
-    load_const(e, R12, (u32)(uintptr_t)&g_jitLeft);
-    str_imm(e, R3, R12, 0);
+    str_imm(e, R3, RG, OFF_JITLEFT);
     mov_reg(e, R0, RG);
     load_const(e, R12, (u32)(uintptr_t)jit_interp);
     blx_reg(e, R12);
@@ -2221,7 +2260,92 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, ADD, 0, LR, LR, 12);
     dp_imm(e, CMP, 1, 0, R0, 0);
     bx_reg_c(e, C_AL, LR);
+    // ST_LOADSLOW: r0 = ea, literal = pc | log2(size). jit_load(g, ea, size, pc); returns past the literal with the value
+    // in r2, the status in r3 (Gekko.jitStatus, cleared) and r0 kept. r1, r12 clobbered.
+    j->stub[ST_LOADSLOW] = e->n;
+    push_regs(e, (1u << R0) | (1u << R1) | (1u << R4) | (1u << LR));  // four registers: the stack stays 8-byte aligned
+    ldr_imm(e, R3, LR, 0);
+    mov_reg(e, R1, R0);
+    mov_reg(e, R0, RG);
+    dp_imm(e, AND, 0, R2, R3, 3);
+    dp_imm(e, MOV, 0, R12, 0, 1);
+    dp_rsr(e, MOV, 0, R2, 0, R12, LSL, R2);  // size = 1 << log2
+    dp_imm(e, BIC, 0, R3, R3, 3);
+    ldr_imm(e, R12, RG, OFF_JITFN(0));       // jit_load
+    blx_reg(e, R12);
+    mov_reg(e, R2, R0);
+    u32 slowRet = e->n;  // shared tail: status to r3, restore, return past the literal
+    ldr_imm(e, R3, RG, OFF_JITSTATUS);
+    dp_imm(e, MOV, 0, R1, 0, 0);
+    str_imm(e, R1, RG, OFF_JITSTATUS);
+    u32 popRet = e->n;
+    pop_regs(e, (1u << R0) | (1u << R1) | (1u << R4) | (1u << LR));
+    dp_imm(e, ADD, 0, LR, LR, 4);
+    bx_reg_c(e, C_AL, LR);
+    // ST_STORESLOW: r0 = ea, r2 = value, literal = pc | log2(size). jit_store(g, ea, value, sizePc); returns as above.
+    j->stub[ST_STORESLOW] = e->n;
+    push_regs(e, (1u << R0) | (1u << R1) | (1u << R4) | (1u << LR));
+    u32 storeBody = e->n;
+    ldr_imm(e, R3, LR, 0);
+    mov_reg(e, R1, R0);
+    mov_reg(e, R0, RG);
+    ldr_imm(e, R12, RG, OFF_JITFN(1));       // jit_store
+    blx_reg(e, R12);
+    branch_c(e, C_AL, slowRet);
+    // ST_STOREPIPE: ST_STORESLOW, but a store to the write-gather pipe's address goes to the pipe: appended to its buffer
+    // when the bytes fit before the 32-byte burst completes (most pipe stores), else through jit_gather (status 2 when
+    // it asks compiled code to stop).
+    j->stub[ST_STOREPIPE] = e->n;
+    push_regs(e, (1u << R0) | (1u << R1) | (1u << R4) | (1u << LR));
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_EA));
+    dp_reg(e, CMP, 1, 0, R0, R1);
+    branch_c(e, C_NE, storeBody);
+    ldr_imm(e, R3, LR, 0);                   // sizePc
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_LEN));
+    dp_imm(e, CMP, 1, 0, R1, 0);
+    u32 noBuf = branch_c(e, C_EQ, 0);
+    dp_imm(e, AND, 0, R4, R3, 3);
+    dp_imm(e, MOV, 0, R12, 0, 1);
+    dp_rsr(e, MOV, 0, R4, 0, R12, LSL, R4);  // r4 = size
+    ldr_imm(e, R12, R1, 0);                  // r12 = bytes already in the burst
+    dp_reg(e, ADD, 0, LR, R12, R4);          // lr (saved on the stack) = the new length
+    dp_imm(e, CMP, 1, 0, LR, 32);
+    u32 full = branch_c(e, C_CS, 0);
+    str_imm(e, LR, R1, 0);
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_BUF));
+    dp_reg(e, ADD, 0, R1, R1, R12);
+    // Console byte order: size 1, 2 or 4.
+    dp_imm(e, CMP, 1, 0, R4, 2);
+    u32 not2 = branch_c(e, C_NE, 0);
+    mov_shift(e, 0, R12, R2, LSR, 8); strb_imm(e, R12, R1, 0); strb_imm(e, R2, R1, 1);
+    u32 done2 = branch_c(e, C_AL, 0);
+    patch_branch(e, not2, e->n);
+    dp_imm(e, CMP, 1, 0, R4, 4);
+    u32 not4 = branch_c(e, C_NE, 0);
+    mov_shift(e, 0, R12, R2, LSR, 24); strb_imm(e, R12, R1, 0);
+    mov_shift(e, 0, R12, R2, LSR, 16); strb_imm(e, R12, R1, 1);
+    mov_shift(e, 0, R12, R2, LSR, 8); strb_imm(e, R12, R1, 2);
+    strb_imm(e, R2, R1, 3);
+    u32 done4 = branch_c(e, C_AL, 0);
+    patch_branch(e, not4, e->n);
+    strb_imm(e, R2, R1, 0);
+    patch_branch(e, done2, e->n);
+    patch_branch(e, done4, e->n);
+    dp_imm(e, MOV, 0, R3, 0, 0);             // appended: no stop
+    branch_c(e, C_AL, popRet);
+    patch_branch(e, noBuf, e->n);
+    patch_branch(e, full, e->n);
+    mov_reg(e, R1, R2);                      // jit_gather(g, value, sizePc)
+    mov_reg(e, R2, R3);
+    mov_reg(e, R0, RG);
+    ldr_imm(e, R12, RG, OFF_JITFN(2));       // jit_gather
+    blx_reg(e, R12);
+    dp_imm(e, MOV, 0, R3, 0, 0);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    dp_imm_c(e, C_NE, MOV, 0, R3, 0, 2);     // the GP asked compiled code to stop: finish the instruction and leave
+    branch_c(e, C_AL, popRet);
     emit_mem_stubs(j, e);
+    if (e->overflow) { fprintf(stderr, "JIT: shared stubs exceed ST_WORDS\n"); abort(); }
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
@@ -2331,10 +2455,26 @@ static bool update_fastmem(Jit* j) {
     return j->fastmem;
 }
 
+// Gekko.jitFn: helper and stub addresses and the pipe's pointers (compiled code reads them RG-relative). Written at every
+// entry: a loaded save state brings another build's values, and the pipe may be configured after the stubs exist.
+static void jit_fill_fns(Jit* j) {
+    Gekko* g = j->g;
+    for (u32 k = 0; k < sizeof kJitFns / sizeof kJitFns[0]; k++) g->jitFn[k] = (u32)(uintptr_t)kJitFns[k];
+    g->jitFn[JF_LOADSLOW] = (u32)(uintptr_t)(j->code + j->stub[ST_LOADSLOW]);
+    g->jitFn[JF_STORESLOW] = (u32)(uintptr_t)(j->code + j->stub[ST_STORESLOW]);
+    g->jitFn[JF_STOREPIPE] = (u32)(uintptr_t)(j->code + j->stub[ST_STOREPIPE]);
+    g->jitFn[JF_GATHER_EA] = j->gatherEa;
+    g->jitFn[JF_GATHER_LEN] = (u32)(uintptr_t)j->gatherLen;
+    g->jitFn[JF_GATHER_BUF] = (u32)(uintptr_t)j->gatherBuf;
+}
+
 static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     Jit* j = ctx;
     u32 total = 0;
     g_where = WH_DISPATCH;
+    // The helper table compiled code calls through: refilled here because a loaded save state overwrites the Gekko
+    // with another build's host addresses.
+    jit_fill_fns(j);
     update_fastmem(j);
     u32* site = NULL;  // the link site the last run left through, patched once its target is known
     u32 siteGen = 0, siteKey = 0;
@@ -2410,6 +2550,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->traceFollow = true;
     j->traceSide = TRACE_SIDE_ALL;
     emit_stubs(j);
+    jit_fill_fns(j);  // compiled code may run without jit_entry (the fuzzer)
     jit_invalidate_all(j);
     g_jit = j;
     return j;
@@ -2452,6 +2593,13 @@ void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns) {
 }
 
 u32 jit_entries(const Jit* j) { return j->nEntries; }
+
+void jit_set_slow_inline(Jit* j, bool on) {
+    if (j->slowInline == on) return;
+    j->slowInline = on;
+    jit_invalidate_all(j);
+}
+bool jit_slow_inline(const Jit* j) { return j->slowInline; }
 
 void jit_set_mem_stubs(Jit* j, bool on) {
     if (j->memStubs == on) return;
