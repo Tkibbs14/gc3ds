@@ -723,3 +723,18 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   before. Hot words 681,522 -> 589,393 (-13.5%; `bc` 11.8 -> 5.8 words, `b` 10.1 -> 7.1); the stub area grew 2.0 -> 3.4
   words per guest instruction (not executed once linked). Fuzzer: default seeds 11/21 and chain mode 0 fails, plants 1-8
   caught; arm_jit_check frames identical.
+- **2DS, dc09f3e (relay jobs 58-59): neutral.** Title 18.21% (job 57's same-config phase 18.14%), cutscene 17.45% (job
+  56's 18.00%, but job 58 ran with `--pmu-split on`, whose hooks cost something: never mix it into a speed comparison).
+  Executed instructions fell 3-11% while I-cache misses rose ~6% (7.97 -> 8.46 M/s title): the stub area between blocks
+  grew from 2.0 to 3.4 words per guest instruction and spread hot code over more cache lines.
+- **3605dfd moves every block stub (exit, link and budget stubs) to the cold region**, which is now emitted at its final
+  address (no copy from a scratch buffer), so hot code and stubs are patched by address (`patch_to`). The hot region
+  holds only block code: 5.6 words per guest instruction. qemu TP exact; fuzzer clean. 2DS: relay jobs 60-61.
+- **2DS, 3605dfd (relay jobs 60-61): title 19.26%, cutscene 19.27%** (from 18.21 / ~18.0): I-cache misses 8.46 -> 7.58 M/s,
+  instruction-fetch stalls 286 -> 238 M cycles/s (title). One-word exits only paid once their stubs left the hot region.
+  Session total: title 16.6 -> 19.3%, cutscene 15.9 -> 19.3%. Core 0 waits for core 2 2-4%; the GX thread waits for
+  the vertex worker ~19% (`vwait`), the next core-2 item once core 0 speeds up again.
+- **Next, by expected gain:** float / paired-single code size (psq_st 31 hot words, psq_l 24, ps_madds 18-24: GQR guard
+  baking, known-single operands); the vertex worker's per-job cost (~220 us per merged job on core 3; the 116-byte VIn
+  record is mostly unused texture slots); fix the two trace-mode bugs (chain seed 5, default seed 31) before traces are
+  tried again, now that blocks are smaller and stubs are cold.
