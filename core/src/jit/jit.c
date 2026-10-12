@@ -365,6 +365,53 @@ static void cold_end(Cg* c, u32 hotResume) {
     c->flagsAt = NO_BRANCH;
 }
 
+// ---- register-cache statistics (PC build, JIT_REGSTAT=1): what pinning a guest register across blocks would save ----
+// Per compiled block: how many times each cache id is loaded from memory into a slot and written back; compiled code
+// counts the block's executions; the products are summed per id (folded when the cache is flushed, printed with the
+// JIT statistics). The weights are dynamic, so a register loaded once in a hot loop body counts as much as it costs.
+#ifndef __3DS__
+#define RS_IDS 34
+static bool g_regStat;
+static u8 (*g_rsLd)[RS_IDS], (*g_rsSt)[RS_IDS];
+static u32* g_rsExec;  // indexed by block entry (Entry index), incremented by the block itself
+static u64 g_rsLdTot[RS_IDS], g_rsStTot[RS_IDS], g_rsExecTot;
+static u32 g_rsCur;    // the block being compiled
+// Dynamic opcode profile (same switch): each block's (opcode, hot words) list in a pool; folded with its execution count
+// into executed guest instructions and executed hot ARM words per opcode.
+#define DOP_POOL (4u << 20)
+static u32* g_dopPool;   // key << 8 | hot words (capped at 255)
+static u32 g_dopUsed, *g_dopStart, *g_dopLen;  // per block entry
+static u64 g_dopN[65536], g_dopWords[65536];
+static void dop_add(u32 key, u32 hot) {
+    if (!g_regStat || g_dopUsed >= DOP_POOL) return;
+    g_dopPool[g_dopUsed++] = key << 8 | (hot > 255 ? 255 : hot);
+    g_dopLen[g_rsCur]++;
+}
+static void rs_fold(u32 nEntries) {
+    if (!g_regStat) return;
+    g_dopUsed = 0;  // the pool restarts with the cache (every block's list is folded below)
+    for (u32 b = 0; b < nEntries; b++) {
+        u64 n = g_rsExec[b];
+        g_rsExecTot += n;
+        for (int i = 0; i < RS_IDS; i++) { g_rsLdTot[i] += n * g_rsLd[b][i]; g_rsStTot[i] += n * g_rsSt[b][i]; }
+        for (u32 k = 0; k < g_dopLen[b]; k++) {
+            u32 v = g_dopPool[g_dopStart[b] + k];
+            g_dopN[v >> 8] += n;
+            g_dopWords[v >> 8] += n * (v & 255);
+        }
+        g_dopLen[b] = 0;
+        g_rsExec[b] = 0;
+        memset(g_rsLd[b], 0, RS_IDS);
+        memset(g_rsSt[b], 0, RS_IDS);
+    }
+}
+static void rs_load(u32 id) { if (g_regStat && g_rsLd[g_rsCur][id] < 255) g_rsLd[g_rsCur][id]++; }
+static void rs_store(u32 id) { if (g_regStat && g_rsSt[g_rsCur][id] < 255) g_rsSt[g_rsCur][id]++; }
+#else
+static void rs_load(u32 id) { (void)id; }
+static void rs_store(u32 id) { (void)id; }
+#endif
+
 // ---- register cache ----
 // Cold code reads the cache but never changes its state: the hot path continues with the state it had.
 static int slot_of(const Rc* rc, u32 r) {
@@ -379,6 +426,7 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
         if (rc->id[k] < 0 || !rc->dirty[k]) continue;
         if (jit_debug_plant == 4 && !skipped) { skipped = true; continue; }  // the fuzzer's self-test: lose a write
         str_imm(&c->e, kSlot[k], RG, rc_off((u32)rc->id[k]));
+        if (!c->inCold && rc == &c->rc) rs_store((u32)rc->id[k]);  // hot flushes only: exit stubs would count once per stub, not per run
     }
 }
 
@@ -409,7 +457,7 @@ static int rc_alloc(Cg* c, u32 r) {
         if (best < 0 || c->rc.use[k] < c->rc.use[best]) best = k;
     }
     if (best < 0) return -1;
-    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best]));
+    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) { str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best])); rs_store((u32)c->rc.id[best]); }
     c->rc.id[best] = (s8)r;
     c->rc.dirty[best] = false;
     return best;
@@ -428,8 +476,9 @@ static int src(Cg* c, u32 r, int tmp) {
     }
     if (k < 0) {
         k = rc_alloc(c, r);
-        if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); return tmp; }
+        if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); rs_load(r); return tmp; }
         ldr_imm(&c->e, kSlot[k], RG, rc_off(r));
+        rs_load(r);
     }
     rc_touch(c, k);
     return kSlot[k];
@@ -1493,9 +1542,8 @@ static void ld_c25(Cg* c, int d, u32 fr, u32 lane) {
 
 // dst = the word stfs / psq_st store for the double in an FPR lane: the exponent and mantissa bits are cut, not rounded
 // (PEM D.7, as the interpreter does); anything below the normal single range, zero included, becomes a signed zero.
-static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2) {
+static void cut_single_bits(Cg* c, int dst, u32 o, int t1, int t2) {
     Emit* e = &c->e;
-    u32 o = OFF_FPR(fr) + 8u * lane;
     ldr_imm(e, t1, RG, o);
     ldr_imm(e, t2, RG, o + 4);
     mov_shift(e, 0, dst, t1, LSR, 29);
@@ -1508,6 +1556,28 @@ static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2)
     dp_imm_c(e, C_CS, CMP, 1, 0, t1, IMM(0x00100000u));
     dp_imm(e, AND, 0, t2, t2, IMM(0x80000000u));
     dp_reg_c(e, C_CC, MOV, 0, dst, 0, t2, LSL, 0);
+}
+
+// The same, fast for the usual case: a double that is exactly a single (zero and infinity included) converts to the
+// same bits in hardware as by the cut. The round trip checks it; a NaN, extra mantissa bits or anything outside the
+// normal single range (which the ARM11 also flushes to +0 where the cut keeps the sign) takes the cut, out of line.
+// Uses d5-d7; clobbers the ARM flags.
+static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2) {
+    Emit* e = &c->e;
+    u32 o = OFF_FPR(fr) + 8u * lane;
+    if (c->inCold) { cut_single_bits(c, dst, o, t1, t2); return; }  // no cold code inside cold code
+    vldr_d(e, 7, RG, o);
+    vcvt_f32_f64(e, 12, 7);  // s12 (in d6)
+    vcvt_f64_f32(e, 5, 12);
+    vcmp_d(e, 5, 7);
+    vmrs_apsr(e);
+    vmov_r_s(e, dst, 12);
+    u32 slow = branch_c(e, C_NE, 0);
+    u32 resume = e->n;
+    cold_begin(c);
+    fix_to_cold(c, slow);
+    cut_single_bits(c, dst, o, t1, t2);
+    cold_end(c, resume);
 }
 
 static void load64_slow(Cg* c, u32 frd) {
@@ -1838,20 +1908,24 @@ static void ps_arith(Cg* c, u32 xo5, u32 fd, u32 fa, u32 fb, u32 fc) {
     }
     bool plain = xo5 == 18 || xo5 == 20 || xo5 == 21;                  // div sub add: a op b
     bool madd = xo5 == 14 || xo5 == 15 || xo5 >= 28;                    // b + a * c'
-    int res[2];
+    // muls0 / muls1 / madds0 / madds1 use one lane of frC for both lanes: its 25-bit cut is made once, into d7.
+    bool sharedC = xo5 >= 12 && xo5 <= 15;
+    if (sharedC) ld_c25(c, 7, fc, (xo5 == 12 || xo5 == 14) ? 0 : 1);
+    int res[2], cr[2];
     for (u32 k = 0; k < 2; k++) {
         int d = (int)(4 * k);
-        u32 cl = (xo5 == 12 || xo5 == 14) ? 0 : (xo5 == 13 || xo5 == 15) ? 1 : k;
         ld_fpr(c, d, fa, k);
-        if (plain) ld_fpr(c, d + 1, fb, k); else ld_c25(c, d + 1, fc, cl);
+        if (plain) ld_fpr(c, d + 1, fb, k);
+        else if (!sharedC) ld_c25(c, d + 1, fc, k);
+        cr[k] = sharedC ? 7 : d + 1;
         if (madd) ld_fpr(c, d + 2, fb, k);
         res[k] = madd ? d + 2 : d;
     }
     for (u32 k = 0; k < 2; k++) {
         int d = (int)(4 * k);
-        if (plain) vfp_d(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, d, d, d + 1);
-        else if (!madd) vfp_d(e, VF_MUL, d, d, d + 1);
-        else vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, d + 2, d, d + 1);
+        if (plain) vfp_d(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, d, d, cr[k]);
+        else if (!madd) vfp_d(e, VF_MUL, d, d, cr[k]);
+        else vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, d + 2, d, cr[k]);
         if (xo5 >= 30) vneg_d(e, res[k], res[k]);
     }
     round_pair(c, res[0], res[1]);
@@ -2021,6 +2095,17 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Emit* e = &c->e;
     // No budget check here (see exit_const). The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
+#ifndef __3DS__
+    if (g_regStat) {  // this block's execution counter (register-cache statistics)
+        g_rsCur = j->nEntries;
+        g_dopStart[g_rsCur] = g_dopUsed;
+        g_dopLen[g_rsCur] = 0;
+        load_const(e, R12, (u32)(uintptr_t)&g_rsExec[g_rsCur]);
+        ldr_imm(e, R0, R12, 0);
+        dp_imm(e, ADD, 0, R0, R0, 1);
+        str_imm(e, R0, R12, 0);
+    }
+#endif
     u32 startPa = pa;
     bool ended = false;
     if (hle_is_hook(g, pc)) {
@@ -2053,7 +2138,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         t.nextPc = c->pc + 4;  // a followed branch changes these
         t.nextPa = ipa + 4;
 #ifndef __3DS__
-        if (i > 0) op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold);
+        if (i > 0) { op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot); }
         prevInst = inst; prevHot = e->n; prevCold = c->alt.n;
 #endif
         // The ARM flags the previous instruction left: every path through an instruction's code reaches its end, so
@@ -2081,7 +2166,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
     }
 #ifndef __3DS__
-    if (c->count) op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold);
+    if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot); }
 #endif
     if (!ended) { rc_flush(c); exit_const(c, t.nextPc); }  // ran out of instructions (or a page end)
     u32 hotEnd = e->n;
@@ -2562,6 +2647,17 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->coldStart = j->codeWords / 8 * 5;  // hot paths and exit stubs: ~61% of TP's code since the shared slow paths (9.5 vs 6.0 words per instruction)
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
+#ifndef __3DS__
+    if (getenv("JIT_REGSTAT")) {
+        g_rsLd = calloc(MAX_ENTRIES, RS_IDS);
+        g_rsSt = calloc(MAX_ENTRIES, RS_IDS);
+        g_rsExec = calloc(MAX_ENTRIES, sizeof(u32));
+        g_dopPool = calloc(DOP_POOL, sizeof(u32));
+        g_dopStart = calloc(MAX_ENTRIES, sizeof(u32));
+        g_dopLen = calloc(MAX_ENTRIES, sizeof(u32));
+        g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen;
+    }
+#endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
     j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
@@ -2670,6 +2766,9 @@ u32 jit_run_one_block(Jit* j) {
 }
 
 void jit_invalidate_all(Jit* j) {
+#ifndef __3DS__
+    rs_fold(j->nEntries);
+#endif
     memset(j->buckets, 0xFF, DISPATCH_SIZE * sizeof(u32));
     j->nEntries = 0;
     memset(j->codePages, 0, sizeof j->codePages);
@@ -2816,6 +2915,46 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                      (double)g_opHot[key] / (double)g_opN[key], (double)g_opCold[key] / (double)g_opN[key],
                      (unsigned long long)g_opN[key]);
             print(l2);
+        }
+    }
+    if (g_regStat) {
+        rs_fold(j->nEntries);
+        {  // executed: guest instructions and hot ARM words per opcode, weighted by block executions
+            u64 totN = 0, totW = 0;
+            for (u32 k = 0; k < 65536; k++) { totN += g_dopN[k]; totW += g_dopWords[k]; }
+            snprintf(line, sizeof line, "  executed by opcode (JIT_REGSTAT): %llu guest instructions, %llu hot ARM words (%.2f per instruction; exit stubs and shared stubs not included):",
+                     (unsigned long long)totN, (unsigned long long)totW, totN ? (double)totW / (double)totN : 0.0);
+            print(line);
+            static bool seen[65536];
+            memset(seen, 0, sizeof seen);
+            for (int rank = 0; rank < 30; rank++) {
+                u64 best = 0; u32 key = 0;
+                for (u32 k = 0; k < 65536; k++) if (!seen[k] && g_dopWords[k] > best) { best = g_dopWords[k]; key = k; }
+                if (!best) break;
+                seen[key] = true;
+                u32 op = key >> 10, xo = key & 1023;
+                char dis[64];
+                gekko_disasm(0, (op == 31 || op == 19 || op == 63 || op == 59 || op == 4) ? (op << 26) | (xo << 1) : op << 26, dis, sizeof dis);
+                char* sp = strchr(dis, ' ');
+                if (sp) *sp = 0;
+                snprintf(line, sizeof line, "    %-9s %5.2f%% of executed words, %5.2f%% of executed instructions, %5.1f words each",
+                         dis, 100.0 * (double)g_dopWords[key] / (double)(totW ? totW : 1), 100.0 * (double)g_dopN[key] / (double)(totN ? totN : 1),
+                         (double)g_dopWords[key] / (double)(g_dopN[key] ? g_dopN[key] : 1));
+                print(line);
+            }
+        }
+        print("  register cache by guest register (loads into a slot / write-backs, per block execution; JIT_REGSTAT):");
+        snprintf(line, sizeof line, "    %llu block executions", (unsigned long long)g_rsExecTot);
+        print(line);
+        u64 order[RS_IDS];
+        for (int i = 0; i < RS_IDS; i++) order[i] = ((g_rsLdTot[i] + g_rsStTot[i]) << 8) | (u64)i;
+        for (int a = 0; a < RS_IDS; a++) for (int b = a + 1; b < RS_IDS; b++) if (order[b] > order[a]) { u64 t = order[a]; order[a] = order[b]; order[b] = t; }
+        for (int n = 0; n < 16; n++) {
+            int i = (int)(order[n] & 255);
+            if (!(order[n] >> 8)) break;
+            snprintf(line, sizeof line, "    %-4s loads %6.3f  stores %6.3f  per block run", i < 32 ? (char[8]){ 'r', (char)('0' + i / 10), (char)('0' + i % 10), 0 } : i == 32 ? "CR" : "XER",
+                     g_rsExecTot ? (double)g_rsLdTot[i] / (double)g_rsExecTot : 0.0, g_rsExecTot ? (double)g_rsStTot[i] / (double)g_rsExecTot : 0.0);
+            print(line);
         }
     }
 #endif
