@@ -27,7 +27,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_N,
-       ST_WORDS = 768 };
+       ST_WORDS = 2048 };
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT };
 // The shared memory-access stubs (emit_mem_stubs): kinds load 32, 16 unsigned, 16 signed, 8; store 32, 16, 8, by the
 // register that holds the loaded value or the value to store (r2 or a cached-GPR slot, r4-r8).
@@ -82,6 +82,8 @@ struct Jit {
     u32 stub[ST_N];             // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
+    u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
+    u16 stfsStub;               // emit_float_stubs: stfs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -470,6 +472,8 @@ static u64 g_rxV1Extra, g_rxV2St, g_rxV2Ld, g_rxV2Mov, g_rxLinkIn[1u << 16];
 // Concentration: block traffic (loads + write-backs per run x runs) and back edges.
 #define RS_TOPN 4096
 static u64 g_rsTrafTot, g_rsTrafTop[5], g_rsTrafLoop, g_rsBackN, g_rsBackSt;
+// psq_l / psq_st executions by store, the GQR's type at compile time (0 float, 4-7 quantized) and W (one element).
+static u32 g_psqRun[2][8][2];
 // Loop regions: each block belongs to the innermost back edge's range holding its start. A loop whose blocks touch at
 // most NSLOT_STAT ids could keep them all in slots: its traffic goes, and each entry loads them and each exit stores the
 // written ones instead. g_rsLoopFit / g_rsLoopBig: traffic in loops that fit / do not; g_rsLoopEntryCost.
@@ -2013,6 +2017,20 @@ static void emit_store64(Cg* c, u32 frs) {
 static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
     Emit* e = &c->e;
     if (update && ra == 0) return false;  // invalid form
+    if (kind == 2 && c->j->memStubs && c->fastmem && !c->inCold) {  // the shared stub (emit_float_stubs)
+        ld_fpr(c, 1, fr, 0);
+        if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
+        set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+        branch_abs(e, C_AL, true, c->j->code + c->j->stfsStub);
+        u32 slow = branch_c(e, C_CS, 0);
+        u32 resume = e->n;
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        store_slow(c, 4, R2);  // the stub left the value's bits in r2
+        cold_end(c, resume);
+        if (update) st_gpr(c, R0, ra);
+        return true;
+    }
     if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R12, LR);
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
     switch (kind) {
@@ -2070,9 +2088,54 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     u32 sz = qt == 0 ? 4 : qt == 4 || qt == 6 ? 1 : 2;
     bool sgn = qt == 6 || qt == 7;
     u32 fb[4], nfb = 0;
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) rs_emit_count(e, &g_psqRun[store][qt][w]);
+#endif
     // The address first: the register cache must not change after the first branch to the cold fallback (that path
     // would skip the write-back of an evicted register).
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, (u32)((s32)(inst << 20) >> 20));
+    if (qt == 0 && c->j->memStubs && !c->inCold) {  // plain float: the shared stub (emit_float_stubs)
+        bool pipe = store && c->j->gatherPut;
+        if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
+        branch_abs(e, C_AL, true, c->j->code + c->j->psqStub[store][idx][w]);
+        u32 slow = branch_c(e, C_CS, 0);
+        if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
+        if (update) st_gpr(c, R0, ra);  // the stub kept the effective address in r0
+        u32 resume = e->n;
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        u32 toInterp[2], nInterp = 0;
+        if (pipe) {  // outside MEM1 (r3 = 1) at the gather pipe's address: element by element through jit_gather
+            dp_imm(e, CMP, 1, 0, R3, 1);
+            toInterp[nInterp++] = branch_c(e, C_NE, 0);
+            load_const(e, R1, c->j->gatherEa);
+            dp_reg(e, CMP, 1, 0, R0, R1);
+            toInterp[nInterp++] = branch_c(e, C_NE, 0);
+            set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+            u32 sizePc = c->pc | 2u;
+            for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
+                psq_store_value(c, fr, lane, 0, 0, false, 4);
+                push_regs(e, (1u << R0) | (1u << R3));
+                mov_reg(e, R1, R2);
+                mov_reg(e, R0, RG);
+                load_const(e, R2, sizePc);
+                emit_time(c);
+                call(c, (const void*)jit_gather);
+                mov_reg(e, R12, R0);
+                pop_regs(e, (1u << R0) | (1u << R3));
+                if (lane == 0) mov_reg(e, R3, R12); else dp_reg(e, ORR, 0, R3, R3, R12);
+            }
+            c->pendingStop = true;
+            stop_tail(c);
+            if (update) st_gpr(c, R0, ra);  // (cold: straight to memory)
+            branch_c(e, C_AL, 0);
+            add_fix(c, true, e->n - 1, false, resume);
+        }
+        for (u32 k = 0; k < nInterp; k++) patch_branch(e, toInterp[k], e->n);
+        emit_fallback(c, inst);
+        cold_end(c, resume);
+        return true;
+    }
     add_const(e, R1, RG, gqr & ~0xFFFu, R12);
     ldr_imm(e, R2, R1, gqr & 0xFFFu);
     if (!store) mov_shift(e, 0, R2, R2, LSR, 16);
@@ -2719,6 +2782,147 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
     }
 }
 
+// The shared float stubs. Twilight Princess's float loads and stores took ~19% of executed hot code (qemu, JIT_REGSTAT:
+// psq_l 24 words, psq_st 31, stfs 10 per site), most of it the same checks and conversions at every site; as with the
+// memory-access stubs, a site now keeps a call and a branch to its slow path, and core 0's instruction fetch has less
+// to fetch. All return with the carry clear when done, set when the site's slow path must run (r0 kept); they keep
+// r4-r11 and clobber r1-r3, r12, lr, d0-d7 and the flags.
+//   psq_l (plain-float GQR q, W): r0 = ea; checks the GQR's load type, alignment and MEM1, loads both elements (or one,
+//     and 1.0) into d1, d2.
+//   psq_st (plain-float GQR q, W): r0 = ea, d1 (and d2) the values; converts them as stfs does (dbl_to_single_bits),
+//     checks the GQR's store type, alignment and MEM1, stores. On failure r3 = 1 when only the address was outside
+//     MEM1 (the gather pipe may take it), else 0.
+//   stfs: r0 = ea, d1 the value; converts it into r2 (also on failure, for the site's slow path), checks, stores.
+// The cut for values that are not exactly singles is shared (cut_d1_r2 / cut_d2_r3): r1 and r12 are its temporaries.
+static void fs_cut(Emit* e, int dst, int dsrc) {  // dst = cut_single_bits of d<dsrc>; uses r1, r12; returns with bx lr
+    vmov_rr_d(e, R1, R12, dsrc);  // r1 = low word, r12 = high word
+    mov_shift(e, 0, dst, R1, LSR, 29);
+    dp_reg_c(e, C_AL, ORR, 0, dst, dst, R12, LSL, 3);
+    dp_imm(e, BIC, 0, dst, dst, IMM(0xC0000000u));
+    dp_imm(e, AND, 0, R1, R12, IMM(0xC0000000u));
+    dp_reg(e, ORR, 0, dst, dst, R1);
+    dp_imm(e, BIC, 0, R1, R12, IMM(0x80000000u));  // |x| below 2^-126: signed zero
+    dp_imm(e, SUB, 1, R1, R1, IMM(0x38000000u));
+    dp_imm_c(e, C_CS, CMP, 1, 0, R1, IMM(0x00100000u));
+    dp_imm(e, AND, 0, R12, R12, IMM(0x80000000u));
+    dp_reg_c(e, C_CC, MOV, 0, dst, 0, R12, LSL, 0);
+    bx_reg_c(e, C_AL, LR);
+}
+
+// dst = d<dsrc> as single bits: in hardware when the double is exactly a single, else through the shared cut (cutAt).
+// Uses s12 / d5 (dsrc 1) or s14 / d5 (dsrc 2).
+static void fs_conv(Emit* e, int dst, int dsrc, u32 cutAt) {
+    int sTmp = dsrc == 1 ? 12 : 14;
+    vcvt_f32_f64(e, sTmp, dsrc);
+    vcvt_f64_f32(e, 5, sTmp);
+    vcmp_d(e, 5, dsrc);
+    vmrs_apsr(e);
+    vmov_r_s(e, dst, sTmp);
+    u32 slow = branch_c(e, C_NE, 0);
+    u32 back = e->n;
+    u32 skip = branch_c(e, C_AL, 0);  // the slow call, out of the way of the fast path
+    patch_branch(e, slow, e->n);
+    push_regs(e, (1u << R1) | (1u << LR));
+    branch_abs(e, C_AL, true, e->buf + cutAt);
+    pop_regs(e, (1u << R1) | (1u << LR));
+    branch_c(e, C_AL, back);  // back to the branch over this slow call
+    patch_branch(e, skip, e->n);
+}
+
+static void fs_gqr(Jit* j, Emit* e, u32 q) {  // r1 = GQR q
+    u32 off = (u32)offsetof(Gekko, spr) + 4u * (SPR_GQR0 + q);
+    add_const(e, R1, RG, off & ~0xFFFu, R12);
+    ldr_imm(e, R1, R1, off & 0xFFFu);
+    (void)j;
+}
+
+static void emit_float_stubs(Jit* j, Emit* e) {
+    u32 cut1 = e->n;
+    fs_cut(e, R2, 1);
+    u32 cut2 = e->n;
+    fs_cut(e, R3, 2);
+    u32 fail = e->n;  // carry set, r3 = 0
+    dp_imm(e, MOV, 0, R3, 0, 0);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    bx_reg_c(e, C_AL, LR);
+    u32 failOut = e->n;  // carry set, r3 = 1 (only outside MEM1)
+    dp_imm(e, MOV, 0, R3, 0, 1);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    bx_reg_c(e, C_AL, LR);
+    for (u32 q = 0; q < 8; q++)
+        for (u32 w = 0; w < 2; w++) {
+            // psq_l
+            j->psqStub[0][q][w] = (u16)e->n;
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));  // the load half's type: plain float
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+            branch_c(e, C_CS, fail);
+            if (!w) {
+                dp_imm(e, ADD, 0, R3, R1, 4);
+                dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
+                branch_c(e, C_CS, fail);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            if (w) {
+                ldr_imm(e, R2, R1, 0);
+                rev(e, R2, R2);
+                vmov_s_r(e, 0, R2);
+                vcvt_f64_f32(e, 1, 0);
+                dp_imm(e, MOV, 0, R2, 0, 0);
+                load_const(e, R3, 0x3FF00000u);
+                vmov_d_rr(e, 2, R2, R3);  // ps1 = 1.0
+            } else {
+                ldmia(e, R1, (1u << R2) | (1u << R3));
+                rev(e, R2, R2);
+                rev(e, R3, R3);
+                vmov_ss_rr(e, 0, R2, R3);
+                vcvt_f64_f32(e, 1, 0);
+                vcvt_f64_f32(e, 2, 1);
+            }
+            bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+            // psq_st
+            j->psqStub[1][q][w] = (u16)e->n;
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);  // the store half's type: plain float
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            fs_conv(e, R2, 1, cut1);
+            if (!w) fs_conv(e, R3, 2, cut2);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+            if (!w) {
+                dp_imm(e, ADD, 0, R12, R1, 4);
+                dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+                branch_c(e, C_CS, failOut);
+            }
+            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+            branch_c(e, C_CS, failOut);
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            rev(e, R2, R2);
+            if (w) str_imm(e, R2, R1, 0);
+            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            bx_reg_c(e, C_AL, LR);
+        }
+    // stfs
+    j->stfsStub = (u16)e->n;
+    fs_conv(e, R2, 1, cut1);
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);  // (r3 is not part of stfs's protocol)
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R1);
+    bx_reg_c(e, C_AL, LR);
+}
+
 static void emit_stubs(Jit* j) {
     Emit em = { j->code, 0, ST_WORDS, false };
     Emit* e = &em;
@@ -2857,6 +3061,7 @@ static void emit_stubs(Jit* j) {
     dp_imm_c(e, C_NE, MOV, 0, R3, 0, 2);     // the GP asked compiled code to stop: finish the instruction and leave
     branch_c(e, C_AL, popRet);
     emit_mem_stubs(j, e);
+    emit_float_stubs(j, e);
     if (e->overflow) { fprintf(stderr, "JIT: shared stubs exceed ST_WORDS\n"); abort(); }
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
@@ -3069,7 +3274,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->ramSize = ramSize;
     j->code = jit_host_alloc_exec(codeBytes);
     j->codeWords = codeBytes / 4;
-    j->coldStart = j->codeWords / 8 * 5;  // hot paths and exit stubs: ~61% of TP's code since the shared slow paths (9.5 vs 6.0 words per instruction)
+    j->coldStart = j->codeWords / 8 * 3;  // hot code: ~35% of TP's code since the block stubs and float stubs moved out (5.0 hot vs 9.3 cold words per instruction)
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
 #ifndef __3DS__
@@ -3433,6 +3638,13 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                  (unsigned long long)g_rsLoops[1], (double)g_rsLoopBig / runs);
         print(line);
         double tt = g_rsTrafTot ? (double)g_rsTrafTot : 1.0;
+        for (int st = 0; st < 2; st++) {
+            int n = snprintf(line, sizeof line, "  %s executed by GQR type (W=0 / W=1):", st ? "psq_st" : "psq_l");
+            for (int q = 0; q < 8; q++)
+                if (g_psqRun[st][q][0] || g_psqRun[st][q][1])
+                    n += snprintf(line + n, sizeof line - (size_t)n, " type %d %u / %u", q, g_psqRun[st][q][0], g_psqRun[st][q][1]);
+            print(line);
+        }
         snprintf(line, sizeof line, "  region model, register traffic by block: top 16 %.1f%%, 64 %.1f%%, 256 %.1f%%, 1024 %.1f%%, 4096 %.1f%%; "
                  "in blocks inside a back edge's range %.1f%%", 100.0 * (double)g_rsTrafTop[0] / tt, 100.0 * (double)g_rsTrafTop[1] / tt,
                  100.0 * (double)g_rsTrafTop[2] / tt, 100.0 * (double)g_rsTrafTop[3] / tt, 100.0 * (double)g_rsTrafTop[4] / tt,

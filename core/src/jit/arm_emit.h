@@ -148,4 +148,5 @@ static inline void vstr_d(Emit* e, int d, int rn, u32 off) { E(e, 0xED800B00u | 
 static inline void vmov_s_r(Emit* e, int sn, int rt) { E(e, 0xEE000A10u | vf_sn(sn) | ((u32)rt << 12)); }
 static inline void vmov_r_s(Emit* e, int rt, int sn) { E(e, 0xEE100A10u | vf_sn(sn) | ((u32)rt << 12)); }
 static inline void vmov_d_rr(Emit* e, int dm, int rt, int rt2) { E(e, 0xEC400B10u | ((u32)rt2 << 16) | ((u32)rt << 12) | (u32)dm); }
+static inline void vmov_rr_d(Emit* e, int rt, int rt2, int dm) { E(e, 0xEC500B10u | ((u32)rt2 << 16) | ((u32)rt << 12) | (u32)dm); }  // FMRRD: rt = low word
 static inline void vmov_ss_rr(Emit* e, int sm, int rt, int rt2) { E(e, 0xEC400A10u | ((u32)rt2 << 16) | ((u32)rt << 12) | vf_sm(sm)); }  // sm, sm+1 = rt, rt2
