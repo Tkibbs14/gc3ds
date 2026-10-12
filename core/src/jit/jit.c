@@ -22,7 +22,10 @@
 // which compiles the target and then patches that branch to jump straight to it. Exits to an address in a register
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
-#define FAST_SIZE 4096
+#ifndef FAST_BITS
+#define FAST_BITS 14
+#endif
+#define FAST_SIZE (1u << FAST_BITS)
 #define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
@@ -3051,8 +3054,8 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
-    mov_shift(e, 0, R1, R2, LSL, 18);  // fast_index: (pc >> 2) & 4095
-    mov_shift(e, 0, R1, R1, LSR, 20);
+    mov_shift(e, 0, R1, R2, LSL, 30 - FAST_BITS);  // fast_index: (pc >> 2) & (FAST_SIZE - 1)
+    mov_shift(e, 0, R1, R1, LSR, 32 - FAST_BITS);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
@@ -3167,7 +3170,7 @@ static void emit_stubs(Jit* j) {
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);
 }
-_Static_assert(FAST_SIZE == 4096, "ST_INDIRECT hashes with 12 bits");
+_Static_assert(FAST_BITS >= 8 && FAST_BITS <= 16, "ST_INDIRECT's index shifts");
 
 typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
@@ -3317,11 +3320,25 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     jit_fill_fns(j);
     update_fastmem(j);
     u32* site = NULL;  // the link site the last run left through, patched once its target is known
+    bool lastMiss = false;  // the last run left through an indirect-table miss (statistics)
+    u32 missKey = 0;
     u32 siteGen = 0, siteKey = 0;
     while ((s64)total < budget) {
         if (!j->soExact && (g->xer & XER_SO)) { j->soExact = true; jit_invalidate_all(j); }  // see jit_set_so_exact
         u32 pc = g->pc, key = block_key(g);
+        u32 compiledBefore = j->nEntries;
         Entry* en = lookup(j, pc, key);
+        if (en && lastMiss) {  // what the indirect-table miss that brought us here jumped to
+            if (en->poll || en->idle) j->stats.missPoll++;
+            else if (j->nEntries != compiledBefore) j->stats.missFirst++;
+            else {
+                const FastEntry* t = (const FastEntry*)(uintptr_t)g->fastBase + fast_index(pc);
+                if (key != missKey) j->stats.missKey++;
+                else if (t->pc == 1) j->stats.missEmpty++;
+                else j->stats.missTaken++;
+            }
+        }
+        lastMiss = false;
         if (!en) break;
         bool plain = !en->idle && !en->poll;  // idle and polling-loop blocks are only ever entered from here
         if (site) {
@@ -3352,7 +3369,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
         j->stats.instrsRun += n;
-        if (s == (u32*)1) j->stats.dispIndirect++;
+        if (s == (u32*)1) { j->stats.dispIndirect++; lastMiss = true; missKey = block_key(g); }
         else if (s) j->stats.dispLink++;
         else if ((s64)n >= room) j->stats.dispBudget++;
         else j->stats.dispOther++;
@@ -3617,9 +3634,12 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
     print(line);
-    snprintf(line, sizeof line, "JIT: returns to the dispatcher: link requests %llu, indirect-table misses %llu, budget ends %llu, other %llu",
-             (unsigned long long)s->dispLink, (unsigned long long)s->dispIndirect, (unsigned long long)s->dispBudget,
-             (unsigned long long)s->dispOther);
+    snprintf(line, sizeof line, "JIT: returns to the dispatcher: link requests %llu, indirect-table misses %llu (to polling / idle "
+             "blocks %llu, to blocks compiled then %llu; else slot taken %llu, empty %llu, key changed %llu), budget ends "
+             "%llu, other %llu", (unsigned long long)s->dispLink,
+             (unsigned long long)s->dispIndirect, (unsigned long long)s->missPoll, (unsigned long long)s->missFirst,
+             (unsigned long long)s->missTaken, (unsigned long long)s->missEmpty, (unsigned long long)s->missKey,
+             (unsigned long long)s->dispBudget, (unsigned long long)s->dispOther);
     print(line);
     snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu cached GPR reads, %llu pipe stores",
              s->instrsCompiled ? (double)code_words_used(j) / (double)s->instrsCompiled : 0.0,

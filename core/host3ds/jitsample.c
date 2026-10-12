@@ -73,7 +73,7 @@ void jitsample_report(FILE* f, const Jit* j) {
     double tot = (double)(n + outside);
     fprintf(f, "# hot guest code 10s (%u samples): outside compiled code %.1f%%;", (unsigned)(n + outside),
             tot > 0 ? 100.0 * outside / tot : 0.0);
-    for (u32 i = 0; i < np && i < 16; i++)
+    for (u32 i = 0; i < np && i < 200; i++)  // enough to group by function offline (run with --profile on)
         fprintf(f, " %08lx %.1f%%", (unsigned long)pairs[2 * i], tot > 0 ? 100.0 * pairs[2 * i + 1] / tot : 0.0);
     fprintf(f, "\n");
     {  // where core 0 was when it was not in compiled code (common.h: WH_*), as a share of all samples

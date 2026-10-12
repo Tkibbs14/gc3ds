@@ -27,6 +27,7 @@ typedef struct {
     u64 compileFails[3];  // blocks not compiled: hot code or exits overflowed (or a slow path without its tail), cold code overflowed, fix-ups overflowed
     u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
+    u64 missPoll, missFirst, missTaken, missEmpty, missKey;  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
     u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
