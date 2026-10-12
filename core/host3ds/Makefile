@@ -12,7 +12,7 @@ include $(DEVKITARM)/3ds_rules
 
 TARGET      := gc3ds
 BUILD       := build
-SOURCES     := . ../src/cpu ../src/sys ../src/hw ../src/gx ../src/gx/pica ../src/boot ../src/disc ../src/jit
+SOURCES     := . ../src/cpu ../src/sys ../src/hw ../src/gx ../src/gx/pica ../src/boot ../src/disc ../src/jit ../tests/jit
 DATA        :=
 INCLUDES    := .
 ROMFS       := romfs

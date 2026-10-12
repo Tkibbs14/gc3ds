@@ -77,7 +77,8 @@ struct Jit {
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
-    bool traceFollow, traceSide;  // jit_set_trace_parts: which half of trace_branch is on
+    bool traceFollow;           // jit_set_trace_parts: follow unconditional b
+    u32 traceSide;              // jit_set_trace_parts: which side exits (TRACE_SIDE_*)
     u32 traceMax;               // jit_set_trace_parts: block length limit (0: MAX_BLOCK_INSNS)
     FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
     u32 fastKeys[FAST_TABLES], fastNext;
@@ -900,7 +901,7 @@ static void emit_branch_side(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, u
     u32 skip = NO_BRANCH;
     bool fused = false;
     if (hasCr) {
-        if (!hasCtr && c->flagsLive && (bi >> 2) == c->flagsFld && (bi & 3) != 3) {
+        if (!hasCtr && (c->j->traceSide & TRACE_SIDE_FUSED) && c->flagsLive && (bi >> 2) == c->flagsFld && (bi & 3) != 3) {
             // The previous instruction was the compare that set this CR field and left its ARM flags: branch on them.
             static const int kSigned[3] = { C_LT, C_GT, C_EQ }, kUnsigned[3] = { C_CC, C_HI, C_EQ };
             int cond = (c->flagsSigned ? kSigned : kUnsigned)[bi & 3];
@@ -955,9 +956,9 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         return true;
     }
     u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
-    if (!j->traceSide) return false;
     if (op == 16) {  // bc, bca
         if ((bo & 20) == 20) return false;  // branch always (no CTR, no CR test): ends the block like b
+        if (!(j->traceSide & (bo & 4 ? TRACE_SIDE_CR : TRACE_SIDE_CTR))) return false;
         s32 bd = (s32)(s16)(inst & 0xFFFC);
         emit_branch_side(c, bo, bi, false, (inst & 2) ? (u32)bd : c->pc + (u32)bd, 0);
         return true;
@@ -966,6 +967,7 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         u32 xo = (inst >> 1) & 0x3FF;
         if ((xo != 16 && xo != 528) || (bo & 20) == 20) return false;  // blr / bctr always: ends the block
         if (xo == 528 && !(bo & 4)) return false;                        // invalid form: the interpreter handles it
+        if (!(j->traceSide & TRACE_SIDE_IND)) return false;
         emit_branch_side(c, bo, bi, true, 0, xo == 16 ? OFF_LR : OFF_CTR);
         return true;
     }
@@ -2394,7 +2396,8 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->linking = true;
     j->memStubs = true;
     j->traces = true;
-    j->traceFollow = j->traceSide = true;
+    j->traceFollow = true;
+    j->traceSide = TRACE_SIDE_ALL;
     emit_stubs(j);
     jit_invalidate_all(j);
     g_jit = j;
@@ -2428,7 +2431,7 @@ void jit_set_traces(Jit* j, bool on) {
 
 bool jit_traces(const Jit* j) { return j->traces; }
 
-void jit_set_trace_parts(Jit* j, bool follow, bool side, u32 maxInsns) {
+void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns) {
     if (j->traceFollow == follow && j->traceSide == side && j->traceMax == maxInsns) return;
     j->traceFollow = follow;
     j->traceSide = side;

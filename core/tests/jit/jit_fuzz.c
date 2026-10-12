@@ -2,9 +2,15 @@
 // machine and by the interpreter on another from identical random state; registers and memory must match exactly.
 // Float and paired-single instructions follow the JIT's "fast float" model (src/jit/jit.c): FPR lanes must match bit
 // for bit except fused multiply-add forms (1 ulp), NaN payloads, and denormal results or inputs that the JIT flushes.
-// Runs as an ARM Linux program under qemu-arm (tests/jit/run_jit_fuzz.sh).
+// Runs as an ARM Linux program under qemu-arm (tests/jit/run_jit_fuzz.sh), and on the 3DS inside gc3ds as
+// jit_fuzz_main (a relay job with --fuzz: host3ds/main.c), where it frees what it made before gc3ds starts.
 //   jit_fuzz [cases] [seed]        JIT_FUZZ_PLANT=1 corrupts one JIT result, =2 makes the JIT skip its rounding to
 //                                  single, to prove the comparison can fail.
+#ifdef __3DS__
+#include <3ds.h>
+#define GC3DS_HOST_TYPES
+#define main jit_fuzz_main
+#endif
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
@@ -628,5 +634,13 @@ int main(int argc, char** argv) {
                (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->fusedBranches);
     }
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
+    // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
+    jit_destroy(jit);
+    jit = NULL;
+    sys_free(&A);
+    sys_free(&B);
+    jit_debug_max_insns = 0;
+    jit_debug_plant = 0;
+    jit_debug_on_compile = NULL;
     return fails ? 1 : 0;
 }

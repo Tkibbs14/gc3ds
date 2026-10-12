@@ -61,7 +61,9 @@ void jit_set_traces(Jit* j, bool on);
 bool jit_traces(const Jit* j);
 // The two halves of traces, for bisecting on the device: follow unconditional b, and compile conditional bc / blr /
 // bctr as side exits. Both on by default; each change drops all compiled code. maxInsns 0: MAX_BLOCK_INSNS.
-void jit_set_trace_parts(Jit* j, bool follow, bool side, u32 maxInsns);
+// side is a mask of TRACE_SIDE_* (0: no side exits).
+enum { TRACE_SIDE_CR = 1, TRACE_SIDE_CTR = 2, TRACE_SIDE_IND = 4, TRACE_SIDE_FUSED = 8, TRACE_SIDE_ALL = 15 };
+void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns);
 u32 jit_entries(const Jit* j);  // blocks in the cache now
 bool jit_mem_stubs(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));

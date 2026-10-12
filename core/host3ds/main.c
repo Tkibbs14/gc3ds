@@ -256,7 +256,9 @@ typedef struct {
     u32 seconds;         // --seconds N: end the run after N real seconds
     bool abTraces, abHle;  // --ab traces|hle|none: which setting alternates every AB_SECS
     bool traces, hle;    // --traces on|off, --hle on|off: start values (an A/B flips them)
-    bool traceFollow, traceSide;  // --trace-follow on|off, --trace-side on|off: the halves of traces (bisecting)
+    bool traceFollow;    // --trace-follow on|off: traces follow unconditional b
+    u32 traceSide;       // --trace-side on|off|MASK: side exits (TRACE_SIDE_*: 1 bc on CR, 2 bc with CTR, 4 blr/bctr, 8 fused flags)
+    bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
 } RunOpts;
@@ -266,7 +268,9 @@ static void opts_default(RunOpts* o) {
     memset(o, 0, sizeof *o);
     o->abTraces = true;
     o->traces = true;
-    o->traceFollow = o->traceSide = true;
+    o->traceFollow = true;
+    o->traceSide = TRACE_SIDE_ALL;
+    o->link = true;
 }
 
 static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
@@ -286,7 +290,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
         else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
         else if (!strcmp(a, "--trace-follow")) o->traceFollow = !strcmp(v, "on");
-        else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on");
+        else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on") ? TRACE_SIDE_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--trace-len")) o->traceLen = (u32)strtoul(v, NULL, 10);
         else { snprintf(err, n, "unknown option %s", a); return false; }
         i++;
@@ -459,7 +464,7 @@ static const char* run(const char* path) {
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) {
-        jit_set_linking(g_jit, true);
+        jit_set_linking(g_jit, g_opt.link);
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
@@ -661,10 +666,10 @@ static const char* run(const char* path) {
                                 g_pica ? (unsigned long)pica_queue_offset() : 0UL);
                         static u64 lastFlush, lastFollow, lastSide;
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
-                                "follow %d side %d len %lu: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),
+                                "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],
                                 (unsigned long long)js->compileFails[1], (unsigned long long)js->compileFails[2],
-                                g_opt.traceFollow, g_opt.traceSide, (unsigned long)g_opt.traceLen,
+                                g_opt.traceFollow, (unsigned long)g_opt.traceSide, (unsigned long)g_opt.traceLen, g_opt.link,
                                 (unsigned long long)(js->traceFollowed - lastFollow), (unsigned long long)(js->traceSideExits - lastSide));
                         lastFlush = js->flushes; lastFollow = js->traceFollowed; lastSide = js->traceSideExits;
                         double kept = js->insnsKept ? (double)js->insnsKept : 1.0;
@@ -737,6 +742,8 @@ static void wait_key(u32 keys) {
 
 static bool g_quitApp;  // remote mode installed a new build: leave so it can be started
 
+int jit_fuzz_main(int argc, char** argv);  // tests/jit/jit_fuzz.c
+
 // A comment line in the current relay job's log (errors before the run's perf log exists).
 static void relay_note(const char* msg) {
     FILE* t = relay_tee(NULL);
@@ -752,13 +759,14 @@ static void save_pending(const RelayJob* j) {
 static bool load_pending(RelayJob* j) {
     FILE* f = fopen(RELAY_PENDING, "r");
     if (!f) return false;
-    char line[16];
+    char line[16], build[40];  // the build line is read whole: a 16-character id fills j->build, leaving its newline
     memset(j, 0, sizeof *j);
-    bool ok = fgets(line, sizeof line, f) && fgets(j->build, sizeof j->build, f) && fgets(j->args, sizeof j->args, f);
+    bool ok = fgets(line, sizeof line, f) && fgets(build, sizeof build, f) && fgets(j->args, sizeof j->args, f);
     fclose(f);
     remove(RELAY_PENDING);
     j->id = (unsigned)strtoul(line, NULL, 10);
-    j->build[strcspn(j->build, "\r\n")] = 0;
+    build[strcspn(build, "\r\n")] = 0;
+    snprintf(j->build, sizeof j->build, "%s", build);
     j->args[strcspn(j->args, "\r\n")] = 0;
     return ok && j->id;
 }
@@ -811,6 +819,14 @@ static void remote_mode(const char* selfPath) {
             g_quitApp = true;
             return;
         }
+        if (strstr(job.args, "--fuzz")) {
+            // The JIT fuzzer needs two machines of its own: it runs at the next start, before gc3ds allocates anything.
+            save_pending(&job);
+            printf("\nThis job runs the JIT fuzzer at startup.\nPress START, then open gc3ds again.\n");
+            wait_key(KEY_START);
+            g_quitApp = true;
+            return;
+        }
         RunOpts o;
         opts_default(&o);
         o.unattended = true;
@@ -830,6 +846,38 @@ static void remote_mode(const char* selfPath) {
         opts_default(&g_opt);
         lastPoll = 0;
     }
+}
+
+// A relay job "--fuzz CASES [SEED]" kept across a restart: the JIT differential fuzzer (tests/jit/jit_fuzz.c) on this
+// CPU, its output streamed to the job, before gc3ds allocates its own machine. qemu cannot show behaviour that only the
+// ARM11 has; this can.
+static void fuzz_job_at_startup(void) {
+    RelayJob job;
+    if (!relay_configured()) return;
+    FILE* f = fopen(RELAY_PENDING, "r");
+    if (!f) return;
+    char buf[1200] = "";
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    if (!strstr(buf, "--fuzz") || !load_pending(&job)) return;
+    char err[200];
+    printf("JIT fuzzer for relay job %u...\n", job.id);
+    if (!relay_start(err, sizeof err)) { printf("relay: %s\n", err); return; }
+    relay_job_begin(job.id);
+    char cases[16] = "20000", seed[24] = "1";
+    const char* p = strstr(job.args, "--fuzz");
+    sscanf(p, "--fuzz %15s %23s", cases, seed);
+    char* av[3] = { "jit_fuzz", cases, seed };
+    FILE* t = relay_tee(NULL);
+    FILE* con = stdout;
+    if (t) stdout = t;
+    int rc = jit_fuzz_main(3, av);
+    fflush(stdout);
+    stdout = con;
+    if (t) fclose(t);
+    printf("fuzzer finished: %s\n", rc ? "FAILURES (see the relay log)" : "no failures");
+    relay_job_end("done");
 }
 
 int main(int argc, char** argv) {
@@ -852,6 +900,7 @@ int main(int argc, char** argv) {
              mhzBefore, mhzSpeedup, cpu_mhz(), ptm ? "ok" : "none", (unsigned long)cfg);
     probe_cores();
     romfsInit();
+    fuzz_job_at_startup();
     scan_dir("romfs:/dols");
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");

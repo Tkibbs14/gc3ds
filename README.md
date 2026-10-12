@@ -14,6 +14,7 @@ own.
 | `bench/` | `gcbench`, the 3DS benchmark used to measure the hardware (CPU JIT shapes, memory, SD, crypto, audio, GPU). |
 | `gc-tests/` | Builds libogc's open-source GameCube examples as test programs, and a static instruction-mix analyser. |
 | `docs/FINDINGS.md` | Everything measured on a New 2DS XL, and what it means for the design. |
+| `docs/REMOTE_RUNS.md` | Testing on the 2DS from anywhere: builds, jobs and perf logs through the dev relay. |
 | `docs/ARCHITECTURE.md` | GameCube, Wii and New 3DS hardware reference with sources. |
 
 ## Building (WSL / Linux)

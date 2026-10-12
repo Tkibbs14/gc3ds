@@ -521,7 +521,7 @@ renderer only):
    - **qemu ARM state for fast JIT-path tests:** `/root/tp_arm_850.state` (TP at field 850, just before the shadow scene),
      made by `HLE_CHECK=1 qemu-arm ... --jit --save-state 850:...`; `--load-state` it with the same build layout.
      `JIT_DUMP=big|<pc>` prints blocks' guest instructions and ARM words; `GC3DS_JIT_NOTRACE=1` turns traces off.
-   - **Remote runs (2026-10-12): the 2DS takes jobs from anywhere.** `core/host3ds/relay.c` (libcurl + mbedTLS from
+   - **Remote runs (2026-10-12): the 2DS takes jobs from anywhere** (full workflow: `docs/REMOTE_RUNS.md`). `core/host3ds/relay.c` (libcurl + mbedTLS from
      portlibs, roots in `host3ds/certs/relay_ca.pem`) talks to nakama-backend `/api/devrelay` (`src/routes/devRelay.js`,
      tables in its `sql/2026-10-12_devrelay.sql`, builds in the private storage bucket `devrelay`). On the PC:
      `bash core/tools/relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces`
