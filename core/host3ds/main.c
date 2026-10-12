@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "../src/cpu/hle.h"
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
@@ -248,7 +249,7 @@ static void perf_open(const char* path) {
     g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
     if (!g_perf) return;
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s (none set) | hot guest code sampled\n# %s\n",
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 2 phases (hle: native shadow scan) | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
@@ -256,7 +257,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -385,6 +386,8 @@ static void run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
+        hle_set_enabled(true);
+        jit_invalidate_all(g_jit);
     }
     if (g_pica) {
         pica_set_vertex_worker(true);
@@ -492,6 +495,7 @@ static void run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
+                fprintf(g_perf, ",%d", hle_enabled() ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -500,9 +504,12 @@ static void run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
-                // (A/B comparisons: set one up here, as the vertex transform, indexed draws, memory stubs and inline pipe
-                // stores were; every one of those won on the 2DS and is on.)
-                (void)AB_SECS;
+                // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
+                // and off (hle column; each switch drops all compiled code, so read each phase after its first seconds).
+                if (g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
+                    hle_set_enabled(!hle_enabled());
+                    jit_invalidate_all(g_jit);
+                }
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
@@ -524,6 +531,11 @@ static void run(const char* path) {
                                 (unsigned long long)(why[1] - lastWhy[1]), (unsigned long long)(why[2] - lastWhy[2]),
                                 (unsigned long long)(why[3] - lastWhy[3]), (unsigned long long)(why[4] - lastWhy[4]),
                                 (unsigned long long)(why[5] - lastWhy[5]));
+                        static u64 lastHleRuns, lastHleInsns;
+                        fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu\n",
+                                (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns));
+                        lastHleRuns = g_hleRuns;
+                        lastHleInsns = g_hleInsns;
                         static u64 lastPal, lastSub;
                         fprintf(g_perf, "# gpu transform 10s: palette uploads %llu, draw calls for palette or projection "
                                 "changes %llu, draws over the palette (CPU) %llu\n",

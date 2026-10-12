@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../cpu/gekko_internal.h"
+#include "../cpu/hle.h"
 #include "arm_emit.h"
 #include "jit.h"
 
@@ -149,6 +150,19 @@ static u32 jit_gather_at(Gekko* g, u32 v, u32 sizePc) {
     GkPriv* p = GKP(g);
     if (p->brk || p->stopReq) { g->pc = (sizePc & ~3u) + 4; return 1; }
     return 0;
+}
+
+// A block that is a native stand-in (hle.h): runs it and returns the guest instructions it stood in for, with g->pc
+// where guest code goes on. If it cannot start, the one instruction there is interpreted instead.
+static u32 jit_hle(Gekko* g) {
+    u32 n = hle_run(g);
+    if (n) return n;
+    u32 pa;
+    bool stop;
+    if (!gk_translate(g, g->pc, false, false, &pa, false) || pa + 4 > g_jit->ramSize) return 0;
+    const u8* w = g_jit->ram + pa;
+    g->pc = gekko_interp_one(g, g->pc, ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], &stop);
+    return 1;
 }
 
 // lfd / stfd slow paths (same status protocol): the helper moves the FPR itself.
@@ -1825,10 +1839,20 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     str_imm(e, PC, RG, OFF_HOSTPC);  // for the sampling profiler: one store per block
     u32 startPa = pa;
     bool ended = false;
+    if (hle_is_hook(g, pc)) {
+        // A native stand-in starts here (hle.h): call it, take the guest instructions it stood in for off the budget,
+        // and leave for the dispatcher at the PC it stopped at.
+        mov_reg(e, R0, RG);
+        call(c, (const void*)jit_hle);
+        dp_reg(e, SUB, 0, RDC, RDC, R0);
+        branch_abs(e, C_AL, false, stub(c, ST_DYN));
+        ended = true;
+    }
     u32 maxInsns = jit_debug_max_insns ? jit_debug_max_insns : MAX_BLOCK_INSNS;
     for (u32 i = 0; i < maxInsns && !ended; i++) {
         c->pc = pc + 4 * i;
         u32 ipa = startPa + 4 * i;
+        if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
         if ((((c->pc ^ pc) >> 12) != 0 && i > 0) || ipa + 4 > j->ramSize) break;  // one 4 KB page, inside RAM
         u32 inst = ((u32)j->ram[ipa] << 24) | ((u32)j->ram[ipa + 1] << 16) | ((u32)j->ram[ipa + 2] << 8) | j->ram[ipa + 3];
         c->count = i + 1;
@@ -1888,11 +1912,22 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (jit_debug_on_compile) jit_debug_on_compile(fn, e->n);
 #ifndef __3DS__
     {  // JIT_DUMP=pc (hex, ARM Linux build): the block's hot words, its exit stubs and its cold words, for objdump
-        static int want = -1;
+        static int want = -1, big;  // JIT_DUMP=big: the first 8 blocks of 16 or more guest instructions
         static u32 dumpPc;
-        if (want < 0) { const char* s = getenv("JIT_DUMP"); want = s != NULL; dumpPc = s ? (u32)strtoul(s, NULL, 16) : 0; }
-        if (want && pc == dumpPc) {
+        if (want < 0) {
+            const char* s = getenv("JIT_DUMP");
+            want = s != NULL;
+            big = s && !strcmp(s, "big") ? 8 : 0;
+            dumpPc = s && !big ? (u32)strtoul(s, NULL, 16) : 0;
+        }
+        if (want && (big ? c->count >= 16 && big-- > 0 : pc == dumpPc)) {
             fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, stubEnd - hotEnd, c->alt.n);
+            for (u32 k = 0; k < c->count && startPa + 4 * k + 4 <= j->ramSize; k++) {
+                const u8* w = j->ram + startPa + 4 * k;
+                char dis[96];
+                gekko_disasm(pc + 4 * k, ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], dis, sizeof dis);
+                fprintf(stderr, "JIT_GUEST %08x %s\n", pc + 4 * k, dis);
+            }
             for (u32 k = 0; k < e->n; k++) fprintf(stderr, "JIT_HOT %08x\n", ((const u32*)fn)[k]);
             for (u32 k = 0; k < c->alt.n; k++) fprintf(stderr, "JIT_COLD %08x\n", cold[k]);
         }

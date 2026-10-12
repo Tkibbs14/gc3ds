@@ -3,6 +3,7 @@
 // References: IBM PowerPC 750CL RISC Microprocessor User's Manual (chapter 4, Exceptions; chapter 2, registers),
 // PowerPC Programming Environments Manual for 32-bit implementations (PEM; 6.x exception processing).
 #include "gekko_internal.h"
+#include "hle.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -383,6 +384,15 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                 }
             }
             u32 pc = g->pc;
+            if (hle_is_hook(g, pc)) {  // a native stand-in for the guest loop that starts here (hle.h)
+                u32 n = hle_run(g);
+                if (n) {
+                    g->cycles += n;
+                    g->downcount -= n;
+                    if (g->downcount <= 0 || p->brk || p->stopReq || g->cycles >= limit) break;
+                    continue;
+                }
+            }
             u32 inst;
             if ((pc >> GK_BLK_SHIFT) != p->fetchBlk && !fetch_refill(g, pc)) {
                 g->pc = p->npc;  // ISI taken

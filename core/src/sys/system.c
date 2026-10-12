@@ -1,4 +1,5 @@
 #include "system.h"
+#include "../cpu/hle.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -174,7 +175,9 @@ static void bus_dcbz(void* ctx, u32 pa) {
 }
 // No data cache model; instruction-cache invalidation is forwarded to the JIT (code at pa may have changed).
 static void bus_cache_op(void* ctx, int op, u32 pa) {
-    if (op == CACHE_ICBI && S->icbiHook) S->icbiHook(S->icbiCtx, pa);
+    if (op != CACHE_ICBI) return;
+    hle_invalidate(pa);
+    if (S->icbiHook) S->icbiHook(S->icbiCtx, pa);
 }
 static void bus_lc_dma(void* ctx, bool toRam, u32 ramPa, u32 cachePa, u32 len) {
     u8* r = bus_host_ptr(ctx, ramPa, len);
@@ -270,6 +273,7 @@ bool sys_init(System* s) {
     s->lockedCache = calloc(1, LOCKED_CACHE_SIZE);
     s->dsp.aram = calloc(1, 16u * 1024 * 1024);
     if (!s->mem1 || !s->lockedCache || !s->dsp.aram) return false;
+    hle_set_memory(s->mem1, MEM1_SIZE);
     s->bus = (GekkoBus){
         .ctx = s,
         .read8 = bus_read8, .read16 = bus_read16, .read32 = bus_read32, .read64 = bus_read64,

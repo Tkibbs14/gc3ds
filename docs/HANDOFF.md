@@ -467,6 +467,16 @@ renderer only):
      stores on 14.69%, off 14.16% (+3.7%): on. Both halves fell below 15.26% because the indirect-branch tables
      went from 4 x 2048 to 2 x 8192 entries: TP uses more than two block keys, so tables were reset 186 times a
      second (was 0), misses rose 19.6k → 24k/s and time outside compiled code 9 → 26%. Now 4 x 4096.
+   - **2DS, 2bbe8ab (perf_2026-10-11_fixed.csv, 373 rows, no A/B):** 15.11% (standard error 0.16), level with
+     15.26%; indirect misses 13.9k/s, no table resets, 7.4% of core 0 outside compiled code.
+   - **Since then (not yet measured): native stand-in for TP's shadow scan** (`src/cpu/hle_tp.c`, `hle.h`): the
+     cell / octree / triangle-list loops of `dBgWKCol::ShdwDraw` (0x8007fb48..0x8007fee8) run natively from the loop
+     entry or the next-triangle step until a new triangle (0x8007fce4, guest code) or the end (0x8007fee8), counting
+     the guest instructions they stand in for. Recognised by an FNV-1a hash of those bytes. The JIT compiles a hooked
+     PC as a call (`jit_hle`) and ends other blocks before it; the interpreter checks the two PCs. `HLE_CHECK=1`
+     (PC) runs every call natively and in the interpreter: TP to field 2500, 6,105 calls, 0 differences (GPRs, CR,
+     XER, PC, instruction count, 2,304-byte frame). JIT fuzzer 0 fails, `arm_jit_check.sh` identical. perf.csv A/B:
+     `hle`, 20 s phases; `# hle 10s` counts runs and instructions stood in for.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /
