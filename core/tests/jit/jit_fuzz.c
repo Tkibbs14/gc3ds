@@ -574,12 +574,81 @@ static u32 gen_trace_branch(u32 i, u32 len, u32 prev) {
     return (19u << 26) | ((rnd() & 1 ? 4u : 12u) << 21) | (bi << 16) | (528u << 1);       // bcctr (no CTR decrement)
 }
 
+// ---- chains of blocks (the dispatcher, links, budget checks) ----
+// A program of segments of random instructions, each ending in b / bc / bdnz / bl / blr to another segment (or falling
+// into the next), run through the dispatcher (jit_run): once from the case's state to compile and link it, then again
+// from the same state with a random budget, now mostly through links. The interpreter runs as many instructions as the
+// second run reports from the same state, and the machines must agree. Plant 8 gives the dispatcher a wrong count.
+#define CH_SEGS 8
+static u32 chain_case(St* st, u32* prog) {
+    u32 nseg = 2 + rnd() % (CH_SEGS - 1), at = 0, start[CH_SEGS + 1], len[CH_SEGS];
+    for (u32 k = 0; k < nseg; k++) len[k] = 1 + rnd() % 6;
+    for (u32 k = 0; k < nseg; k++) { start[k] = at; at += len[k] + 1; }
+    start[nseg] = at;
+    for (u32 k = 0; k < nseg; k++) {
+        for (u32 i = 0; i < len[k]; i++) {
+            u32 in = gen(st);
+            while (is_branch_op(in) || ((in >> 26) == 31 && ((in >> 1) & 0x3FF) == 146)) in = gen(st);  // no mtmsr
+            prog[start[k] + i] = in;
+        }
+        u32 here = start[k] + len[k], to = start[rnd() % nseg], kind = rnd() % 10;
+        u32 delta = ((to - here) * 4u) & 0x03FFFFFCu;
+        if (k == nseg - 1 && kind >= 8) kind = 0;  // the last segment never falls off the program
+        if (kind <= 2) prog[here] = (18u << 26) | delta;                                          // b
+        else if (kind <= 4) {                                                                     // bc on a CR bit
+            int f = crf_set(prog[here - 1]);
+            u32 bi = f >= 0 && rnd() % 2 ? (u32)f * 4 + rnd() % 3 : rbits(5);
+            prog[here] = (16u << 26) | ((rnd() & 1 ? 4u : 12u) << 21) | (bi << 16) | (delta & 0xFFFC);
+        } else if (kind == 5) prog[here] = (16u << 26) | (16u << 21) | (delta & 0xFFFC);           // bdnz
+        else if (kind == 6) prog[here] = (18u << 26) | delta | 1;                                  // bl
+        else if (kind == 7) prog[here] = 0x4E800020u;                                              // blr
+        else prog[here] = (24u << 26);                                                             // nop: fall through
+    }
+    st->lr = CODE_EA;
+    st->ctr = rnd() % 24;
+    st->irq = false;
+    st->user = false;
+    return at;
+}
+
+static u32 g_chainInfo[4];  // budgets and counts of the last chain case (printed when it fails)
+static void interp_steps(int n) {
+    for (int step = 0; step < n; step++) {
+        bool stop;
+        if ((B.cpu.pc & 0x01FFFFFFu) > MEM1_SIZE - 4) break;
+        u32 w = mem1_read32(&B, B.cpu.pc & 0x01FFFFFFu);
+        B.cpu.pc = gekko_interp_one(&B.cpu, B.cpu.pc, w, &stop);
+    }
+}
+
+// Two dispatcher runs back to back (the first compiles, the second mostly runs linked code), the interpreter following
+// each for as many instructions as it reports; the machines are compared after both.
+static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
+    for (u32 i = 0; i < words; i++) { mem1_write32(&A, CODE_PA + 4 * i, prog[i]); mem1_write32(&B, CODE_PA + 4 * i, prog[i]); }
+    for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
+    jit_invalidate_all(jit);
+    jit_debug_max_insns = 0;
+    jit_set_so_exact(jit, false);
+    put_state(&A, st);
+    put_state(&B, st);
+    s64 b1 = 1 + rnd() % 300, b2 = 1 + rnd() % 300;
+    int n1 = (int)jit_run(jit, b1);
+    interp_steps(n1);
+    jit_debug_plant = plant == 8 ? 8 : 0;
+    int n2 = (int)jit_run(jit, b2);
+    jit_debug_plant = 0;
+    interp_steps(n2);
+    g_chainInfo[0] = (u32)b1; g_chainInfo[1] = (u32)n1; g_chainInfo[2] = (u32)b2; g_chainInfo[3] = (u32)n2;
+    return (u32)(n1 + n2);
+}
+
 int main(int argc, char** argv) {
     u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 20000;
     if (argc > 2) rng ^= strtoull(argv[2], NULL, 0) * 0x2545F4914F6CDD1Dull;
     // Third argument: "int" integer cases only, all of them traces; "long" traces of up to 43 instructions (the 2DS
     // bisect of side exits, 2026-10-12, where float sign-of-zero differences ended runs early).
     bool intOnly = argc > 3 && strstr(argv[3], "int"), longTraces = argc > 3 && strstr(argv[3], "long");
+    bool chains = argc > 3 && strstr(argv[3], "chain");  // "chain": multi-block programs through the dispatcher only
     g_logMask = 0;  // unmapped-access and reserved-GQR messages from the deliberately wild addresses
     const char* pe = getenv("JIT_FUZZ_PLANT");
     int plant = pe ? atoi(pe) : 0;
@@ -598,6 +667,7 @@ int main(int argc, char** argv) {
     jit_debug_max_insns = 1;
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
+    if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;
@@ -640,6 +710,25 @@ int main(int argc, char** argv) {
                 seq[len++] = next;
             }
         }
+        if (chains) {
+            static u32 prog[CH_SEGS * 8];
+            st.fpscr = 0;
+            st.fpOff = false;
+            u32 words = chain_case(&st, prog);
+            CODE_PA = 0x3000u + 4 * (rnd() % (1024 - words));
+            int n = (int)chain_run(&st, prog, words, plant);
+            if (!compare(prog[0], prog[1], n, n)) {
+                fails++;
+                printf("  chain case %u at %08x: budget %u ran %u, budget %u ran %u; program:\n", k, CODE_EA, g_chainInfo[0],
+                       g_chainInfo[1], g_chainInfo[2], g_chainInfo[3]);
+                for (u32 i = 0; i < words; i++) {
+                    char dis[96];
+                    gekko_disasm(CODE_EA + 4 * i, prog[i], dis, sizeof dis);
+                    printf("    %08x %08x %s\n", CODE_EA + 4 * i, prog[i], dis);
+                }
+            }
+            continue;
+        }
         u32 inst = seq[0], inst2 = seq[1];
         floats += isFloat;
         for (u32 i = 0; i < len; i++) if (!check_regs(seq[i], &st, plant)) fails++;
@@ -665,6 +754,21 @@ int main(int argc, char** argv) {
         }
         jit_invalidate_all(jit);
         jit_debug_max_insns = len;
+        {  // JIT_FUZZ_CASE=k: the starting state of case k (to reproduce a failure by hand)
+            static long want = -2;
+            if (want == -2) { const char* e = getenv("JIT_FUZZ_CASE"); want = e ? atol(e) : -1; }
+            if ((long)k == want) {
+                printf("case %u at %08x len %u trace %d user %d fpOff %d irq %d msr %08x\n", k, CODE_EA, len, traceCase,
+                       st.user, st.fpOff, st.irq, A.cpu.msr);
+                for (int r = 0; r < 32; r++) printf("  r%d=%08x%s", r, st.gpr[r], r % 8 == 7 ? "\n" : "");
+                printf("  cr %08x xer %08x lr %08x ctr %08x\n", st.cr, st.xer, st.lr, st.ctr);
+                for (u32 i = 0; i < len; i++) {
+                    char dis[96];
+                    gekko_disasm(CODE_EA + 4 * i, seq[i], dis, sizeof dis);
+                    printf("  %08x %08x %s\n", CODE_EA + 4 * i, seq[i], dis);
+                }
+            }
+        }
         if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x %08x %08x\n", k, seq[0], seq[1], seq[2], seq[3]); fflush(stdout); }
         jit_set_so_exact(jit, false);  // each case starts with SO-free CR updates; XER[SO] set switches them to exact
         int n = (int)jit_run_one_block(jit);

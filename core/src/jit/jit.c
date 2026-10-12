@@ -58,7 +58,9 @@ typedef u32 (*BlockFn)(Gekko* g);
 // Every compiled block stays reachable until the code cache is flushed: entries live in a pool, chained per hash
 // bucket (a direct-mapped table evicted and recompiled colliding blocks, e.g. a real-mode exception handler at
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll; u32 next; } Entry;  // poll: polling-loop length or 0
+// poll: polling-loop length or 0; count: the guest instructions the block's entry takes off the budget
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count; u32 next; } Entry;
+#define JIT_PROLOGUE 2  // words of each block's budget check (compile_block); the dispatcher enters after them
 #define MAX_ENTRIES (1u << 16)
 #define NO_ENTRY 0xFFFFFFFFu
 
@@ -340,6 +342,14 @@ typedef struct {
     bool inCold;
     struct { u32 at, target; bool fromCold, toCold; } fix[MAX_BLOCK_INSNS * 16];  // a pipe psq_st takes ~8
     u32 nFix;
+    // Link sites (exit_const): a one-word branch in the hot path to its stub after the block, patched to the target
+    // block once that is compiled (link_site).
+    struct { u32 at, target; } links[MAX_BLOCK_INSNS * 4];
+    u32 nLinks;
+    // Words that depend on the block's instruction count, known only at its end (see "Budget" in compile_block):
+    // emit_time's ADD immediate and ST_INTERP's literal, in the hot or the cold buffer.
+    struct { u32 at, count; bool cold, literal; } tfix[MAX_BLOCK_INSNS * 8];
+    u32 nTfix;
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -836,29 +846,28 @@ static void exit_if(Cg* c, int cond) { exit_snap(c, cond, false, 0, NULL); }
 // The same, writing g->pc = pc first; the dispatcher never links it (state the block depends on may have changed).
 static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, NULL); }
 
-// Unconditional exit to the guest address `target`, emitted in place: a link site (a branch the dispatcher patches
-// to the target block once it is compiled; until then it falls through to the stub that asks for it). The cache must
-// already be written back (rc_flush).
-// The budget is checked where a block leaves, not where one starts: SUBS here sets the flags, and the link site,
-// once patched, is "BGT target" (link_site), so a chain of linked blocks stops when RDC is used up; with no budget
-// left it falls through to the ST_LINK call and returns to the dispatcher. Entries from the dispatcher (room > 0) and
-// through ST_INDIRECT (which checks) are the only other ways into a block. Same instructions run as with a check at
-// each block's start, two instructions fewer per block.
+// Unconditional exit to the guest address `target`, emitted in place: a link site, one word in the hot path (a branch
+// to its stub after the block, which asks the dispatcher for the target; link_site then points it at the target block).
+// The cache must already be written back (rc_flush). The block's instructions were taken off the budget at its entry
+// (compile_block), and the target block checks the budget at its own entry.
+static void link_add(Cg* c, u32 at, u32 target) {
+    if (c->inCold || c->nLinks == sizeof c->links / sizeof c->links[0]) { c->e.overflow = true; return; }  // refused
+    c->links[c->nLinks].at = at;
+    c->links[c->nLinks].target = target;
+    c->nLinks++;
+}
 static void exit_const(Cg* c, u32 target) {
     Emit* e = &c->e;
 #ifndef __3DS__
     rx_add(c, c->noLink ? RX_DISPATCH : RX_CONST, target, c->pc);
 #endif
-    dp_imm(e, SUB, c->noLink ? 0 : 1, RDC, RDC, c->count);
     if (c->noLink) {
         load_const(e, R1, target);
         str_imm(e, R1, RG, OFF_PC);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
         return;
     }
-    branch_c(e, C_AL, e->n + 1);  // link site
-    branch_abs(e, C_AL, true, stub(c, ST_LINK));
-    word(e, target);
+    link_add(c, branch_c(e, C_AL, 0), target);
 }
 
 // Unconditional exit to the guest address in r2 (blr, bctr): through the indirect-branch table.
@@ -868,8 +877,17 @@ static void exit_indirect(Cg* c) {
     rx_add(c, c->noLink ? RX_DISPATCH : RX_IND, 0, c->pc);
 #endif
     str_imm(e, R2, RG, OFF_PC);
-    dp_imm(e, SUB, 0, RDC, RDC, c->count);
     branch_abs(e, C_AL, false, stub(c, c->noLink ? ST_DYN : ST_INDIRECT));
+}
+
+// A word that depends on the block's instruction count (see Cg.tfix), at the current position.
+static void tfix_add(Cg* c, bool literal) {
+    if (c->nTfix == sizeof c->tfix / sizeof c->tfix[0]) { c->e.overflow = true; return; }
+    c->tfix[c->nTfix].at = c->e.n;
+    c->tfix[c->nTfix].count = c->count;
+    c->tfix[c->nTfix].cold = c->inCold;
+    c->tfix[c->nTfix].literal = literal;
+    c->nTfix++;
 }
 
 // Call a C helper with up to 4 word arguments already in r0-r3.
@@ -890,8 +908,11 @@ static void call(Cg* c, const void* fn) {
 }
 
 // Before a helper that runs at guest time: the budget left at this instruction to g_jitLeft (clobbers lr and r12).
+// RDC already has the whole block taken off: lr = RDC + (instructions in the block - instructions before this one),
+// an immediate patched at the block's end (tfix).
 static void emit_time(Cg* c) {
-    dp_imm(&c->e, SUB, 0, LR, RDC, c->count - 1);
+    tfix_add(c, false);
+    dp_imm(&c->e, ADD, 0, LR, RDC, 0);
     str_imm(&c->e, LR, RG, OFF_JITLEFT);
 }
 
@@ -1210,7 +1231,8 @@ static void emit_fallback(Cg* c, u32 inst) {
         branch_abs(e, C_AL, true, stub(c, ST_INTERP));
         word(e, c->pc);
         word(e, inst);
-        word(e, c->count - 1);
+        tfix_add(c, true);  // (instructions before this one) - (instructions in the block), patched at the block's end
+        word(e, 0);
     }
     exit_snap(c, C_NE, false, 0, &clean);
     rc_after_interp(c);
@@ -1243,6 +1265,16 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
             dp_imm(e, TST, 1, 0, cr, enc);
             notTaken[nNot++] = branch_c(e, (bo & 8) ? C_EQ : C_NE, 0);  // want bit set: not taken if clear
         }
+    }
+    bool condSite = nNot == 1 && !indirect && !c->noLink;
+#ifndef __3DS__
+    if (g_regStat) condSite = false;  // the region model counts each exit with code in front of it
+#endif
+    if (condSite) {  // one condition: the branch itself becomes the taken side's link site (its condition inverted)
+        e->buf[notTaken[0]] ^= 1u << 28;
+        link_add(c, notTaken[0], target);
+        exit_const(c, c->pc + 4);
+        return;
     }
     if (indirect) exit_indirect(c); else exit_const(c, target);
     if (!nNot) return;
@@ -2398,6 +2430,8 @@ static u32 g_opN[65536], g_opHot[65536], g_opCold[65536];
 static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] += hot; g_opCold[key] += cold; }
 #endif
 
+static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
+
 static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
@@ -2422,7 +2456,14 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     c->pr = (g->msr & MSR_PR) != 0;
     Emit* e = &c->e;
-    // No budget check here (see exit_const). The sampling profiler's store, when asked for.
+    // Budget: the block's instructions come off RDC at its entry (the immediate is patched once the block's length is
+    // known), and the block only runs while some budget is left; the dispatcher enters after these two words with the
+    // count already taken off (JIT_PROLOGUE), so a run executes at most its budget plus one block. Exits are then plain
+    // branches (exit_const); exits from the middle of the block give back the instructions it did not run.
+    u32 budgetSub = e->n;
+    dp_imm(e, SUB, 1, RDC, RDC, 0);
+    u32 budgetBr = branch_c(e, C_LE, 0);
+    // The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
 #ifndef __3DS__
     if (g_regStat) {  // this block's execution counter (register-cache statistics)
@@ -2518,30 +2559,46 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (g_regStat) { g_rsE[g_rsCur].written = g_rsWritten; g_rsE[g_rsCur].touched = g_rsSeen; g_rxHave = false; }
 #endif
     u32 hotEnd = e->n;
-    // Exit stubs: subtract what the block executed from RDC and leave to the dispatcher.
+    u32 total = hle_is_hook(g, pc) ? 0 : c->count;  // a stand-in takes off what it ran itself
+    e->buf[budgetSub] |= total;  // SUBS RDC, RDC, #total (at most MAX_BLOCK_INSNS: a plain immediate)
+    for (u32 k = 0; k < c->nTfix; k++) {
+        u32* w = c->tfix[k].cold ? &c->alt.buf[c->tfix[k].at] : &e->buf[c->tfix[k].at];
+        if (c->tfix[k].literal) *w = (c->tfix[k].count - 1) - total;  // ST_INTERP: jitLeft = RDC - literal
+        else *w |= total - (c->tfix[k].count - 1);  // the block's instructions not yet run at that instruction
+    }
+    // Exit stubs: give back to RDC the instructions the block did not run, and leave.
     for (u32 k = 0; k < c->nExits; k++) {
         if (c->exits[k].inCold) add_fix(c, true, c->exits[k].at, false, e->n);
         else patch_branch(e, c->exits[k].at, e->n);
         rc_emit_flush(c, &c->exits[k].snap);
+        u32 back = total - c->exits[k].count + (c->exits[k].kind == EXIT_LINK && jit_debug_plant == 6 ? 1 : 0);  // plant 6: a side exit miscounts
+        if (back) dp_imm(e, ADD, 0, RDC, RDC, back);
         if (c->exits[k].kind == EXIT_LINK) {  // a conditional branch out of a trace: a link site to the target block
-            dp_imm(e, SUB, 1, RDC, RDC, c->exits[k].count - (jit_debug_plant == 6 ? 1 : 0));  // plant 6: a side exit miscounts; SUBS: see exit_const
-            branch_c(e, C_AL, e->n + 1);
-            branch_abs(e, C_AL, true, stub(c, ST_LINK));
-            word(e, c->exits[k].pc);
+            link_add(c, branch_c(e, C_AL, 0), c->exits[k].pc);
             continue;
         }
         if (c->exits[k].kind == EXIT_INDIRECT) {  // blr / bctr taken: through the indirect table to the address in LR / CTR
             ldr_imm(e, R2, RG, c->exits[k].pc);
             dp_imm(e, BIC, 0, R2, R2, 3);
             str_imm(e, R2, RG, OFF_PC);
-            dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
             branch_abs(e, C_AL, false, stub(c, ST_INDIRECT));
             continue;
         }
         if (c->exits[k].setPc) { load_const(e, R1, c->exits[k].pc); str_imm(e, R1, RG, OFF_PC); }
-        dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
     }
+    // Link stubs: ST_LINK with the target's guest address and the site to patch.
+    for (u32 k = 0; k < c->nLinks; k++) {
+        patch_branch(e, c->links[k].at, e->n);
+        branch_abs(e, C_AL, true, stub(c, ST_LINK));
+        word(e, c->links[k].target);
+        word(e, (u32)(uintptr_t)(e->buf + c->links[k].at));
+    }
+    // No budget left at the entry: give the block's count back and leave with g->pc = the block.
+    patch_branch(e, budgetBr, e->n);
+    if (total) dp_imm(e, ADD, 0, RDC, RDC, total);
+    branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
+    word(e, pc);
 
     u32 stubEnd = e->n;
     // The cold code goes to the cold region; then every branch between hot and cold gets its offset (base: the cold
@@ -2594,6 +2651,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     j->stats.wordsExit += stubEnd - hotEnd;
     j->stats.wordsCold += c->alt.n;
     j->stats.insnsKept += c->count;
+    g_lastCount = total;
     return (BlockFn)fn;
 }
 
@@ -2609,8 +2667,8 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
 // the budget left in *left.
 //   ST_ENTER (g, fn, budget, left): saves the C registers, sets up the block registers and jumps to fn.
 //   ST_EXIT: r0 = link site or 0.
-//   ST_LINK: reached with "bl" from a link stub whose next word is the target guest PC; returns the site to patch
-//     (the branch two words before that literal) after writing g->pc.
+//   ST_LINK: reached with "bl" from a link stub whose next words are the target guest PC and the address of the site
+//     to patch (the hot path's branch to that stub); writes g->pc and returns the site.
 //   ST_DYN: g->pc is already written; returns 0.
 //   ST_BUDGET: as ST_LINK's entry (literal = the block's own PC), but returns 0.
 //   ST_INDIRECT: r2 = target (g->pc already written): jumps to it through the table, or returns 0.
@@ -2665,7 +2723,7 @@ static void emit_stubs(Jit* j) {
     j->stub[ST_LINK] = e->n;
     ldr_imm(e, R1, LR, 0);
     str_imm(e, R1, RG, OFF_PC);
-    dp_imm(e, SUB, 0, R0, LR, 8);
+    ldr_imm(e, R0, LR, 4);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_DYN] = e->n;
     dp_imm(e, MOV, 0, R0, 0, 0);
@@ -2675,11 +2733,7 @@ static void emit_stubs(Jit* j) {
     str_imm(e, R1, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
-    j->stub[ST_INDIRECT] = e->n;
-    // Budget: blocks do not check it on entry (exit_const), so a chain through blr / bctr stops here (g->pc is written).
-    dp_imm(e, CMP, 1, 0, RDC, 0);
-    dp_imm_c(e, C_LE, MOV, 0, R0, 0, 0);
-    branch_c(e, C_LE, j->stub[ST_EXIT]);
+    j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
     mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
     mov_shift(e, 0, R1, R1, LSR, 20);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
@@ -2804,13 +2858,14 @@ typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 void (*jit_run_begin_hook)(void);
 void (*jit_run_end_hook)(void);
 
-static u32 run(Jit* j, BlockFn fn, s32 budget, u64 start, u32** site) {
+// `pre`: entering block en after its budget check (JIT_PROLOGUE) with its count already taken off; 0 at the check.
+static u32 run(Jit* j, BlockFn fn, s32 budget, u64 start, u32** site, u32 pre) {
     s32 left = budget;
     g_runStart = start;
     g_runBudget = budget;
     g_jitLeft = budget;
     if (jit_run_begin_hook) jit_run_begin_hook();
-    *site = (u32*)(uintptr_t)((EnterFn)(void*)(j->code + j->stub[ST_ENTER]))(j->g, (void*)fn, budget, &left);
+    *site = (u32*)(uintptr_t)((EnterFn)(void*)(j->code + j->stub[ST_ENTER]))(j->g, (void*)fn, budget - (s32)pre, &left);
     if (jit_run_end_hook) jit_run_end_hook();
     return (u32)(budget - left);
 }
@@ -2818,8 +2873,8 @@ static u32 run(Jit* j, BlockFn fn, s32 budget, u64 start, u32** site) {
 // Patches the link site to jump straight to `fn`.
 static void link_site(Jit* j, u32* site, BlockFn fn) {
     s32 off = (s32)((const u32*)(void*)fn - (site + 2));
-    u32 insn = 0xCA000000u | ((u32)off & 0xFFFFFF);  // BGT: taken only while budget is left (exit_const's SUBS)
-    if (*site == insn) return;  // linked already: this exit came back because the budget ran out (no cache sync)
+    u32 insn = (*site & 0xF0000000u) | 0x0A000000u | ((u32)off & 0xFFFFFF);  // the site's condition kept
+    if (*site == insn) return;  // linked already (no cache sync)
     *site = insn;
     jit_host_sync_icache(site, 4);
     j->stats.links++;
@@ -2866,6 +2921,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
                ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
     en->poll = (u8)poll;
+    en->count = (u8)g_lastCount;
     en->next = *head;
     *head = idx;
     return en;
@@ -2965,7 +3021,8 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         s64 room = budget - (s64)total;
         u32 gen = j->gen, *s;
         jit_in_run = 1;
-        u32 n = run(j, en->fn, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room, g->cycles + total, &s);
+        u32 n = run(j, (BlockFn)(void*)((u32*)(void*)en->fn + JIT_PROLOGUE), room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room,
+                    g->cycles + total, &s, en->count - (jit_debug_plant == 8 && en->count > 1 ? 1u : 0u));  // plant 8: a wrong count
         jit_in_run = 0;
         g_where = WH_DISPATCH;
         j->stats.blocksRun++;
@@ -3126,8 +3183,10 @@ u32 jit_run_one_block(Jit* j) {
     if (!en) return 0;
     fast_select(j, msrBits);
     u32* site;
-    return run(j, en->fn, 0x3FFFFFFF, g->cycles, &site);
+    return run(j, en->fn, 0x3FFFFFFF, g->cycles, &site, 0);
 }
+
+u32 jit_run(Jit* j, s64 budget) { return jit_entry(j->g, budget, j); }
 
 void jit_invalidate_all(Jit* j) {
 #ifndef __3DS__

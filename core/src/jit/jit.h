@@ -41,6 +41,9 @@ typedef struct {
 Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes);
 void jit_destroy(Jit* j);
 void jit_attach(Jit* j);                 // installs the JIT into the CPU's run loop (gekko_set_jit)
+// The dispatcher as gekko_run calls it: compiled code from g->pc for up to about `budget` instructions; returns how many
+// ran (the fuzzer's multi-block cases).
+u32 jit_run(Jit* j, s64 budget);
 void jit_invalidate(Jit* j, u32 pa);     // the 32-byte line at physical pa may hold changed code (icbi)
 void jit_invalidate_all(Jit* j);
 const JitStats* jit_stats(const Jit* j);

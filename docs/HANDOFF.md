@@ -667,3 +667,59 @@ textures (VRAM-limited, not whole packs). Decide with 2DS measurements once spee
   `--ab vwmem`) and stops reserving job memory deferred GPU-transformed jobs never touch (relay jobs 54-55).
 - `core/tools/perf_heavy.py FILE.csv [--by COL]` averages heavy rows (draws_s > 1000) with standard errors, split by
   an A/B column.
+- **Job ring (9388639, relay jobs 54-55, `--ab vwmem`): 1 MB gains nothing** (title 17.17 vs 17.31%, cutscene 16.15 vs
+  17.19%), and the whole build was slower than f56d430 in both phases: core 0 waited for core 2 13-17% again. Cause,
+  read from the columns (perf_diff.py): with merged jobs the old early-split gate ("only with <= 4 jobs queued, since a
+  split waits for every queued job") rarely opened, splits fell 64 -> 49-55/s and the GX thread's wait for the GPU
+  (`gxsync` + `gxpres`) rose 2 -> 7-12%. Default back to 256 KB.
+- **Splits at the recorded draw calls (60d54fa, relay jobs 56-57, `--ab splitopen`):** an early split flushes and
+  submits only what recorded draw calls use and waits only for their (older) jobs, leaving the open batch open. Title
+  **18.00% vs 17.56%**, cutscene **18.14% vs 17.61%**; core 0's wait for core 2 12.7 -> 1.6% (title), `gxsync` 5.9 ->
+  0.4%, splits 58 -> 78/s. On by default. Lesson: compare builds only through a within-run A/B: the title from boot
+  lands on different parts of its loop from run to run (texture decodes 10x, compiles 2.5x between jobs 52 and 54).
+- `core/tools/perf_diff.py A.csv[:COL=VAL] B.csv[:COL=VAL]` lists the columns whose heavy-row averages differ most.
+
+## 2026-10-12 evening: region compilation measured and set aside (docs/REGION_JIT_PLAN.md's open questions)
+
+`JIT_REGSTAT=1` (ARM build, c639aeb) now models the brief's options. TP from `tp_arm_850.state`, 30 fields, 7.6M block
+runs, 47.9 hot words per run (the model's own exit counters inflate branch words; use the numbers below, not its
+per-opcode table):
+- **Where the traffic is:** per block run, loads 2.04 at first touch + 0.28 after evictions; write-backs 1.54 at
+  constant exits + 0.45 at blr/bctr + 0.49 at evictions. ~4.8 memory accesses per run, ~10% of executed hot words
+  (the brief's "25%" counted the whole block boundary: link sites and budget checks as well).
+- **Exits:** 79% constant, 21% blr/bctr; back edges are 36% of constant exits. Traffic is fairly concentrated (top 64
+  blocks 35%, top 256 61%) and 56% of it is in blocks inside a back edge's range.
+- **Handing entry state over at linked exits** (no duplication; each block's entry = the first 5 ids it touches):
+  saves 2.2-2.4% of executed hot words before the register moves it needs (~0.5-0.7 per run), so ~1.3% net.
+- **Loop regions:** 0.64%. The loops that hold the traffic touch more than 5 registers, and the cache has 5 slots; the
+  loops that fit carry only 0.46 accesses per run.
+- **Decision:** not worth building now; the block boundary's code size is the bigger lever (next section). If revisited,
+  the decoder it needs exists: `src/cpu/gekko_regs.c` (GPR / CR / XER / LR / CTR read and write sets), checked against the
+  interpreter by the fuzzer on every run (third machine, PC only; planted bug 7).
+- **Multi-block fuzzing (fuzzer mode `chain`, in run_jit_fuzz.sh):** random programs of segments ending in b / bc /
+  bdnz / bl / blr, run through the dispatcher twice (compile + link, then mostly linked) with random budgets, the
+  interpreter following each run; planted bug 8 (a wrong dispatcher entry count) must be caught. With traces off (the
+  2DS default) 0 differences in 80,000 cases. **With traces on, seed 5 case 16475 differs** (`jit_fuzz 20000 5 chain`;
+  the committed JIT before this session fails it the same way): a trace-mode bug to fix before traces are tried again.
+- **Open trace-mode bug found by a new seed (older than this session; traces only, off on the 2DS):** `jit_fuzz 30000 31` fails at
+  case 13483, an 11-instruction trace with a `bdz` side exit, where `mfspr r21,SPRG3` (r21 := 0) is followed by
+  `sth r0,0(r21)`: the interpreter faults at address 0 (DSISR 0x42000000), the JIT stores through r21's old value (the
+  pipe address). The committed JIT before this session fails it the same way; with `JIT_FUZZ_NOTRACES=1` seeds 31 and
+  41 pass. Fix before traces are tried again; `JIT_FUZZ_CASE=k` prints a case's state and program.
+
+## 2026-10-12 evening: one-word exits (block-entry budget check)
+
+The data said the block boundary's *code size* is the lever, not its register traffic: branches were 34% of static hot
+words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bclr` 7.5), because every exit carried
+`SUBS RDC; BGT link; BL ST_LINK; .word target` in the hot path, two words of which never run once linked.
+- Each block now starts with `SUBS RDC, #count; BLE budget_stub` (the same two instructions per block that each exit
+  ran before) and every constant exit is one word, `B site`, whose `BL ST_LINK` and literals (target, site address) sit
+  in the stub area after the block. A `bc` with one condition is itself the taken side's link site (`B<cond> site`,
+  link_site keeps the condition). The dispatcher enters after the two-word prologue with the count already taken off
+  (`run(..., pre)`, `Entry.count`), so a run still executes at most its budget plus one block; ST_INDIRECT no longer
+  checks the budget (the target block does). Exits from the middle of a block give back what it did not run; emit_time's
+  immediate and ST_INTERP's literal are patched at the block's end (`tfix`).
+- qemu, TP 30 fields: same 44,798,955 instructions, same last frame (md5 34d7c70e...), same final PC and GX bytes as
+  before. Hot words 681,522 -> 589,393 (-13.5%; `bc` 11.8 -> 5.8 words, `b` 10.1 -> 7.1); the stub area grew 2.0 -> 3.4
+  words per guest instruction (not executed once linked). Fuzzer: default seeds 11/21 and chain mode 0 fails, plants 1-8
+  caught; arm_jit_check frames identical.

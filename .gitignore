@@ -31,3 +31,5 @@ core/build-arm/
 # Dev relay access token (core/tools/relay.sh, sdmc:/gc3ds/relay.txt): never committed
 core/host3ds/relay.txt
 core/build-arm*/
+
+core/tools/__pycache__/
