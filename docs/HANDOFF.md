@@ -602,3 +602,12 @@ CPU lighting forms), switchable at run time for an A/B on the card.
 
 Opus for open-ended debugging and design; Sonnet for coding with a checker (fuzzer, reference renderer, CPU tests);
 Haiku for lookups and log reading. Set `model` explicitly on every agent.
+
+## Later milestone (owner, 2026-10-12): picture quality, after full speed and working sound
+
+Order set by the owner: 100% playable first, sound fully working second, then textures and resolution "as good as
+possible", choosing whatever measures best on the 2DS. Today the PICA backend renders the EFB scaled 0.625 x 0.5 straight
+to the 400x240 top screen (no wasted fill). Candidates, best value first: the New 2DS XL's 800x240 wide 2D mode (2x
+horizontal detail, ~2x fill; the GPU is ~40% busy at full speed); supersampling (render larger, downscale with the
+display transfer; 2-4x fill); full-resolution textures with proper filtering (memory, little speed); a few HD replacement
+textures (VRAM-limited, not whole packs). Decide with 2DS measurements once speed allows.
