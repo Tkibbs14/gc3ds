@@ -257,9 +257,10 @@ typedef struct {
     u32 saveAt;          // --save-state FIELD:PATH: save the machine when the VI reaches FIELD
     char savePath[160];
     u32 seconds;         // --seconds N: end the run after N real seconds
-    bool abTraces, abHle, abMerge;  // --ab traces|hle|merge|none: which setting alternates every AB_SECS
+    bool abTraces, abHle, abMerge, abVwmem;  // --ab traces|hle|merge|vwmem|none: which setting alternates every AB_SECS
     bool traces, hle;    // --traces on|off, --hle on|off: start values (an A/B flips them)
     bool merge;          // --merge on|off: draw merging on the GX thread (pica.c; on by default)
+    u32 vwmemKb;         // --vwmem KB: the vertex worker's job ring (pica_set_job_ring; --ab vwmem alternates 256 and 1024)
     bool traceFollow;    // --trace-follow on|off: traces follow unconditional b
     u32 traceSide;       // --trace-side on|off|MASK: side exits (TRACE_SIDE_*: 1 bc on CR, 2 bc with CTR, 4 blr/bctr, 8 fused flags)
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
@@ -288,6 +289,7 @@ static void opts_default(RunOpts* o) {
     o->traceSide = TRACE_SIDE_ALL;
     o->link = true;
     o->merge = true;
+    o->vwmemKb = 1024;
 }
 
 static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
@@ -303,7 +305,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); }
+        else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
         else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
@@ -362,7 +365,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -526,6 +529,7 @@ static const char* run(const char* path) {
         pica_set_early_split(true);
         pica_set_indexed(true);
         pica_set_merge(g_opt.merge);
+        pica_set_job_ring(g_opt.vwmemKb << 10);
     }
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     g_profClock = prof_clock;  // X toggles the profile lines
@@ -646,6 +650,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", hle_enabled() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_merge() ? 1 : 0);
+                fprintf(g_perf, ",%u", g_pica ? (unsigned)(pica_job_ring() >> 10) : 0u);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -666,6 +671,8 @@ static const char* run(const char* path) {
                     jit_set_traces(g_jit, !jit_traces(g_jit));
                 // A/B in two phases of AB_SECS: draw merging on the GX thread (merge column; no recompile).
                 if (g_opt.abMerge && g_pica && perfRows % AB_SECS == 0) pica_set_merge(!pica_merge());
+                // A/B in two phases of AB_SECS: the vertex worker's job ring, 256 KB and 1 MB (vwmem column).
+                if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)

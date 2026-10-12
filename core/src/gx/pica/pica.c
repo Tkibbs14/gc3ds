@@ -904,9 +904,13 @@ static void tex_key(const GXCore* gx, u32* k, u32* n) {
 // Princess's draws, so the worker keeps the overlap within a batch. (2DS, 7f2033e: writing culled triangles as
 // degenerate ones instead, to fix each draw's place when queued, tripled the GPU's time per frame: the vertex shader
 // still runs for every vertex.) Jobs live in a ring of memory the worker frees in order, small enough to stay in the
-// L2 cache (a 4 MB ring made the GX thread's vertex time grow).
+// L2 cache (a 4 MB ring made the GX thread's vertex time grow). With draw merging a job is ~28 draws (~140 vertices,
+// ~30 KB), and 256 KB made the GX thread wait for ring space 17% of the time (2DS, f56d430) while core 3 was half idle:
+// the ring's size is a run option (pica_set_job_ring, up to VW_MEM).
 #define VW_SLOTS 1024
-#define VW_MEM (256u << 10)
+#define VW_MEM (1024u << 10)
+static u32 g_vwLimit = VW_MEM;              // the ring's size in use
+static volatile u32 g_vwLimitWant = VW_MEM;  // pica_set_job_ring: applied when the ring is empty
 typedef struct {
     VJob* job;
     PVert* pv;         // the draw's vertices (colours from vfast_prepare)
@@ -1109,9 +1113,10 @@ static void vw_sync_all(void) {
 
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
 static u8* vw_alloc(u32 bytes) {
-    if (bytes > VW_MEM) return NULL;
+    if (g_vwLimitWant != g_vwLimit && g_vwTail == g_vwHead) { g_vwLimit = g_vwLimitWant; g_vwMemHead = 0; }
+    if (bytes > g_vwLimit) return NULL;
     u32 start = g_vwMemHead;
-    if (start + bytes > VW_MEM) start = 0;
+    if (start + bytes > g_vwLimit) start = 0;
     u64 t0 = 0;
     for (;;) {
         u32 t = g_vwTail;
@@ -1162,6 +1167,8 @@ static void vw_apply(void) {
     g_vwOn = g_vwWant;
 }
 bool pica_vertex_worker(void) { return g_vwOn && g_vwThread; }
+void pica_set_job_ring(u32 bytes) { g_vwLimitWant = bytes < (64u << 10) ? (64u << 10) : bytes > VW_MEM ? VW_MEM : bytes; }
+u32 pica_job_ring(void) { return g_vwLimitWant; }
 bool pica_vertex_worker_wanted(void) { return g_vwWant; }
 
 // A draw of a GPU-transformed batch with more matrices than the palette: transformed and culled on the CPU and drawn
@@ -1169,6 +1176,7 @@ bool pica_vertex_worker_wanted(void) { return g_vwWant; }
 // made for the whole draw.
 static void draw_cpu_alone(VWork* w, const GXCore* gx, const VFold* f, u32 prim, u32 count, u32 nIdx) {
     g_picaDrawPaths[7]++;
+    if (!w->nd) w->nd = g_nd;  // the job had none (the PICA was to cull it); draw_job sized g_nd for the draw
     flush_batch();
     vfast_job_gpu_pos(w->job, NULL);
     set_lon(false);
@@ -1287,7 +1295,12 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count);
             return;
         }
-        u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u, bytes = jb + count * (u32)sizeof(PVert) + count * 8 + nSeg * 4;
+        bool defer = gpuPos || indexed || kVwGather, deferLit = defer && g.batchGpuLight;
+        // Job memory only for what the draw uses: a deferred indexed job finishes straight into the arena (no vertex
+        // copy), and GPU-transformed draws are culled by the PICA (no NDC).
+        bool needPv = !(deferLit && indexed), needNd = !gpuPos && (cull == 1 || cull == 2);
+        u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
+        u32 bytes = jb + (needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 4;
         u8* mem = work ? vw_alloc(bytes) : NULL;
         if (!mem) {  // the worker is off, or the draw is larger than its job ring: done here
             work = false;
@@ -1300,16 +1313,16 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             mem = g_jobMem;
         }
         dprof_end(PROF_VQUEUE, tq);
-        w.pv = (PVert*)(mem + jb);
-        w.nd = (float (*)[2])(w.pv + count);
+        u8* at = mem + jb;
+        if (needPv) { w.pv = (PVert*)at; at += count * sizeof(PVert); }
+        if (needNd) { w.nd = (float (*)[2])at; at += count * 8; }
         if (nSeg) {
-            u32* sc = (u32*)(w.nd + count);
+            u32* sc = (u32*)at;
             memcpy(sc, seg, nSeg * 4);
             w.seg = sc;
             w.nSeg = nSeg;
         }
-        bool defer = gpuPos || indexed || kVwGather;
-        w.deferred = defer && g.batchGpuLight;  // vfast_prepare defers shader-lit draws only
+        w.deferred = deferLit;  // vfast_prepare defers shader-lit draws only
         u64 tp = dprof_begin();
         w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem, w.pv);
         dprof_end(PROF_VPREP, tp);
