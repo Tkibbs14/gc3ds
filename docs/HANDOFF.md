@@ -535,6 +535,18 @@ renderer only):
    - **Save states load on the 2DS:** `System` is 0x6b78 bytes and `GXCore` 0x4a68 in both the qemu ARM build and the
      3DS build (same ARM EABI), so a state written under qemu (`--save-state 850:...`) loads with `--state`. A build that
      changes either size refuses old states; then make a new one (qemu, or a 2DS job with `--save-state`).
+   - **2DS, traces on (relay jobs 4-35, from tp850.state): 1.3-1.4% vs 14-17% off, and the cause is code-buffer
+     capacity, not a hardware bug.** With traces the 16 MB buffer fills every ~1.7 s and is flushed whole
+     (`# jit cache` flushes 5-7 per 10 s); ~98% of the ~6,000 compiles/s are new PCs since the flush (`# jit repeats`), so
+     the lookup works: about 14,000 entry points per interval, as many as without traces, but trace blocks are ~2x
+     longer (tail duplication: every side-exit target and return point starts its own trace over the code after it),
+     ~26 MB of working set. Without traces the scene fits (~21,500 blocks, 0 flushes). qemu shows it too once the
+     counter is read: 50 fields, 8 MB buffer, 60 flushes with traces vs 35 without, 4.18M vs 2.42M guest instructions
+     compiled for the same execution; qemu's wall time just does not show compile cost. Bisect: follow-only 15.0%,
+     side exits only 12.2-12.9%, linking off no help, fused flags innocent; guest exceptions per emulated second equal
+     on and off (`# exceptions`). The 2DS fuzzer (`--fuzz 40000 3 int,long`: 177,598 side exits) found 0 differences;
+     the default mode found float sign-of-zero differences (ARM11 flushes tiny results to +0.0, interpreter -0.0).
+     Traces stay off by default until duplication is bounded (`--trace-len` jobs pending).
    - **ARM11 fetch facts (DDI 0360F, read 2026-10-12):** 16 KB 4-way I-cache, 32 B lines, round-robin, virtually indexed
      (code 4 KB apart shares a set); 128-entry direct-mapped BTAC indexed by VA[9:3] (branches 1 KB apart alias);
      3-entry return stack (BL pushes, BX LR pops); folded B costs 0 cycles, unfolded predicted 1, mispredict 5-7.

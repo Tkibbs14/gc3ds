@@ -71,6 +71,7 @@ struct Jit {
     u32 nEntries;
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
+    u8* compiledPc;             // one bit per guest word of MEM1: a block started there since the last flush (stats)
     JitStats stats;
     u32 stub[ST_INTERP + 1];    // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
@@ -2257,6 +2258,15 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
         if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
     if (j->nEntries == MAX_ENTRIES) { jit_invalidate_all(j); j->stats.flushes++; }
     Gekko* g = j->g;
+    {  // statistics: a block compiled again at a PC compiled since the last flush means a lookup missed it
+        u32 w = (pc & 0x01FFFFFFu) >> 2;
+        if (j->compiledPc && w < (24u << 20) / 4) {
+            if (j->compiledPc[w >> 3] & (1u << (w & 7))) j->stats.compileRepeats++;
+            j->compiledPc[w >> 3] |= (u8)(1u << (w & 7));
+        }
+    }
+    for (u32 k = 0; k < 8; k++)
+        if (j->stats.keySeen[k] == msrBits || !j->stats.keyCount[k]) { j->stats.keySeen[k] = msrBits; j->stats.keyCount[k]++; break; }
     u32 poll = gekko_poll_loop_len(g, pc);
     unsigned char wasWhere = g_where;
     g_where = WH_COMPILE;
@@ -2390,6 +2400,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->codeWords = codeBytes / 4;
     j->coldStart = j->codeWords / 5 * 2;  // hot paths and exit stubs measure about 40% of the code in TP
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
+    j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
     j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
@@ -2410,6 +2421,7 @@ void jit_destroy(Jit* j) {
     free(j->table);
     free(j->buckets);
     free(j->fast);
+    free(j->compiledPc);
     free(j);  // the executable region is kept for the process lifetime
 }
 
@@ -2481,6 +2493,7 @@ void jit_invalidate_all(Jit* j) {
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;
     j->insnsSinceFlush = 0;
+    if (j->compiledPc) memset(j->compiledPc, 0, (24u << 20) / 32);
     fast_clear(j);
     j->gen++;
 }

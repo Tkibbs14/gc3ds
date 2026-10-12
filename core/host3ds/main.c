@@ -267,8 +267,7 @@ static RunOpts g_opt;
 
 static void opts_default(RunOpts* o) {
     memset(o, 0, sizeof *o);
-    o->abTraces = true;
-    o->traces = true;
+    // Traces off by default: on the 2DS their tail duplication overflows the 16 MB code buffer (HANDOFF, 2026-10-12).
     o->traceFollow = true;
     o->traceSide = TRACE_SIDE_ALL;
     o->link = true;
@@ -677,6 +676,12 @@ static const char* run(const char* path) {
                             fprintf(g_perf, "\n");
                         }
                         static u64 lastFlush, lastFollow, lastSide;
+                        static u64 lastRep, lastComp;
+                        fprintf(g_perf, "# jit repeats 10s: %llu compiles, %llu at a PC already compiled since the flush; keys (all time):",
+                                (unsigned long long)(js->blocksCompiled - lastComp), (unsigned long long)(js->compileRepeats - lastRep));
+                        for (int k = 0; k < 8 && js->keyCount[k]; k++) fprintf(g_perf, " %08lx=%lu", (unsigned long)js->keySeen[k], (unsigned long)js->keyCount[k]);
+                        fprintf(g_perf, "\n");
+                        lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],

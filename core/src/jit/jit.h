@@ -18,6 +18,8 @@ typedef struct {
 
 typedef struct {
     u64 blocksCompiled, instrsCompiled, instrsNative, flushes;
+    u64 compileRepeats;   // blocks compiled at a PC already compiled since the last flush (a lookup missed it)
+    u32 keySeen[8], keyCount[8];  // block keys (MSR / FPSCR / HID2 bits) blocks were compiled under, and how often
     u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
     u64 links;      // exits patched to jump straight to their target block
     u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR reads served by the register cache
