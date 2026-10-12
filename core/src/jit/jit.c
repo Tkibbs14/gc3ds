@@ -152,9 +152,12 @@ static u32 jit_gather_at(Gekko* g, u32 v, u32 sizePc) {
     return 0;
 }
 
-// A block that is a native stand-in (hle.h): runs it and returns the guest instructions it stood in for, with g->pc
-// where guest code goes on. If it cannot start, the one instruction there is interpreted instead.
-static u32 jit_hle(Gekko* g) {
+// A block that is a native stand-in (hle.h): runs it from `pc` and returns the guest instructions it stood in for, with
+// g->pc where guest code goes on. If it cannot start, the one instruction there is interpreted instead. `pc` comes from
+// the block: linked blocks jump to each other without writing g->pc, which is stale here (2DS, 9d7c239: the stand-in
+// saw a stale PC, declined, and the instruction at that PC was interpreted, which froze Twilight Princess).
+static u32 jit_hle(Gekko* g, u32 pc) {
+    g->pc = pc;
     u32 n = hle_run(g);
     if (n) return n;
     u32 pa;
@@ -1843,6 +1846,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         // A native stand-in starts here (hle.h): call it, take the guest instructions it stood in for off the budget,
         // and leave for the dispatcher at the PC it stopped at.
         mov_reg(e, R0, RG);
+        load_const(e, R1, pc);
         call(c, (const void*)jit_hle);
         dp_reg(e, SUB, 0, RDC, RDC, R0);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));

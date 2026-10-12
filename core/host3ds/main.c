@@ -235,6 +235,9 @@ static Disc g_disc;
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
 #define AB_SECS 20  // A/B period: inline pipe stores on and off (each switch recompiles all code)
+// The native shadow-scan stand-in (hle_tp.c) is off, and not part of the A/B, until its JIT path has been proven: the
+// first version froze Twilight Princess at the first Link and Epona close-up (2DS, 9d7c239).
+static const bool kHleAb = false;
 static bool g_pipeFast = true;  // compiled code appends pipe stores itself (jit_set_gather_buffer)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
@@ -386,7 +389,7 @@ static void run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
-        hle_set_enabled(true);
+        hle_set_enabled(kHleAb);
         jit_invalidate_all(g_jit);
     }
     if (g_pica) {
@@ -506,7 +509,7 @@ static void run(const char* path) {
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
                 // and off (hle column; each switch drops all compiled code, so read each phase after its first seconds).
-                if (g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
+                if (kHleAb && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
                     hle_set_enabled(!hle_enabled());
                     jit_invalidate_all(g_jit);
                 }
