@@ -860,9 +860,143 @@ static void vfast_check(System* s, GXCore* gx, u32 prim, u32 vat, const u8* raw,
     free(fast);
 }
 
+// MERGE_CHECK: the PICA backend's draw merging (pica.c) modelled on the PC. A triangle draw opens a merged draw and the
+// next triangle draws with the same VAT join it, until fifo.c reports a state change (the backend's flush), a line or
+// point draw arrives, or the merged draw reaches MERGE_MAX_VERTS. Each closed merged draw is run as one vertex job and
+// compared with its draws run one by one: the CPU transform must give identical vertices (it proves no state the job
+// reads changed while the draw was open), and the GPU transform, with the merged job's single origin, is measured
+// against the double reference as vgpu_check does.
+#define MERGE_MAX_VERTS 256
+static struct {
+    bool on;
+    u32 vat, vsize, count, nSeg, segPrim[MERGE_MAX_VERTS], segCount[MERGE_MAX_VERTS];
+    u8 raw[MERGE_MAX_VERTS * 256];
+    PVert sep[MERGE_MAX_VERTS];  // the draws' vertices run one by one, when they arrived
+    u64 draws, joined, jobs, closeFlush, closeOther, closeFull, verts, mismatch, gpuVerts, over[2][2];
+    double tex[2];  // [0] each draw its own origin, [1] the merged job's origin
+    u64 hist[6];    // draws per merged job: 1, 2, 3-4, 5-8, 9-16, 17+
+} g_mrg;
+
+static void merge_report(void) {
+    fprintf(stderr, "MERGE_CHECK %llu triangle draws, %llu joined an open draw (%.1f%%), %llu jobs (%.2f draws each, %.1f "
+            "vertices); closed by state changes %llu, other draws %llu, full %llu; jobs by draws 1 %llu, 2 %llu, 3-4 %llu, "
+            "5-8 %llu, 9-16 %llu, 17+ %llu\n", (unsigned long long)g_mrg.draws, (unsigned long long)g_mrg.joined,
+            g_mrg.draws ? 100.0 * (double)g_mrg.joined / (double)g_mrg.draws : 0.0, (unsigned long long)g_mrg.jobs,
+            g_mrg.jobs ? (double)g_mrg.draws / (double)g_mrg.jobs : 0.0,
+            g_mrg.jobs ? (double)g_mrg.verts / (double)g_mrg.jobs : 0.0, (unsigned long long)g_mrg.closeFlush,
+            (unsigned long long)g_mrg.closeOther, (unsigned long long)g_mrg.closeFull, (unsigned long long)g_mrg.hist[0],
+            (unsigned long long)g_mrg.hist[1], (unsigned long long)g_mrg.hist[2], (unsigned long long)g_mrg.hist[3],
+            (unsigned long long)g_mrg.hist[4], (unsigned long long)g_mrg.hist[5]);
+    fprintf(stderr, "MERGE_CHECK CPU transform: %llu vertices differ from the separate draws\n",
+            (unsigned long long)g_mrg.mismatch);
+    fprintf(stderr, "MERGE_CHECK GPU transform, %llu vertices on screen: own origin max %.3g texels (%llu over 0.25, %llu "
+            "over 1); merged origin max %.3g texels (%llu over 0.25, %llu over 1)\n", (unsigned long long)g_mrg.gpuVerts,
+            g_mrg.tex[0], (unsigned long long)g_mrg.over[0][0], (unsigned long long)g_mrg.over[0][1], g_mrg.tex[1],
+            (unsigned long long)g_mrg.over[1][0], (unsigned long long)g_mrg.over[1][1]);
+}
+
+static void merge_sel(GXCore* gx, VSel* sel, VFold* f) {
+    PicaTev pt;
+    tev_pica_compile(gx, &pt);
+    *sel = (VSel){ pt.rasChan, pt.numTex, { pt.texCoord[0], pt.texCoord[1], pt.texCoord[2] } };
+    vfold_init(gx, (400.0f / 640.0f) * 2.0f / 512.0f, (240.0f / 480.0f) * 2.0f / 256.0f, false, f);
+}
+
+// Clip positions of a job's vertices through the shader model (f24), with the job's origin; texel errors against the
+// double reference go to slot k.
+static void merge_gpu_err(System* s, GXCore* gx, const VFold* f, const VSel* sel, const u8* raw, u32 count, int k) {
+    static u8 mem[1 << 20];
+    PVert out[MERGE_MAX_VERTS];
+    VLightUniforms lu;
+    bool lit = vfast_gpu_light(gx, sel, &lu);
+    VJob* job = vfast_prepare(s, gx, g_mrg.vat, f, sel, raw, count, g_mrg.vsize, lit, true, mem, out);
+    if (!job) return;
+    const float (*pos)[21];
+    u32 n = vfast_job_matrices(job, &pos);
+    float palO[64][12];
+    u8 slots[64];
+    vfast_job_origin(job, palO);
+    for (u32 i = 0; i < n; i++) slots[i] = (u8)i;
+    vfast_job_gpu_pos(job, slots);
+    vfast_finish(job, out);
+    const float* P = vfast_job_proj(job);
+    for (u32 i = 0; i < count; i++) {
+        double t[4];
+        ref_clip_double(s, gx, f, g_mrg.vat, raw + i * g_mrg.vsize, t);
+        float c[4], eye[3];
+        vfast_gpu_pos_model((const float (*)[12])palO, P, &out[i], true, c, eye);
+        if (t[3] <= 1e-6) continue;
+        double nx = t[0] / t[3], ny = t[1] / t[3], nz = t[2] / t[3];
+        if (fabs(nx) > 1 || fabs(ny) > 1 || nz > 0 || nz < -1) continue;
+        if (k == 1) g_mrg.gpuVerts++;
+        if (!(c[3] > 0)) { g_mrg.over[k][1]++; continue; }
+        double ex = fabs(c[0] / c[3] - nx) * 256.0, ey = fabs(c[1] / c[3] - ny) * 128.0, et = ex > ey ? ex : ey;
+        if (et > g_mrg.tex[k]) g_mrg.tex[k] = et;
+        g_mrg.over[k][0] += et > 0.25;
+        g_mrg.over[k][1] += et > 1.0;
+    }
+}
+
+static void merge_close(System* s, int why) {
+    if (!g_mrg.count) return;
+    GXCore* gx = &s->gx.core;
+    g_gxMergeOpen = false;
+    g_mrg.jobs++;
+    g_mrg.verts += g_mrg.count;
+    if (why == 0) g_mrg.closeFlush++; else if (why == 1) g_mrg.closeOther++; else g_mrg.closeFull++;
+    u32 d = g_mrg.nSeg;
+    g_mrg.hist[d <= 1 ? 0 : d == 2 ? 1 : d <= 4 ? 2 : d <= 8 ? 3 : d <= 16 ? 4 : 5]++;
+    VSel sel;
+    VFold f;
+    merge_sel(gx, &sel, &f);
+    VLightUniforms lu;
+    bool lit = vfast_gpu_light(gx, &sel, &lu);
+    static PVert out[MERGE_MAX_VERTS];
+    memset(out, 0, sizeof out);
+    vfast_run(s, gx, g_mrg.vat, &f, &sel, g_mrg.raw, g_mrg.count, g_mrg.vsize, out, lit);
+    for (u32 i = 0; i < g_mrg.count; i++)
+        if (memcmp(&out[i], &g_mrg.sep[i], sizeof out[i]) && g_mrg.mismatch++ < 8)
+            fprintf(stderr, "MERGE_CHECK draw %llu: vertex %u of %u differs (%u draws merged)\n",
+                    (unsigned long long)gx->draws, i, g_mrg.count, g_mrg.nSeg);
+    u32 at = 0;
+    for (u32 k = 0; k < g_mrg.nSeg; k++) {
+        merge_gpu_err(s, gx, &f, &sel, g_mrg.raw + at * g_mrg.vsize, g_mrg.segCount[k], 0);
+        at += g_mrg.segCount[k];
+    }
+    merge_gpu_err(s, gx, &f, &sel, g_mrg.raw, g_mrg.count, 1);
+    g_mrg.count = g_mrg.nSeg = 0;
+}
+
+static void soft_flush(void* ctx, System* s) { (void)ctx; merge_close(s, 0); }
+
+static void merge_draw(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
+    if (prim >= PRIM_LINES || vsize > 256 || count > MERGE_MAX_VERTS) { merge_close(s, 1); return; }
+    if (!g_mrg.draws) atexit(merge_report);
+    g_mrg.draws++;
+    if (g_mrg.count && (vat != g_mrg.vat || vsize != g_mrg.vsize)) merge_close(s, 1);
+    if (g_mrg.count && g_mrg.count + count > MERGE_MAX_VERTS) merge_close(s, 2);
+    if (g_mrg.count) g_mrg.joined++;
+    GXCore* gx = &s->gx.core;
+    VSel sel;
+    VFold f;
+    merge_sel(gx, &sel, &f);
+    VLightUniforms lu;
+    bool lit = vfast_gpu_light(gx, &sel, &lu);
+    memset(&g_mrg.sep[g_mrg.count], 0, count * sizeof(PVert));
+    vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, &g_mrg.sep[g_mrg.count], lit);
+    memcpy(g_mrg.raw + g_mrg.count * vsize, raw, count * vsize);
+    g_mrg.vat = vat;
+    g_mrg.vsize = vsize;
+    g_mrg.segPrim[g_mrg.nSeg] = prim;
+    g_mrg.segCount[g_mrg.nSeg++] = count;
+    g_mrg.count += count;
+    g_gxMergeOpen = true;
+}
+
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
+    if (g_mrg.on) merge_draw(s, prim, vat, raw, count, vsize);
     // PICA_TEV_FLAGS=hex (with --pica-tev): only draws whose approximations are all in the mask take the PICA path,
     // the rest the reference TEV; bisects which approximation changes a frame.
     static int allowSet = -1;
@@ -950,9 +1084,10 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     }
 }
 
-static const GXBackend kSoft = { soft_draw, NULL };
+static const GXBackend kSoft = { soft_draw, NULL, soft_flush };
 
 void gx_soft_attach(System* s) {
+    g_mrg.on = getenv("MERGE_CHECK") != NULL;
     s->gx.core.backend = &kSoft;
     s->gx.core.backendCtx = &g_soft;
 }

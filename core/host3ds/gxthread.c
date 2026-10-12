@@ -49,8 +49,14 @@ static void gx_main(void* arg) {
     while (!g_quit) {
         u32 tail = g_tail;
         if (tail == g_head) {
+            // The ring stayed empty for a moment: issue the draw held open for merging (pica.c), which a sync waits for.
+            if (++idle == 32 && g_gxMergeOpen) {
+                u64 t0 = prof_begin();
+                pica_merge_flush(s, true);
+                prof_end(PROF_GXTHREAD, t0);
+            }
             // Spin briefly (a sync waits on us), then sleep so an idle GX thread costs nothing.
-            if (++idle < 20000) continue;
+            if (idle < 20000) continue;
             svcSleepThread(100000);
             continue;
         }
@@ -139,13 +145,22 @@ static u32 apply_events(System* s) {
 
 static void poll(System* s) { apply_events(s); }
 
-// Everything fed so far executed, including the vertex worker's reads of guest memory (its draws are queued before
-// the GX thread publishes g_tail, so the worker check after the ring check sees them).
+// Everything fed so far executed, including the draw held open for merging (the GX thread issues it once the ring is
+// empty, and sets g_gxMergeOpen before it publishes g_tail) and the vertex worker's reads of guest memory (its draws
+// are queued before the GX thread publishes g_tail or clears g_gxMergeOpen, so the worker check after those sees them).
+static bool drained(void) {
+    if (g_tail != g_head) return false;
+    dmb();
+    if (*(volatile bool*)&g_gxMergeOpen) return false;
+    dmb();
+    return pica_vertex_worker_idle();
+}
+
 static void wait_drained(void) {
-    if (g_tail == g_head && pica_vertex_worker_idle()) return;
+    if (drained()) return;
     u64 t0 = prof_begin();
     u64 limit = svcGetSystemTick() + 2 * SYSCLOCK_ARM11;
-    while (g_tail != g_head || (dmb(), !pica_vertex_worker_idle())) {
+    while (!drained()) {
         if (svcGetSystemTick() > limit) { emu_error("GX thread: no progress for 2 s (head %08lx tail %08lx)\n",
                                                     (unsigned long)g_head, (unsigned long)g_tail); break; }
     }

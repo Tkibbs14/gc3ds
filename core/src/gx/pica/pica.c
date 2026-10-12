@@ -919,6 +919,8 @@ typedef struct {
     bool indexed;      // vertices at arena index dst, triangles as indices at ibase (vw_do_indexed); vrel: dst - vbase
     u32 ibase;
     u16 vrel;
+    const u32* seg;    // a merged draw (draw merging below): its draws as prim << 16 | count, in job memory
+    u32 nSeg;
 } VWork;
 static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
@@ -977,6 +979,24 @@ static inline void vw_tri_idx(const VWork* w, const PVert* pv, u16** ix, u32 a, 
     *ix = p + 3;
 }
 
+// The triangles of one draw whose vertices start at job vertex `at`.
+static void vw_assemble_idx(const VWork* w, const PVert* pv, u16** ix, u32 prim, u32 at, u32 count) {
+    switch (prim) {
+    case PRIM_QUADS: case PRIM_QUADS2:
+        for (u32 i = at; i + 3 < at + count; i += 4) { vw_tri_idx(w, pv, ix, i, i + 1, i + 2); vw_tri_idx(w, pv, ix, i, i + 2, i + 3); }
+        break;
+    case PRIM_TRIS: for (u32 i = at; i + 2 < at + count; i += 3) vw_tri_idx(w, pv, ix, i, i + 1, i + 2); break;
+    case PRIM_STRIP:
+        for (u32 i = 0; i + 2 < count; i++) {
+            if (i & 1) vw_tri_idx(w, pv, ix, at + i + 1, at + i, at + i + 2);
+            else vw_tri_idx(w, pv, ix, at + i, at + i + 1, at + i + 2);
+        }
+        break;
+    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) vw_tri_idx(w, pv, ix, at, at + i, at + i + 1); break;
+    default: break;
+    }
+}
+
 static void vw_do_indexed(const VWork* w) {
     u32 count = w->count;
     PVert* pv = g.arena + w->dst;
@@ -993,19 +1013,11 @@ static void vw_do_indexed(const VWork* w) {
             w->nd[i][0] = pv[i].pos[0] * iw; w->nd[i][1] = pv[i].pos[1] * iw;
         }
     u16* ix = g.idx + w->ibase;
-    switch (w->prim) {
-    case PRIM_QUADS: case PRIM_QUADS2:
-        for (u32 i = 0; i + 3 < count; i += 4) { vw_tri_idx(w, pv, &ix, i, i + 1, i + 2); vw_tri_idx(w, pv, &ix, i, i + 2, i + 3); }
-        break;
-    case PRIM_TRIS: for (u32 i = 0; i + 2 < count; i += 3) vw_tri_idx(w, pv, &ix, i, i + 1, i + 2); break;
-    case PRIM_STRIP:
-        for (u32 i = 0; i + 2 < count; i++) {
-            if (i & 1) vw_tri_idx(w, pv, &ix, i + 1, i, i + 2);
-            else vw_tri_idx(w, pv, &ix, i, i + 1, i + 2);
-        }
-        break;
-    case PRIM_FAN: for (u32 i = 1; i + 1 < count; i++) vw_tri_idx(w, pv, &ix, 0, i, i + 1); break;
-    default: break;
+    if (!w->nSeg) { vw_assemble_idx(w, pv, &ix, w->prim, 0, count); return; }
+    for (u32 k = 0, at = 0; k < w->nSeg; k++) {
+        u32 c = w->seg[k] & 0xFFFF;
+        vw_assemble_idx(w, pv, &ix, w->seg[k] >> 16, at, c);
+        at += c;
     }
 }
 
@@ -1182,8 +1194,9 @@ static void draw_cpu_alone(VWork* w, const GXCore* gx, const VFold* f, u32 prim,
     if (g.arenaUsed > first) draw_arrays(first, g.arenaUsed - first);
 }
 
-static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
-    (void)ctx;
+// One draw, or a merged draw (nSeg > 0: seg[] lists its draws as prim << 16 | count, vertices back to back in raw;
+// always triangles, always indexed).
+static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const u32* seg, u32 nSeg) {
     vw_apply();
     static u32 drawN;
     g_drawScale = 16;
@@ -1209,7 +1222,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     u32 zop = 0;
     float zz = 0;
     bool ztex = !lines && ztex_value(s, gx, &zop, &zz);
-    bool gpuPos = g.gpuPos && !lines && !ztex, indexed = g_indexed && !lines;
+    bool gpuPos = g.gpuPos && !lines && !ztex, indexed = (g_indexed || nSeg) && !lines;
     // Lines and points are lit and placed on the CPU, and a batch is transformed all on the GPU or all on the CPU, and
     // indexed or not: draws of different classes never share a batch.
     u32 cls = (lines ? 1u : 0u) | (gpuPos ? 2u : 0u) | (indexed ? 4u : 0u);
@@ -1265,7 +1278,8 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     memset(&w, 0, sizeof w);
     u32 workVerts = 0, nIdx = 0;
     if (jobPath) {
-        workVerts = tri_verts(prim, count);
+        if (nSeg) for (u32 k = 0; k < nSeg; k++) workVerts += tri_verts(seg[k] >> 16, seg[k] & 0xFFFF);
+        else workVerts = tri_verts(prim, count);
         if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
         nIdx = indexed ? workVerts : 0;
         u64 tq = dprof_begin();
@@ -1273,7 +1287,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count);
             return;
         }
-        u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u, bytes = jb + count * (u32)sizeof(PVert) + count * 8;
+        u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u, bytes = jb + count * (u32)sizeof(PVert) + count * 8 + nSeg * 4;
         u8* mem = work ? vw_alloc(bytes) : NULL;
         if (!mem) {  // the worker is off, or the draw is larger than its job ring: done here
             work = false;
@@ -1288,6 +1302,12 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         dprof_end(PROF_VQUEUE, tq);
         w.pv = (PVert*)(mem + jb);
         w.nd = (float (*)[2])(w.pv + count);
+        if (nSeg) {
+            u32* sc = (u32*)(w.nd + count);
+            memcpy(sc, seg, nSeg * 4);
+            w.seg = sc;
+            w.nSeg = nSeg;
+        }
         bool defer = gpuPos || indexed || kVwGather;
         w.deferred = defer && g.batchGpuLight;  // vfast_prepare defers shader-lit draws only
         u64 tp = dprof_begin();
@@ -1392,6 +1412,82 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         return;
     }
     assemble(gx, &f, prim, count);
+}
+
+// ---- draw merging ----
+// Twilight Princess sends ~50,000 draws a second of ~5 vertices, and nearly all of the GX thread's time is fixed work per
+// draw (batch state, vertex setup, palette, the job for the vertex worker: ~16 us of core 2 per draw on the 2DS,
+// 3a1696f). Consecutive triangle draws with the same vertex format and no state change between them are joined into
+// one vertex job: the open draw keeps a copy of each draw's vertex stream and its primitive and count, and is issued
+// as one indexed draw whose triangles are assembled draw by draw (vw_assemble_idx). It is issued before anything
+// changes state it reads (fifo.c calls the backend's flush: register values, palette loads, PE signals, EFB copies),
+// before a draw that cannot join, before present, and when the GX thread finds its ring empty (pica_merge_flush), so
+// a sync from the CPU thread never sees it pending (gxthread.c's wait_drained also checks g_gxMergeOpen). Only with the
+// GX thread: inline, the CPU thread would run on with the draw unissued. MERGE_CHECK on the PC models it (soft.c).
+#define MERGE_VERTS 256
+#define MERGE_SEGS 64
+#define MERGE_BYTES (16u << 10)
+static struct {
+    u32 vat, vsize, count, bytes, nSeg;
+    u32 seg[MERGE_SEGS];  // prim << 16 | count
+    u8 raw[MERGE_BYTES];
+} g_mg;
+static volatile bool g_mergeWant = true;  // pica_set_merge (the GX thread reads it at each draw)
+u64 g_picaMerge[7];
+
+static void merge_issue(System* s) {
+    u32 n = g_mg.nSeg;
+    g_mg.nSeg = 0;
+    if (n) {
+        g_picaMerge[2]++;
+        draw_job(s, g_mg.seg[0] >> 16, g_mg.vat, g_mg.raw, g_mg.count, g_mg.vsize, n > 1 ? g_mg.seg : NULL, n > 1 ? n : 0);
+    }
+    vw_dmb();  // the draw is queued on the vertex worker before a sync on the CPU thread can see it issued
+    g_gxMergeOpen = false;
+}
+
+static void pica_flush(void* ctx, System* s) {
+    (void)ctx;
+    g_picaMerge[3]++;
+    merge_issue(s);
+}
+
+void pica_merge_flush(System* s, bool idle) {
+    if (!g_gxMergeOpen) return;
+    g_picaMerge[idle ? 5 : 6]++;
+    merge_issue(s);
+}
+
+void pica_set_merge(bool on) { g_mergeWant = on; }
+bool pica_merge(void) { return g_mergeWant; }
+
+static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
+    (void)ctx;
+    g_picaMerge[0]++;
+    u32 bytes = count * vsize;
+    bool can = g_mergeWant && g_indexed && s->gxAsync && prim < PRIM_LINES && count <= MERGE_VERTS && bytes <= MERGE_BYTES;
+    if (g_gxMergeOpen) {
+        if (can && vat == g_mg.vat && vsize == g_mg.vsize && g_mg.count + count <= MERGE_VERTS &&
+            g_mg.bytes + bytes <= MERGE_BYTES && g_mg.nSeg < MERGE_SEGS) {
+            memcpy(g_mg.raw + g_mg.bytes, raw, bytes);
+            g_mg.seg[g_mg.nSeg++] = (prim << 16) | count;
+            g_mg.count += count;
+            g_mg.bytes += bytes;
+            g_picaMerge[1]++;
+            return;
+        }
+        g_picaMerge[4]++;
+        merge_issue(s);
+    }
+    if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0); return; }
+    memcpy(g_mg.raw, raw, bytes);
+    g_mg.seg[0] = (prim << 16) | count;
+    g_mg.nSeg = 1;
+    g_mg.vat = vat;
+    g_mg.vsize = vsize;
+    g_mg.count = count;
+    g_mg.bytes = bytes;
+    g_gxMergeOpen = true;
 }
 
 // ---- EFB copies and clears ----
@@ -1567,7 +1663,7 @@ static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, 
     return true;
 }
 
-static const GXBackend kPica = { pica_draw, pica_efb_copy };
+static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush };
 
 // ---- present ----
 // ---- screenshots of what the top screen shows (sdmc:/gc3ds/shots, key points only) ----
@@ -1640,7 +1736,7 @@ static void cap_write(void) {
 }
 
 bool pica_present(System* s, u32 xfbAddr) {
-    (void)s;
+    pica_merge_flush(s, false);
     if (g_capState == 2) cap_write();  // the copy was queued with the previous present
     PXfb* show = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) {
@@ -1703,6 +1799,8 @@ void pica_set_gpu_transform(bool on) { g.gpuPos = on && g.uProj >= 0 && g.uPal >
 bool pica_gpu_transform(void) { return g.gpuPos; }
 
 void pica_reset(void) {
+    g_mg.nSeg = 0;  // the program is going: its open draw too
+    g_gxMergeOpen = false;
     vw_sync_all();
     vfast_reset_cache();
     g.palValid = 0;

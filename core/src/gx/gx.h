@@ -51,7 +51,12 @@ struct GXBackend {
     // EFB pixels, destination physical address) on the backend's own framebuffer, including the clear. Returns true
     // when handled; the software copy into RAM is then skipped.
     bool (*efb_copy)(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest);
+    // Optional: issues the draw the backend holds open for merging (g_gxMergeOpen). fifo.c calls it before any command
+    // that changes state the open draw depends on.
+    void (*flush)(void* ctx, System* s);
 };
+// True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
+extern bool g_gxMergeOpen;
 
 // One decoded vertex, before transformation (model space, dequantised).
 typedef struct {

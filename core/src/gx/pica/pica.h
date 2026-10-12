@@ -47,6 +47,14 @@ bool pica_early_split(void);
 void pica_set_indexed(bool on);
 bool pica_indexed(void);
 bool pica_early_queue(void);
+// Draw merging (on by default; only with the GX thread): consecutive triangle draws with no state change between them
+// become one vertex job; off issues every draw by itself (comparison). pica_merge_flush (GX thread) issues the draw held
+// open, idle: because the ring is empty. g_picaMerge: draws, draws that joined an open draw, jobs issued, open draws
+// issued for a state change, for a draw that could not join, for an empty ring, for present.
+void pica_set_merge(bool on);
+bool pica_merge(void);
+void pica_merge_flush(System* s, bool idle);
+extern u64 g_picaMerge[7];
 u32 pica_queue_offset(void);
 extern u64 g_picaDrawPaths[8];
 bool pica_vertex_worker_idle(void);  // no draw queued on the vertex worker (callable from any thread)  // draws by batch path (pica.c)

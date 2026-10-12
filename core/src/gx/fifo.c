@@ -74,8 +74,17 @@ u32 gx_vertex_size(const GXCore* gx, u32 vat) {
 }
 
 // ---- register writes ----
-static void xf_write(GXCore* gx, u32 addr, u32 v) {
-    if (addr >= sizeof gx->xf / 4) return;
+// Draw merging: while the backend holds a draw open to append the next draws to (pica.c), it reads the draw's state
+// only when it issues it. Every command that would change that state (any register value, palette loads, PE signals,
+// EFB copies) first lets the backend issue the open draw.
+bool g_gxMergeOpen;
+static inline void merge_break(System* s, GXCore* gx) {
+    if (g_gxMergeOpen && gx->backend && gx->backend->flush) gx->backend->flush(gx->backendCtx, s);
+}
+
+static void xf_write(System* s, GXCore* gx, u32 addr, u32 v) {
+    if (addr >= sizeof gx->xf / 4 || gx->xf[addr] == v) return;
+    merge_break(s, gx);
     // Lights, channel controls and texgen settings: what shader lighting depends on (GXCore.xfLightVersion).
     if (((addr >= 0x600 && addr < 0x680) || (addr >= 0x1009 && addr <= 0x1011) || (addr >= 0x103F && addr <= 0x1047)) &&
         gx->xf[addr] != v)
@@ -259,6 +268,9 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     u32 mask = gx->bpMask;
     if (reg != BP_MASK) gx->bpMask = 0xFFFFFF;
     u32 nv = (gx->bp[reg] & ~mask) | (val & mask);
+    if (nv != gx->bp[reg] || reg == BP_PE_DONE || reg == BP_PE_TOKEN || reg == BP_PE_TOKEN_INT || reg == BP_COPY_EXEC ||
+        reg == 0x65)
+        merge_break(s, gx);
     if (nv != gx->bp[reg]) gx->bpVersion++;
     gx->bp[reg] = nv;
     if (gx->bp[reg]) gx->bpNonZero[reg >> 5] |= 1u << (reg & 31);
@@ -291,7 +303,7 @@ static void load_indexed(System* s, GXCore* gx, u32 which, u32 v) {
     u32 index = v >> 16, size = ((v >> 12) & 0xF) + 1, addr = v & 0xFFF;
     u32 base = gx->cp[CP_ARRAY_BASE + 12 + which] & 0x03FFFFFF, stride = gx->cp[CP_ARRAY_STRIDE + 12 + which] & 0xFFF;
     u32 pa = base + index * stride;
-    for (u32 i = 0; i < size && pa + 4 * i + 4 <= PA_MEM1_END; i++) xf_write(gx, addr + i, mem1_read32(s, pa + 4 * i));
+    for (u32 i = 0; i < size && pa + 4 * i + 4 <= PA_MEM1_END; i++) xf_write(s, gx, addr + i, mem1_read32(s, pa + 4 * i));
 }
 
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
@@ -318,7 +330,10 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         if (avail < 6) return 0;
         {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
             u32 v = rd32(p + 2), r = p[1];
-            if (gx->cp[r] != v && (r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
+            if (gx->cp[r] != v) {
+                merge_break(s, gx);
+                if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
+            }
             gx->cp[r] = v;
         }
         return 6;
@@ -326,7 +341,7 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         if (avail < 5) return 0;
         u32 h = rd32(p + 1), n = (h >> 16) + 1, addr = h & 0xFFFF;
         if (avail < 5 + 4 * n) return 0;
-        for (u32 i = 0; i < n; i++) xf_write(gx, addr + i, rd32(p + 5 + 4 * i));
+        for (u32 i = 0; i < n; i++) xf_write(s, gx, addr + i, rd32(p + 5 + 4 * i));
         return 5 + 4 * n;
     }
     case 0x20: case 0x28: case 0x30: case 0x38:
