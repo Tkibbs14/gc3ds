@@ -4,6 +4,7 @@
 #include <citro3d.h>
 #define GC3DS_HOST_TYPES
 #include <dirent.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,53 @@ static u64 prof_clock(void) { return svcGetSystemTick(); }
 
 // CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
 // iteration on the ARM11), timed with the system tick. Tells 268 MHz from 804 MHz apart, not more.
+// The bottom screen's once-a-second numbers are drawn by a thread on core 1: the console draws every glyph itself, and
+// the ~13 lines a second took 2.6% of core 0 (2DS, 9b96050: perf_log in "# core0 outside compiled code"). Core 0 only
+// formats them; when the thread is still drawing the previous second's, this second's are dropped.
+static char g_conBuf[2][2048];
+static u32 g_conLen, g_conFill;
+static volatile int g_conReady = -1;  // the buffer the thread is to draw, or -1
+static Thread g_conThread;
+
+static void con_printf(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(g_conBuf[g_conFill] + g_conLen, sizeof g_conBuf[0] - g_conLen, fmt, ap);
+    va_end(ap);
+    if (n > 0) g_conLen = g_conLen + (u32)n < sizeof g_conBuf[0] ? g_conLen + (u32)n : (u32)sizeof g_conBuf[0] - 1;
+}
+
+static void con_main(void* arg) {
+    (void)arg;
+    for (;;) {
+        int r = g_conReady;
+        if (r >= 0) {
+            __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory");
+            fputs(g_conBuf[r], stdout);
+            fflush(stdout);
+            __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory");
+            g_conReady = -1;
+        }
+        svcSleepThread(20000000LL);
+    }
+}
+
+static void con_flush(void) {
+    if (!g_conThread) {  // no thread: draw here
+        s32 prio = 0x30;
+        svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+        g_conThread = threadCreate(con_main, NULL, 8 * 1024, prio + 3 > 0x3F ? 0x3F : prio + 3, 1, true);
+        if (!g_conThread) { fputs(g_conBuf[g_conFill], stdout); g_conLen = 0; return; }
+    }
+    if (g_conReady < 0) {
+        __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory");
+        g_conReady = (int)g_conFill;
+        g_conFill ^= 1;
+    }
+    g_conLen = 0;
+    g_conBuf[g_conFill][0] = 0;
+}
+
 static double cpu_mhz(void) {
     u32 n = 100000;  // ~2 ms at 804 MHz (it runs every 10 s on core 0)
     u32 x = 0;
@@ -588,11 +636,11 @@ static const char* run(const char* path) {
             double secs = (double)(now - tLast) / SYSCLOCK_ARM11;
             double mips = (double)(g_sys.cpu.cycles - cycLast) / secs / 1e6;
             double fps = (g_fields - fieldsLast) / secs;
-            printf("\x1b[5;0H%6.2f MIPS  %5.2f fields/s  (%4.1f%% speed)   \n", mips, fps, 100.0 * mips / 486.0);
-            printf("emulated %.1f s, real %.1f s     \n", (double)g_sys.cpu.cycles / GEKKO_HZ, (double)(now - t0) / SYSCLOCK_ARM11);
+            con_printf("\x1b[5;0H%6.2f MIPS  %5.2f fields/s  (%4.1f%% speed)   \n", mips, fps, 100.0 * mips / 486.0);
+            con_printf("emulated %.1f s, real %.1f s     \n", (double)g_sys.cpu.cycles / GEKKO_HZ, (double)(now - t0) / SYSCLOCK_ARM11);
             if (g_jit && g_useJit) {
                 const JitStats* js = jit_stats(g_jit);
-                printf("JIT %llu blocks, %.1f%% native   \n", (unsigned long long)js->blocksCompiled,
+                con_printf("JIT %llu blocks, %.1f%% native   \n", (unsigned long long)js->blocksCompiled,
                        js->instrsCompiled ? 100.0 * (double)js->instrsNative / (double)js->instrsCompiled : 0.0);
             }
             // Share of real time per area; the rest is guest code, interpreter fallbacks and emulated hardware.
@@ -782,24 +830,25 @@ static const char* run(const char* path) {
             g_where = WH_PERF;
             if (g_profClock) {
                 // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
-                printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
+                con_printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],
                        p[PROF_GXSYNC]);
                 // disc, log; then the vertex path's gather (dec) and lighting (lit) parts of vtx
-                printf("disc%5.1f log%4.1f  dec%5.1f lit%5.1f  \n", p[PROF_DISC], p[PROF_LOG], p[PROF_VDEC],
+                con_printf("disc%5.1f log%4.1f  dec%5.1f lit%5.1f  \n", p[PROF_DISC], p[PROF_LOG], p[PROF_VDEC],
                        p[PROF_VLIGHT]);
-                printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
-                printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
+                con_printf("JIT compile %4.1f%%  present %4.1f%%   \n", p[PROF_JITC], p[PROF_PRESENT]);
+                con_printf("wait %4.1f%%  guest+other %4.1f%%   \n", 100.0 * (double)waitTicks / tot, rest);
                 // cpu: inside gekko_run (includes GX and disc work the guest triggers); fpfb / fb: interpreted
                 // float and other instructions from compiled code (sampled)
-                printf("cpu%5.1f fpfb%5.1f fb%5.1f    \n", p[PROF_CPU], p[PROF_FBFP], p[PROF_FB]);
+                con_printf("cpu%5.1f fpfb%5.1f fb%5.1f    \n", p[PROF_CPU], p[PROF_FBFP], p[PROF_FB]);
                 // core 2: the GX thread's busy time, and the CPU thread waiting for it
-                printf("GX thread%5.1f%%  cpu waits%5.1f%%  \n", p[PROF_GXTHREAD], p[PROF_GXWAIT]);
-                printf("draws/s %5.0f  verts/s %6.0f   \n", draws, verts);
+                con_printf("GX thread%5.1f%%  cpu waits%5.1f%%  \n", p[PROF_GXTHREAD], p[PROF_GXWAIT]);
+                con_printf("draws/s %5.0f  verts/s %6.0f   \n", draws, verts);
                 if (g_jit && g_useJit) {
-                    printf("k/s ins %5.0f fb %4.0f disp %5.0f %s\n", k[0], k[1], k[2], jit_linking(g_jit) ? "L" : "-");
-                    printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)jit_stats(g_jit)->icbiFlushes);
+                    con_printf("k/s ins %5.0f fb %4.0f disp %5.0f %s\n", k[0], k[1], k[2], jit_linking(g_jit) ? "L" : "-");
+                    con_printf("k/s slow ld %4.0f st %4.0f  icbi %llu   \n", k[3], k[4], (unsigned long long)jit_stats(g_jit)->icbiFlushes);
                 }
             }
+            con_flush();
             vertsLast = g_sys.gx.core.vertices;
             presentsLast = g_presents;
             fieldMax = fieldSum = 0;

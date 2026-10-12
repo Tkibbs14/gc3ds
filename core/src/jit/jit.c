@@ -352,6 +352,10 @@ typedef struct {
     // emit_time's ADD immediate and ST_INTERP's literal, in the hot or the cold buffer.
     struct { u32 at, count; bool cold, literal; } tfix[MAX_BLOCK_INSNS * 8];
     u32 nTfix;
+    // FPR lanes (bit 2 * fr + lane) that hold an exact single-precision value at this point of the block: written by
+    // lfs, psq_l or a rounded single-precision result since the block began. Gekko's single multiply cuts frC to 25
+    // significant bits (ld_c25), which leaves such a value unchanged, so the cut is skipped for them.
+    u64 single;
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -1218,6 +1222,7 @@ static void emit_store(Cg* c, u32 size, int vreg) {
 
 static void emit_fallback(Cg* c, u32 inst) {
     Emit* e = &c->e;
+    c->single = 0;  // the interpreter may write any FPR
 #ifndef __3DS__
     g_rwWhy = RW_INTERP;
 #endif
@@ -1290,6 +1295,20 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
     exit_const(c, c->pc + 4);
 }
 
+// LR = the address after a branch with LK: a PC-relative load of a literal placed after the block's last branch (every
+// branch ends the block with an unconditional one), one word where the constant took up to four (ARMv6 has no MOVW).
+static u32 lr_set(Cg* c) {
+    u32 at = c->e.n;
+    ldr_imm(&c->e, R1, PC, 0);
+    str_imm(&c->e, R1, RG, OFF_LR);
+    return at;
+}
+static void lr_literal(Cg* c, u32 at) {
+    Emit* e = &c->e;
+    e->buf[at] |= (e->n - (at + 2)) * 4;  // PC reads 8 bytes ahead
+    word(e, c->pc + 4);
+}
+
 static bool compile_branch(Cg* c, u32 inst) {
     u32 op = inst >> 26, lk = inst & 1;
 #ifndef __3DS__
@@ -1308,16 +1327,18 @@ static bool compile_branch(Cg* c, u32 inst) {
     if (op == 18) {  // b, bl, ba, bla
         s32 li = ((s32)(inst << 6)) >> 6 & ~3;
         u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li;
-        if (lk) { load_const(e, R1, c->pc + 4); str_imm(e, R1, RG, OFF_LR); }
+        u32 lit = lk ? lr_set(c) : 0;
         exit_const(c, target);
+        if (lk) lr_literal(c, lit);
         return true;
     }
     if (op == 16) {  // bc
         u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
         s32 bd = (s32)(s16)(inst & 0xFFFC);
         u32 target = (inst & 2) ? (u32)bd : c->pc + (u32)bd;
-        if (lk) { load_const(e, R1, c->pc + 4); str_imm(e, R1, RG, OFF_LR); }
+        u32 lit = lk ? lr_set(c) : 0;
         emit_branch_cond(c, bo, bi, false, target);
+        if (lk) lr_literal(c, lit);
         return true;
     }
     if (op == 19) {
@@ -1326,8 +1347,9 @@ static bool compile_branch(Cg* c, u32 inst) {
             if (xo == 528 && !(bo & 4)) return false;  // invalid form: let the interpreter handle it
             ldr_imm(e, R2, RG, xo == 16 ? OFF_LR : OFF_CTR);   // read before LK overwrites LR
             dp_imm(e, BIC, 0, R2, R2, 3);
-            if (lk) { load_const(e, R1, c->pc + 4); str_imm(e, R1, RG, OFF_LR); }
+            u32 lit = lk ? lr_set(c) : 0;
             emit_branch_cond(c, bo, bi, true, 0);
+            if (lk) lr_literal(c, lit);
             return true;
         }
         if (xo == 150) {  // isync: nothing to do here, but it ends the block (code may have changed before it)
@@ -1901,6 +1923,7 @@ static void round_pair(Cg* c, int d0, int d1) {
 // (x + 2^27) & ~(2^28 - 1) on the 64-bit pattern (the interpreter's sf_round25; identity for exact singles). Uses r0, r1.
 static void ld_c25(Cg* c, int d, u32 fr, u32 lane) {
     Emit* e = &c->e;
+    if ((c->single >> (2 * fr + lane)) & 1) { ld_fpr(c, d, fr, lane); return; }  // an exact single: the cut changes nothing
     ldr_imm(e, R0, RG, OFF_FPR(fr) + 8u * lane);
     ldr_imm(e, R1, RG, OFF_FPR(fr) + 8u * lane + 4);
     dp_imm(e, ADD, 1, R0, R0, IMM(0x08000000u));
@@ -2055,6 +2078,7 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         }
         cold_end(c, resume);  // lfs / lfd: back to the FPR stores; stfd: past the call
         if (update) st_gpr(c, R0, ra);
+        if (kind == 0) c->single |= 3ull << (2 * fr);
         return true;
     }
     if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R12, LR);
@@ -2074,6 +2098,7 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
     default: set_tail(c, update ? 1 : 0, R0, ra, 0, 0); emit_store64(c, fr); break;
     }
     if (update) st_gpr(c, R0, ra);  // the access kept the effective address in r0
+    if (kind == 0) c->single |= 3ull << (2 * fr);  // lfs: both lanes, exactly the loaded single
     return true;
 }
 
@@ -2160,6 +2185,7 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         for (u32 k = 0; k < nInterp; k++) patch_branch(e, toInterp[k], e->n);
         emit_fallback(c, inst);
         cold_end(c, resume);
+        if (!store) c->single |= 3ull << (2 * fr);  // floats (or 1.0) loaded from singles
         return true;
     }
     add_const(e, R1, RG, gqr & ~0xFFFu, R12);
@@ -2385,6 +2411,7 @@ static void ps_arith(Cg* c, u32 xo5, u32 fd, u32 fa, u32 fb, u32 fc) {
     round_pair(c, res[0], res[1]);
     st_fpr(c, res[0], fd, 0);
     st_fpr(c, res[1], fd, 1);
+    c->single |= 3ull << (2 * fd);
 }
 
 static bool compile_float(Cg* c, u32 inst) {
@@ -2449,7 +2476,7 @@ static bool compile_float(Cg* c, u32 inst) {
                 res = 2;
             }
         }
-        if (single) { round_pair(c, res, -1); st_fpr(c, res, frd, 0); st_fpr(c, res, frd, 1); }
+        if (single) { round_pair(c, res, -1); st_fpr(c, res, frd, 0); st_fpr(c, res, frd, 1); c->single |= 3ull << (2 * frd); }
         else st_fpr(c, res, frd, 0);
         return true;
     }
@@ -2614,6 +2641,11 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         // The ARM flags the previous instruction left: every path through an instruction's code reaches its end, so
         // flags its last emitted instruction set are there on all of them.
         c->flagsLive = i > 0 && c->flagsAt == e->n;
+        {   // the destination FPR is not known single until its producer says so (conservative: any instruction of these
+            // classes; op 31's FPR loads are among its other forms)
+            u32 pop = inst >> 26;
+            if (pop == 4 || pop == 31 || (pop >= 48 && pop <= 57) || pop == 59 || pop == 63) c->single &= ~(3ull << (2 * ((inst >> 21) & 31)));
+        }
         c->pinned = 0;
         c->tailN = 0;
         c->tailFpr = -1;
