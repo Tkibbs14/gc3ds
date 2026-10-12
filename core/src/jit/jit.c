@@ -481,6 +481,9 @@ static u64 g_rxV1Extra, g_rxV2St, g_rxV2Ld, g_rxV2Mov, g_rxLinkIn[1u << 16];
 static u64 g_rsTrafTot, g_rsTrafTop[5], g_rsTrafLoop, g_rsBackN, g_rsBackSt;
 // psq_l / psq_st executions by store, the GQR's type at compile time (0 float, 4-7 quantized) and W (one element).
 static u32 g_psqRun[2][8][2];
+// Memory instructions executed by how they form their address: (rA|0) + d with rA = r1, r2, r13, another GPR or 0;
+// rA + rB.
+static u32 g_eaRun[6];
 // Loop regions: each block belongs to the innermost back edge's range holding its start. A loop whose blocks touch at
 // most NSLOT_STAT ids could keep them all in slots: its traffic goes, and each entry loads them and each exit stores the
 // written ones instead. g_rsLoopFit / g_rsLoopBig: traffic in loops that fit / do not; g_rsLoopEntryCost.
@@ -1039,10 +1042,16 @@ static void stop_tail(Cg* c) {
 
 // Effective address into r0: (rA|0) + d, or rA + rB for indexed forms.
 static void ea_disp(Cg* c, u32 ra, u32 d) {
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) rs_emit_count(&c->e, &g_eaRun[ra == 1 ? 0 : ra == 2 ? 1 : ra == 13 ? 2 : ra ? 3 : 4]);
+#endif
     if (ra) add_const(&c->e, R0, src(c, ra, R0), d, R12);
     else load_const(&c->e, R0, d);
 }
 static void ea_index(Cg* c, u32 ra, u32 rb) {
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) rs_emit_count(&c->e, &g_eaRun[5]);
+#endif
     int b = src(c, rb, R1);
     if (ra) dp_reg(&c->e, ADD, 0, R0, src(c, ra, R0), b);
     else mov_reg(&c->e, R0, b);
@@ -3768,6 +3777,9 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                  (unsigned long long)g_rsLoops[1], (double)g_rsLoopBig / runs);
         print(line);
         double tt = g_rsTrafTot ? (double)g_rsTrafTot : 1.0;
+        snprintf(line, sizeof line, "  memory instructions executed by address form: r1+d %u, r2+d %u, r13+d %u, other rA+d %u, 0+d %u, rA+rB %u",
+                 g_eaRun[0], g_eaRun[1], g_eaRun[2], g_eaRun[3], g_eaRun[4], g_eaRun[5]);
+        print(line);
         for (int st = 0; st < 2; st++) {
             int n = snprintf(line, sizeof line, "  %s executed by GQR type (W=0 / W=1):", st ? "psq_st" : "psq_l");
             for (int q = 0; q < 8; q++)

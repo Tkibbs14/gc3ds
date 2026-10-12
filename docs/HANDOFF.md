@@ -758,3 +758,17 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   not aliasing: folding higher address bits into the index changed nothing under qemu (86,499 -> 91,663 misses in 30
   fields), so it was not kept; most are probably blr / bctr into polling-loop and idle blocks, which the table never holds
   (unverified: count misses by target kind before working on it). qemu stats now print the dispatcher's return reasons.
+- **2DS results since:** d7ac114 (perf.csv via core 1) 19.83 / 19.86% (cutscene / title); 9b96050 (lfs / lfd / stfd stubs)
+  20.10 / 20.13%; afe3fc0 (LR literals, known-single frC, bottom-screen text on core 1) 20.73 / 20.69%; **a1dd311 (indirect
+  table 16,384 entries) 21.01 / 21.04%** (relay jobs 64-71). perf_log on core 0: 4.6% -> 0.0%. Indirect misses: TP's were
+  slot conflicts (79,307 of 86,499 under qemu; folding high address bits in did nothing, a 4x table cut them to 36,621; on
+  the 2DS 35k -> 13.6k/s).
+- **Where core 0 stands (title, a1dd311-era counters):** TP needs ~1.65M guest instructions per field, so 80% speed is
+  ~79M guest instructions/s against ~21M now (~3.9x). Core 0 executes ~13 ARM instructions per guest instruction at IPC
+  0.33 (25% of cycles fetch stalls, 21% data-hazard stalls). Memory instructions are 40% of TP's guest instructions
+  (`JIT_REGSTAT`: r1+d 21% of them, r13+d 8%, r2+d 3%, other rA+d 63%, rA+rB 4%) and each runs ~12 ARM instructions
+  through its stub (call, alignment and MEM1 checks, access, byte swap, return): ~37% of all executed ARM instructions.
+- **The guest profile is flat** (relay jobs 72-73, `--profile on`, `core/tools/hot_funcs.py` with zeldaret/tp's
+  `config/GZ2E01/symbols.txt` kept outside the repo in WSL `/root/tp_symbols/`): the 200 hottest blocks are 13.5% (title)
+  and 6.2% (cutscene) of core 0, no game function above ~0.5% except the DVD driver's `Read` while loading. Native
+  stand-ins for single functions cannot give big steps on these scenes; the per-instruction cost of compiled code can.
