@@ -633,3 +633,6 @@ textures (VRAM-limited, not whole packs). Decide with 2DS measurements once spee
 - **Next hot-path candidates** (qemu per-opcode, 4c5012a): bc 11.8 and b 10.1 hot words (register-cache flush at every
   block end plus the link site), psq_st 41 / psq_l 24, stfs 15, lfd 14, lfs 9. Pinning the most used guest registers
   across blocks would remove most of the flush / reload at block boundaries.
+- **Region compilation is the next big item and has its own brief: `docs/REGION_JIT_PLAN.md`** (block-boundary
+  register traffic ~25% of executed work; traces, register pinning and a float register cache measured and ruled out
+  or deferred; constraints, options and how to judge them). The owner will give it a dedicated session.

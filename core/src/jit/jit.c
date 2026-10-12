@@ -382,6 +382,44 @@ static u32 g_rsCur;    // the block being compiled
 static u32* g_dopPool;   // key << 8 | hot words (capped at 255)
 static u32 g_dopUsed, *g_dopStart, *g_dopLen;  // per block entry
 static u64 g_dopN[65536], g_dopWords[65536];
+// Simulated 8-lane FPR cache (what a float register cache would save): per block, ld_fpr hits (the lane was read or
+// written earlier in the block, LRU of 8) and st_fpr stores overwritten by a later st_fpr before any ld_fpr of the lane.
+#define FS_N 8
+static u32 *g_fsLd, *g_fsHit, *g_fsSt, *g_fsDead;  // per block entry
+static u64 g_fsLdTot, g_fsHitTot, g_fsStTot, g_fsDeadTot;
+static int g_fsLane[FS_N], g_fsPending[64];  // lane ids (fr * 2 + lane), -1 empty; pending store per lane: 1 = stored, unread
+static u32 g_fsUse[FS_N], g_fsTick;
+static void fs_reset(void) {
+    for (int k = 0; k < FS_N; k++) g_fsLane[k] = -1;
+    for (int k = 0; k < 64; k++) g_fsPending[k] = 0;
+}
+static bool fs_touch(int lane) {  // true if the lane was in the simulated cache
+    int best = 0;
+    for (int k = 0; k < FS_N; k++) {
+        if (g_fsLane[k] == lane) { g_fsUse[k] = ++g_fsTick; return true; }
+        if (g_fsLane[k] < 0 || g_fsUse[k] < g_fsUse[best]) best = k;
+    }
+    if (g_fsLane[best] >= 0) g_fsPending[g_fsLane[best]] = 0;  // evicted: a write-back cache would store it then
+    g_fsLane[best] = lane;
+    g_fsUse[best] = ++g_fsTick;
+    return false;
+}
+static void fs_ld(u32 fr, u32 lane) {
+    if (!g_regStat) return;
+    int l = (int)(fr * 2 + lane);
+    g_fsLd[g_rsCur]++;
+    if (fs_touch(l)) g_fsHit[g_rsCur]++;
+    g_fsPending[l] = 0;
+}
+static void fs_st(u32 fr, u32 lane) {
+    if (!g_regStat) return;
+    int l = (int)(fr * 2 + lane);
+    g_fsSt[g_rsCur]++;
+    if (g_fsPending[l]) g_fsDead[g_rsCur]++;
+    fs_touch(l);
+    g_fsPending[l] = 1;
+}
+
 static void dop_add(u32 key, u32 hot) {
     if (!g_regStat || g_dopUsed >= DOP_POOL) return;
     g_dopPool[g_dopUsed++] = key << 8 | (hot > 255 ? 255 : hot);
@@ -400,6 +438,8 @@ static void rs_fold(u32 nEntries) {
             g_dopWords[v >> 8] += n * (v & 255);
         }
         g_dopLen[b] = 0;
+        g_fsLdTot += n * g_fsLd[b]; g_fsHitTot += n * g_fsHit[b]; g_fsStTot += n * g_fsSt[b]; g_fsDeadTot += n * g_fsDead[b];
+        g_fsLd[b] = g_fsHit[b] = g_fsSt[b] = g_fsDead[b] = 0;
         g_rsExec[b] = 0;
         memset(g_rsLd[b], 0, RS_IDS);
         memset(g_rsSt[b], 0, RS_IDS);
@@ -889,6 +929,9 @@ static void emit_store(Cg* c, u32 size, int vreg) {
 static void emit_fallback(Cg* c, u32 inst) {
     Emit* e = &c->e;
     rc_flush(c);  // the interpreter works on guest state in memory
+#ifndef __3DS__
+    if (!c->inCold && g_regStat) fs_reset();  // a float register cache would be forgotten here too
+#endif
     Rc clean = c->rc;
     for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
     if (c->inCold) {  // cold code moves when it is appended: no branches to absolute addresses
@@ -1515,8 +1558,18 @@ static bool compile_int(Cg* c, u32 inst) {
 // Blocks are keyed on MSR[FP], HID2[PSE, LSQE] and FPSCR[RN] != 0, so compiled code never runs under other settings. FPSCR[NI]
 // (flush denormals, which games set) matches the host and needs no guard.
 // Record forms (Rc = 1), other rounding modes and everything not listed here run on the interpreter.
-static void ld_fpr(Cg* c, int d, u32 fr, u32 lane) { vldr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane); }
-static void st_fpr(Cg* c, int d, u32 fr, u32 lane) { vstr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane); }
+static void ld_fpr(Cg* c, int d, u32 fr, u32 lane) {
+#ifndef __3DS__
+    if (!c->inCold) fs_ld(fr, lane);
+#endif
+    vldr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane);
+}
+static void st_fpr(Cg* c, int d, u32 fr, u32 lane) {
+#ifndef __3DS__
+    if (!c->inCold) fs_st(fr, lane);
+#endif
+    vstr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane);
+}
 
 // d = d rounded to single precision (still held as a double). Two registers at once so the conversions overlap.
 static void round_pair(Cg* c, int d0, int d1) {
@@ -2100,6 +2153,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         g_rsCur = j->nEntries;
         g_dopStart[g_rsCur] = g_dopUsed;
         g_dopLen[g_rsCur] = 0;
+        fs_reset();
         load_const(e, R12, (u32)(uintptr_t)&g_rsExec[g_rsCur]);
         ldr_imm(e, R0, R12, 0);
         dp_imm(e, ADD, 0, R0, R0, 1);
@@ -2655,7 +2709,9 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_dopPool = calloc(DOP_POOL, sizeof(u32));
         g_dopStart = calloc(MAX_ENTRIES, sizeof(u32));
         g_dopLen = calloc(MAX_ENTRIES, sizeof(u32));
-        g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen;
+        g_fsLd = calloc(MAX_ENTRIES, sizeof(u32)); g_fsHit = calloc(MAX_ENTRIES, sizeof(u32));
+        g_fsSt = calloc(MAX_ENTRIES, sizeof(u32)); g_fsDead = calloc(MAX_ENTRIES, sizeof(u32));
+        g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead;
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
@@ -2943,6 +2999,10 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                 print(line);
             }
         }
+        snprintf(line, sizeof line, "  simulated FPR lane cache (8 lanes, per block): ld_fpr %llu executed, %.1f%% hits; st_fpr %llu executed, %.1f%% overwritten in the block before being read",
+                 (unsigned long long)g_fsLdTot, g_fsLdTot ? 100.0 * (double)g_fsHitTot / (double)g_fsLdTot : 0.0,
+                 (unsigned long long)g_fsStTot, g_fsStTot ? 100.0 * (double)g_fsDeadTot / (double)g_fsStTot : 0.0);
+        print(line);
         print("  register cache by guest register (loads into a slot / write-backs, per block execution; JIT_REGSTAT):");
         snprintf(line, sizeof line, "    %llu block executions", (unsigned long long)g_rsExecTot);
         print(line);
