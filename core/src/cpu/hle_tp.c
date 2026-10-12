@@ -23,7 +23,6 @@
 #define PC_TRI 0x8007FCE4u
 #define PC_EXIT 0x8007FEE8u
 #define CODE_HASH 0x195639DFDBEA5654ull  // FNV-1a 64 of the guest bytes [PC_ENTRY, PC_EXIT); see code_hash
-#define MAX_INSNS 4000000u               // per call: a scan that runs longer leaves at the x loop for guest code
 
 u64 g_hleRuns, g_hleInsns;
 static u8* g_mem;
@@ -90,7 +89,7 @@ static inline u32 rotl(u32 v, u32 n) { return n ? (v << n) | (v >> (32 - n)) : v
 static inline u32 cmps(u32 a, u32 b) { return (s32)a < (s32)b ? 8u : (s32)a > (s32)b ? 4u : 2u; }  // CR field LT GT EQ
 static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
 
-static u32 scan(Gekko* g) {
+static u32 scan(Gekko* g, u32 budget) {
     u32 r[32], pc = g->pc, n = 0, cr0 = 0, t;
     bool crSet = false, caClear = false;
     memcpy(r, g->gpr, sizeof r);
@@ -114,7 +113,7 @@ L_fb54:
     r[23] = 0; n++;                                  // addi r23,0,0
     r[17] = r[30]; n++;                              // or r17,r30,r30
 L_fb70:
-    if (n > MAX_INSNS) { pc = 0x8007FB70u; goto out; }
+    if (n >= budget) { pc = 0x8007FB70u; goto out; }  // slice used up: guest code goes on from the loop head
     RD32(r[8], r[15] + 24, 0x8007FB70u); n++;        // lwz r8,24(r15)
     RD32(r[3], r[8] + 12, 0x8007FB74u); n++;         // lwz r3,12(r8)
     RD32(r[4], r[8] + 44, 0x8007FB78u); n++;         // lwz r4,44(r8)
@@ -274,14 +273,14 @@ static void chk_report(void) {
     fprintf(stderr, "HLE_CHECK: %llu stand-in calls compared with the interpreter, %llu differed\n",
             (unsigned long long)g_chk.calls, (unsigned long long)g_chk.bad);
 }
-static u32 checked(Gekko* g) {
+static u32 checked(Gekko* g, u32 budget) {
     enum { FRAME = 2304 };
     u32 fpa = g->gpr[1] & 0x0FFFFFFFu;
-    if (fpa + FRAME > g_memSize) return scan(g);
+    if (fpa + FRAME > g_memSize) return scan(g, budget);
     static u8 frame0[FRAME], frameN[FRAME];
     Gekko g0 = *g;
     memcpy(frame0, g_mem + fpa, FRAME);
-    u32 n = scan(g);
+    u32 n = scan(g, budget);
     if (!n) return 0;
     Gekko gn = *g;
     memcpy(frameN, g_mem + fpa, FRAME);
@@ -311,14 +310,14 @@ static u32 checked(Gekko* g) {
 }
 #endif
 
-u32 hle_run(Gekko* g) {
+u32 hle_run(Gekko* g, u32 budget) {
     if (!g_on || !known()) return 0;
 #ifndef __3DS__
     static int chk = -1;
     if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
-    u32 n = chk ? checked(g) : scan(g);
+    u32 n = chk ? checked(g, budget) : scan(g, budget);
 #else
-    u32 n = scan(g);
+    u32 n = scan(g, budget);
 #endif
     if (n) { g_hleRuns++; g_hleInsns += n; }
     return n;

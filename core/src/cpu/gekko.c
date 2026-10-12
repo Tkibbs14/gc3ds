@@ -385,7 +385,9 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             }
             u32 pc = g->pc;
             if (hle_is_hook(g, pc)) {  // a native stand-in for the guest loop that starts here (hle.h)
-                u32 n = hle_run(g);
+                s64 left = g->downcount;
+                if ((s64)(limit - g->cycles) < left) left = (s64)(limit - g->cycles);
+                u32 n = hle_run(g, left > 0 ? (u32)left : 1u);
                 if (n) {
                     g->cycles += n;
                     g->downcount -= n;

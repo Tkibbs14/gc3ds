@@ -481,6 +481,15 @@ renderer only):
      blocks link to each other without writing g->pc, and `jit_hle` read the stale one. Fixed (17799fe): the block passes
      its PC. The first check ran the interpreter only, which never exercises that path; the JIT path was then checked under
      qemu (`HLE_CHECK=1 qemu-arm ... --jit`, TP to field 1100, 7,735 s): 1,235 calls, 0 differences. Re-enabled in the A/B.
+   - **2DS, f7e63ab (core/out/perf_2026-10-12_hle.csv), stand-in on vs off:** the run has two scenes. In the title loop the
+     scan hardly runs (~5k instructions per 10 s), so on/off there is noise. In the Link / Epona cutscene (from ~437 s) it stands
+     in for ~36M instructions a second, and there the **game's field rate fell 5.02 -> 3.85 /s while the cycle-based speed
+     rose 8.39% -> 9.67%**. Cause: one stand-in call could run up to 4M instructions (MAX_INSNS) regardless of the slice
+     (`sys_run` slices are 1M, and its `end` is recomputed each call, so overshoot is not made up), which also delays events.
+     Fix: `hle_run(g, budget)` stops at the next loop head once the caller's budget (JIT: RDC; interpreter: min(downcount,
+     limit - cycles)) is used up. PC `HLE_CHECK`: 6,129 calls to field 2500, 0 differences. **JIT-path check under qemu
+     pending** (`/root/hlejit2.txt`, also saves `/root/tp_arm_850.state`); nothing goes on the card before it passes.
+     Judge the next run by the cutscene's `fields_s`, not `speed_pct` alone.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /
