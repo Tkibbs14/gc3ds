@@ -42,7 +42,7 @@ digits of their sha256) and tie the job to it.
 | `--save-state FIELD:PATH` | save the machine when the VI reaches FIELD |
 | `--seconds N` | end after N real seconds (relay jobs default to 600) |
 | `--ab traces\|hle\|none` | which setting alternates every 20 s (`traces` / `hle` columns in perf.csv) |
-| `--traces on|off`, `--hle on|off` | start values (both off by default) |\|off`, `--hle on\|off` | start values |
+| `--traces on\|off`, `--hle on\|off` | start values (both off by default; `--ab none` is the default too) |
 | `--trace-follow on\|off` | traces follow unconditional `b` |
 | `--trace-side on\|off\|MASK` | side exits: 1 `bc` on a CR bit, 2 `bc` with CTR, 4 conditional `blr`/`bctr`, 8 fused flags |
 | `--trace-len N` | block length limit |
