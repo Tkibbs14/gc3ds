@@ -102,7 +102,7 @@ static u64 prof_clock(void) { return svcGetSystemTick(); }
 // CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
 // iteration on the ARM11), timed with the system tick. Tells 268 MHz from 804 MHz apart, not more.
 static double cpu_mhz(void) {
-    u32 n = 1000000;
+    u32 n = 100000;  // ~2 ms at 804 MHz (it runs every 10 s on core 0)
     u32 x = 0;
     u64 t0 = svcGetSystemTick();
     __asm__ volatile(
@@ -114,7 +114,7 @@ static double cpu_mhz(void) {
         "subs %0, %0, #1\n bne 1b\n"
         : "+r"(n), "+r"(x) : : "cc");
     double secs = (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11;
-    return 18e6 / secs / 1e6;
+    return 1.8e6 / secs / 1e6;  // 18 cycles per round
 }
 
 // Which CPU cores can run our threads, and how much work each gets done in 50 ms (a counting loop) compared with
@@ -617,6 +617,7 @@ static const char* run(const char* path) {
             }
             double draws = (double)(g_sys.gx.core.draws - drawsLast) / secs, verts = (double)(g_sys.gx.core.vertices - vertsLast) / secs;
             if (g_perf) {
+                g_where = WH_PERFCSV;
                 u64 t0p = prof_begin();
                 double shown = (double)(g_presents - presentsLast) / secs, tickMs = 1000.0 / SYSCLOCK_ARM11;
                 fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f", (double)(now - t0) / SYSCLOCK_ARM11,
@@ -677,6 +678,7 @@ static const char* run(const char* path) {
                 if (g_opt.abSplit && g_pica && perfRows % AB_SECS == 0) pica_set_split_open(!pica_split_open());
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
+                    g_where = WH_PERFREP;
                     perf_fallbacks();
                     {  // the GX thread's per-draw paths over the last 10 s (see g_picaDrawPaths, VFastStats)
                         static u64 lastP[8], lastSetups, lastDraws, lastWhy[6];
@@ -773,9 +775,11 @@ static const char* run(const char* path) {
                     if (g_opt.pmuSplit) pmu_split_report(g_perf);
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }
+                g_where = WH_PERFCSV;
                 fflush(g_perf);
                 prof_end(PROF_LOG, t0p);
             }
+            g_where = WH_PERF;
             if (g_profClock) {
                 // GX, then its parts: textures, vertices, waiting for the GPU (40 columns)
                 printf("\x1b[9;0HGX%5.1f%% tex%5.1f vtx%5.1f gpu%5.1f \n", p[PROF_GX], p[PROF_GXTEX], p[PROF_GXVTX],

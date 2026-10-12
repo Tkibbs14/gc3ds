@@ -83,7 +83,7 @@ struct Jit {
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
     u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
-    u16 stfsStub;               // emit_float_stubs: stfs
+    u16 stfsStub, lfsStub, lfdStub, stfdStub;  // emit_float_stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -2031,6 +2031,32 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         if (update) st_gpr(c, R0, ra);
         return true;
     }
+    if (kind != 2 && c->j->memStubs && c->fastmem && !c->inCold) {  // lfs, lfd, stfd: the shared stubs
+        if (kind == 3) ld_fpr(c, 1, fr, 0);
+        if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
+        set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+        if (kind == 0) c->tailFpr = (int)fr;
+        branch_abs(e, C_AL, true, c->j->code + (kind == 0 ? c->j->lfsStub : kind == 1 ? c->j->lfdStub : c->j->stfdStub));
+        u32 slow = branch_c(e, C_CS, 0);
+        u32 resume = e->n;
+        if (kind == 0) { st_fpr(c, 1, fr, 0); st_fpr(c, 1, fr, 1); }
+        else if (kind == 1) st_fpr(c, 1, fr, 0);
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        if (kind == 0) {  // the slow load's value in r2, then back to the stores
+            load_slow(c, 4, false, R2);
+            vmov_s_r(&c->e, 0, R2);
+            vcvt_f64_f32(&c->e, 1, 0);
+        } else if (kind == 1) {
+            load64_slow(c, fr);  // the helper wrote the FPR: the stores below write it again
+            ld_fpr(c, 1, fr, 0);
+        } else {
+            store64_slow(c, fr);
+        }
+        cold_end(c, resume);  // lfs / lfd: back to the FPR stores; stfd: past the call
+        if (update) st_gpr(c, R0, ra);
+        return true;
+    }
     if (kind == 2) dbl_to_single_bits(c, R2, fr, 0, R12, LR);
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
     switch (kind) {
@@ -2793,6 +2819,8 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
 //     checks the GQR's store type, alignment and MEM1, stores. On failure r3 = 1 when only the address was outside
 //     MEM1 (the gather pipe may take it), else 0.
 //   stfs: r0 = ea, d1 the value; converts it into r2 (also on failure, for the site's slow path), checks, stores.
+//   lfs: r0 = ea; checks, loads the single into d1 as a double. lfd: r0 = ea; checks (8-byte alignment), loads d1.
+//   stfd: r0 = ea, d1 the value; checks (8-byte alignment), stores.
 // The cut for values that are not exactly singles is shared (cut_d1_r2 / cut_d2_r3): r1 and r12 are its temporaries.
 static void fs_cut(Emit* e, int dst, int dsrc) {  // dst = cut_single_bits of d<dsrc>; uses r1, r12; returns with bx lr
     vmov_rr_d(e, R1, R12, dsrc);  // r1 = low word, r12 = high word
@@ -2920,6 +2948,47 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     branch_c(e, C_CS, fail);
     rev(e, R3, R2);
     str_reg(e, R3, RRAM, R1);
+    bx_reg_c(e, C_AL, LR);
+    // lfs
+    j->lfsStub = (u16)e->n;
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    ldr_reg(e, R2, RRAM, R1);
+    rev(e, R2, R2);
+    vmov_s_r(e, 0, R2);
+    vcvt_f64_f32(e, 1, 0);
+    bx_reg_c(e, C_AL, LR);
+    // lfd (FPR words: low word first)
+    j->lfdStub = (u16)e->n;
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));  // 8-byte aligned and below the end: all 8 bytes inside
+    branch_c(e, C_CS, fail);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    ldmia(e, R1, (1u << R2) | (1u << R3));
+    rev(e, R2, R2);
+    rev(e, R3, R3);
+    vmov_d_rr(e, 1, R3, R2);
+    bx_reg_c(e, C_AL, LR);
+    // stfd
+    j->stfdStub = (u16)e->n;
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    vmov_rr_d(e, R3, R2, 1);  // r3 = low word, r2 = high word
+    rev(e, R2, R2);
+    rev(e, R3, R3);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    stmia(e, R1, (1u << R2) | (1u << R3));
     bx_reg_c(e, C_AL, LR);
 }
 

@@ -49,7 +49,7 @@ extern u64 g_hostProf[PROF_N];
 // Where core 0 is when it is not inside compiled code (host3ds/jitsample.c reports how often the sampler finds it at each): the
 // code that runs there sets this one byte on entry. WH_NONE is compiled code and its helpers (the sampler uses jit_in_run for those).
 enum { WH_NONE, WH_GEKKO, WH_DISPATCH, WH_COMPILE, WH_SYSRUN, WH_EVENTS, WH_GXPOLL, WH_HLE, WH_INTERP, WH_FRONT, WH_PRESENT, WH_WAIT,
-       WH_PERF, WH_N };
+       WH_PERF, WH_PERFCSV, WH_PERFREP, WH_N };  // perf: console and counters / perf.csv rows / the 10 s reports
 extern volatile unsigned char g_where;
 extern u64 (*g_profClock)(void);
 static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }

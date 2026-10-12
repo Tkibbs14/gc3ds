@@ -78,7 +78,8 @@ void jitsample_report(FILE* f, const Jit* j) {
     fprintf(f, "\n");
     {  // where core 0 was when it was not in compiled code (common.h: WH_*), as a share of all samples
         static const char* const kWh[WH_N] = { "none", "gekko_run", "dispatch", "compile", "sys_run", "events", "gx_poll", "hle",
-                                               "interp", "frontend", "present", "vblank_wait", "perf_log" };
+                                               "interp", "frontend", "present", "vblank_wait", "perf_log",
+                                               "perf_csv", "perf_reports" };
         fprintf(f, "# core0 outside compiled code 10s:");
         for (int k = 0; k < WH_N; k++) {
             if (g_whereN[k]) fprintf(f, " %s %.1f%%", kWh[k], tot > 0 ? 100.0 * g_whereN[k] / tot : 0.0);
