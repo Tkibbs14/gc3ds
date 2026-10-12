@@ -636,3 +636,9 @@ textures (VRAM-limited, not whole packs). Decide with 2DS measurements once spee
 - **Region compilation is the next big item and has its own brief: `docs/REGION_JIT_PLAN.md`** (block-boundary
   register traffic ~25% of executed work; traces, register pinning and a float register cache measured and ruled out
   or deferred; constraints, options and how to judge them). The owner will give it a dedicated session.
+- **3a1696f on the 2DS (relay jobs 50-51): float steps did not move speed** (title heavy rows 16.55% vs 16.62%,
+  cutscene 15.89% vs 15.89%) although I-cache misses fell ~5% (8.24 -> 7.89 M/s). **Core 2 is now a co-bottleneck:**
+  the GX thread is ~80% busy at ~50,000 draws/s and **core 0 waits for it 12.0% of the time** (6.9% this morning,
+  9.7% after the slow-path stubs, 11.5% after budget-at-exit): each core-0 gain turned into waiting. The next gains need
+  core 2 cheaper as well: draw merging (`MERGE_STATS=1`: 76% of TP's draws could join the previous draw's vertex job;
+  99.6% are strips) is the known lever, then per-draw setup cost on the GX thread.
