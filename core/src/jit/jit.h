@@ -67,8 +67,19 @@ bool jit_traces(const Jit* j);
 enum { TRACE_SIDE_CR = 1, TRACE_SIDE_CTR = 2, TRACE_SIDE_IND = 4, TRACE_SIDE_FUSED = 8, TRACE_SIDE_ALL = 15 };
 void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns);
 u32 jit_entries(const Jit* j);  // blocks in the cache now
+// Called around every run of compiled code when set (the 3DS's performance-counter split, pmu.c).
+extern void (*jit_run_begin_hook)(void);
+extern void (*jit_run_end_hook)(void);
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);
+// XER[SO] in CR updates: compares and record forms leave CR bit SO out while XER[SO] has never been seen set (games
+// almost never use overflow instructions; Dolphin does not emulate SO in CR at all). The first time XER[SO] is set the
+// JIT drops its code and compiles exact CR updates from then on. jit_set_so_exact(j, false) starts over (fuzzer).
+void jit_set_so_exact(Jit* j, bool on);
+// Each block stores its start in Gekko.hostPc for the sampling profiler (host3ds/jitsample.c): one store per block
+// entered, so it is off unless asked for. Drops all compiled code.
+void jit_set_profile(Jit* j, bool on);
+bool jit_so_exact(const Jit* j);
 bool jit_slow_inline(const Jit* j);
 bool jit_mem_stubs(const Jit* j);
 void jit_print_stats(const Jit* j, void (*print)(const char* line));

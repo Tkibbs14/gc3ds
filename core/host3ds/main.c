@@ -264,6 +264,8 @@ typedef struct {
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
     bool gxInline;       // --gx inline|thread: GX on the CPU thread instead of core 2
     bool slowInline;     // --slow inline|stub: memory slow paths per site (old) or through the shared stubs
+    bool pmuSplit;       // --pmu-split on: performance counters split between compiled code and the rest (# pmu split)
+    bool profile;        // --profile on: blocks store their start for the sampler (# hot guest code); one store per block
     struct { u32 from, to; u16 bits; } press[16];  // --press A@200-206,START@900-905: buttons held over field ranges
     u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
@@ -307,6 +309,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
+        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on");
+        else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -500,6 +504,9 @@ static const char* run(const char* path) {
     if (g_jit) {
         jit_set_linking(g_jit, g_opt.link);
         jit_set_slow_inline(g_jit, g_opt.slowInline);
+        jit_set_profile(g_jit, g_opt.profile);
+        jit_run_begin_hook = g_opt.pmuSplit ? pmu_split_begin : NULL;
+        jit_run_end_hook = g_opt.pmuSplit ? pmu_split_end : NULL;
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
@@ -735,6 +742,7 @@ static const char* run(const char* path) {
                                 (cur[2] - last[2]) / 10.0, (cur[3] - last[3]) / 10.0, (cur[4] - last[4]) / 10.0, (cur[5] - last[5]) / 10.0);
                         memcpy(last, cur, sizeof last);
                     }
+                    if (g_opt.pmuSplit) pmu_split_report(g_perf);
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
                 }
                 fflush(g_perf);

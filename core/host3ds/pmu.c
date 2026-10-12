@@ -73,6 +73,42 @@ const char* pmu_columns(void) {
     return g_cols;
 }
 
+// pmu_split_*: inside = sampled JIT runs (x SPLIT_EVERY), all = what pmu_row saw, both per event pair.
+#define SPLIT_EVERY 8
+static u64 g_inCyc[NPAIRS], g_inEv[NPAIRS][2], g_allCyc[NPAIRS], g_allEv[NPAIRS][2], g_s0[3];
+static u32 g_splitN;
+static bool g_inSample;
+
+void pmu_split_begin(void) {
+    if (!g_on || ++g_splitN % SPLIT_EVERY) return;
+    g_s0[0] = get(PERFCOUNTERREG_CORE_CYCLE_COUNTER);
+    g_s0[1] = get(PERFCOUNTERREG_CORE_COUNT_REG_0);
+    g_s0[2] = get(PERFCOUNTERREG_CORE_COUNT_REG_1);
+    g_inSample = true;
+}
+
+void pmu_split_end(void) {
+    if (!g_inSample) return;
+    g_inSample = false;
+    g_inCyc[g_pair] += (get(PERFCOUNTERREG_CORE_CYCLE_COUNTER) - g_s0[0]) * SPLIT_EVERY;
+    g_inEv[g_pair][0] += (get(PERFCOUNTERREG_CORE_COUNT_REG_0) - g_s0[1]) * SPLIT_EVERY;
+    g_inEv[g_pair][1] += (get(PERFCOUNTERREG_CORE_COUNT_REG_1) - g_s0[2]) * SPLIT_EVERY;
+}
+
+void pmu_split_report(FILE* f) {
+    if (!g_on) return;
+    u64 ic = 0, ac = 0;
+    for (u32 p = 0; p < NPAIRS; p++) { ic += g_inCyc[p]; ac += g_allCyc[p]; }
+    fprintf(f, "# pmu split 10s (compiled code incl. its helpers, share of core 0; runs sampled 1/%d): cycles %.0f%%", SPLIT_EVERY,
+            ac ? 100.0 * (double)ic / (double)ac : 0.0);
+    for (u32 p = 0; p < NPAIRS; p++)
+        for (u32 k = 0; k < 2; k++)
+            if (g_allEv[p][k]) fprintf(f, ", %s %.0f%%", kPairs[p][k].col, 100.0 * (double)g_inEv[p][k] / (double)g_allEv[p][k]);
+    fprintf(f, "\n");
+    memset(g_inCyc, 0, sizeof g_inCyc); memset(g_inEv, 0, sizeof g_inEv);
+    memset(g_allCyc, 0, sizeof g_allCyc); memset(g_allEv, 0, sizeof g_allEv);
+}
+
 void pmu_row(FILE* f, double secs) {
     if (!g_on) {
         for (u32 k = 0; k < 1 + 2 * NPAIRS + 4; k++) fputc(',', f);
@@ -81,6 +117,7 @@ void pmu_row(FILE* f, double secs) {
     u64 cyc = get(PERFCOUNTERREG_CORE_CYCLE_COUNTER), a = get(PERFCOUNTERREG_CORE_COUNT_REG_0),
         b = get(PERFCOUNTERREG_CORE_COUNT_REG_1), s[4];
     for (u32 k = 0; k < 4; k++) s[k] = get(PERFCOUNTERREG_SCU_0 + k);
+    g_allCyc[g_pair] += cyc; g_allEv[g_pair][0] += a; g_allEv[g_pair][1] += b;  // for pmu_split_report
     fprintf(f, ",%.1f", (double)cyc / secs / 1e6);
     for (u32 p = 0; p < NPAIRS; p++)
         for (u32 k = 0; k < 2; k++) {

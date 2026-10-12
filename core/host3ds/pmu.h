@@ -20,3 +20,10 @@ void pmu_probe(FILE* f);
 // cycles and the two events since then (false when the counters are unavailable).
 void pmu_select(unsigned p);
 bool pmu_read(unsigned long long* cyc, unsigned long long* ev0, unsigned long long* ev1);
+// Split of core 0's counts between compiled code (with the helpers it calls) and everything else: pmu_split_begin /
+// pmu_split_end bracket each JIT run (jit.c run hooks); one run in eight is measured (each read is a system call) and
+// scaled. pmu_split_report writes "# pmu split" with compiled code's share of cycles and of each event since the last
+// report, and starts over.
+void pmu_split_begin(void);
+void pmu_split_end(void);
+void pmu_split_report(FILE* f);

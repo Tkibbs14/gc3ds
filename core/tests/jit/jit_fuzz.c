@@ -590,6 +590,7 @@ int main(int argc, char** argv) {
         jit_invalidate_all(jit);
         jit_debug_max_insns = len;
         if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x %08x %08x\n", k, seq[0], seq[1], seq[2], seq[3]); fflush(stdout); }
+        jit_set_so_exact(jit, false);  // each case starts with SO-free CR updates; XER[SO] set switches them to exact
         int n = (int)jit_run_one_block(jit);
         if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
         // The interpreter runs the sequence while each instruction goes on to the next one, except that compiled code

@@ -97,6 +97,8 @@ struct Jit {
     u8* gatherBuf;              // jit_set_gather_buffer: the pipe's partial burst and its length, appended to inline
     u32* gatherLen;
     bool slowInline;            // jit_set_slow_inline: the old per-site slow paths instead of the shared stubs (A/B)
+    bool soExact;               // jit_set_so_exact: CR updates include XER[SO] (set once XER[SO] has been seen set)
+    bool profile;               // jit_set_profile: blocks store their start in Gekko.hostPc
 };
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
@@ -231,6 +233,9 @@ static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
         npc = gekko_interp_one(g, pc, inst, &stop);
     }
     if (npc != pc + 4 || stop) { g->pc = npc; return 1; }
+    // XER[SO] newly set (an overflow-form instruction, mtxer): leave, so the dispatcher switches to exact CR updates
+    // before any more code compiled without SO runs.
+    if (!g_jit->soExact && (g->xer & XER_SO)) { g->pc = npc; return 1; }
     return 0;
 }
 
@@ -490,9 +495,14 @@ static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, N
 // Unconditional exit to the guest address `target`, emitted in place: a link site (a branch the dispatcher patches
 // to the target block once it is compiled; until then it falls through to the stub that asks for it). The cache must
 // already be written back (rc_flush).
+// The budget is checked where a block leaves, not where one starts: SUBS here sets the flags, and the link site,
+// once patched, is "BGT target" (link_site), so a chain of linked blocks stops when RDC is used up; with no budget
+// left it falls through to the ST_LINK call and returns to the dispatcher. Entries from the dispatcher (room > 0) and
+// through ST_INDIRECT (which checks) are the only other ways into a block. Same instructions run as with a check at
+// each block's start, two instructions fewer per block.
 static void exit_const(Cg* c, u32 target) {
     Emit* e = &c->e;
-    dp_imm(e, SUB, 0, RDC, RDC, c->count);
+    dp_imm(e, SUB, c->noLink ? 0 : 1, RDC, RDC, c->count);
     if (c->noLink) {
         load_const(e, R1, target);
         str_imm(e, R1, RG, OFF_PC);
@@ -542,16 +552,18 @@ static void update_crf_from_flags(Cg* c, u32 fld, bool isSigned) {
     Emit* e = &c->e;
     u32 sh = 28 - 4 * fld;
     u32 enc = 0;
+    bool so = c->j->soExact;  // otherwise XER[SO] is known 0 (see jit_set_so_exact): bit 0 of the field stays clear
     int cr = src(c, ID_CR, R1);
-    int xer = src(c, ID_XER, R3);
-    load_const(e, R2, 0xFu << sh);
+    int xer = so ? src(c, ID_XER, R3) : -1;
     int d = dst(c, ID_CR, R1);
-    dp_reg(e, BIC, 0, d, cr, R2);
+    arm_imm(0xFu << sh, &enc); dp_imm(e, BIC, 0, d, cr, enc);  // a nibble at a multiple of 4: always an ARM immediate
     arm_imm(8u << sh, &enc); dp_imm_c(e, isSigned ? C_LT : C_CC, ORR, 0, d, d, enc);
     arm_imm(4u << sh, &enc); dp_imm_c(e, isSigned ? C_GT : C_HI, ORR, 0, d, d, enc);
     arm_imm(2u << sh, &enc); dp_imm_c(e, C_EQ, ORR, 0, d, d, enc);
-    dp_imm(e, AND, 0, R3, xer, IMM(XER_SO));
-    dp_reg_c(e, C_AL, ORR, 0, d, d, R3, LSR, (int)(31 - sh));  // SO (bit 31) to the field's bit 0
+    if (so) {
+        dp_imm(e, AND, 0, R3, xer, IMM(XER_SO));
+        dp_reg_c(e, C_AL, ORR, 0, d, d, R3, LSR, (int)(31 - sh));  // SO (bit 31) to the field's bit 0
+    }
     dst_done(c, ID_CR, d);
     c->flagsAt = c->inCold ? NO_BRANCH : e->n;
     c->flagsFld = fld;
@@ -1348,6 +1360,7 @@ static bool compile_int(Cg* c, u32 inst) {
                 mov_reg(e, d, x);
                 dst_done(c, rd, d);
             } else {
+                if (!c->j->soExact) return false;  // may set XER[SO]: the interpreter, which notices it (jit_interp_at)
                 int s = src(c, rd, R0);
                 load_const(e, R2, XER_MASK);
                 int d = dst(c, ID_XER, R1);
@@ -2006,10 +2019,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     c->pr = (g->msr & MSR_PR) != 0;
     Emit* e = &c->e;
-    // Budget check: a chain of linked blocks stops here once RDC is used up.
-    dp_imm(e, CMP, 1, 0, RDC, 0);
-    u32 noBudget = branch_c(e, C_LE, 0);
-    str_imm(e, PC, RG, OFF_HOSTPC);  // for the sampling profiler: one store per block
+    // No budget check here (see exit_const). The sampling profiler's store, when asked for.
+    if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
     u32 startPa = pa;
     bool ended = false;
     if (hle_is_hook(g, pc)) {
@@ -2080,7 +2091,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         else patch_branch(e, c->exits[k].at, e->n);
         rc_emit_flush(c, &c->exits[k].snap);
         if (c->exits[k].kind == EXIT_LINK) {  // a conditional branch out of a trace: a link site to the target block
-            dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count - (jit_debug_plant == 6 ? 1 : 0));  // plant 6: a side exit miscounts
+            dp_imm(e, SUB, 1, RDC, RDC, c->exits[k].count - (jit_debug_plant == 6 ? 1 : 0));  // plant 6: a side exit miscounts; SUBS: see exit_const
             branch_c(e, C_AL, e->n + 1);
             branch_abs(e, C_AL, true, stub(c, ST_LINK));
             word(e, c->exits[k].pc);
@@ -2098,9 +2109,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         dp_imm(e, SUB, 0, RDC, RDC, c->exits[k].count);
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
     }
-    patch_branch(e, noBudget, e->n);
-    branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
-    word(e, pc);
+
     u32 stubEnd = e->n;
     // The cold code goes to the cold region; then every branch between hot and cold gets its offset (base: the cold
     // code's word index relative to this block's hot code).
@@ -2234,6 +2243,10 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;
+    // Budget: blocks do not check it on entry (exit_const), so a chain through blr / bctr stops here (g->pc is written).
+    dp_imm(e, CMP, 1, 0, RDC, 0);
+    dp_imm_c(e, C_LE, MOV, 0, R0, 0, 0);
+    branch_c(e, C_LE, j->stub[ST_EXIT]);
     mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
     mov_shift(e, 0, R1, R1, LSR, 20);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
@@ -2355,19 +2368,26 @@ typedef u32 (*EnterFn)(Gekko* g, void* fn, s32 budget, s32* left);
 
 // Runs compiled code from block `fn` with a budget of guest instructions; returns how many ran and the link site the
 // code left through (or NULL).
+void (*jit_run_begin_hook)(void);
+void (*jit_run_end_hook)(void);
+
 static u32 run(Jit* j, BlockFn fn, s32 budget, u64 start, u32** site) {
     s32 left = budget;
     g_runStart = start;
     g_runBudget = budget;
     g_jitLeft = budget;
+    if (jit_run_begin_hook) jit_run_begin_hook();
     *site = (u32*)(uintptr_t)((EnterFn)(void*)(j->code + j->stub[ST_ENTER]))(j->g, (void*)fn, budget, &left);
+    if (jit_run_end_hook) jit_run_end_hook();
     return (u32)(budget - left);
 }
 
 // Patches the link site to jump straight to `fn`.
 static void link_site(Jit* j, u32* site, BlockFn fn) {
     s32 off = (s32)((const u32*)(void*)fn - (site + 2));
-    *site = 0xEA000000u | ((u32)off & 0xFFFFFF);
+    u32 insn = 0xCA000000u | ((u32)off & 0xFFFFFF);  // BGT: taken only while budget is left (exit_const's SUBS)
+    if (*site == insn) return;  // linked already: this exit came back because the budget ran out (no cache sync)
+    *site = insn;
     jit_host_sync_icache(site, 4);
     j->stats.links++;
 }
@@ -2479,6 +2499,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     u32* site = NULL;  // the link site the last run left through, patched once its target is known
     u32 siteGen = 0, siteKey = 0;
     while ((s64)total < budget) {
+        if (!j->soExact && (g->xer & XER_SO)) { j->soExact = true; jit_invalidate_all(j); }  // see jit_set_so_exact
         u32 pc = g->pc, key = block_key(g);
         Entry* en = lookup(j, pc, key);
         if (!en) break;
@@ -2594,6 +2615,19 @@ void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns) {
 
 u32 jit_entries(const Jit* j) { return j->nEntries; }
 
+void jit_set_profile(Jit* j, bool on) {
+    if (j->profile == on) return;
+    j->profile = on;
+    jit_invalidate_all(j);
+}
+
+void jit_set_so_exact(Jit* j, bool on) {
+    if (j->soExact == on) return;
+    j->soExact = on;
+    jit_invalidate_all(j);
+}
+bool jit_so_exact(const Jit* j) { return j->soExact; }
+
 void jit_set_slow_inline(Jit* j, bool on) {
     if (j->slowInline == on) return;
     j->slowInline = on;
@@ -2627,6 +2661,7 @@ u32 jit_run_one_block(Jit* j) {
     GKP(g)->brk = false;
     u32 msrBits = block_key(g);
     update_fastmem(j);
+    if (!j->soExact && (g->xer & XER_SO)) { j->soExact = true; jit_invalidate_all(j); }  // as the dispatcher does
     Entry* en = lookup(j, g->pc, msrBits);
     if (!en) return 0;
     fast_select(j, msrBits);
