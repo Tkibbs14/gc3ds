@@ -259,6 +259,7 @@ typedef struct {
     bool traceFollow;    // --trace-follow on|off: traces follow unconditional b
     u32 traceSide;       // --trace-side on|off|MASK: side exits (TRACE_SIDE_*: 1 bc on CR, 2 bc with CTR, 4 blr/bctr, 8 fused flags)
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
+    bool gxInline;       // --gx inline|thread: GX on the CPU thread instead of core 2
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
 } RunOpts;
@@ -292,6 +293,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--trace-follow")) o->traceFollow = !strcmp(v, "on");
         else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on") ? TRACE_SIDE_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
+        else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--trace-len")) o->traceLen = (u32)strtoul(v, NULL, 10);
         else { snprintf(err, n, "unknown option %s", a); return false; }
         i++;
@@ -465,6 +467,7 @@ static const char* run(const char* path) {
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) {
         jit_set_linking(g_jit, g_opt.link);
+        if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
@@ -664,6 +667,15 @@ static const char* run(const char* path) {
                                 (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
                                 (unsigned long long)js->gatherStores, (unsigned long long)js->links,
                                 g_pica ? (unsigned long)pica_queue_offset() : 0UL);
+                        {  // exceptions the guest took (gk_exception), by vector
+                            static u32 lastExc[32];
+                            fprintf(g_perf, "# exceptions 10s:");
+                            for (int v = 0; v < 32; v++) {
+                                if (g_gekkoExc[v] != lastExc[v]) fprintf(g_perf, " %x00=%lu", v, (unsigned long)(g_gekkoExc[v] - lastExc[v]));
+                                lastExc[v] = g_gekkoExc[v];
+                            }
+                            fprintf(g_perf, "\n");
+                        }
                         static u64 lastFlush, lastFollow, lastSide;
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),

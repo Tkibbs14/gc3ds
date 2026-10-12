@@ -100,8 +100,11 @@ void gekko_set_compat(Gekko* g, u32 flags) { GKP(g)->compat = flags; }
 // 750CL Table 4-? / PEM 6.4: SRR0 gets the restart address; SRR1[16-31] gets MSR[16-31] and SRR1[0-15] carries
 // exception-specific bits. The new MSR clears POW, EE, PR, FP, FE0, SE, BE, FE1, IR, DR, PM and RI, keeps ME and IP,
 // copies ILE into LE; machine check also clears ME. The vector base is 0xFFF00000 when MSR[IP] = 1.
+u32 g_gekkoExc[32];
+
 void gk_exception(Gekko* g, u32 vector, u32 srr0, u32 srr1Bits) {
     GkPriv* p = GKP(g);
+    g_gekkoExc[(vector >> 8) & 31]++;
     g->spr[SPR_SRR0] = srr0;
     g->spr[SPR_SRR1] = (g->msr & 0x0000FFFFu) | srr1Bits;
     u32 msr = g->msr & (MSR_ME | MSR_IP | MSR_ILE);

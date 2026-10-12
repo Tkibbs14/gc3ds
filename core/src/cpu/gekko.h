@@ -89,6 +89,7 @@ void gekko_reset(Gekko* g);                         // power-on state (MSR, HID,
 // Runs until `cycles` cycles have been executed (or gekko_stop is called) and returns the number executed.
 u32 gekko_run(Gekko* g, u32 cycles);
 extern u64 g_gekkoRuns;  // gekko_run calls (emulation slices between events)
+extern u32 g_gekkoExc[32];  // exceptions taken, by vector >> 8 (0x300 DSI at 3, 0x500 external at 5, 0x900 decrementer at 9, 0xC00 sc at 12)
 void gekko_stop(Gekko* g);                          // ends the current gekko_run slice early (callable from bus code)
 void gekko_set_external_irq(Gekko* g, bool level);
 u32 gekko_get_spr(Gekko* g, u32 spr);               // as mfspr would read it (TB, DEC computed)
