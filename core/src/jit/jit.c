@@ -344,7 +344,7 @@ typedef struct {
     u32 nFix;
     // Link sites (exit_const): a one-word branch in the hot path to its stub after the block, patched to the target
     // block once that is compiled (link_site).
-    struct { u32 at, target; } links[MAX_BLOCK_INSNS * 4];
+    struct { u32* site; u32 target; } links[MAX_BLOCK_INSNS * 4];
     u32 nLinks;
     // Words that depend on the block's instruction count, known only at its end (see "Budget" in compile_block):
     // emit_time's ADD immediate and ST_INTERP's literal, in the hot or the cold buffer.
@@ -353,9 +353,13 @@ typedef struct {
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
-static u32 g_coldBuf[BLOCK_MAX_WORDS];
 
 static void swap_emit(Cg* c) { Emit t = c->e; c->e = c->alt; c->alt = t; c->inCold = !c->inCold; }
+// Points the branch at `site` to `dest` (both at their final addresses), keeping its condition and link bit.
+static void patch_to(u32* site, const u32* dest) {
+    s32 off = (s32)(dest - (site + 2));
+    *site = (*site & 0xFF000000u) | ((u32)off & 0xFFFFFF);
+}
 static void add_fix(Cg* c, bool fromCold, u32 at, bool toCold, u32 target) {
     if (c->nFix == sizeof c->fix / sizeof c->fix[0]) { c->e.overflow = true; return; }
     c->fix[c->nFix].at = at;
@@ -851,8 +855,8 @@ static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, N
 // The cache must already be written back (rc_flush). The block's instructions were taken off the budget at its entry
 // (compile_block), and the target block checks the budget at its own entry.
 static void link_add(Cg* c, u32 at, u32 target) {
-    if (c->inCold || c->nLinks == sizeof c->links / sizeof c->links[0]) { c->e.overflow = true; return; }  // refused
-    c->links[c->nLinks].at = at;
+    if (c->nLinks == sizeof c->links / sizeof c->links[0]) { c->e.overflow = true; return; }  // refused
+    c->links[c->nLinks].site = c->e.buf + at;  // hot and cold code are both emitted at their final addresses
     c->links[c->nLinks].target = target;
     c->nLinks++;
 }
@@ -2444,7 +2448,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Cg* c = &cg;
     memset(c, 0, sizeof *c);
     c->e = (Emit){ j->code + j->codeUsed, 0, BLOCK_MAX_WORDS, false };
-    c->alt = (Emit){ g_coldBuf, 0, BLOCK_MAX_WORDS, false };
+    c->alt = (Emit){ j->code + j->coldUsed, 0, BLOCK_MAX_WORDS, false };  // cold code is emitted where it stays
     c->flagsAt = NO_BRANCH;
     for (int k = 0; k < NSLOT; k++) c->rc.id[k] = -1;
     c->j = j;
@@ -2566,10 +2570,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (c->tfix[k].literal) *w = (c->tfix[k].count - 1) - total;  // ST_INTERP: jitLeft = RDC - literal
         else *w |= total - (c->tfix[k].count - 1);  // the block's instructions not yet run at that instruction
     }
+    // The block's stubs go to the cold region: they run only before a link is made, when the budget runs out, and on
+    // the exits of slow paths, and in the hot region they spread every block's hot code over more cache lines.
+    u32* hotBuf = e->buf;
+    u32* coldBuf = c->alt.buf;
+    u32 coldBefore = c->alt.n;
+    cold_begin(c);
+    e = &c->e;
     // Exit stubs: give back to RDC the instructions the block did not run, and leave.
     for (u32 k = 0; k < c->nExits; k++) {
-        if (c->exits[k].inCold) add_fix(c, true, c->exits[k].at, false, e->n);
-        else patch_branch(e, c->exits[k].at, e->n);
+        patch_to((c->exits[k].inCold ? coldBuf : hotBuf) + c->exits[k].at, e->buf + e->n);
         rc_emit_flush(c, &c->exits[k].snap);
         u32 back = total - c->exits[k].count + (c->exits[k].kind == EXIT_LINK && jit_debug_plant == 6 ? 1 : 0);  // plant 6: a side exit miscounts
         if (back) dp_imm(e, ADD, 0, RDC, RDC, back);
@@ -2589,18 +2599,20 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     }
     // Link stubs: ST_LINK with the target's guest address and the site to patch.
     for (u32 k = 0; k < c->nLinks; k++) {
-        patch_branch(e, c->links[k].at, e->n);
+        patch_to(c->links[k].site, e->buf + e->n);
         branch_abs(e, C_AL, true, stub(c, ST_LINK));
         word(e, c->links[k].target);
-        word(e, (u32)(uintptr_t)(e->buf + c->links[k].at));
+        word(e, (u32)(uintptr_t)c->links[k].site);
     }
     // No budget left at the entry: give the block's count back and leave with g->pc = the block.
-    patch_branch(e, budgetBr, e->n);
+    patch_to(hotBuf + budgetBr, e->buf + e->n);
     if (total) dp_imm(e, ADD, 0, RDC, RDC, total);
     branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
     word(e, pc);
+    u32 exitWords = e->n - coldBefore;
+    swap_emit(c);
+    e = &c->e;
 
-    u32 stubEnd = e->n;
     // The cold code goes to the cold region; then every branch between hot and cold gets its offset (base: the cold
     // code's word index relative to this block's hot code).
     if (c->alt.overflow || e->overflow) {
@@ -2609,7 +2621,6 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     }
     u32 base = j->coldUsed - j->codeUsed;
     u32* cold = j->code + j->coldUsed;
-    memcpy(cold, c->alt.buf, 4 * c->alt.n);
     for (u32 k = 0; k < c->nFix; k++)
         patch_branch(e, c->fix[k].fromCold ? base + c->fix[k].at : c->fix[k].at,
                      c->fix[k].toCold ? base + c->fix[k].target : c->fix[k].target);
@@ -2628,7 +2639,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             dumpPc = s && !big ? (u32)strtoul(s, NULL, 16) : 0;
         }
         if (want && (big ? c->count >= 16 && big-- > 0 : pc == dumpPc)) {
-            fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, stubEnd - hotEnd, c->alt.n);
+            fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, exitWords, c->alt.n);
             for (u32 k = 0; k < c->count && c->gpa[k] + 4 <= j->ramSize; k++) {
                 const u8* w = j->ram + c->gpa[k];
                 char dis[96];
@@ -2648,7 +2659,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     j->stats.blocksCompiled++;
     j->insnsSinceFlush += c->count;
     j->stats.wordsHot += hotEnd;
-    j->stats.wordsExit += stubEnd - hotEnd;
+    j->stats.wordsExit += exitWords;
+
     j->stats.wordsCold += c->alt.n;
     j->stats.insnsKept += c->count;
     g_lastCount = total;
