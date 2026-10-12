@@ -34,7 +34,7 @@ extern PicaStats g_picaStats;
 void pica_set_vertex_worker(bool on);
 bool pica_vertex_worker(void);
 bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it at its next draw)
-// The vertex worker's job ring in bytes (64 KB to 1 MB, default 1 MB; applied when the ring is next empty).
+// The vertex worker's job ring in bytes (64 KB to 1 MB, default 256 KB; applied when the ring is next empty).
 void pica_set_job_ring(u32 bytes);
 u32 pica_job_ring(void);
 // Starting citro3d's GX queue at each split (on by default when the queue was found), so the GPU overlaps the GX
@@ -44,6 +44,10 @@ void pica_set_early_queue(bool on);
 // Splitting the frame every few thousand vertices so the GPU starts on it sooner (on by default); off splits only at
 // EFB copies and clears (comparison).
 void pica_set_early_split(bool on);
+// Early splits at the draw calls recorded so far, leaving the open batch open (on by default); off splits only between
+// batches and only with the vertex worker nearly idle (comparison).
+void pica_set_split_open(bool on);
+bool pica_split_open(void);
 bool pica_early_split(void);
 // Indexed triangle draws (on by default): each vertex written and shaded once, culled triangles as a repeated vertex,
 // so no batch waits for the vertex worker; off draws three vertices per triangle (comparison).

@@ -136,6 +136,11 @@ static u32 g_vcap;
 static u32* g_scratch;
 static u32 g_scratchCap;
 
+static volatile u32 g_vwHead, g_vwTail;  // the vertex worker's queue (below): jobs queued / done
+// g_vwHead when the open batch (or its open sub-batch) began: the older jobs only feed draw calls already recorded,
+// which is all an early split needs finished (split_early).
+static u32 g_recJob;
+
 // ---- frames ----
 // Issues the open batch's triangles; call before anything changes GPU state or submits.
 static void vw_sync(void);
@@ -320,13 +325,10 @@ void pica_set_indexed(bool on) { g_indexed = on && g.idx; }
 bool pica_indexed(void) { return g_indexed; }
 void pica_set_early_split(bool on) { g_earlySplit = on; }
 bool pica_early_split(void) { return g_earlySplit; }
-static bool vw_nearly_idle(void);
-static void split_early(void) {
-    if (!g_earlySplit || !g_q || !g.frame || g.arenaUsed - g.splitArena < SPLIT_VERTS || g.queued + 8 > GXQUEUE_BUDGET)
-        return;
-    if (!vw_nearly_idle()) return;  // a split waits for the worker (2DS, 24e4585: vwait 10%): only with <= 4 draws queued
-    split(0);
-}
+static void split_early(void);  // below the vertex worker
+static bool g_splitOpen = true;  // pica_set_split_open: early splits leave the open batch open
+void pica_set_split_open(bool on) { g_splitOpen = on; }
+bool pica_split_open(void) { return g_splitOpen; }
 
 // Makes room for `verts` more vertices and keeps the command buffer from overflowing (libctru drops commands
 // silently when it is full).
@@ -806,6 +808,7 @@ static void flush_sub(void) {
     }
     g.batchFirst = g.arenaUsed;
     g.batchIdxFirst = g.idxUsed;
+    g_recJob = g_vwHead;
     g.palSerial++;
 }
 
@@ -909,8 +912,8 @@ static void tex_key(const GXCore* gx, u32* k, u32* n) {
 // the ring's size is a run option (pica_set_job_ring, up to VW_MEM).
 #define VW_SLOTS 1024
 #define VW_MEM (1024u << 10)
-static u32 g_vwLimit = VW_MEM;              // the ring's size in use
-static volatile u32 g_vwLimitWant = VW_MEM;  // pica_set_job_ring: applied when the ring is empty
+static u32 g_vwLimit = 256u << 10;              // the ring's size in use (1 MB gained nothing on the 2DS: 9388639)
+static volatile u32 g_vwLimitWant = 256u << 10;  // pica_set_job_ring: applied when the ring is empty
 typedef struct {
     VJob* job;
     PVert* pv;         // the draw's vertices (colours from vfast_prepare)
@@ -929,7 +932,7 @@ typedef struct {
 static VWork g_vw[VW_SLOTS];
 static u8* g_vwMem;
 static u32 g_vwMemHead;
-static volatile u32 g_vwHead, g_vwTail, g_vwQuit, g_vwPos;
+static volatile u32 g_vwQuit, g_vwPos;
 // The worker also gathers shader-lit draws from guest memory (vfast_prepare defer) when they are GPU-transformed:
 // their batches never wait for the worker. For CPU-transformed draws it measured slower on the 2DS (6673eb2: 14.2%
 // against 14.8%), because every batch flush then waits for the worker (vwait 18%).
@@ -1109,6 +1112,42 @@ static void vw_sync(void) {
 static void vw_sync_all(void) {
     vw_sync();
     if (g_vwFixed) { vw_wait(); g_vwFixed = false; }
+}
+
+// Splits the frame (see SPLIT_VERTS) at the draw calls recorded so far: the open batch stays open, and only the vertex
+// worker's jobs for recorded draws must be done, which are older than the open batch's and nearly always finished.
+// (Splitting at a closed batch waited for every queued job, so it was only done with <= 4 jobs queued; with draw
+// merging a job is ~28 draws, the gate rarely opened, and splits fell from 67 to 49-55/s while the GX thread's wait for
+// the GPU rose from 1.7% to 6-7%: 2DS, 9388639.)
+static void split_early(void) {
+    if (!g_earlySplit || !g_q || !g.frame || g.arenaUsed - g.splitArena < SPLIT_VERTS || g.queued + 8 > GXQUEUE_BUDGET)
+        return;
+    if (!g_splitOpen || !g.batchOpen || g_vwReserved) {  // the whole batch: only when the worker is nearly idle
+        if (vw_nearly_idle()) split(0);
+        return;
+    }
+    s32 behind = (s32)(g_recJob - g_vwTail);
+    if (behind > 1) return;  // more than the job in progress outstanding: the next job tries again
+    if (behind > 0) {
+        u64 t0 = prof_begin();
+        while ((s32)(g_vwTail - g_recJob) < 0) {}
+        prof_end(PROF_VWAIT, t0);
+    }
+    vw_dmb();
+    u32 arenaEnd = g.batchFirst, idxEnd = g.batchIdxFirst;
+    if (arenaEnd > g.arenaFlushed)
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)(g.arena + g.arenaFlushed), (arenaEnd - g.arenaFlushed) * sizeof(PVert));
+    if (idxEnd > g.idxFlushed)
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)(g.idx + g.idxFlushed), (idxEnd - g.idxFlushed) * 2);
+    if (arenaEnd > g.arenaFlushed) g.arenaFlushed = arenaEnd;
+    if (idxEnd > g.idxFlushed) g.idxFlushed = idxEnd;
+    verify_queue(true);
+    C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    verify_queue(false);
+    g_picaStats.splits++;
+    g.queued += 1;
+    g.splitArena = g.arenaUsed;
+    queue_run();
 }
 
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
@@ -1375,6 +1414,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         g.batchOpen = true;
         g.batchFirst = g.arenaUsed;
         g.batchIdxFirst = g.idxUsed;
+        g_recJob = g_vwHead;
         g.batchIdx = indexed;
         g.palSerial++;  // the previous batch is drawn: its palette slots may be replaced
         if (!same) {  // the same batch (a new frame only) already holds this key
@@ -1386,6 +1426,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
     dprof_end(PROF_GXSTATE, tState);
     if (jobPath) {
+        split_early();  // at the draw calls recorded so far (the open batch's jobs need not be done)
         t0 = dprof_begin();
         // u16 indices: start the vertex buffer further along when this draw's vertices would be out of their reach
         // (before any palette slot is given, since that draws the open part of the batch).
