@@ -235,9 +235,10 @@ static Disc g_disc;
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
 #define AB_SECS 20  // A/B period: inline pipe stores on and off (each switch recompiles all code)
-// The native shadow-scan stand-in (hle_tp.c) is off, and not part of the A/B, until its JIT path has been proven: the
-// first version froze Twilight Princess at the first Link and Epona close-up (2DS, 9d7c239).
-static const bool kHleAb = false;
+// The native shadow-scan stand-in (hle_tp.c) alternates on and off in the A/B. Its first version froze Twilight Princess at
+// the first Link and Epona close-up (2DS, 9d7c239: the hook read a stale PC); the fix was proven under qemu with the JIT:
+// 1,235 calls to field 1100, all identical to the interpreter. Set false to keep it off.
+static const bool kHleAb = true;
 static bool g_pipeFast = true;  // compiled code appends pipe stores itself (jit_set_gather_buffer)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with

@@ -477,6 +477,10 @@ renderer only):
      (PC) runs every call natively and in the interpreter: TP to field 2500, 6,105 calls, 0 differences (GPRs, CR,
      XER, PC, instruction count, 2,304-byte frame). JIT fuzzer 0 fails, `arm_jit_check.sh` identical. perf.csv A/B:
      `hle`, 20 s phases; `# hle 10s` counts runs and instructions stood in for.
+   - **2DS, 9d7c239: the stand-in froze TP at the first Link / Epona close-up** (speed read 85% with no draws): compiled
+     blocks link to each other without writing g->pc, and `jit_hle` read the stale one. Fixed (17799fe): the block passes
+     its PC. The first check ran the interpreter only, which never exercises that path; the JIT path was then checked under
+     qemu (`HLE_CHECK=1 qemu-arm ... --jit`, TP to field 1100, 7,735 s): 1,235 calls, 0 differences. Re-enabled in the A/B.
    - **Then:** from gcbench (GPU_GUIDANCE 20, 23, 6, 8): indexed draws (each vertex shaded once instead of per
      triangle corner), several draws in one draw window, GX strips as strips, raw draw commands.
 2. **Normals, eye position and texgen on the GPU** with the same palette (the shader-lighting path already gets eye /
