@@ -77,6 +77,8 @@ struct Jit {
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
+    bool traceFollow, traceSide;  // jit_set_trace_parts: which half of trace_branch is on
+    u32 traceMax;               // jit_set_trace_parts: block length limit (0: MAX_BLOCK_INSNS)
     FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
     u32 fastKeys[FAST_TABLES], fastNext;
     bool fastUsed[FAST_TABLES];
@@ -938,6 +940,7 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
     u32 op = inst >> 26, lk = inst & 1;
     if (lk || !c->trace || c->noLink) return false;
     if (op == 18) {  // b, ba
+        if (!j->traceFollow) return false;
         s32 li = ((s32)(inst << 6)) >> 6 & ~3;
         u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li;
         if (t->nVisited == sizeof t->visited / sizeof t->visited[0] || c->count + 1 >= t->maxInsns) return false;
@@ -952,6 +955,7 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         return true;
     }
     u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (!j->traceSide) return false;
     if (op == 16) {  // bc, bca
         if ((bo & 20) == 20) return false;  // branch always (no CTR, no CR test): ends the block like b
         s32 bd = (s32)(s16)(inst & 0xFFFC);
@@ -1976,7 +1980,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
         ended = true;
     }
-    u32 maxInsns = jit_debug_max_insns ? jit_debug_max_insns : MAX_BLOCK_INSNS;
+    u32 maxInsns = jit_debug_max_insns ? jit_debug_max_insns : j->traceMax ? j->traceMax : MAX_BLOCK_INSNS;
     if (maxInsns > MAX_BLOCK_INSNS) maxInsns = MAX_BLOCK_INSNS;
 #ifndef __3DS__
     u32 prevInst = 0, prevHot = 0, prevCold = 0;
@@ -2390,6 +2394,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->linking = true;
     j->memStubs = true;
     j->traces = true;
+    j->traceFollow = j->traceSide = true;
     emit_stubs(j);
     jit_invalidate_all(j);
     g_jit = j;
@@ -2422,6 +2427,16 @@ void jit_set_traces(Jit* j, bool on) {
 }
 
 bool jit_traces(const Jit* j) { return j->traces; }
+
+void jit_set_trace_parts(Jit* j, bool follow, bool side, u32 maxInsns) {
+    if (j->traceFollow == follow && j->traceSide == side && j->traceMax == maxInsns) return;
+    j->traceFollow = follow;
+    j->traceSide = side;
+    j->traceMax = maxInsns;
+    jit_invalidate_all(j);
+}
+
+u32 jit_entries(const Jit* j) { return j->nEntries; }
 
 void jit_set_mem_stubs(Jit* j, bool on) {
     if (j->memStubs == on) return;

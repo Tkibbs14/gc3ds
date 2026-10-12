@@ -7,6 +7,7 @@
 #if defined(__arm__)
 #include <sys/mman.h>
 #include "../jit/jit.h"
+#include "../cpu/hle.h"
 
 void* jit_host_alloc_exec(u32 bytes) {
     void* p = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -27,6 +28,7 @@ bool host_jit_enable(System* s) {
     jit_set_gather_buffer(g_hostJit, s->gx.wgp, &s->gx.wgpLen);
     if (getenv("GC3DS_JIT_NOLINK")) jit_set_linking(g_hostJit, false);  // comparison runs
     if (getenv("GC3DS_JIT_NOTRACE")) jit_set_traces(g_hostJit, false);
+    if (getenv("GC3DS_NOHLE")) hle_set_enabled(false);  // as on the 2DS when the stand-in is off
     s->icbiCtx = g_hostJit;
     return true;
 }

@@ -231,8 +231,24 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
     bool match = !strcmp(got, id);
     snprintf(g_selfId, sizeof g_selfId, "%s", was);
     if (!match) { remove(tmp); snprintf(err, n, "download does not match %s", id); return false; }
+    // RomFS reads from our own .3dsx and keeps it open, so it must be closed before the file can be replaced (2DS,
+    // 2026-10-12: "cannot replace"). The caller leaves right after a success; on failure RomFS comes back (the
+    // relay's CA file lives there).
+    romfsExit();
     remove(path);
-    if (rename(tmp, path)) { snprintf(err, n, "cannot replace %s", path); return false; }
+    if (rename(tmp, path)) {
+        // Fallback: copy the bytes over.
+        FILE* in = fopen(tmp, "rb");
+        FILE* out = in ? fopen(path, "wb") : NULL;
+        bool copied = in && out;
+        static u8 buf[64 * 1024];
+        size_t k;
+        while (copied && (k = fread(buf, 1, sizeof buf, in)) > 0) copied = fwrite(buf, 1, k, out) == k;
+        if (in) fclose(in);
+        if (out && fclose(out)) copied = false;
+        if (!copied) { romfsInit(); snprintf(err, n, "cannot replace %s (new build left at %s)", path, tmp); return false; }
+        remove(tmp);
+    }
     return true;
 }
 

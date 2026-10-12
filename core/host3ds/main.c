@@ -256,6 +256,8 @@ typedef struct {
     u32 seconds;         // --seconds N: end the run after N real seconds
     bool abTraces, abHle;  // --ab traces|hle|none: which setting alternates every AB_SECS
     bool traces, hle;    // --traces on|off, --hle on|off: start values (an A/B flips them)
+    bool traceFollow, traceSide;  // --trace-follow on|off, --trace-side on|off: the halves of traces (bisecting)
+    u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
 } RunOpts;
 static RunOpts g_opt;
@@ -264,6 +266,7 @@ static void opts_default(RunOpts* o) {
     memset(o, 0, sizeof *o);
     o->abTraces = true;
     o->traces = true;
+    o->traceFollow = o->traceSide = true;
 }
 
 static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
@@ -282,6 +285,9 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); }
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
         else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
+        else if (!strcmp(a, "--trace-follow")) o->traceFollow = !strcmp(v, "on");
+        else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on");
+        else if (!strcmp(a, "--trace-len")) o->traceLen = (u32)strtoul(v, NULL, 10);
         else { snprintf(err, n, "unknown option %s", a); return false; }
         i++;
     }
@@ -459,6 +465,7 @@ static const char* run(const char* path) {
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
         jit_set_traces(g_jit, g_opt.traces);
+        jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
     }
     if (g_pica) {
@@ -652,6 +659,14 @@ static const char* run(const char* path) {
                                 (unsigned long long)js->fusedBranches, (unsigned long long)js->forwards,
                                 (unsigned long long)js->gatherStores, (unsigned long long)js->links,
                                 g_pica ? (unsigned long)pica_queue_offset() : 0UL);
+                        static u64 lastFlush, lastFollow, lastSide;
+                        fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
+                                "follow %d side %d len %lu: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),
+                                (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],
+                                (unsigned long long)js->compileFails[1], (unsigned long long)js->compileFails[2],
+                                g_opt.traceFollow, g_opt.traceSide, (unsigned long)g_opt.traceLen,
+                                (unsigned long long)(js->traceFollowed - lastFollow), (unsigned long long)(js->traceSideExits - lastSide));
+                        lastFlush = js->flushes; lastFollow = js->traceFollowed; lastSide = js->traceSideExits;
                         double kept = js->insnsKept ? (double)js->insnsKept : 1.0;
                         fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.1f, exit stubs %.1f, "
                                 "cold %.1f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
