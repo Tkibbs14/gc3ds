@@ -13,9 +13,9 @@ qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" | tee "$out/main
 status=${PIPESTATUS[0]}
 # A run that crashed prints no summary: that is a failure, never a pass (2026-10-12: a segfault read as a pass).
 grep -qE "^JIT FUZZ .*fails=0" "$out/main.txt" || { echo "FUZZ RUN FAILED (crashed, or found differences)"; exit 4; }
-for plant in 1 2 3 4 5 6; do
+for plant in 1 2 3 4 5 6 7; do
     JIT_FUZZ_PLANT=$plant qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
     if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
 done
-echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count)"
+echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table)"
 exit $status

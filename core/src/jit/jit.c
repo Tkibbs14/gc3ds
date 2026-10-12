@@ -420,13 +420,219 @@ static void fs_st(u32 fr, u32 lane) {
     g_fsPending[l] = 1;
 }
 
+// ---- region-compilation model (JIT_REGSTAT; docs/REGION_JIT_PLAN.md) ----
+// Why each load into a slot and each write-back happens, per block: loads at a register's first touch in the block
+// (RL_FIRST), after an interpreter fallback forgot the cache (RL_INTERP) or after an eviction (RL_EVICT); write-backs at
+// the block's end before a constant exit (RW_CONST) or blr / bctr (RW_IND), before an interpreter fallback (RW_INTERP),
+// at an eviction (RW_EVICT), elsewhere (RW_OTHER).
+enum { RL_FIRST, RL_INTERP, RL_EVICT, RL_N };
+enum { RW_CONST, RW_IND, RW_INTERP, RW_EVICT, RW_OTHER, RW_N };
+static u8 (*g_rwLd)[RL_N], (*g_rwSt)[RW_N];
+static u64 g_rwLdTot[RL_N], g_rwStTot[RW_N];
+static int g_rwWhy = RW_OTHER;          // the reason of the rc_flush being emitted
+static u64 g_rsSeen, g_rsEvicted, g_rsWritten;  // ids touched / evicted / written so far in the block being compiled
+// Each block's would-be entry state: the first NSLOT_STAT ids it touches (the slots they take in an empty cache, so a
+// predecessor could hand them over in place), which of them it touches first by reading (a load today), and every id it
+// writes (a dirty one handed over needs no write-back by the predecessor: the block's own exits write it back).
+#define NSLOT_STAT 5
+typedef struct { s8 id[NSLOT_STAT]; u8 readFirst; u64 written, touched; } RsEntry;
+static RsEntry* g_rsE;
+// Exits at block ends, with the cache as it stood before the flush and their executions (counted by compiled code).
+enum { RX_CONST, RX_IND, RX_DISPATCH };
+typedef struct { u32 block, target, from; u8 kind; s8 id[NSLOT_STAT]; u8 dirty; } RsExit;  // from: the branch's address
+#define RX_POOL (1u << 18)
+static RsExit* g_rx;
+static u32* g_rxCount;
+static u32 g_rxUsed;
+static bool g_rxHave;   // g_rxState holds the cache of the block end being compiled (set before its flush)
+static Rc g_rxState;
+// Totals of the model (folded with the cache): edge executions and their write-backs and loads today, and with the
+// target's entry state handed over (stores of what the target does not keep, loads of what it wants and the source
+// lacks, moves of what sits in another slot).
+static u64 g_rxN[3], g_rxTodaySt[3], g_rxTodayLd, g_rxHoSt, g_rxHoLd, g_rxHoMov, g_rxNoTarget;
+// Variant 1 (the entry state holds the registers the block writes first too): entries not through a link must load
+// those as well (g_rxV1Extra). Variant 2 (only the registers it reads first): g_rxV2*.
+static u64 g_rxV1Extra, g_rxV2St, g_rxV2Ld, g_rxV2Mov, g_rxLinkIn[1u << 16];
+// Concentration: block traffic (loads + write-backs per run x runs) and back edges.
+#define RS_TOPN 4096
+static u64 g_rsTrafTot, g_rsTrafTop[5], g_rsTrafLoop, g_rsBackN, g_rsBackSt;
+// Loop regions: each block belongs to the innermost back edge's range holding its start. A loop whose blocks touch at
+// most NSLOT_STAT ids could keep them all in slots: its traffic goes, and each entry loads them and each exit stores the
+// written ones instead. g_rsLoopFit / g_rsLoopBig: traffic in loops that fit / do not; g_rsLoopEntryCost.
+static u64 g_rsLoopFit, g_rsLoopBig, g_rsLoopEntryCost, g_rsLoops[2];
+static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled code (r12, lr; flags kept)
+    load_const(e, R12, (u32)(uintptr_t)counter);
+    ldr_imm(e, LR, R12, 0);
+    dp_imm(e, ADD, 0, LR, LR, 1);
+    str_imm(e, LR, R12, 0);
+}
+static void rx_add(Cg* c, int kind, u32 target, u32 from);
+
 static void dop_add(u32 key, u32 hot) {
     if (!g_regStat || g_dopUsed >= DOP_POOL) return;
     g_dopPool[g_dopUsed++] = key << 8 | (hot > 255 ? 255 : hot);
     g_dopLen[g_rsCur]++;
 }
-static void rs_fold(u32 nEntries) {
+static int u64_desc(const void* a, const void* b) {
+    u64 x = *(const u64*)a, y = *(const u64*)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+static Entry* rs_find(Jit* j, u32 pc, u32 msrBits);
+
+// The region model over the blocks and exits of the cache being flushed (see the declarations above).
+static void rx_fold(Jit* j, u32 nEntries) {
+    static u8* loopMark;  // one bit per guest word of MEM1 inside a back edge's range
+    if (!loopMark) loopMark = calloc(1, (24u << 20) / 32);
+    for (u32 x = 0; x < g_rxUsed; x++) {
+        const RsExit* r = &g_rx[x];
+        u64 n = g_rxCount[x];
+        if (!n) continue;
+        u32 dirty = (u32)__builtin_popcount(r->dirty);
+        g_rxN[r->kind] += n;
+        g_rxTodaySt[r->kind] += n * dirty;
+        if (r->kind != RX_CONST) continue;
+        // A back edge (to an earlier address, within 4 KB): the blocks starting in its range are in a loop.
+        u32 from = r->from, to = r->target, src = j->table[r->block].pc;
+        if (to <= from && from - to < 4096 && loopMark) {
+            g_rsBackN += n;
+            g_rsBackSt += n * dirty;
+            for (u32 a = to; a <= from; a += 4) {
+                u32 w = (a & 0x01FFFFFFu) >> 2;
+                if (w < (24u << 20) / 4) loopMark[w >> 3] |= (u8)(1u << (w & 7));
+            }
+        }
+        (void)src;
+        Entry* te = rs_find(j, r->target, j->table[r->block].msrBits);
+        if (!te) { g_rxNoTarget += n; continue; }
+        const RsEntry* E = &g_rsE[te - j->table];
+        u32 st = 0, ld = 0, mov = 0;
+        for (int k = 0; k < NSLOT_STAT; k++) {
+            if (r->id[k] < 0 || !((r->dirty >> k) & 1)) continue;
+            bool kept = false;
+            for (int m = 0; m < NSLOT_STAT; m++) if (E->id[m] == r->id[k]) kept = (E->written >> (u32)r->id[k]) & 1;
+            st += !kept;
+        }
+        for (int m = 0; m < NSLOT_STAT; m++) {
+            if (E->id[m] < 0) continue;
+            int at = -1;
+            for (int k = 0; k < NSLOT_STAT; k++) if (r->id[k] == E->id[m]) at = k;
+            if (at < 0) ld += (E->readFirst >> m) & 1;
+            else mov += at != m;
+        }
+        g_rxTodayLd += n * (u64)__builtin_popcount(E->readFirst);
+        g_rxHoSt += n * st;
+        g_rxHoLd += n * ld;
+        g_rxHoMov += n * mov;
+        u32 ti = (u32)(te - j->table);
+        if (ti < (1u << 16)) g_rxLinkIn[ti] += n;
+        // Variant 2: the read-first registers only, in their slots.
+        u32 st2 = 0, ld2 = 0, mov2 = 0;
+        for (int k = 0; k < NSLOT_STAT; k++) {
+            if (r->id[k] < 0 || !((r->dirty >> k) & 1)) continue;
+            bool kept = false;
+            for (int m = 0; m < NSLOT_STAT; m++)
+                if (E->id[m] == r->id[k] && ((E->readFirst >> m) & 1)) kept = (E->written >> (u32)r->id[k]) & 1;
+            st2 += !kept;
+        }
+        for (int m = 0; m < NSLOT_STAT; m++) {
+            if (E->id[m] < 0 || !((E->readFirst >> m) & 1)) continue;
+            int at = -1;
+            for (int k = 0; k < NSLOT_STAT; k++) if (r->id[k] == E->id[m]) at = k;
+            if (at < 0) ld2++;
+            else mov2 += at != m;
+        }
+        g_rxV2St += n * st2;
+        g_rxV2Ld += n * ld2;
+        g_rxV2Mov += n * mov2;
+    }
+    {   // Loop regions (see g_rsLoopFit): back edges, innermost first.
+        typedef struct { u32 to, from; u64 n; } Back;
+        static Back back[8192];
+        static u32 owner[1u << 16];  // block -> 1 + back edge index
+        u32 nb = 0;
+        for (u32 x = 0; x < g_rxUsed && nb < 8192; x++) {
+            const RsExit* r = &g_rx[x];
+            if (r->kind != RX_CONST || !g_rxCount[x] || r->target > r->from || r->from - r->target >= 4096) continue;
+            back[nb++] = (Back){ r->target, r->from, g_rxCount[x] };
+        }
+        for (u32 a = 0; a < nb; a++)  // smallest range first
+            for (u32 b = a + 1; b < nb; b++)
+                if (back[b].from - back[b].to < back[a].from - back[a].to) { Back t = back[a]; back[a] = back[b]; back[b] = t; }
+        u32 nbk = nEntries < (1u << 16) ? nEntries : (1u << 16);
+        memset(owner, 0, nbk * sizeof owner[0]);
+        for (u32 a = 0; a < nb; a++)
+            for (u32 b = 0; b < nbk; b++)
+                if (!owner[b] && g_rsExec[b] && j->table[b].pc >= back[a].to && j->table[b].pc <= back[a].from) owner[b] = a + 1;
+        for (u32 a = 0; a < nb; a++) {
+            u64 touched = 0, written = 0, traf = 0, headExec = 0;
+            bool any = false;
+            for (u32 b = 0; b < nbk; b++) {
+                if (owner[b] != a + 1) continue;
+                any = true;
+                touched |= g_rsE[b].touched;
+                written |= g_rsE[b].written;
+                u64 t = 0;
+                for (int i = 0; i < RS_IDS; i++) t += (u64)g_rsLd[b][i] + g_rsSt[b][i];
+                traf += t * g_rsExec[b];
+                if (j->table[b].pc == back[a].to) headExec += g_rsExec[b];
+            }
+            if (!any) continue;
+            u32 nt = (u32)__builtin_popcountll(touched), nw = (u32)__builtin_popcountll(written);
+            if (nt <= NSLOT_STAT) {
+                u64 entries = headExec > back[a].n ? headExec - back[a].n : 0;
+                g_rsLoopFit += traf;
+                g_rsLoopEntryCost += entries * (nt + nw);
+                g_rsLoops[0]++;
+            } else {
+                g_rsLoopBig += traf;
+                g_rsLoops[1]++;
+            }
+        }
+    }
+    // Variant 1's extra loads: entries from the dispatcher or blr / bctr load the write-first registers too.
+    for (u32 b = 0; b < nEntries && b < (1u << 16); b++) {
+        u32 wf = 0;
+        for (int m = 0; m < NSLOT_STAT; m++) wf += g_rsE[b].id[m] >= 0 && !((g_rsE[b].readFirst >> m) & 1);
+        u64 other = g_rsExec[b] > g_rxLinkIn[b] ? g_rsExec[b] - g_rxLinkIn[b] : 0;
+        g_rxV1Extra += other * wf;
+        g_rxLinkIn[b] = 0;
+    }
+    // Block traffic: how concentrated it is, and how much of it is in blocks inside a back edge's range.
+    static u64 traf[1u << 16];
+    u32 nt = 0;
+    for (u32 b = 0; b < nEntries && nt < (1u << 16); b++) {
+        u64 t = 0;
+        for (int i = 0; i < RS_IDS; i++) t += (u64)g_rsLd[b][i] + g_rsSt[b][i];
+        t *= g_rsExec[b];
+        if (!t) continue;
+        traf[nt++] = t;
+        g_rsTrafTot += t;
+        u32 w = (j->table[b].pc & 0x01FFFFFFu) >> 2;
+        if (loopMark && w < (24u << 20) / 4 && ((loopMark[w >> 3] >> (w & 7)) & 1)) g_rsTrafLoop += t;
+    }
+    qsort(traf, nt, sizeof traf[0], u64_desc);
+    static const u32 kTop[5] = { 16, 64, 256, 1024, 4096 };
+    u64 cum = 0;
+    for (u32 i = 0, k = 0; i < nt && k < 5; i++) {
+        cum += traf[i];
+        while (k < 5 && i + 1 == kTop[k]) g_rsTrafTop[k++] += cum;
+        if (i + 1 == nt) while (k < 5) g_rsTrafTop[k++] += cum;
+    }
+    if (loopMark) memset(loopMark, 0, (24u << 20) / 32);
+    memset(g_rxCount, 0, g_rxUsed * sizeof(u32));
+    g_rxUsed = 0;
+    for (u32 b = 0; b < nEntries; b++) {
+        for (int i = 0; i < RL_N; i++) g_rwLdTot[i] += (u64)g_rsExec[b] * g_rwLd[b][i];
+        for (int i = 0; i < RW_N; i++) g_rwStTot[i] += (u64)g_rsExec[b] * g_rwSt[b][i];
+        memset(g_rwLd[b], 0, RL_N);
+        memset(g_rwSt[b], 0, RW_N);
+    }
+}
+
+static void rs_fold(Jit* j, u32 nEntries) {
     if (!g_regStat) return;
+    rx_fold(j, nEntries);
     g_dopUsed = 0;  // the pool restarts with the cache (every block's list is folded below)
     for (u32 b = 0; b < nEntries; b++) {
         u64 n = g_rsExec[b];
@@ -445,11 +651,37 @@ static void rs_fold(u32 nEntries) {
         memset(g_rsSt[b], 0, RS_IDS);
     }
 }
-static void rs_load(u32 id) { if (g_regStat && g_rsLd[g_rsCur][id] < 255) g_rsLd[g_rsCur][id]++; }
-static void rs_store(u32 id) { if (g_regStat && g_rsSt[g_rsCur][id] < 255) g_rsSt[g_rsCur][id]++; }
+static void rs_load(u32 id) {
+    if (!g_regStat) return;
+    if (g_rsLd[g_rsCur][id] < 255) g_rsLd[g_rsCur][id]++;
+    int why = !((g_rsSeen >> id) & 1) ? RL_FIRST : ((g_rsEvicted >> id) & 1) ? RL_EVICT : RL_INTERP;
+    if (g_rwLd[g_rsCur][why] < 255) g_rwLd[g_rsCur][why]++;
+}
+static void rs_store_why(u32 id, int why) {
+    if (!g_regStat) return;
+    if (g_rsSt[g_rsCur][id] < 255) g_rsSt[g_rsCur][id]++;
+    if (g_rwSt[g_rsCur][why] < 255) g_rwSt[g_rsCur][why]++;
+}
+static void rs_store(u32 id) { rs_store_why(id, g_rwWhy); }
+// A hot-code touch of cache id `id` (read: a load from memory, or write: computed into its slot): the block's entry
+// state records its first NSLOT_STAT ids.
+static void rs_touch(u32 id, bool read) {
+    if (!g_regStat || ((g_rsSeen >> id) & 1)) return;
+    g_rsSeen |= 1ull << id;
+    RsEntry* E = &g_rsE[g_rsCur];
+    for (int k = 0; k < NSLOT_STAT; k++)
+        if (E->id[k] < 0) { E->id[k] = (s8)id; if (read) E->readFirst |= (u8)(1u << k); break; }
+}
+static void rs_written(u32 id) { if (g_regStat) g_rsWritten |= 1ull << id; }
+static void rs_evicted(u32 id) { if (g_regStat) g_rsEvicted |= 1ull << id; }
 #else
 static void rs_load(u32 id) { (void)id; }
 static void rs_store(u32 id) { (void)id; }
+static void rs_store_why(u32 id, int why) { (void)id; (void)why; }
+static void rs_touch(u32 id, bool read) { (void)id; (void)read; }
+static void rs_written(u32 id) { (void)id; }
+static void rs_evicted(u32 id) { (void)id; }
+#define RW_EVICT 0
 #endif
 
 // ---- register cache ----
@@ -487,6 +719,25 @@ static void rc_after_interp(Cg* c) {
     for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; }
 }
 
+#ifndef __3DS__
+// A block-end exit for the region model: the cache before the block's final flush, and a counter compiled code bumps.
+static void rx_add(Cg* c, int kind, u32 target, u32 from) {
+    if (!g_regStat || !g_rxHave || c->inCold || g_rxUsed == RX_POOL) return;
+    RsExit* x = &g_rx[g_rxUsed];
+    x->block = g_rsCur;
+    x->target = target;
+    x->from = from;
+    x->kind = (u8)kind;
+    x->dirty = 0;
+    for (int k = 0; k < NSLOT_STAT; k++) {
+        x->id[k] = g_rxState.id[k];
+        if (g_rxState.id[k] >= 0 && g_rxState.dirty[k]) x->dirty |= (u8)(1u << k);
+    }
+    rs_emit_count(&c->e, &g_rxCount[g_rxUsed]);
+    g_rxUsed++;
+}
+#endif
+
 // A slot for guest GPR r: an empty one, else the least recently used one not pinned by this instruction (written
 // back first if dirty). -1 when all are pinned.
 static int rc_alloc(Cg* c, u32 r) {
@@ -497,7 +748,8 @@ static int rc_alloc(Cg* c, u32 r) {
         if (best < 0 || c->rc.use[k] < c->rc.use[best]) best = k;
     }
     if (best < 0) return -1;
-    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) { str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best])); rs_store((u32)c->rc.id[best]); }
+    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) { str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best])); rs_store_why((u32)c->rc.id[best], RW_EVICT); }
+    if (c->rc.id[best] >= 0) rs_evicted((u32)c->rc.id[best]);
     c->rc.id[best] = (s8)r;
     c->rc.dirty[best] = false;
     return best;
@@ -516,9 +768,10 @@ static int src(Cg* c, u32 r, int tmp) {
     }
     if (k < 0) {
         k = rc_alloc(c, r);
-        if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); rs_load(r); return tmp; }
+        if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); rs_load(r); rs_touch(r, true); return tmp; }
         ldr_imm(&c->e, kSlot[k], RG, rc_off(r));
         rs_load(r);
+        rs_touch(r, true);
     }
     rc_touch(c, k);
     return kSlot[k];
@@ -528,6 +781,7 @@ static int src(Cg* c, u32 r, int tmp) {
 // is marked dirty only by dst_done, so an exit taken in between writes back the old value.
 static int dst(Cg* c, u32 r, int tmp) {
     if (c->inCold) return tmp;
+    rs_touch(r, false);
     int k = slot_of(&c->rc, r);
     if (k < 0) k = rc_alloc(c, r);
     if (k < 0) return tmp;
@@ -535,6 +789,7 @@ static int dst(Cg* c, u32 r, int tmp) {
     return kSlot[k];
 }
 static void dst_done(Cg* c, u32 r, int reg) {
+    if (!c->inCold) rs_written(r);
     int k = slot_of(&c->rc, r);
     if (k >= 0 && kSlot[k] == reg) { c->rc.dirty[k] = true; return; }
     str_imm(&c->e, reg, RG, rc_off(r));
@@ -591,6 +846,9 @@ static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, N
 // each block's start, two instructions fewer per block.
 static void exit_const(Cg* c, u32 target) {
     Emit* e = &c->e;
+#ifndef __3DS__
+    rx_add(c, c->noLink ? RX_DISPATCH : RX_CONST, target, c->pc);
+#endif
     dp_imm(e, SUB, c->noLink ? 0 : 1, RDC, RDC, c->count);
     if (c->noLink) {
         load_const(e, R1, target);
@@ -606,6 +864,9 @@ static void exit_const(Cg* c, u32 target) {
 // Unconditional exit to the guest address in r2 (blr, bctr): through the indirect-branch table.
 static void exit_indirect(Cg* c) {
     Emit* e = &c->e;
+#ifndef __3DS__
+    rx_add(c, c->noLink ? RX_DISPATCH : RX_IND, 0, c->pc);
+#endif
     str_imm(e, R2, RG, OFF_PC);
     dp_imm(e, SUB, 0, RDC, RDC, c->count);
     branch_abs(e, C_AL, false, stub(c, c->noLink ? ST_DYN : ST_INDIRECT));
@@ -928,8 +1189,12 @@ static void emit_store(Cg* c, u32 size, int vreg) {
 
 static void emit_fallback(Cg* c, u32 inst) {
     Emit* e = &c->e;
+#ifndef __3DS__
+    g_rwWhy = RW_INTERP;
+#endif
     rc_flush(c);  // the interpreter works on guest state in memory
 #ifndef __3DS__
+    g_rwWhy = RW_OTHER;
     if (!c->inCold && g_regStat) fs_reset();  // a float register cache would be forgotten here too
 #endif
     Rc clean = c->rc;
@@ -986,9 +1251,20 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
 }
 
 static bool compile_branch(Cg* c, u32 inst) {
-    rc_flush(c);  // every path out of the block leaves guest state in memory (stores keep the ARM flags)
-    Emit* e = &c->e;
     u32 op = inst >> 26, lk = inst & 1;
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) {  // the region model: the cache at the block's end, and why it is written back
+        u32 xo = (inst >> 1) & 0x3FF;
+        g_rxState = c->rc;
+        g_rxHave = true;
+        g_rwWhy = op == 19 && (xo == 16 || xo == 528) ? RW_IND : RW_CONST;
+    }
+#endif
+    rc_flush(c);  // every path out of the block leaves guest state in memory (stores keep the ARM flags)
+#ifndef __3DS__
+    g_rwWhy = RW_OTHER;
+#endif
+    Emit* e = &c->e;
     if (op == 18) {  // b, bl, ba, bla
         s32 li = ((s32)(inst << 6)) >> 6 & ~3;
         u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li;
@@ -2154,6 +2430,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         g_dopStart[g_rsCur] = g_dopUsed;
         g_dopLen[g_rsCur] = 0;
         fs_reset();
+        g_rsSeen = g_rsEvicted = g_rsWritten = 0;
+        g_rxHave = false;
+        RsEntry* E = &g_rsE[g_rsCur];
+        for (int k = 0; k < NSLOT_STAT; k++) E->id[k] = -1;
+        E->readFirst = 0;
+        E->written = 0;
         load_const(e, R12, (u32)(uintptr_t)&g_rsExec[g_rsCur]);
         ldr_imm(e, R0, R12, 0);
         dp_imm(e, ADD, 0, R0, R0, 1);
@@ -2222,7 +2504,19 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 #ifndef __3DS__
     if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot); }
 #endif
-    if (!ended) { rc_flush(c); exit_const(c, t.nextPc); }  // ran out of instructions (or a page end)
+    if (!ended) {  // ran out of instructions (or a page end)
+#ifndef __3DS__
+        if (g_regStat) { g_rxState = c->rc; g_rxHave = true; g_rwWhy = RW_CONST; }
+#endif
+        rc_flush(c);
+#ifndef __3DS__
+        g_rwWhy = RW_OTHER;
+#endif
+        exit_const(c, t.nextPc);
+    }
+#ifndef __3DS__
+    if (g_regStat) { g_rsE[g_rsCur].written = g_rsWritten; g_rsE[g_rsCur].touched = g_rsSeen; g_rxHave = false; }
+#endif
     u32 hotEnd = e->n;
     // Exit stubs: subtract what the block executed from RDC and leave to the dispatcher.
     for (u32 k = 0; k < c->nExits; k++) {
@@ -2534,6 +2828,14 @@ static void link_site(Jit* j, u32* site, BlockFn fn) {
 // ---- dispatcher ----
 static u32 bucket_of(u32 pc, u32 msrBits) { return ((pc >> 2) ^ (pc >> 18) ^ (msrBits << 9)) & (DISPATCH_SIZE - 1); }
 
+#ifndef __3DS__
+static Entry* rs_find(Jit* j, u32 pc, u32 msrBits) {  // the region model: a compiled block, without compiling
+    for (u32 i = j->buckets[bucket_of(pc, msrBits)]; i != NO_ENTRY; i = j->table[i].next)
+        if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
+    return NULL;
+}
+#endif
+
 // Finds the block for (pc, msrBits), compiling it on first use; NULL when it cannot be compiled.
 static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     u32* head = &j->buckets[bucket_of(pc, msrBits)];
@@ -2711,7 +3013,13 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_dopLen = calloc(MAX_ENTRIES, sizeof(u32));
         g_fsLd = calloc(MAX_ENTRIES, sizeof(u32)); g_fsHit = calloc(MAX_ENTRIES, sizeof(u32));
         g_fsSt = calloc(MAX_ENTRIES, sizeof(u32)); g_fsDead = calloc(MAX_ENTRIES, sizeof(u32));
-        g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead;
+        g_rwLd = calloc(MAX_ENTRIES, RL_N);
+        g_rwSt = calloc(MAX_ENTRIES, RW_N);
+        g_rsE = calloc(MAX_ENTRIES, sizeof(RsEntry));
+        g_rx = calloc(RX_POOL, sizeof(RsExit));
+        g_rxCount = calloc(RX_POOL, sizeof(u32));
+        g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead &&
+                    g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount;
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
@@ -2823,7 +3131,7 @@ u32 jit_run_one_block(Jit* j) {
 
 void jit_invalidate_all(Jit* j) {
 #ifndef __3DS__
-    rs_fold(j->nEntries);
+    rs_fold(j, j->nEntries);
 #endif
     memset(j->buckets, 0xFF, DISPATCH_SIZE * sizeof(u32));
     j->nEntries = 0;
@@ -2916,7 +3224,7 @@ static void print_top(const JitOpCounts* t, const char* title, void (*print)(con
 }
 
 void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
-    char line[160];
+    char line[400];
     const JitStats* s = &j->stats;
     snprintf(line, sizeof line, "JIT: icbi %llu (%llu dropped all code), %u blocks live", (unsigned long long)s->icbis,
              (unsigned long long)s->icbiFlushes, j->nEntries);
@@ -2974,7 +3282,7 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
         }
     }
     if (g_regStat) {
-        rs_fold(j->nEntries);
+        rs_fold((Jit*)j, j->nEntries);  // folding the model resets counters only
         {  // executed: guest instructions and hot ARM words per opcode, weighted by block executions
             u64 totN = 0, totW = 0;
             for (u32 k = 0; k < 65536; k++) { totN += g_dopN[k]; totW += g_dopWords[k]; }
@@ -3016,6 +3324,49 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                      g_rsExecTot ? (double)g_rsLdTot[i] / (double)g_rsExecTot : 0.0, g_rsExecTot ? (double)g_rsStTot[i] / (double)g_rsExecTot : 0.0);
             print(line);
         }
+        // The region model (docs/REGION_JIT_PLAN.md): per block run unless stated.
+        double runs = g_rsExecTot ? (double)g_rsExecTot : 1.0;
+        u64 words = 0;
+        for (u32 k = 0; k < 65536; k++) words += g_dopWords[k];
+        snprintf(line, sizeof line, "  region model: loads first touch %.3f, after a fallback %.3f, after an eviction %.3f; write-backs at "
+                 "constant exits %.3f, blr/bctr %.3f, fallbacks %.3f, evictions %.3f, other %.3f (per block run; %.1f hot words per run)",
+                 (double)g_rwLdTot[RL_FIRST] / runs, (double)g_rwLdTot[RL_INTERP] / runs, (double)g_rwLdTot[RL_EVICT] / runs,
+                 (double)g_rwStTot[RW_CONST] / runs, (double)g_rwStTot[RW_IND] / runs, (double)g_rwStTot[RW_INTERP] / runs,
+                 (double)g_rwStTot[RW_EVICT] / runs, (double)g_rwStTot[RW_OTHER] / runs, (double)words / runs);
+        print(line);
+        u64 ex = g_rxN[0] + g_rxN[1] + g_rxN[2];
+        snprintf(line, sizeof line, "  region model: block-end exits %llu: constant %.1f%%, blr/bctr %.1f%%, to the dispatcher %.1f%%; "
+                 "constant exits whose target was not compiled %.1f%%; back edges %.1f%% of constant exits",
+                 (unsigned long long)ex, ex ? 100.0 * (double)g_rxN[0] / (double)ex : 0.0, ex ? 100.0 * (double)g_rxN[1] / (double)ex : 0.0,
+                 ex ? 100.0 * (double)g_rxN[2] / (double)ex : 0.0, g_rxN[0] ? 100.0 * (double)g_rxNoTarget / (double)g_rxN[0] : 0.0,
+                 g_rxN[0] ? 100.0 * (double)g_rsBackN / (double)g_rxN[0] : 0.0);
+        print(line);
+        double today = (double)(g_rxTodaySt[RX_CONST] + g_rxTodayLd), ho = (double)(g_rxHoSt + g_rxHoLd);
+        snprintf(line, sizeof line, "  region model, entry state handed over at constant exits: today %.3f write-backs + %.3f target loads, "
+                 "handed over %.3f + %.3f + %.3f moves per block run: saves %.3f memory accesses per run (%.2f%% of hot words, moves not counted)",
+                 (double)g_rxTodaySt[RX_CONST] / runs, (double)g_rxTodayLd / runs, (double)g_rxHoSt / runs, (double)g_rxHoLd / runs,
+                 (double)g_rxHoMov / runs, (today - ho) / runs, words ? 100.0 * (today - ho) / (double)words : 0.0);
+        print(line);
+        snprintf(line, sizeof line, "  region model, variant 1 (above) also loads the write-first registers at entries not through a link: "
+                 "%.3f per block run, net saving %.3f (%.2f%% of hot words); variant 2 (read-first registers only): handed over %.3f + "
+                 "%.3f + %.3f moves, saves %.3f (%.2f%%)", (double)g_rxV1Extra / runs, (today - ho - (double)g_rxV1Extra) / runs,
+                 words ? 100.0 * (today - ho - (double)g_rxV1Extra) / (double)words : 0.0, (double)g_rxV2St / runs,
+                 (double)g_rxV2Ld / runs, (double)g_rxV2Mov / runs, (today - (double)(g_rxV2St + g_rxV2Ld)) / runs,
+                 words ? 100.0 * (today - (double)(g_rxV2St + g_rxV2Ld)) / (double)words : 0.0);
+        print(line);
+        snprintf(line, sizeof line, "  region model, loop regions (innermost back edge per block): %llu loops touch at most %d ids, "
+                 "their traffic %.3f per block run against %.3f to enter and leave them (saves %.3f, %.2f%% of hot words); %llu loops "
+                 "touch more, traffic %.3f per run", (unsigned long long)g_rsLoops[0], NSLOT_STAT, (double)g_rsLoopFit / runs,
+                 (double)g_rsLoopEntryCost / runs, ((double)g_rsLoopFit - (double)g_rsLoopEntryCost) / runs,
+                 words ? 100.0 * ((double)g_rsLoopFit - (double)g_rsLoopEntryCost) / (double)words : 0.0,
+                 (unsigned long long)g_rsLoops[1], (double)g_rsLoopBig / runs);
+        print(line);
+        double tt = g_rsTrafTot ? (double)g_rsTrafTot : 1.0;
+        snprintf(line, sizeof line, "  region model, register traffic by block: top 16 %.1f%%, 64 %.1f%%, 256 %.1f%%, 1024 %.1f%%, 4096 %.1f%%; "
+                 "in blocks inside a back edge's range %.1f%%", 100.0 * (double)g_rsTrafTop[0] / tt, 100.0 * (double)g_rsTrafTop[1] / tt,
+                 100.0 * (double)g_rsTrafTop[2] / tt, 100.0 * (double)g_rsTrafTop[3] / tt, 100.0 * (double)g_rsTrafTop[4] / tt,
+                 100.0 * (double)g_rsTrafLoop / tt);
+        print(line);
     }
 #endif
 }

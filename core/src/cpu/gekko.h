@@ -129,6 +129,10 @@ void gekko_disasm(u32 pc, u32 inst, char* buf, size_t len);
 // opcode << 10 | extended opcode (A-form float / paired-single forms by their 5-bit opcode).
 extern u64* g_gekkoOpMix;
 u32 gekko_op_key(u32 inst);
+// The guest registers an instruction reads and writes, as bit masks over ids 0-31 (GPRs) and GR_* (gekko_regs.c);
+// false when it is not analysed (it changes state compiled code depends on, or is not in the table).
+enum { GR_CR = 32, GR_XER = 33, GR_LR = 34, GR_CTR = 35, GR_N = 36 };
+bool gekko_regs(u32 inst, u64* reads, u64* writes);
 
 // ---- Hooks the system provides (called by the CPU core) ----
 // Called when the CPU executes an instruction it does not implement or hits an unrecoverable condition; the system

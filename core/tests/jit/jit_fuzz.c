@@ -484,6 +484,77 @@ static void fill_floats(System* s) {
     }
 }
 
+// ---- gekko_regs (src/cpu/gekko_regs.c) against the interpreter ----
+// The JIT's analysis of guest code trusts gekko_regs: an instruction may read only the registers in `reads` and write
+// only those in `writes`. Each analysed instruction runs twice on a third machine C from the case's state, the second time
+// with every register outside `reads` randomized: the registers in `writes`, the next PC and memory must come out the
+// same, and every register outside `writes` must keep the value it started with. Plant 7 drops a read GPR from the set.
+// PC only (C is a whole machine: the 3DS run has no room for it).
+static System C;
+static bool g_haveC;
+static void put_state(System* s, const St* st) {
+    Gekko* g = &s->cpu;
+    memcpy(g->gpr, st->gpr, sizeof st->gpr);
+    g->cr = st->cr; g->xer = st->xer; g->lr = st->lr; g->ctr = st->ctr; g->pc = CODE_EA;
+    for (int r = 0; r < 32; r++) { memcpy(&g->fpr[r].ps0, &st->fpr[r][0], 8); memcpy(&g->fpr[r].ps1, &st->fpr[r][1], 8); }
+    for (int i = 0; i < 8; i++) g->spr[SPR_GQR0 + i] = st->gqr[i];
+    g->fpscr = st->fpscr;
+    u32 msr = MSR_BASE | (st->fpOff ? 0 : MSR_FP) | (st->user ? MSR_PR : 0);
+    if (g->msr != msr) gekko_set_msr(g, msr);
+    g->spr[SPR_SRR0] = g->spr[SPR_SRR1] = g->spr[SPR_DAR] = g->spr[SPR_DSISR] = 0;
+    for (int i = 0; i < 4; i++) g->spr[SPR_SPRG0 + i] = 0;
+    gekko_set_external_irq(g, st->irq);
+}
+
+static u32 st_id(const St* st, u32 id) {
+    return id < 32 ? st->gpr[id] : id == GR_CR ? st->cr : id == GR_XER ? st->xer : id == GR_LR ? st->lr : st->ctr;
+}
+static u32 g_id(const Gekko* g, u32 id) {
+    return id < 32 ? g->gpr[id] : id == GR_CR ? g->cr : id == GR_XER ? g->xer : id == GR_LR ? g->lr : g->ctr;
+}
+static void st_set(St* st, u32 id, u32 v) {
+    if (id < 32) st->gpr[id] = v;
+    else if (id == GR_CR) st->cr = v;
+    else if (id == GR_XER) st->xer = v & 0xE000007Fu;
+    else if (id == GR_LR) st->lr = v & ~3u;
+    else st->ctr = v;
+}
+
+static u8 g_win0[WIN_SIZE], g_win1[WIN_SIZE];
+static u32 g_regChecked, g_regFails;
+static bool check_regs(u32 inst, const St* st, int plant) {
+    u64 rd, wr;
+    if (!g_haveC || !gekko_regs(inst, &rd, &wr)) return true;
+    if (plant == 7) for (u32 k = 0; k < 32; k++) if ((rd >> k) & 1) { rd &= ~(1ull << k); break; }
+    g_regChecked++;
+    for (u32 i = 0; i < WIN_SIZE; i++) g_win0[i] = (u8)rnd();
+    St st2 = *st;
+    for (u32 id = 0; id < GR_N; id++) if (!((rd >> id) & 1)) st_set(&st2, id, interesting() ^ (rnd() << 16));
+    const St* from[2] = { st, &st2 };
+    u32 out[2][GR_N], npc[2];
+    for (int run = 0; run < 2; run++) {
+        mem1_write32(&C, CODE_PA, inst);
+        memcpy(C.mem1 + WIN_PA, g_win0, WIN_SIZE);
+        put_state(&C, from[run]);
+        bool stop;
+        npc[run] = gekko_interp_one(&C.cpu, CODE_EA, inst, &stop);
+        for (u32 id = 0; id < GR_N; id++) out[run][id] = g_id(&C.cpu, id);
+        if (run == 0) memcpy(g_win1, C.mem1 + WIN_PA, WIN_SIZE);
+    }
+    bool ok = npc[0] == npc[1] && !memcmp(g_win1, C.mem1 + WIN_PA, WIN_SIZE);
+    for (u32 id = 0; id < GR_N && ok; id++)
+        // A may-write register: equal results, or left alone in both runs (the instruction raised an exception).
+        ok = (out[0][id] == st_id(st, id) && out[1][id] == st_id(&st2, id)) || ((wr >> id) & 1 && out[0][id] == out[1][id]);
+    if (!ok) {
+        char dis[96];
+        gekko_disasm(CODE_EA, inst, dis, sizeof dis);
+        if (g_regFails < 10)
+            printf("REGS MISMATCH %08x  %s (reads %09llx writes %09llx)\n", inst, dis, (unsigned long long)rd, (unsigned long long)wr);
+        g_regFails++;
+    }
+    return ok;
+}
+
 // ---- traces ----
 // The JIT follows an unconditional b and compiles a conditional branch as a side exit, so a branch can sit in the middle
 // of a block. A program is a few instructions in which some are b / bc / bclr / bcctr that jump forward inside it (or
@@ -518,6 +589,10 @@ int main(int argc, char** argv) {
     free(B.dsp.aram); B.dsp.aram = NULL;
     boot_like(&A);
     boot_like(&B);
+#ifndef __3DS__
+    g_haveC = sys_init(&C);
+    if (g_haveC) { free(C.dsp.aram); C.dsp.aram = NULL; boot_like(&C); }
+#endif
     jit = jit_create(&A.cpu, A.mem1, MEM1_SIZE, 4u << 20);
     if (!jit) { printf("jit_create failed\n"); sys_free(&A); sys_free(&B); return 2; }
     jit_debug_max_insns = 1;
@@ -567,6 +642,7 @@ int main(int argc, char** argv) {
         }
         u32 inst = seq[0], inst2 = seq[1];
         floats += isFloat;
+        for (u32 i = 0; i < len; i++) if (!check_regs(seq[i], &st, plant)) fails++;
         CODE_PA = 0x3000u + 4 * (rnd() % (1024 - len + 1));
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
@@ -600,6 +676,7 @@ int main(int argc, char** argv) {
         if (traceCase) {  // follow the interpreter along the same path, for as many instructions as the JIT ran
             for (int step = 0; step < n; step++) {
                 bool stop;
+                if ((B.cpu.pc & 0x01FFFFFFu) > MEM1_SIZE - 4) break;  // a wrong JIT path (planted bugs) can lead anywhere
                 u32 w = mem1_read32(&B, (B.cpu.pc & 0x01FFFFFFu));
                 B.cpu.pc = gekko_interp_one(&B.cpu, B.cpu.pc, w, &stop);
                 expect++;
@@ -641,12 +718,15 @@ int main(int argc, char** argv) {
         printf("trace cases: %llu unconditional branches followed, %llu conditional branches as side exits, %llu fused compare-branches\n",
                (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->fusedBranches);
     }
+    printf("gekko_regs checked on %u instructions, %u mismatches\n", g_regChecked, g_regFails);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
     jit_destroy(jit);
     jit = NULL;
     sys_free(&A);
     sys_free(&B);
+    if (g_haveC) sys_free(&C);
+    g_haveC = false;
     jit_debug_max_insns = 0;
     jit_debug_plant = 0;
     jit_debug_on_compile = NULL;
