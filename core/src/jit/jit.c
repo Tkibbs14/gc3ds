@@ -2950,7 +2950,7 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
-    mov_shift(e, 0, R1, R2, LSL, 18);  // (pc >> 2) & 4095
+    mov_shift(e, 0, R1, R2, LSL, 18);  // fast_index: (pc >> 2) & 4095
     mov_shift(e, 0, R1, R1, LSR, 20);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
@@ -3144,6 +3144,11 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     return en;
 }
 
+// The indirect table's slot for a guest address, as ST_INDIRECT computes it. Folding in the address bits from 4 KB up did
+// not reduce TP's misses (qemu, 30 fields from tp_arm_850: 86,499 -> 91,663), so they are not code 16 KB apart sharing a
+// slot; blr / bctr to polling-loop and idle blocks, which are never put in the table, are the likely rest.
+static u32 fast_index(u32 pc) { return (pc >> 2) & (FAST_SIZE - 1); }
+
 static void fast_clear_one(FastEntry* t) {
     for (u32 i = 0; i < FAST_SIZE; i++) { t[i].pc = 1; t[i].fn = NULL; }  // 1: never a guest PC
 }
@@ -3231,7 +3236,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         }
         FastEntry* ft = fast_select(j, key);
         if (plain && j->linking) {
-            FastEntry* f = &ft[(pc >> 2) & (FAST_SIZE - 1)];
+            FastEntry* f = &ft[fast_index(pc)];
             f->pc = pc;
             f->fn = (void*)en->fn;
         }
@@ -3510,6 +3515,10 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsNative,
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
+    print(line);
+    snprintf(line, sizeof line, "JIT: returns to the dispatcher: link requests %llu, indirect-table misses %llu, budget ends %llu, other %llu",
+             (unsigned long long)s->dispLink, (unsigned long long)s->dispIndirect, (unsigned long long)s->dispBudget,
+             (unsigned long long)s->dispOther);
     print(line);
     snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu cached GPR reads, %llu pipe stores",
              s->instrsCompiled ? (double)code_words_used(j) / (double)s->instrsCompiled : 0.0,

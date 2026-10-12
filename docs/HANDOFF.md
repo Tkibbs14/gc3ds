@@ -738,3 +738,23 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   baking, known-single operands); the vertex worker's per-job cost (~220 us per merged job on core 3; the 116-byte VIn
   record is mostly unused texture slots); fix the two trace-mode bugs (chain seed 5, default seed 31) before traces are
   tried again, now that blocks are smaller and stubs are cold.
+
+## 2026-10-12 night: float stubs, the code buffer split, perf.csv off core 0
+
+- **Shared float stubs (b7534e3):** psq_l / psq_st with a plain-float GQR (98% / 99.9% of their executions in TP,
+  `JIT_REGSTAT` counts them by GQR type) and stfs call shared stubs per GQR and W (`emit_float_stubs`) that do the GQR,
+  alignment and MEM1 checks, the access and the conversions; the cut for values that are not exact singles is shared once.
+  A site keeps the call, a branch to its slow path and its FPR moves: psq_l 24 -> 5.6 hot words, psq_st 31 -> 5.2. The
+  gather-pipe path of psq_st stays in the site's cold code (the stub reports "only outside MEM1" in r3).
+- **The code buffer's split:** moving block stubs to the cold region (3605dfd) overfilled it: 17 full flushes in 30 qemu
+  fields on the PC's 8 MB buffer, and the 2DS's 16 MB buffer was 75% full after 4 minutes (no flush yet). The hot region
+  is now 37.5% (hot 5.0-5.1 vs cold ~9 words per guest instruction); 0 flushes again. **Check `# jit cache` flushes and
+  `jitcode_pct` after any change that moves code between the regions.**
+- **2DS, b7534e3 (relay jobs 62-63): cutscene 19.62%, title 19.77%** (from 19.27 / 19.26): I-cache misses 7.58 -> 6.79
+  M/s, fetch stalls 238 -> 205 M cycles/s. Hot code per guest instruction 6.0 this morning -> 5.1.
+- **Core 0 outside compiled code** (3605dfd, title): dispatcher 6.4-6.8%, **perf_log 4.5-4.7%**. The second was perf.csv
+  flushed to the SD card once a second on core 0: perf.csv now goes through a memory ring that a thread on core 1 drains
+  (`host3ds/asyncfile.c`); judge it by the `perf_log` share. The dispatcher's ~35k indirect-table misses per second are
+  not aliasing: folding higher address bits into the index changed nothing under qemu (86,499 -> 91,663 misses in 30
+  fields), so it was not kept; most are probably blr / bctr into polling-loop and idle blocks, which the table never holds
+  (unverified: count misses by target kind before working on it). qemu stats now print the dispatcher's return reasons.

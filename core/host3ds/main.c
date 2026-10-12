@@ -18,6 +18,7 @@
 #include "gxthread.h"
 #include "pmu.h"
 #include "jitsample.h"
+#include "asyncfile.h"
 #include "relay.h"
 
 #define MAX_FILES 64
@@ -353,7 +354,7 @@ static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
 static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
-    g_perf = fopen("sdmc:/gc3ds/perf.csv", "a");
+    g_perf = asyncfile_open("sdmc:/gc3ds/perf.csv", "a");  // written to the card by a thread on core 1
     if (!g_perf) return;
     g_perf = relay_tee(g_perf);  // a relay job also streams the log (relay.c)
     pmu_init();
