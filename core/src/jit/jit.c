@@ -2538,7 +2538,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->ramSize = ramSize;
     j->code = jit_host_alloc_exec(codeBytes);
     j->codeWords = codeBytes / 4;
-    j->coldStart = j->codeWords / 5 * 2;  // hot paths and exit stubs measure about 40% of the code in TP
+    j->coldStart = j->codeWords / 8 * 5;  // hot paths and exit stubs: ~61% of TP's code since the shared slow paths (9.5 vs 6.0 words per instruction)
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
