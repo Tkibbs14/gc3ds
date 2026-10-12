@@ -611,3 +611,15 @@ to the 400x240 top screen (no wasted fill). Candidates, best value first: the Ne
 horizontal detail, ~2x fill; the GPU is ~40% busy at full speed); supersampling (render larger, downscale with the
 display transfer; 2-4x fill); full-resolution textures with proper filtering (memory, little speed); a few HD replacement
 textures (VRAM-limited, not whole packs). Decide with 2DS measurements once speed allows.
+
+## 2026-10-12 afternoon: shared slow paths measured on the 2DS (relay jobs 40-45)
+
+- Shared slow-path stubs (385c1ae) + hot region 62.5% (this commit's parent): title from boot **16.0-16.1%** (was
+  15.7%), 0 compile fails (391 cold-overflow fails before), buffer 65% full after 240 s (was 97%), 14.6 host words per
+  guest instruction (was ~27). The tp850 cutscene is unchanged at 15.5% (it never overflowed). `--slow inline|stub` A/B
+  on the cutscene: 15.53 / 15.52.
+- Traces now fit (no thrash) but give nothing: cutscene 15.52% on and off, title 15.94% on vs 16.03% off. They stay off.
+- Core 0 counters (pmu, title): I-cache misses 9.0 -> 8.8 M/s, instruction-fetch stalls 274 -> 277 M cycles/s (~36% of
+  cycles): slow paths seldom run, so shrinking them freed capacity, not fetch time. **The fetch stalls are hot code:**
+  compares ~11 words (full CR update each), b ~10 and bc ~11 (register-cache flush + link site), stfs 15, lfs 9,
+  psq_st 41, psq_l 24 (per-opcode table in the qemu stats). Next: CR dead-store elimination / lazy CR, then branches.
