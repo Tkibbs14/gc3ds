@@ -623,3 +623,13 @@ textures (VRAM-limited, not whole packs). Decide with 2DS measurements once spee
   cycles): slow paths seldom run, so shrinking them freed capacity, not fetch time. **The fetch stalls are hot code:**
   compares ~11 words (full CR update each), b ~10 and bc ~11 (register-cache flush + link site), stfs 15, lfs 9,
   psq_st 41, psq_l 24 (per-opcode table in the qemu stats). Next: CR dead-store elimination / lazy CR, then branches.
+- **4c5012a on the 2DS (relay jobs 46-49):** `--pmu-split on`: compiled code (with the helpers it calls) has 88-96% of
+  core 0's cycles, 95-99% of instruction-fetch stalls and ~all I-cache misses, so the emulator's C code is not where
+  the fetch time goes. Traces had cut executed ARM instructions 5% and mispredicts ~30% without moving I-cache misses
+  (their duplicated code keeps the touched footprint the same). Budget at block exits + SO-free CR updates: heavy
+  rows of the title 16.24 -> **16.62%**, tp850 cutscene 15.52 -> **15.89%**; I-cache misses 8.8 -> 8.2-8.4 M/s,
+  fetch stalls 277 -> 245-261 M cycles/s. Job 46 also met a light screen (~180 draws/s) that ran at a steady 60 fields/s
+  for a minute: the whole pipeline holds full speed when the guest's work is light.
+- **Next hot-path candidates** (qemu per-opcode, 4c5012a): bc 11.8 and b 10.1 hot words (register-cache flush at every
+  block end plus the link site), psq_st 41 / psq_l 24, stfs 15, lfd 14, lfs 9. Pinning the most used guest registers
+  across blocks would remove most of the flush / reload at block boundaries.
