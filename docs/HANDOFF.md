@@ -642,3 +642,28 @@ textures (VRAM-limited, not whole packs). Decide with 2DS measurements once spee
   9.7% after the slow-path stubs, 11.5% after budget-at-exit): each core-0 gain turned into waiting. The next gains need
   core 2 cheaper as well: draw merging (`MERGE_STATS=1`: 76% of TP's draws could join the previous draw's vertex job;
   99.6% are strips) is the known lever, then per-draw setup cost on the GX thread.
+
+## 2026-10-12 evening: draw merging (core 2), measured on the 2DS (relay jobs 52-53)
+
+- **Where core 2's time went (3a1696f, title heavy rows):** busy 80% at ~50,000 draws/s, ~16 us per draw and all of it
+  fixed per draw: `vprep` 6.8 us, `vpal` 3.0 us, `gxstate` 2.9 us, the rest of the job path 2.8 us. Per-vertex work
+  was already on core 3. So the lever was the number of jobs, not the cost per vertex.
+- **Draw merging (f56d430):** consecutive triangle draws with the same VAT and no state change between them become
+  one vertex job. fifo.c calls the backend's `flush` before any command that changes state the open draw reads
+  (register values, palette loads, PE signals, EFB copies); pica.c keeps each draw's stream and primitive and issues
+  one indexed job whose triangles are assembled draw by draw (`vw_assemble_idx`); the GX thread issues the open draw
+  when its ring stays empty, and `wait_drained` also waits for `g_gxMergeOpen`. Only with the GX thread (inline GX
+  never merges). Options `--merge on|off`, `--ab merge`; perf.csv `merge` column and `# merge 10s` line.
+- **PC model first (`MERGE_CHECK=1`, soft.c):** TP to field 1,500: **96.4% of 4.67M draws join an open draw, 28 draws
+  (140 vertices) per job.** The old MERGE_STATS estimate (76%) excluded draws with per-vertex matrix indices, which TP
+  uses everywhere. CPU-transform vertices of merged jobs are bit-identical to the separate draws (proves no state the
+  job reads changes while it is open); the GPU transform with the merged job's single origin: max 0.70 texels on 39
+  of 12.3M vertices (0.114 with each draw's own origin). Test DOLs: gxSprites and NeHe 11 merge 98%, the others not at
+  all, 0 differences; NeHe 11 renders correctly in Azahar (98.4% joined there too).
+- **2DS, `--ab merge` (20 s phases):** title heavy rows **18.77% on vs 16.26% off (+15%)**, tp850 cutscene **17.44% vs
+  15.97% (+9%)**. Core 2 busy 80 -> 66%, core 0's wait for it 11.8 -> 6.0%, `vpal` 15 -> 1.8%, `vprep` 33 -> 15%.
+  New wait: the GX thread waited for space in the vertex worker's 256 KB job ring 17.6% of the time (`vwait`, inside
+  `vqueue`) while core 3 was 47% busy: merged jobs are ~30 KB. 9388639 makes the ring 1 MB (run option `--vwmem KB`,
+  `--ab vwmem`) and stops reserving job memory deferred GPU-transformed jobs never touch (relay jobs 54-55).
+- `core/tools/perf_heavy.py FILE.csv [--by COL]` averages heavy rows (draws_s > 1000) with standard errors, split by
+  an A/B column.
