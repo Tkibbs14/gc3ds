@@ -487,8 +487,9 @@ renderer only):
      rose 8.39% -> 9.67%**. Cause: one stand-in call could run up to 4M instructions (MAX_INSNS) regardless of the slice
      (`sys_run` slices are 1M, and its `end` is recomputed each call, so overshoot is not made up), which also delays events.
      Fix: `hle_run(g, budget)` stops at the next loop head once the caller's budget (JIT: RDC; interpreter: min(downcount,
-     limit - cycles)) is used up. PC `HLE_CHECK`: 6,129 calls to field 2500, 0 differences. **JIT-path check under qemu
-     pending** (`/root/hlejit2.txt`, also saves `/root/tp_arm_850.state`); nothing goes on the card before it passes.
+     limit - cycles)) is used up. PC `HLE_CHECK`: 6,129 calls to field 2500, 0 differences. JIT-path check under qemu
+     (`HLE_CHECK=1 ... --jit`, TP to field 1100, 8,994 s; `/root/hlejit2.txt`, also wrote `/root/tp_arm_850.state`):
+     **1,236 calls, 0 differences.** Back in the A/B as a run option: `--ab hle` (relay job 6, from the field-850 state).
      Judge the next run by the cutscene's `fields_s`, not `speed_pct` alone.
    - **Where the time goes (2026-10-12 analysis, perf_2026-10-12_hle*.csv; read before choosing the next step):**
      - *GPU:* 6-7 ms per submitted frame (max ~15), so ~40% busy at full speed (60 fields/s): it looks idle only because
