@@ -506,6 +506,9 @@ static u32 gen_trace_branch(u32 i, u32 len, u32 prev) {
 int main(int argc, char** argv) {
     u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 20000;
     if (argc > 2) rng ^= strtoull(argv[2], NULL, 0) * 0x2545F4914F6CDD1Dull;
+    // Third argument: "int" integer cases only, all of them traces; "long" traces of up to 43 instructions (the 2DS
+    // bisect of side exits, 2026-10-12, where float sign-of-zero differences ended runs early).
+    bool intOnly = argc > 3 && strstr(argv[3], "int"), longTraces = argc > 3 && strstr(argv[3], "long");
     g_logMask = 0;  // unmapped-access and reserved-GQR messages from the deliberately wild addresses
     const char* pe = getenv("JIT_FUZZ_PLANT");
     int plant = pe ? atoi(pe) : 0;
@@ -536,13 +539,14 @@ int main(int argc, char** argv) {
         st.fpscr = rnd() % 8 == 0 ? rnd() & 7 : 0;  // RN != 0: the JIT must leave every float instruction to the interpreter; NI: flush, as the host does
         st.fpOff = rnd() % 40 == 0;
         st.user = rnd() % 30 == 0;
-        bool isFloat = rnd() % 100 < 55;
+        bool isFloat = !intOnly && rnd() % 100 < 55;
         // Integer cases are often blocks of 2-4 instructions: each later one often reads a GPR an earlier one wrote,
         // or branches on its compare (the JIT's register cache, forwarding of flags and write-back at exits).
-        u32 seq[16] = { isFloat ? genf(&st) : gen(&st), 0 }, len = 1;
-        bool traceCase = !isFloat && rnd() % 100 < 30 && !is_branch_op(seq[0]);
+        u32 seq[48] = { isFloat ? genf(&st) : gen(&st), 0 }, len = 1;
+        while (intOnly && is_branch_op(seq[0])) seq[0] = gen(&st);
+        bool traceCase = !isFloat && (intOnly || rnd() % 100 < 30) && !is_branch_op(seq[0]);
         if (traceCase) {
-            len = 4 + rnd() % 8;
+            len = 4 + rnd() % (longTraces ? 40 : 8);
             for (u32 i = 1; i < len; i++) {
                 if (rnd() % 100 < 28) { seq[i] = gen_trace_branch(i, len, seq[i - 1]); continue; }
                 u32 next = gen(&st);

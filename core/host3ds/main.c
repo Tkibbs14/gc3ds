@@ -865,14 +865,14 @@ static void fuzz_job_at_startup(void) {
     printf("JIT fuzzer for relay job %u...\n", job.id);
     if (!relay_start(err, sizeof err)) { printf("relay: %s\n", err); return; }
     relay_job_begin(job.id);
-    char cases[16] = "20000", seed[24] = "1";
+    char cases[16] = "20000", seed[24] = "1", mode[24] = "";
     const char* p = strstr(job.args, "--fuzz");
-    sscanf(p, "--fuzz %15s %23s", cases, seed);
-    char* av[3] = { "jit_fuzz", cases, seed };
+    sscanf(p, "--fuzz %15s %23s %23s", cases, seed, mode);
+    char* av[4] = { "jit_fuzz", cases, seed, mode };
     FILE* t = relay_tee(NULL);
     FILE* con = stdout;
     if (t) stdout = t;
-    int rc = jit_fuzz_main(3, av);
+    int rc = jit_fuzz_main(mode[0] ? 4 : 3, av);
     fflush(stdout);
     stdout = con;
     if (t) fclose(t);
