@@ -513,7 +513,10 @@ renderer only):
      hot words per guest instruction 6.0 -> 4.9, total code 4,598 -> 4,090 KB, cached GPR reads +58%, instructions
      run identical. JIT fuzzer: random programs with mid-trace branches, 30,000 cases x 3 seeds, 0 differences; planted
      bugs 5 (a followed b skips an instruction) and 6 (a side exit miscounts) are caught. perf.csv A/B: `traces` column,
-     20 s phases (`kTraceAb` in main.c); the shadow-scan stand-in is off in this build (`kHleAb`).
+     20 s phases (`--ab traces`, the default); the shadow-scan stand-in is off in this build (`--ab hle` / `--hle on`).
+     From `tp_arm_850.state`, 100 fields into the shadow scene, traces on vs off: code 7,217 -> 5,160 KB, kept hot words
+     per guest instruction 7.1 -> 6.0; same final PC, GX bytes and last frame; instructions 150,419,831 vs 150,419,842
+     (longer blocks end a slice a few cycles later, so events land a few instructions apart: timing, not semantics).
    - **qemu ARM state for fast JIT-path tests:** `/root/tp_arm_850.state` (TP at field 850, just before the shadow scene),
      made by `HLE_CHECK=1 qemu-arm ... --jit --save-state 850:...`; `--load-state` it with the same build layout.
      `JIT_DUMP=big|<pc>` prints blocks' guest instructions and ARM words; `GC3DS_JIT_NOTRACE=1` turns traces off.
