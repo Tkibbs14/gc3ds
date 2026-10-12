@@ -27,7 +27,7 @@ static void aram_dma(System* s) {
     DSPState* d = &s->dsp;
     u32 mm = d->aramDmaMm & 0x03FFFFE0, ar = d->aramDmaAr & 0x00FFFFE0, cnt = d->aramDmaCnt & 0x03FFFFE0;
     bool toMm = d->aramDmaCnt & 0x80000000u;
-    if (mm + cnt <= PA_MEM1_END && ar + cnt <= ARAM_SIZE) {
+    if (d->aram && mm + cnt <= PA_MEM1_END && ar + cnt <= ARAM_SIZE) {  // no ARAM: the JIT fuzzer's machines
         if (toMm) memcpy(s->mem1 + mm, d->aram + ar, cnt);
         else memcpy(d->aram + ar, s->mem1 + mm, cnt);
     } else {

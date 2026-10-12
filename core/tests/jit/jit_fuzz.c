@@ -509,11 +509,14 @@ int main(int argc, char** argv) {
     g_logMask = 0;  // unmapped-access and reserved-GQR messages from the deliberately wild addresses
     const char* pe = getenv("JIT_FUZZ_PLANT");
     int plant = pe ? atoi(pe) : 0;
-    if (!sys_init(&A) || !sys_init(&B)) { printf("init failed\n"); return 2; }
+    if (!sys_init(&A) || !sys_init(&B)) { printf("init failed\n"); sys_free(&A); sys_free(&B); return 2; }
+    // Fuzz cases never touch ARAM: on the 3DS its 2 x 16 MB is what keeps the JIT from fitting beside two machines.
+    free(A.dsp.aram); A.dsp.aram = NULL;
+    free(B.dsp.aram); B.dsp.aram = NULL;
     boot_like(&A);
     boot_like(&B);
     jit = jit_create(&A.cpu, A.mem1, MEM1_SIZE, 4u << 20);
-    if (!jit) { printf("jit_create failed\n"); return 2; }
+    if (!jit) { printf("jit_create failed\n"); sys_free(&A); sys_free(&B); return 2; }
     jit_debug_max_insns = 1;
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
