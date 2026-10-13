@@ -957,3 +957,6 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Relay:** builds restart by themselves (hb:ldr via svcConnectToPort); downloads retry on a stall (job 126's first
   attempt stalled and the second finished). A run interrupted by the 2DS sleeping stays "running" on the relay:
   cancel it (job 126).
+- **Baseline of the night's defaults (job 130, tp850, 600 s, no A/B):** cutscene (first 300 s) 20.06% +- 0.26, core 0
+  22.83% (gxwait 11.1%, valloc 21%, worker 55% busy); later core-0-bound stretch 11.80% +- 0.05 (core 0 11.87%).
+  No new Luma dumps (arm11 9, arm9 2). Compare the next builds' runs against these, within-run A/B first.
