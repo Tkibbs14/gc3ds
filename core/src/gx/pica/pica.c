@@ -931,6 +931,7 @@ typedef struct {
     u32 nSeg;
 } VWork;
 static VWork g_vw[VW_SLOTS];
+static VCache *g_vcGx, *g_vcWorker;  // display-list vertex caches (vfast.c): one per gathering thread
 static u8* g_vwMem;
 static u32 g_vwMemHead;
 static volatile u32 g_vwQuit, g_vwPos;
@@ -1065,6 +1066,7 @@ static void vw_main(void* arg) {
             bool timed = !(++jobs & 15);  // timed on one job in 16 (a clock read costs 0.25 us)
             u64 t0 = timed ? prof_begin() : 0;
             g_vfPhaseTimed = timed;
+            if (g_vw[g_vwTail % VW_SLOTS].job) vfast_job_set_cache(g_vw[g_vwTail % VW_SLOTS].job, g_vcWorker);  // gathers here use the worker's cache
             vw_do(&g_vw[g_vwTail % VW_SLOTS]);
             g_vfPhaseTimed = false;
             if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 16; g_vwPhaseAll += d; }
@@ -1211,6 +1213,8 @@ static void vw_queue(const VWork* w, u32 verts) {
 
 static bool vw_start(void) {
     if (g_vwThread) return true;
+    if (!g_vcGx) g_vcGx = vcache_create(2560u << 10, 8192);
+    if (!g_vcWorker) g_vcWorker = vcache_create(2560u << 10, 8192);
     g_vwMem = malloc(VW_MEM);
     if (!g_vwMem) g_vwMem = linearAlloc(VW_MEM);
     if (!g_vwMem) return false;
@@ -1292,7 +1296,12 @@ static void describe_draw(const GXCore* gx, u32 prim, u32 count) {
 
 // One draw, or a merged draw (nSeg > 0: seg[] lists its draws as prim << 16 | count, vertices back to back in raw;
 // always triangles, always indexed).
-static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const u32* seg, u32 nSeg) {
+// The display-list vertex cache (vfast.c): one for gathers on this (GX) thread, one for the vertex worker's.
+const VCacheStats* pica_vcache_stats(int worker) { return vcache_stats(worker ? g_vcWorker : g_vcGx); }
+
+// segPa: where the stream (or each merged draw's) lies in guest RAM, VC_NO_PA when it was not read from there.
+static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const u32* seg, u32 nSeg,
+                     const u32* segPa) {
     vw_apply();
     if (g_descWant && !g_descReady) describe_draw(&s->gx.core, prim, count);
     static u32 drawN;
@@ -1390,7 +1399,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         bool needPv = !(deferLit && indexed), needNd = !gpuPos && (cull == 1 || cull == 2);
         // The draw's own arrays first, then the job (its unused end is given back after vfast_prepare: vw_trim).
         u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
-        u32 front = ((needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 4 + 7) & ~7u;
+        u32 front = ((needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 8 + 7) & ~7u;
         u32 bytes = front + jb;
         u8* mem = work ? vw_alloc(bytes) : NULL;
         if (!mem) {  // the worker is off, or the draw is larger than its job ring: done here
@@ -1407,13 +1416,18 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         u8* at = mem;
         if (needPv) { w.pv = (PVert*)at; at += count * sizeof(PVert); }
         if (needNd) { w.nd = (float (*)[2])at; at += count * 8; }
+        const u32* pac = segPa;
         if (nSeg) {
             u32* sc = (u32*)at;
             memcpy(sc, seg, nSeg * 4);
             w.seg = sc;
             w.nSeg = nSeg;
+            u32* pc = sc + nSeg;  // the segments' addresses live with the job (the worker gathers later)
+            memcpy(pc, segPa, nSeg * 4);
+            pac = pc;
         }
         w.deferred = deferLit;  // vfast_prepare defers shader-lit draws only
+        if (g_vcGx) vfast_set_sources(g_vcGx, pac, w.seg, nSeg ? nSeg : 1);
         u64 tp = dprof_begin();
         w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem + front, w.pv);
         dprof_end(PROF_VPREP, tp);
@@ -1537,6 +1551,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
 static struct {
     u32 vat, vsize, count, bytes, nSeg;
     u32 seg[MERGE_SEGS];  // prim << 16 | count
+    u32 pa[MERGE_SEGS];   // where each draw's stream lies in guest RAM (VC_NO_PA: not from RAM)
     u8 raw[MERGE_BYTES];
 } g_mg;
 static volatile bool g_mergeWant = true;  // pica_set_merge (the GX thread reads it at each draw)
@@ -1547,7 +1562,7 @@ static void merge_issue(System* s) {
     g_mg.nSeg = 0;
     if (n) {
         g_picaMerge[2]++;
-        draw_job(s, g_mg.seg[0] >> 16, g_mg.vat, g_mg.raw, g_mg.count, g_mg.vsize, n > 1 ? g_mg.seg : NULL, n > 1 ? n : 0);
+        draw_job(s, g_mg.seg[0] >> 16, g_mg.vat, g_mg.raw, g_mg.count, g_mg.vsize, n > 1 ? g_mg.seg : NULL, n > 1 ? n : 0, g_mg.pa);
     }
     vw_dmb();  // the draw is queued on the vertex worker before a sync on the CPU thread can see it issued
     g_gxMergeOpen = false;
@@ -1572,11 +1587,14 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     (void)ctx;
     g_picaMerge[0]++;
     u32 bytes = count * vsize;
+    // A draw inside a display list streams straight from guest RAM: its address keys the vertex cache.
+    u32 pa = raw >= s->mem1 && raw + bytes <= s->mem1 + PA_MEM1_END ? (u32)(raw - s->mem1) : VC_NO_PA;
     bool can = g_mergeWant && g_indexed && s->gxAsync && prim < PRIM_LINES && count <= MERGE_VERTS && bytes <= MERGE_BYTES;
     if (g_gxMergeOpen) {
         if (can && vat == g_mg.vat && vsize == g_mg.vsize && g_mg.count + count <= MERGE_VERTS &&
             g_mg.bytes + bytes <= MERGE_BYTES && g_mg.nSeg < MERGE_SEGS) {
             memcpy(g_mg.raw + g_mg.bytes, raw, bytes);
+            g_mg.pa[g_mg.nSeg] = pa;
             g_mg.seg[g_mg.nSeg++] = (prim << 16) | count;
             g_mg.count += count;
             g_mg.bytes += bytes;
@@ -1586,8 +1604,9 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         g_picaMerge[4]++;
         merge_issue(s);
     }
-    if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0); return; }
+    if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0, &pa); return; }
     memcpy(g_mg.raw, raw, bytes);
+    g_mg.pa[0] = pa;
     g_mg.seg[0] = (prim << 16) | count;
     g_mg.nSeg = 1;
     g_mg.vat = vat;

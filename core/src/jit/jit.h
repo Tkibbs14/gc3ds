@@ -96,6 +96,9 @@ u32 jit_sched(const Jit* j);
 // Has no effect in fault mode (accesses are unchecked there already).
 enum { OPT_HOIST = 1, OPT_ALL = 1 };
 void jit_set_opt(Jit* j, u32 mask);
+// dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
+// display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.
+void jit_set_mem_stamps(Jit* j, void* stamps);
 u32 jit_opt(const Jit* j);
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);

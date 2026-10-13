@@ -59,6 +59,22 @@ struct GXBackend {
 extern bool g_gxMergeOpen;
 extern u64 g_dlStats[7];  // display-list statistics (fifo.c dl_note)
 
+// Guest RAM pages (4 KB) changed behind the CPU's cache: by the game's cache flushes (dcbf, dcbst, dcbz) and by DMA
+// (disc, ARAM, EXI, locked cache). The GPU of a GameCube reads vertex arrays and display lists
+// from RAM, so a game that changes them with the CPU must flush them, or the real GPU would read stale data: these
+// stamps are what the display-list vertex cache (vfast.c) checks (docs/DL_CACHE_PLAN.md). `now` grows by one per
+// change; a page holds the `now` of its last change. Plain CPU stores are not tracked (the hardware's rule).
+#define MEM_PAGES (0x01800000u >> 12)
+typedef struct { volatile u32 now; volatile u32 page[MEM_PAGES]; } MemStamps;
+extern MemStamps g_memStamps;
+static inline void mem_dirty(u32 pa, u32 len) {
+    if (!len || pa >= 0x01800000u) return;
+    u32 last = pa + len - 1 >= 0x01800000u ? MEM_PAGES - 1 : (pa + len - 1) >> 12;
+    u32 now = g_memStamps.now + 1;
+    g_memStamps.now = now;
+    for (u32 p = pa >> 12; p <= last; p++) g_memStamps.page[p] = now;
+}
+
 // One decoded vertex, before transformation (model space, dequantised).
 typedef struct {
     float pos[3];

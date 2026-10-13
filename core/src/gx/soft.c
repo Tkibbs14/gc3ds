@@ -993,10 +993,53 @@ static void merge_draw(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u
     g_gxMergeOpen = true;
 }
 
+// VCACHE_CHECK: the display-list vertex cache (vfast.c) on every draw that streams from guest RAM, through both gather
+// paths (on the preparing thread, and deferred to vfast_finish as on the 3DS worker); every hit is gathered again and
+// compared. VCACHE_PLANT=1 ignores the page stamps: differences then show the stamps are what keeps entries right.
+static VCache* g_vcPc;
+static void vcache_report(void) {
+    const VCacheStats* st = vcache_stats(g_vcPc);
+    if (!st) return;
+    fprintf(stderr, "VCACHE_CHECK: hits %llu (%llu vertices), misses %llu, stale %llu, inserts %llu, uncacheable %llu; "
+            "%llu hits gathered again, %llu differ%s\n", (unsigned long long)st->hits, (unsigned long long)st->hitVerts,
+            (unsigned long long)st->misses, (unsigned long long)st->stale, (unsigned long long)st->inserts,
+            (unsigned long long)st->uncacheable, (unsigned long long)g_vcacheChecked, (unsigned long long)g_vcacheCheckFails,
+            g_vcachePlant ? " (planted: page stamps ignored)" : "");
+}
+static void vcache_check_draw(System* s, GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize) {
+    if (!g_vcPc) {
+        g_vcPc = vcache_create(16u << 20, 1u << 16);
+        if (!g_vcPc) return;
+        g_vcacheCheck = true;
+        g_vcachePlant = getenv("VCACHE_PLANT") != NULL;
+        atexit(vcache_report);
+    }
+    static u8* mem;
+    static u32 memCap;
+    static PVert* out;
+    static u32 outCap;
+    u32 bytes = vfast_job_bytes(gx, count, vsize);
+    if (bytes > memCap) { free(mem); mem = malloc(bytes); memCap = mem ? bytes : 0; }
+    if (count > outCap) { free(out); out = malloc(count * sizeof *out); outCap = out ? count : 0; }
+    if (!mem || !out) return;
+    VSel sel;
+    VFold f;
+    merge_sel(gx, &sel, &f);
+    u32 pa = raw >= s->mem1 && raw + count * vsize <= s->mem1 + PA_MEM1_END ? (u32)(raw - s->mem1) : VC_NO_PA;
+    for (int deferred = 0; deferred < 2; deferred++) {
+        vfast_set_sources(g_vcPc, &pa, NULL, 1);
+        VJob* job = vfast_prepare(s, gx, vat, &f, &sel, raw, count, vsize, deferred != 0, deferred != 0, mem, out);
+        if (job && deferred) vfast_finish(job, out);
+    }
+}
+
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
     if (g_mrg.on) merge_draw(s, prim, vat, raw, count, vsize);
+    static int vcc = -1;
+    if (vcc < 0) vcc = getenv("VCACHE_CHECK") != NULL;
+    if (vcc && prim < 6) vcache_check_draw(s, gx, vat, raw, count, vsize);
     // PICA_TEV_FLAGS=hex (with --pica-tev): only draws whose approximations are all in the mask take the PICA path,
     // the rest the reference TEV; bisects which approximation changes a frame.
     static int allowSet = -1;

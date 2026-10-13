@@ -30,6 +30,11 @@ static u32 CODE_PA = 0x3000u;
 #define WIN_PA 0x100000u
 #define WIN_SIZE 0x10000u
 #define TOP_SIZE 256u  // the end of MEM1 is compared and randomized too
+// Around the edges of check hoisting's window (load_base): randomized and compared like the window. Before 2026-10-13
+// they were neither, so a float an earlier case stored there (a denormal: the JIT flushes it, as the 2DS does) came back
+// in a later load as a false difference (seed 1 case 15664), and a store there was never checked.
+static const u32 kEdgePa[2] = { 0x10000u - 0x200u, 0x17D0000u - 0x200u };
+#define EDGE_SIZE 0x400u
 
 #define MSR_BASE (MSR_IR | MSR_DR | MSR_RI)
 #define HID2_BASE (0x80000000u | 0x20000000u)  // LSQE | PSE
@@ -434,9 +439,25 @@ static u32 g_case;  // the case being checked (printed with a mismatch: JIT_FUZZ
 // whose interpreter took a DSI at such an address is not compared (counted in g_aliasSkips).
 static bool g_faultMode;
 static u32 g_aliasSkips;
+static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
 static bool alias_unchecked(u32 ea) {
     if (ea - 0x7FFF0000u < 0x01820000u || ea - 0xC0000000u < 0x01800000u || ea < 0x01800000u) return false;  // MEM1 and its guards
     if (ea - 0xC8000000u < 0x00400000u || ea - 0xCC000000u < 0x00010000u || ea - 0xE0000000u < 0x00010000u) return false;
+    return true;
+}
+
+// Page stamps for the display-list vertex cache (gx.h MemStamps): compiled dcbst / dcbf / dcbz stamp g_jitStamps (or
+// g_memStamps when they fall back to the interpreter); the interpreter stamps g_memStamps. The pages each side stamped
+// in a case must be the same set.
+static MemStamps g_jitStamps;
+
+static bool stamps_same(u32 stJ, u32 stI, u32 stI1) {
+    if (g_jitStamps.now == stJ && g_memStamps.now == stI) return true;
+    for (u32 p = 0; p < MEM_PAGES; p++) {
+        bool a = (s32)(g_jitStamps.page[p] - stJ) > 0 || ((s32)(g_memStamps.page[p] - stI) > 0 && (s32)(g_memStamps.page[p] - stI1) <= 0);
+        bool b = (s32)(g_memStamps.page[p] - stI1) > 0;
+        if (a != b) { printf("  page %05x (pa %08x): jit %s, interp %s\n", (unsigned)p, (unsigned)(p << 12), a ? "stamped" : "not stamped", b ? "stamped" : "not stamped"); return false; }
+    }
     return true;
 }
 
@@ -446,7 +467,12 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
     bool ok = true;
     char dis[96];
     gekko_disasm(CODE_EA, inst, dis, sizeof dis);
-    if (g_faultMode && b->spr[SPR_DAR] != a->spr[SPR_DAR] && alias_unchecked(b->spr[SPR_DAR])) {
+    // The same without a DSI: the interpreter read or wrote an unmapped physical address (BAT-mapped, 0x81810000 and up)
+    // while the JIT went through to the host alias (seed 1 case 19292, lwzux at 0x820CA67C, 2026-10-13).
+    // (What such an access reads depends on the host's memory layout: chain mode met three after the vertex cache's
+    // page stamps grew the program's data.) The interpreter made more unmapped accesses than the JIT's slow paths.
+    bool unmapped = g_faultMode && B.unknownMmioCount - g_unkB > A.unknownMmioCount - g_unkA;
+    if (unmapped || (g_faultMode && b->spr[SPR_DAR] != a->spr[SPR_DAR] && alias_unchecked(b->spr[SPR_DAR]))) {
         // Not compared; what outlives the case (the write-gather pipe) is taken from the interpreter.
         memcpy(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp);
         A.gx.wgpLen = B.gx.wgpLen;
@@ -488,6 +514,13 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
         printf("  memory at the end of MEM1 differs\n");
         ok = false;
     }
+    for (int k = 0; k < 2; k++)
+        if (memcmp(A.mem1 + kEdgePa[k], B.mem1 + kEdgePa[k], EDGE_SIZE)) {
+            if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
+            for (u32 i = 0; i < EDGE_SIZE; i++)
+                if (A.mem1[kEdgePa[k] + i] != B.mem1[kEdgePa[k] + i]) { printf("  mem %08x jit %02x interp %02x\n", kEdgePa[k] + i, A.mem1[kEdgePa[k] + i], B.mem1[kEdgePa[k] + i]); break; }
+            ok = false;
+        }
     if (memcmp(A.mem1 + WIN_PA, B.mem1 + WIN_PA, WIN_SIZE)) {
         if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         for (u32 i = 0; i < WIN_SIZE; i++) if (A.mem1[WIN_PA + i] != B.mem1[WIN_PA + i]) { printf("  mem %08x jit %02x interp %02x\n", WIN_PA + i, A.mem1[WIN_PA + i], B.mem1[WIN_PA + i]); break; }
@@ -663,6 +696,7 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     jit_set_so_exact(jit, false);
     put_state(&A, st);
     put_state(&B, st);
+    g_unkA = A.unknownMmioCount; g_unkB = B.unknownMmioCount;
     s64 b1 = 1 + rnd() % 300, b2 = 1 + rnd() % 300;
     bool show = getenv("JIT_FUZZ_CASE") && (u32)atol(getenv("JIT_FUZZ_CASE")) == g_case;
     int n1 = (int)jit_run(jit, b1);
@@ -709,8 +743,9 @@ int main(int argc, char** argv) {
     g_faultMode = jit_fault_mem(jit);
     jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);
     if (getenv("JIT_FUZZ_OPT")) jit_set_opt(jit, (u32)strtoul(getenv("JIT_FUZZ_OPT"), NULL, 0));  // optimizing-JIT stages
+    if (plant != 9) jit_set_mem_stamps(jit, &g_jitStamps);  // plant 9: compiled dcbf / dcbst / dcbz stamp nothing
     if (plant == 2) jit_debug_plant = 1;
-    if (plant >= 3) jit_debug_plant = (u32)plant;
+    if (plant >= 3 && plant != 9) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;
     for (u32 k = 0; k < cases && fails < 10; k++) {
         g_case = k;
@@ -763,6 +798,21 @@ int main(int argc, char** argv) {
             }
             len = want;
             floatSeq = true;
+            // Single stores store values fval_st made: not a register an earlier load of the case wrote (an lfd of two
+            // float words can round to a single denormal), and set again here because the instructions genf made and
+            // the loop above dropped may have changed the register (seed 1, cases 12097 and 17672 of 2026-10-13).
+            u32 loaded = 0;
+            for (u32 i = 0; i < len; i++) {
+                u32 op = seq[i] >> 26, fr = (seq[i] >> 21) & 31;
+                if (op == 48 || op == 50 || op == 56) { loaded |= 1u << fr; continue; }
+                if (op != 52 && op != 60) continue;
+                if (loaded & (1u << fr)) {
+                    for (fr = rnd() % 32; loaded & (1u << fr); fr = (fr + 1) % 32) {}
+                    seq[i] = (seq[i] & ~(31u << 21)) | (fr << 21);
+                }
+                st.fpr[fr][0] = fval_st();
+                st.fpr[fr][1] = fval_st();
+            }
         } else if (!isFloat && rnd() % 2 == 0 && !is_branch_op(seq[0])) {
             u32 want = 2 + rnd() % 3;
             while (len < want && !is_branch_op(seq[len - 1])) {
@@ -813,6 +863,11 @@ int main(int argc, char** argv) {
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         if (st.fmem && (floatSeq || rnd() % 8)) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
+        for (int k = 0; k < 2; k++) {
+            for (u32 i = 0; i < EDGE_SIZE; i++) A.mem1[kEdgePa[k] + i] = (u8)rnd();
+            if (st.fmem || floatSeq) fill_floats_at(&A, kEdgePa[k], EDGE_SIZE);
+            memcpy(B.mem1 + kEdgePa[k], A.mem1 + kEdgePa[k], EDGE_SIZE);
+        }
         if (floatSeq) {
             fill_floats_at(&A, MEM1_SIZE - TOP_SIZE, TOP_SIZE);
             memcpy(B.mem1 + MEM1_SIZE - TOP_SIZE, A.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
@@ -852,7 +907,10 @@ int main(int argc, char** argv) {
         }
         if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x %08x %08x\n", k, seq[0], seq[1], seq[2], seq[3]); fflush(stdout); }
         jit_set_so_exact(jit, false);  // each case starts with SO-free CR updates; XER[SO] set switches them to exact
+        u32 stJ = g_jitStamps.now, stI = g_memStamps.now;
+        g_unkA = A.unknownMmioCount; g_unkB = B.unknownMmioCount;
         int n = (int)jit_run_one_block(jit);
+        u32 stI1 = g_memStamps.now;
         if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
         // The interpreter runs the sequence while each instruction goes on to the next one, except that compiled code
         // must stop after an mtmsr that changed more than EE or set EE with an interrupt pending (other stops are the
@@ -876,7 +934,10 @@ int main(int argc, char** argv) {
             bool mustStop = stop && mtmsr && (((msrBefore ^ B.cpu.msr) & ~MSR_EE) || (st.irq && (B.cpu.msr & ~msrBefore & MSR_EE)));
             if (B.cpu.pc != CODE_EA + 4 * (i + 1) || mustStop || (stop && n <= expect)) break;
         }
-        if (!compare(inst, inst2, n, expect)) {
+        if (!stamps_same(stJ, stI, stI1)) {
+            if (fails < 5) printf("STAMPS DIFFER (case %u, %08x): the pages compiled code stamped are not the interpreter's\n", k, inst);
+            fails++;
+        } else if (!compare(inst, inst2, n, expect)) {
             if (!fails && !plant) {  // keep the first failing block for disassembly
                 FILE* d = fopen("/tmp/jit_fail.bin", "wb");
                 if (d) { fwrite(jit_debug_last_code, 4, jit_debug_last_words, d); fclose(d); }
@@ -904,7 +965,7 @@ int main(int argc, char** argv) {
                (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->fusedBranches);
     }
     printf("gekko_regs checked on %u instructions, %u mismatches\n", g_regChecked, g_regFails);
-    printf("fault mode %s: %llu sites patched by faults, %u cases not compared (DSI at an address aliasing host memory)\n",
+    printf("fault mode %s: %llu sites patched by faults, %u cases not compared (a DSI or an unmapped access at an address aliasing host memory)\n",
            jit_fault_mem(jit) ? "on" : "off", (unsigned long long)jit_stats(jit)->faults, g_aliasSkips);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).

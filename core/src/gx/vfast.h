@@ -43,6 +43,22 @@ typedef struct VJob VJob;
 // defer (shader-lit draws only): leave the gather of attributes from guest memory to vfast_finish as well; the caller
 // must then run vfast_finish before the guest can change the vertex arrays (before PE tokens / finish are signalled).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
+// The display-list vertex cache (vfast.c, docs/DL_CACHE_PLAN.md): one per thread that gathers. Before vfast_prepare,
+// vfast_set_sources names the cache and where the draw's vertex stream lies in guest RAM: n segments, pa[k] each
+// (VC_NO_PA: not in RAM, not cached) and seg[k] = prim << 16 | count (seg unused for n = 1). Arrays for n > 1 must stay
+// valid until vfast_finish. vfast_job_set_cache: the cache a vfast_finish on another thread uses instead.
+#define VC_NO_PA 0xFFFFFFFFu
+typedef struct VCache VCache;
+typedef struct { u64 hits, hitVerts, misses, stale, inserts, uncacheable; } VCacheStats;
+VCache* vcache_create(u32 bytes, u32 entries);
+void vcache_reset(VCache* vc);
+const VCacheStats* vcache_stats(const VCache* vc);
+void vfast_set_sources(VCache* vc, const u32* pa, const u32* seg, u32 n);
+void vfast_job_set_cache(VJob* job, VCache* vc);
+extern bool g_vcacheOn;     // off: every draw gathers (A/B)
+extern bool g_vcacheCheck;  // PC checker: hits are gathered again and compared
+extern bool g_vcachePlant;  // the checker's self-test: page stamps ignored
+extern u64 g_vcacheCheckFails, g_vcacheChecked;
 extern u64 g_vfPhase[3];  // vfast_finish's time by phase on marked calls (vfast.c)
 extern bool g_vfPhaseTimed;
 u32 vfast_job_used(const VJob* job);  // bytes from the job's start to the end of what it uses, once prepared

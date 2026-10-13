@@ -1,6 +1,7 @@
 # Display-list vertex cache: design (lever 1 of research/PERF_LEVERS.md)
 
-Status: designed 2026-10-13, not built. Build it in a fresh session, behind an A/B switch (`--ab dlcache`).
+Status: built 2026-10-13 (vfast.c gather_cached, page stamps in gx.h), off by default: `--dlcache on`, `--ab dlcache`,
+live `set dlcache 0|1`. Checked on the PC with `VCACHE_CHECK=1` (`VCACHE_PLANT=1` for its self-test); measured on the 2DS.
 
 ## Why
 

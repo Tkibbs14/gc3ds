@@ -98,6 +98,7 @@ static inline void ldr_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0
 static inline void str_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x05800000u | ((u32)rn << 16) | ((u32)rt << 12) | off); }
 static inline void ldr_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07900000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void str_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07800000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
+static inline void str_reg_shift(Emit* e, int rt, int rn, int rm, int lsl) { E(e, cc(C_AL) | 0x07800000u | ((u32)rn << 16) | ((u32)rt << 12) | ((u32)lsl << 7) | (u32)rm); }  // str rt, [rn, rm, lsl #lsl]
 static inline void ldrb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07D00000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void strb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07C00000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void ldrh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x019000B0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }

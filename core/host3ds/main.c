@@ -332,6 +332,8 @@ typedef struct {
     bool opt;            // --opt on|off (off): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
     bool abOpt;          // --ab opt: on and off (opt and deopts columns; each switch drops all compiled code)
     bool abVtrim;        // --ab vtrim: the vertex worker's job trim on and off (vtrim column)
+    bool dlcache;        // --dlcache on|off (off): the display-list vertex cache (vfast.c, docs/DL_CACHE_PLAN.md)
+    bool abDlcache;      // --ab dlcache: the cache on and off (dlcache column; starts off)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -366,7 +368,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -382,6 +384,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
         else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
+        else if (!strcmp(a, "--dlcache")) o->dlcache = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -430,7 +433,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -480,6 +483,7 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "sched") && g_jit) jit_set_sched(g_jit, v);
         else if (!strcmp(name, "merge") && g_pica) pica_set_merge(v != 0);
         else if (!strcmp(name, "vtrim")) pica_set_vw_trim(v != 0);
+        else if (!strcmp(name, "dlcache")) g_vcacheOn = v != 0;
         else if (!strcmp(name, "pld")) vfast_set_prefetch(v != 0);
         else if (!strcmp(name, "splitopen") && g_pica) pica_set_split_open(v != 0);
         else if (!strcmp(name, "vwmem") && g_pica) pica_set_job_ring(v << 10);
@@ -607,6 +611,7 @@ static const char* run(const char* path) {
     u32 fieldN = 0, presentsLast = g_presents;
     u64 xLast[4] = { 0, 0, g_sys.gx.bytesReceived, g_sys.di.bytesRead };  // compiles, polls, GX bytes, disc bytes
     if (g_jit) { xLast[0] = jit_stats(g_jit)->blocksCompiled; xLast[1] = jit_stats(g_jit)->pollSkips; }
+    g_vcacheOn = g_opt.dlcache;  // --ab dlcache starts off
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) {
@@ -620,6 +625,7 @@ static const char* run(const char* path) {
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
         jit_set_opt(g_jit, g_opt.opt ? OPT_ALL : 0);  // --ab opt starts off
+        jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
@@ -766,6 +772,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%lu", g_jit ? (unsigned long)jit_sched(g_jit) : 0UL);
                 fprintf(g_perf, ",%lu,%llu", g_jit ? (unsigned long)jit_opt(g_jit) : 0UL, g_jit ? (unsigned long long)jit_stats(g_jit)->deopts : 0ULL);
                 fprintf(g_perf, ",%d", pica_vw_trim() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_vcacheOn ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -799,6 +806,7 @@ static const char* run(const char* path) {
                 if (g_opt.abSched && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_sched(g_jit, jit_sched(g_jit) ? 0 : SCHED_ALL);
                 if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ? 0 : OPT_ALL);
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
+                if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
@@ -876,6 +884,20 @@ static const char* run(const char* path) {
                                         100 * a / all, 100 * b / all, 100 * c / all, 100 * (all - a - b - c) / all);
                             }
                             memcpy(lastPh, ph, sizeof ph);
+                        }
+                        for (int w = 0; w < 2; w++) {  // the display-list vertex caches (vfast.c): GX thread, vertex worker
+                            static VCacheStats lastC[2];
+                            const VCacheStats* c = pica_vcache_stats(w);
+                            if (!c) continue;
+                            double look = (double)(c->hits - lastC[w].hits + c->misses - lastC[w].misses + c->stale - lastC[w].stale);
+                            fprintf(g_perf, "# dlcache 10s (%s): %.0f hits/s (%.0f vertices/s), %.0f misses/s, %.0f stale/s, %.1f%% of "
+                                    "lookups hit; %.0f inserts/s, %.0f uncacheable segments/s; cache %s\n", w ? "worker" : "gx thread",
+                                    (double)(c->hits - lastC[w].hits) / 10.0, (double)(c->hitVerts - lastC[w].hitVerts) / 10.0,
+                                    (double)(c->misses - lastC[w].misses) / 10.0, (double)(c->stale - lastC[w].stale) / 10.0,
+                                    look > 0 ? 100.0 * (double)(c->hits - lastC[w].hits) / look : 0.0,
+                                    (double)(c->inserts - lastC[w].inserts) / 10.0, (double)(c->uncacheable - lastC[w].uncacheable) / 10.0,
+                                    g_vcacheOn ? "on" : "off");
+                            lastC[w] = *c;
                         }
                         lastPal = g_picaStats.palUploads;
                         lastSub = g_picaStats.subDraws;

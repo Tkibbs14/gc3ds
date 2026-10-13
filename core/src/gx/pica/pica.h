@@ -2,6 +2,7 @@
 // GX -> PICA200 backend for the 3DS (citro3d). Replaces the software renderer: draws, EFB clears and EFB copies run
 // on the GPU, and copies to the XFB stay on the GPU ("virtual XFB").
 #include "../gx.h"
+#include "../vfast.h"
 
 // Initialises citro3d and attaches the backend to s. Call after gfxInitDefault. Returns false if the GPU resources
 // could not be allocated (the caller keeps the software renderer).
@@ -72,6 +73,8 @@ void pica_set_vw_trim(bool on);  // give back the unused end of each job's reser
 bool pica_vw_trim(void);
 // Describes the next `draws` draws (TEV registers, texture maps, the combiner compiler's result) for the log: the
 // text is ready once pica_take_description returns it; pica_description_taken releases it.
+// The display-list vertex cache's counters: the GX thread's (0) or the vertex worker's (1); NULL before it exists.
+const VCacheStats* pica_vcache_stats(int worker);
 void pica_describe(u32 draws);
 const char* pica_take_description(void);
 void pica_description_taken(void);

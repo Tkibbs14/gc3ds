@@ -294,6 +294,11 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_COPY_EXEC:
         if (s->on_efb_copy) s->on_efb_copy(s, s->user, val);
         efb_copy(s, gx, val);
+        {  // the copy wrote RAM (a bound: rows of h lines or tiles at the copy's stride, or 4 bytes a pixel unstrided)
+            u32 wh = gx->bp[BP_EFB_WH], w = (wh & 0x3FF) + 1, h = ((wh >> 10) & 0x3FF) + 1;
+            u32 stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5, len = h * stride > w * h * 4 ? h * stride : w * h * 4;
+            mem_dirty((gx->bp[BP_COPY_DEST] & 0xFFFFFF) << 5, len);
+        }
         break;
     }
 }
@@ -313,6 +318,7 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
 // is checked against them. g_dlStats: calls, draws inside lists, draws outside, sampled calls, sampled with the same
 // bytes, sampled with the same arrays too, new list addresses.
 u64 g_dlStats[7];
+MemStamps g_memStamps;
 #define DL_SLOTS 2048
 static struct { u32 addr, size, bytes, arrays; } g_dl[DL_SLOTS];
 static u32 dl_hash(const u8* p, u32 n, u32 h) { for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }

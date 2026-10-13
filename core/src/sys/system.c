@@ -177,9 +177,11 @@ static u8* bus_host_ptr(void* ctx, u32 pa, u32 len) {
 static void bus_dcbz(void* ctx, u32 pa) {
     u8* p = bus_host_ptr(ctx, pa & ~31u, 32);
     if (p) memset(p, 0, 32);
+    mem_dirty(pa & ~31u, 32);
 }
 // No data cache model; instruction-cache invalidation is forwarded to the JIT (code at pa may have changed).
 static void bus_cache_op(void* ctx, int op, u32 pa) {
+    if (op == CACHE_DCBF || op == CACHE_DCBST) mem_dirty(pa & ~31u, 32);  // the line reaches RAM for the GPU to read
     if (op != CACHE_ICBI) return;
     hle_invalidate(pa);
     if (S->icbiHook) S->icbiHook(S->icbiCtx, pa);
@@ -188,7 +190,7 @@ static void bus_lc_dma(void* ctx, bool toRam, u32 ramPa, u32 cachePa, u32 len) {
     u8* r = bus_host_ptr(ctx, ramPa, len);
     u8* c = bus_host_ptr(ctx, cachePa, len);
     if (!r || !c) { unknown_access(S, "locked-cache DMA", ramPa, cachePa); return; }
-    if (toRam) memmove(r, c, len); else memmove(c, r, len);
+    if (toRam) { memmove(r, c, len); mem_dirty(ramPa, len); } else memmove(c, r, len);
 }
 #undef S
 

@@ -8,7 +8,9 @@
 // the lighting loop's independent vertices.
 #pragma GCC optimize("no-math-errno")
 #include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../sys/system.h"
 #include "vfast.h"
 
@@ -270,6 +272,11 @@ struct VJob {
     float P[16];
     VUnit unit[3];
     u8* end;           // the end of what the job uses (vfast_job_used)
+    VCache* vc;        // the display-list vertex cache gathers use (vfast_set_sources / vfast_job_set_cache)
+    u32 srcN;          // stream segments in guest RAM (0: not cacheable)
+    const u32 *srcPa, *srcSeg;  // each segment's physical address (VC_NO_PA: not in RAM) and prim << 16 | count
+    u32 onePa, oneSeg; // a single segment's, held in the job
+    u32 made;          // g_memStamps.now before the job read guest RAM (the stream copy of a deferred gather is that old)
     VIn* in;
     float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
     float (*tex)[12];  // texture matrices (3x4), per local index
@@ -358,7 +365,7 @@ static u32 prefetch_table(const VJob* job, VPf* pf) {
     return n;
 }
 
-static void gather(VJob* job, bool indices) {
+static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
     const u8* mem1 = job->mem1;
     VAttr pos = job->pos_, nrm = job->nrm_, col[2] = { job->col_[0], job->col_[1] }, tex[8];
     memcpy(tex, job->tex_, sizeof tex);
@@ -366,9 +373,9 @@ static void gather(VJob* job, bool indices) {
     u32 texUsed = job->texUsed, tmDirect = job->tmDirect, skip = (pnDirect ? 1u : 0u) + (u32)__builtin_popcount(tmDirect);
     VPf pf[8];
     u32 npf = g_vfastPrefetch ? prefetch_table(job, pf) : 0;
-    for (u32 vi = 0; vi < job->count; vi++) {
+    for (u32 vi = from; vi < to; vi++) {
         const u8* p = job->raw + vi * job->vsize;
-        if (npf && vi + PF_AHEAD < job->count) {
+        if (npf && vi + PF_AHEAD < to) {
             const u8* q = job->raw + (vi + PF_AHEAD) * job->vsize;
             for (u32 k = 0; k < npf; k++) {
                 u32 idx = pf[k].wide ? be16(q + pf[k].off) : q[pf[k].off];
@@ -541,6 +548,206 @@ static void setup_compute(VSetup* S, const GXCore* gx, u32 vat, const VFold* f, 
     S->eyeUsed = eyeUsed;
 }
 
+// ---- display-list vertex cache (docs/DL_CACHE_PLAN.md) ----
+// 99.6% of Twilight Princess's draws come from display lists and ~85% of list calls replay the same bytes over the same
+// arrays (2DS, job 107), while the vertex worker spent 58-62% of its time gathering attributes from guest RAM. A cache
+// per thread keeps the gathered attributes (position, normal, texture coordinates, colours: not the matrix indices,
+// which come from the registers of each draw) of each stream segment in RAM, keyed by its physical address, vertex
+// count and size and a hash of the vertex setup (formats, scales, array bases and strides). An entry records the RAM
+// pages its stream and array elements cover and g_memStamps.now before it gathered; it is used only while none of
+// those pages has a later stamp (gx.h: what the game flushed or DMA wrote).
+bool g_vcacheOn = true;
+bool g_vcacheCheck;  // VCACHE_CHECK (PC): every hit is gathered again and compared (vcache_check_failures)
+bool g_vcachePlant;  // the checker's self-test: page stamps ignored, so a changed array must show as a failure
+u64 g_vcacheCheckFails, g_vcacheChecked;
+#define VC_RANGES 13
+typedef struct {
+    u32 pa, count, vsize, made, key[2];
+    u64 at;  // the data's position in the ring's running byte count
+    u16 nr, r0[VC_RANGES], r1[VC_RANGES];
+} VCEnt;
+struct VCache {
+    VCEnt* ent;
+    u32 nEnt;  // a power of two
+    u8* ring;
+    u32 size;
+    u64 total;
+    VCacheStats st;
+};
+
+VCache* vcache_create(u32 bytes, u32 entries) {
+    VCache* vc = calloc(1, sizeof *vc);
+    if (!vc) return NULL;
+    u32 n = 1;
+    while (n < entries) n <<= 1;
+    vc->ent = calloc(n, sizeof *vc->ent);
+    vc->ring = malloc(bytes);
+    if (!vc->ent || !vc->ring) { free(vc->ent); free(vc->ring); free(vc); return NULL; }
+    vc->nEnt = n;
+    vc->size = bytes;
+    for (u32 i = 0; i < n; i++) vc->ent[i].pa = VC_NO_PA;
+    return vc;
+}
+void vcache_reset(VCache* vc) { if (vc) for (u32 i = 0; i < vc->nEnt; i++) vc->ent[i].pa = VC_NO_PA; }
+const VCacheStats* vcache_stats(const VCache* vc) { return vc ? &vc->st : NULL; }
+
+static VCache* g_pendVc;
+static const u32 *g_pendPa, *g_pendSeg;
+static u32 g_pendN;
+void vfast_set_sources(VCache* vc, const u32* pa, const u32* seg, u32 n) { g_pendVc = vc; g_pendPa = pa; g_pendSeg = seg; g_pendN = n; }
+void vfast_job_set_cache(VJob* job, VCache* vc) { job->vc = vc; }
+
+static void vc_key(const VJob* job, u32 key[2]) {
+    u32 h0 = 2166136261u, h1 = 0x9747B28Cu;
+    const VAttr* a[12] = { &job->pos_, &job->nrm_, &job->col_[0], &job->col_[1] };
+    for (int i = 0; i < 8; i++) a[4 + i] = &job->tex_[i];
+    for (int i = 0; i < 12; i++) {
+        const u8* b = (const u8*)a[i];
+        for (u32 k = 0; k < sizeof(VAttr); k++) { h0 = (h0 ^ b[k]) * 16777619u; h1 = (h1 ^ b[k]) * 0x5bd1e995u; h1 ^= h1 >> 15; }
+    }
+    u32 f[4] = { (u32)job->nrmUsed | (u32)job->nbt << 1 | (u32)job->index3 << 2 | (u32)job->pnDirect << 3,
+                 job->texUsed, job->tmDirect, job->vsize };
+    for (int i = 0; i < 4; i++) { h0 = (h0 ^ f[i]) * 16777619u; h1 = (h1 ^ f[i]) * 0x5bd1e995u; h1 ^= h1 >> 15; }
+    key[0] = h0; key[1] = h1;
+}
+
+static VCEnt* vc_slot(VCache* vc, u32 pa, u32 count, const u32 key[2]) {
+    u32 h = (pa >> 5) * 2654435761u ^ count * 40503u ^ key[0];
+    return &vc->ent[(h ^ (h >> 16)) & (vc->nEnt - 1)];
+}
+
+static bool vc_valid(const VCache* vc, const VCEnt* e) {
+    if (vc->total - e->at > vc->size) return false;  // the ring has gone past its data
+    if (g_vcachePlant) return true;
+    for (u32 r = 0; r < e->nr; r++)
+        for (u32 p = e->r0[r]; p <= e->r1[r]; p++)
+            if ((s32)(g_memStamps.page[p] - e->made) > 0) return false;
+    return true;
+}
+
+// The pages [lo, hi] (bytes) into the entry's ranges, merging overlaps; false when they do not fit.
+static bool vc_range(VCEnt* e, u32 lo, u32 hi) {
+    if (lo >= PA_MEM1_END) return true;
+    if (hi >= PA_MEM1_END) hi = PA_MEM1_END - 1;
+    u16 a = (u16)(lo >> 12), b = (u16)(hi >> 12);
+    for (u32 r = 0; r < e->nr; r++)
+        if (a <= e->r1[r] + 1 && b + 1 >= e->r0[r]) {
+            if (a < e->r0[r]) e->r0[r] = a;
+            if (b > e->r1[r]) e->r1[r] = b;
+            return true;
+        }
+    if (e->nr == VC_RANGES) return false;
+    e->r0[e->nr] = a; e->r1[e->nr] = b; e->nr++;
+    return true;
+}
+
+// Every index the vertex records hold (the prefetch table without its limit, and all three of an NBT normal's).
+typedef struct { u32 off, base, stride; bool wide; } VIdx;
+static u32 index_list(const VJob* job, VIdx* out) {
+    u32 n = 0, off = (job->pnDirect ? 1u : 0u) + (u32)__builtin_popcount(job->tmDirect);
+    const VAttr* a[12] = { &job->pos_, &job->nrm_, &job->col_[0], &job->col_[1] };
+    for (int i = 0; i < 8; i++) a[4 + i] = &job->tex_[i];
+    for (int i = 0; i < 12; i++) {
+        const VAttr* v = a[i];
+        if (!v->mode) continue;
+        u32 direct = i == 2 || i == 3 ? v->cs : (u32)v->n * v->cs;
+        if (v->mode == 1) { off += direct; continue; }
+        u32 isz = v->mode == 2 ? 1 : 2, count = i == 1 && job->nbt && job->index3 ? 3 : 1;
+        for (u32 c = 0; c < count; c++) out[n++] = (VIdx){ off + c * isz, v->base, v->stride, isz == 2 };
+        off += isz * count;
+    }
+    return n;
+}
+
+static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const u32 key[2], u32 made) {
+    u32 len = cnt * (u32)sizeof(VIn);
+    if (len > vc->size / 4) return;
+    VCEnt e;
+    memset(&e, 0, sizeof e);
+    e.pa = pa; e.count = cnt; e.vsize = job->vsize; e.made = made; e.key[0] = key[0]; e.key[1] = key[1];
+    bool ok = vc_range(&e, pa, pa + cnt * job->vsize - 1);  // the stream (and the display list around it)
+    VIdx ix[16];
+    u32 ni = index_list(job, ix);
+    for (u32 k = 0; k < ni && ok; k++) {  // the array elements the segment's indices reach
+        u32 lo = 0xFFFFFFFFu, hi = 0;
+        for (u32 vi = from; vi < from + cnt; vi++) {
+            const u8* p = job->raw + vi * job->vsize + ix[k].off;
+            u32 idx = ix[k].wide ? ((u32)p[0] << 8 | p[1]) : p[0];
+            if (idx < lo) lo = idx;
+            if (idx > hi) hi = idx;
+        }
+        ok = vc_range(&e, ix[k].base + lo * ix[k].stride, ix[k].base + hi * ix[k].stride + 63);
+    }
+    if (!ok) { vc->st.uncacheable++; return; }
+    u32 pos = (u32)(vc->total % vc->size);
+    if (pos + len > vc->size) { vc->total += vc->size - pos; pos = 0; }
+    memcpy(vc->ring + pos, job->in + from, len);
+    e.at = vc->total;
+    vc->total += len;
+    *vc_slot(vc, pa, cnt, key) = e;
+    vc->st.inserts++;
+}
+
+// What the cache holds of a vertex: position, normal, texture coordinates, colours (not c0, pn, tm).
+static void vc_copy(VIn* dst, const VIn* src, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        memcpy(&dst[i], &src[i], offsetof(VIn, c0));
+        memcpy(dst[i].col, src[i].col, sizeof src[i].col);
+        dst[i].hasColor = src[i].hasColor;
+    }
+}
+
+static bool vc_same(const VJob* job, const VIn* a, const VIn* b, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        if (memcmp(a[i].p, b[i].p, sizeof a[i].p) || memcmp(a[i].col, b[i].col, sizeof a[i].col) || a[i].hasColor != b[i].hasColor) return false;
+        if (job->nrmUsed && memcmp(a[i].n, b[i].n, sizeof a[i].n)) return false;
+        for (u32 t = 0; t < 8; t++) if (((job->texUsed >> t) & 1) && memcmp(a[i].t[t], b[i].t[t], sizeof a[i].t[t])) return false;
+    }
+    return true;
+}
+
+static void gather_range(VJob* job, bool indices, u32 from, u32 to);
+static void gather_cached(VJob* job, bool indices) {
+    VCache* vc = job->vc;
+    if (!vc || !g_vcacheOn || !job->srcN) { gather_range(job, indices, 0, job->count); return; }
+    if (indices) gather_indices(job);  // matrix indices: from the stream and this draw's registers, never cached
+    u32 key[2];
+    vc_key(job, key);
+    u32 at = 0;
+    for (u32 k = 0; k < job->srcN && at < job->count; k++) {
+        u32 cnt = job->srcSeg[k] & 0xFFFF, pa = job->srcPa[k];
+        if (at + cnt > job->count) cnt = job->count - at;
+        VCEnt* e = pa == VC_NO_PA ? NULL : vc_slot(vc, pa, cnt, key);
+        bool match = e && e->pa == pa && e->count == cnt && e->vsize == job->vsize && e->key[0] == key[0] && e->key[1] == key[1];
+        if (match && vc_valid(vc, e)) {
+            const VIn* src = (const VIn*)(vc->ring + (u32)(e->at % vc->size));
+            vc_copy(job->in + at, src, cnt);
+            vc->st.hits++;
+            vc->st.hitVerts += cnt;
+            if (g_vcacheCheck) {  // the checker: gather again and compare
+                static VIn fresh[1024], keep[1024];  // (PC only; static: the 3DS worker's stack is 32 KB)
+                if (cnt <= 1024) {
+                    memcpy(keep, job->in + at, cnt * sizeof(VIn));
+                    gather_range(job, false, at, at + cnt);
+                    memcpy(fresh, job->in + at, cnt * sizeof(VIn));
+                    memcpy(job->in + at, keep, cnt * sizeof(VIn));
+                    g_vcacheChecked++;
+                    if (!vc_same(job, fresh, keep, cnt)) g_vcacheCheckFails++;
+                }
+            }
+        } else if (pa == VC_NO_PA) {
+            vc->st.uncacheable++;
+            gather_range(job, false, at, at + cnt);
+        } else {
+            if (match) vc->st.stale++; else vc->st.misses++;
+            gather_range(job, false, at, at + cnt);
+            vc_put(vc, job, pa, at, cnt, key, job->made);  // as old as the job's stream: a deferred job copied it earlier
+        }
+        at += cnt;
+    }
+    if (at < job->count) gather_range(job, false, at, job->count);
+}
+
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                     u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out) {
     VJob* job = mem;
@@ -555,6 +762,13 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     job->count = count;
     job->gpuLight = gpuLight;
     job->gpuPos = false;
+    job->vc = g_pendVc;  // the stream's place in RAM (vfast_set_sources), for the display-list vertex cache
+    job->srcN = g_pendVc ? g_pendN : 0;
+    if (g_pendVc && g_pendN == 1) { job->onePa = g_pendPa[0]; job->oneSeg = count; job->srcPa = &job->onePa; job->srcSeg = &job->oneSeg; }
+    else { job->srcPa = g_pendPa; job->srcSeg = g_pendSeg; }
+    g_pendVc = NULL; g_pendN = 0;
+    job->made = g_memStamps.now;
+    __sync_synchronize();  // the stamp before the reads it covers
     VIn* g_in = job->in;
     // The draw's setup (decode layout, outputs needed, texture units, lighting halves, projection) depends only on
     // registers, so it is kept until one of them changes value (GXCore versions) or the draw's format, the TEV's
@@ -625,7 +839,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         goto matrices;
     }
     t0 = dprof_begin();  // all reads of guest memory (timed as "dec" on the 3DS profile)
-    gather(job, true);
+    gather_cached(job, true);
     dprof_end(PROF_VDEC, t0);
 
     // Colour channels the outputs need (texgen from colour reads channel 0, kept in c0).
@@ -725,7 +939,7 @@ static inline u64 vf_clock(void) { return g_vfPhaseTimed && g_profClock ? g_prof
 void vfast_finish(VJob* job, PVert* out) {
     u64 tp0 = vf_clock(), tp1, tp2;
     if (!job->gathered) {
-        gather(job, false);
+        gather_cached(job, false);
         gpu_colours(job, out);
         job->gathered = true;
     }

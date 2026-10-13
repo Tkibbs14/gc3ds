@@ -30,7 +30,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_N, ST_WORDS = 4096 };  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_N, ST_WORDS = 4096 };  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -129,6 +129,7 @@ struct Jit {
     u32 opt;                    // jit_set_opt: OPT_* optimizations
     u32 deopt[DEOPT_SLOTS];     // guest PCs of blocks deoptimized by a failed window check (0: empty); kept across flushes
     u32 deoptN;
+    void* memStamps;            // jit_set_mem_stamps: { now, page[] } stamped by dcbf / dcbst / dcbz (NULL: not tracked)
 };
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
@@ -1024,7 +1025,7 @@ static const void* const kJitFns[] = { (const void*)jit_load, (const void*)jit_s
                                        (const void*)jit_interp, (const void*)jit_mtmsr, (const void*)jit_load64,
                                        (const void*)jit_store64, (const void*)jit_hle };
 // Gekko.jitFn after the C helpers: the shared slow-path stubs, and the write-gather pipe's address, length and buffer.
-enum { JF_LOADSLOW = 8, JF_STORESLOW, JF_STOREPIPE, JF_GATHER_EA, JF_GATHER_LEN, JF_GATHER_BUF, JF_DEOPT, JF_N };
+enum { JF_LOADSLOW = 8, JF_STORESLOW, JF_STOREPIPE, JF_GATHER_EA, JF_GATHER_LEN, JF_GATHER_BUF, JF_DEOPT, JF_MEMSTAMPS, JF_N };
 _Static_assert(sizeof kJitFns / sizeof kJitFns[0] <= JF_LOADSLOW, "kJitFns overlaps the stub slots");
 _Static_assert(JF_N <= sizeof ((Gekko*)0)->jitFn / sizeof(u32), "Gekko.jitFn too small");
 static void call(Cg* c, const void* fn) {
@@ -2071,6 +2072,10 @@ static bool compile_int(Cg* c, u32 inst) {
         dp_imm(e, SUB, 0, R2, R1, IMM(0x80000000u));
         dp_imm(e, CMP, 1, 0, R2, IMM(0x01800000u));
         u32 slow = branch_c(e, C_CS, 0);
+        if ((xo == 54 || xo == 86) && c->j->memStamps) {  // dcbst / dcbf: the line reaches what the GPU reads; stamp its page
+            branch_abs(e, C_AL, true, stub(c, ST_MEMDIRTY));
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+        }
         if (xo == 1014) {  // dcbz: zero the 32-byte line
             u32 zero = (1u << R2) | (1u << R3) | (1u << R12) | (1u << LR);
             dp_imm(e, BIC, 0, R1, R1, 31);
@@ -2082,6 +2087,11 @@ static bool compile_int(Cg* c, u32 inst) {
             stmia(e, R1, zero);
             dp_imm(e, ADD, 0, R1, R1, 16);
             stmia(e, R1, zero);
+            if (c->j->memStamps) {  // the page's stamp after the zeroes (a gather between them must not see a current stamp)
+                dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+                dp_imm(e, SUB, 0, R2, R1, IMM(0x80000000u));
+                branch_abs(e, C_AL, true, stub(c, ST_MEMDIRTY));
+            }
         }
         u32 resume = e->n;
         cold_begin(c);
@@ -3460,6 +3470,15 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, SUB, 0, R12, R12, IMM(HOIST_LO - 0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(HOIST_SIZE));
     bx_reg_c(e, C_AL, LR);
+    j->stub[ST_MEMDIRTY] = e->n;  // r2 = physical address in MEM1: its 4 KB page gets the next stamp (r1, r2, r3 clobbered)
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_MEMSTAMPS));
+    ldr_imm(e, R3, R1, 0);
+    dp_imm(e, ADD, 0, R3, R3, 1);
+    str_imm(e, R3, R1, 0);
+    mov_shift(e, 0, R2, R2, LSR, 12);
+    dp_imm(e, ADD, 0, R1, R1, 4);
+    str_reg_shift(e, R3, R1, R2, 2);
+    bx_reg_c(e, C_AL, LR);
     j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
     mov_shift(e, 0, R1, R2, LSL, 30 - FAST_BITS);  // fast_index: (pc >> 2) & (FAST_SIZE - 1)
     mov_shift(e, 0, R1, R1, LSR, 32 - FAST_BITS);
@@ -3747,6 +3766,7 @@ static void jit_fill_fns(Jit* j) {
     g->jitFn[JF_GATHER_EA] = j->gatherEa;
     g->jitFn[JF_GATHER_LEN] = (u32)(uintptr_t)j->gatherLen;
     g->jitFn[JF_GATHER_BUF] = (u32)(uintptr_t)j->gatherBuf;
+    g->jitFn[JF_MEMSTAMPS] = (u32)(uintptr_t)j->memStamps;
 }
 
 static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
@@ -3974,6 +3994,13 @@ bool jit_fault(u32 hostPc, u32* resume) {
         }
     }
     return false;
+}
+
+void jit_set_mem_stamps(Jit* j, void* stamps) {
+    if (j->memStamps == stamps) return;
+    j->memStamps = stamps;
+    jit_fill_fns(j);
+    jit_invalidate_all(j);
 }
 
 void jit_set_opt(Jit* j, u32 mask) {
