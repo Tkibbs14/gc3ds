@@ -28,7 +28,10 @@ jobs:
         run: dkp-pacman -Sy --noconfirm --needed 3ds-curl 3ds-mbedtls 3ds-zlib
       - name: 3DS build
         run: bash core/host3ds/build.sh
-      - uses: actions/upload-artifact@v4
+      - name: The .3dsx as an artifact (best effort: artifact storage is shared by the account's repositories)
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: gc3ds-3dsx
           path: core/host3ds/gc3ds.3dsx
+          retention-days: 7
