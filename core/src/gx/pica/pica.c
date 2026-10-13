@@ -1064,8 +1064,10 @@ static void vw_main(void* arg) {
             vw_dmb();
             bool timed = !(++jobs & 15);  // timed on one job in 16 (a clock read costs 0.25 us)
             u64 t0 = timed ? prof_begin() : 0;
+            g_vfPhaseTimed = timed;
             vw_do(&g_vw[g_vwTail % VW_SLOTS]);
-            if (timed && g_profClock) g_hostProf[PROF_VWORK] += (g_profClock() - t0) * 16;
+            g_vfPhaseTimed = false;
+            if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 16; g_vwPhaseAll += d; }
             vw_dmb();
             g_vwTail = g_vwTail + 1;
             idle = 0;
@@ -1153,6 +1155,7 @@ static void split_early(void) {
 }
 
 u64 g_vwStats[5];
+u64 g_vwPhaseAll;  // the worker's timed jobs in all (g_vfPhase splits vfast_finish's part of it)
 static volatile bool g_vwTrim = true;
 void pica_set_vw_trim(bool on) { g_vwTrim = on; }
 bool pica_vw_trim(void) { return g_vwTrim; }

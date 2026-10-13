@@ -716,12 +716,20 @@ static void job_origin(VJob* job);
     for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[in[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
 } while (0)
 
+// Per-phase time of vfast_finish on calls the caller marks (g_vfPhaseTimed: the 3DS vertex worker, one job in 16):
+// [0] the deferred gather and colours, [1] positions and normals, [2] texture coordinates.
+u64 g_vfPhase[3];
+bool g_vfPhaseTimed;
+static inline u64 vf_clock(void) { return g_vfPhaseTimed && g_profClock ? g_profClock() : 0; }
+
 void vfast_finish(VJob* job, PVert* out) {
+    u64 tp0 = vf_clock(), tp1, tp2;
     if (!job->gathered) {
         gather(job, false);
         gpu_colours(job, out);
         job->gathered = true;
     }
+    tp1 = vf_clock();
     u32 count = job->count;
     const VIn* in = job->in;
     const float* P = job->P;
@@ -773,6 +781,7 @@ void vfast_finish(VJob* job, PVert* out) {
         }
     }
 texcoords:
+    tp2 = vf_clock();
     // Texture coordinates, one unit at a time with its texgen settled outside the vertex loop.
     for (u32 u = 0; u < 3; u++) {
         const VUnit* vu = &job->unit[u];
@@ -798,6 +807,10 @@ texcoords:
             default: TG_LOOP(TG_NONE, false); break;
             }
         }
+    }
+    if (g_vfPhaseTimed && tp0) {
+        u64 tp3 = vf_clock();
+        g_vfPhase[0] += tp1 - tp0; g_vfPhase[1] += tp2 - tp1; g_vfPhase[2] += tp3 - tp2;
     }
 }
 

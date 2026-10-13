@@ -854,6 +854,16 @@ static const char* run(const char* path) {
                                     jobs > 0 ? (double)(v[2] - lastV[2]) / jobs / 1024.0 : 0.0, waits / 10.0,
                                     waits > 0 ? (double)(v[4] - lastV[4]) / waits : 0.0);
                             memcpy(lastV, v, sizeof v);
+                            static u64 lastPh[4];
+                            u64 ph[4] = { g_vfPhase[0], g_vfPhase[1], g_vfPhase[2], g_vwPhaseAll };
+                            double all = (double)(ph[3] - lastPh[3]);
+                            if (all > 0) {
+                                double a = (double)(ph[0] - lastPh[0]), b = (double)(ph[1] - lastPh[1]), c = (double)(ph[2] - lastPh[2]);
+                                fprintf(g_perf, "# vworker phases 10s: gather and colours %.1f%%, positions and normals %.1f%%, "
+                                        "texture coordinates %.1f%%, rest (copy, cull, triangles) %.1f%% of the worker's time\n",
+                                        100 * a / all, 100 * b / all, 100 * c / all, 100 * (all - a - b - c) / all);
+                            }
+                            memcpy(lastPh, ph, sizeof ph);
                         }
                         lastPal = g_picaStats.palUploads;
                         lastSub = g_picaStats.subDraws;

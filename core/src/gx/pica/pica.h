@@ -65,6 +65,7 @@ extern u64 g_picaMerge[7];
 // The vertex worker's job ring: jobs, bytes reserved, bytes kept (after the trim), waits for space, jobs in flight summed
 // over those waits.
 extern u64 g_vwStats[5];
+extern u64 g_vwPhaseAll;  // the vertex worker's timed jobs, whole (g_vfPhase holds vfast_finish's phases of them)
 void pica_set_vw_trim(bool on);  // give back the unused end of each job's reservation (default on; A/B)
 bool pica_vw_trim(void);
 // Describes the next `draws` draws (TEV registers, texture maps, the combiner compiler's result) for the log: the
