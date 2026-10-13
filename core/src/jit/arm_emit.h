@@ -57,11 +57,38 @@ static inline void load_const_c(Emit* e, int cond, int rd, u32 v) {
 static inline void load_const(Emit* e, int rd, u32 v) { load_const_c(e, C_AL, rd, v); }
 
 // rd = rn (+/-) v, using `tmp` for constants that do not encode (tmp must differ from rd and rn).
+// Splits v into ARM immediates (8 bits at an even rotation), lowest first; returns how many (5: more than 4).
+static inline u32 imm_chunks(u32 v, u32 out[4]) {
+    u32 n = 0;
+    while (v) {
+        if (n == 4) return 5;
+        u32 low = (u32)__builtin_ctz(v) & ~1u;
+        u32 chunk = v & (0xFFu << low);
+        out[n++] = chunk;
+        v &= ~chunk;
+    }
+    return n;
+}
+// add_const builds a constant that is not one immediate from up to this many ADD / SUB immediates before it falls
+// back to loading it into tmp (up to 4 words) and adding: any 16-bit displacement takes 2 (the JIT sets it, jit_set_sched).
+static u32 g_addChunks = 1;
 static inline void add_const(Emit* e, int rd, int rn, u32 v, int tmp) {
     u32 enc;
     if (v == 0) { mov_reg(e, rd, rn); return; }
     if (arm_imm(v, &enc)) { dp_imm(e, ADD, 0, rd, rn, enc); return; }
     if (arm_imm(0u - v, &enc)) { dp_imm(e, SUB, 0, rd, rn, enc); return; }
+    if (g_addChunks > 1) {
+        u32 a[4], b[4], na = imm_chunks(v, a), nb = imm_chunks(0u - v, b);
+        bool neg = nb < na;
+        u32 n = neg ? nb : na;
+        if (n <= g_addChunks) {
+            for (u32 i = 0; i < n; i++) {
+                arm_imm(neg ? b[i] : a[i], &enc);
+                dp_imm(e, neg ? SUB : ADD, 0, rd, i ? rd : rn, enc);
+            }
+            return;
+        }
+    }
     load_const(e, tmp, v);
     dp_reg(e, ADD, 0, rd, rn, tmp);
 }

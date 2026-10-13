@@ -697,6 +697,7 @@ int main(int argc, char** argv) {
     if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
     if (!getenv("JIT_FUZZ_NOFAULT")) jit_set_fault_mem(jit, true);  // as gcemu and the 2DS: unchecked MEM1 accesses
     g_faultMode = jit_fault_mem(jit);
+    jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;

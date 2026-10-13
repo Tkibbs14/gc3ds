@@ -78,6 +78,7 @@ bool host_jit_enable(System* s) {
     if (getenv("GC3DS_NOHLE")) hle_set_enabled(false);  // as on the 2DS when the stand-in is off
     if (getenv("GC3DS_SLOW_INLINE")) jit_set_slow_inline(g_hostJit, true);  // the old per-site memory slow paths
     if (!getenv("GC3DS_NOFAULTMEM")) jit_set_fault_mem(g_hostJit, true);  // checked loads and stores for comparison
+    jit_set_sched(g_hostJit, getenv("GC3DS_NOSCHED") ? 0 : SCHED_ALL);
     s->icbiCtx = g_hostJit;
     return true;
 }

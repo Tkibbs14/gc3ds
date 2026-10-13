@@ -327,6 +327,8 @@ typedef struct {
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
+    bool sched;          // --sched on: code scheduled against interlocks (jit_set_sched SCHED_ALL)
+    bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -360,7 +362,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -374,6 +376,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
+        else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -422,7 +425,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -575,6 +578,7 @@ static const char* run(const char* path) {
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
+        jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
@@ -717,6 +721,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_split_open() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_vfastPrefetch ? 1 : 0);
                 fprintf(g_perf, ",%d,%llu", g_jit && jit_fault_mem(g_jit) ? 1 : 0, g_jit ? (unsigned long long)jit_stats(g_jit)->faults : 0ULL);
+                fprintf(g_perf, ",%lu", g_jit ? (unsigned long)jit_sched(g_jit) : 0UL);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -741,6 +746,7 @@ static const char* run(const char* path) {
                 if (g_opt.abSplit && g_pica && perfRows % AB_SECS == 0) pica_set_split_open(!pica_split_open());
                 if (g_opt.abPld && perfRows % AB_SECS == 0) vfast_set_prefetch(!g_vfastPrefetch);  // worker reads it per job
                 if (g_opt.abFault && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_fault_mem(g_jit, !jit_fault_mem(g_jit));
+                if (g_opt.abSched && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_sched(g_jit, jit_sched(g_jit) ? 0 : SCHED_ALL);
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;

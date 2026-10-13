@@ -92,6 +92,8 @@ struct Jit {
     u32 stub[ST_N];             // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
+    u16 memStub2[MS_KINDS][MS_REGS];  // ... the scheduled set (SCHED_STUBS)
+    u32 sched;                  // jit_set_sched: SCHED_STUBS | SCHED_CONST
     u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
     u16 stfsStub, lfsStub, lfdStub, stfdStub;  // emit_float_stubs
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
@@ -672,9 +674,32 @@ static void rx_fold(Jit* j, u32 nEntries) {
     }
 }
 
+// JIT_SCHEDDUMP=path (with JIT_REGSTAT): every executed block's hot code goes to `path` when the statistics are folded,
+// for an offline model of the ARM11 pipeline (core/tools/arm11_sched.py): per block the guest PC, the hot words,
+// where its instructions start (after the budget check and the statistics counter), its (opcode, hot words) list and
+// its execution count.
+static FILE* g_schedOut;
+static u32 *g_hotLen, *g_proLen;
 static void rs_fold(Jit* j, u32 nEntries) {
     if (!g_regStat) return;
     rx_fold(j, nEntries);
+    static bool stubsOut;
+    if (g_schedOut && !stubsOut) {  // the shared stubs once (calls into them are followed): magic, base, words
+        u32 hdr[3] = { 0x42555453u, (u32)(uintptr_t)j->code, j->stubWords };
+        fwrite(hdr, 4, 3, g_schedOut);
+        fwrite(j->code, 4, j->stubWords, g_schedOut);
+        stubsOut = true;
+    }
+    for (u32 b = 0; g_schedOut && b < nEntries; b++) {
+        u64 n = g_rsExec[b];
+        if (!n || !g_hotLen[b] || !j->table[b].fn) continue;
+        u32 hdr[6] = { 0x4B4C4222u, j->table[b].pc, g_hotLen[b], g_proLen[b], g_dopLen[b], (u32)(uintptr_t)j->table[b].fn };
+        fwrite(hdr, 4, 6, g_schedOut);
+        fwrite(&n, 8, 1, g_schedOut);
+        fwrite((const void*)j->table[b].fn, 4, g_hotLen[b], g_schedOut);
+        fwrite(&g_dopPool[g_dopStart[b]], 4, g_dopLen[b], g_schedOut);
+    }
+    if (g_schedOut) fflush(g_schedOut);
     g_dopUsed = 0;  // the pool restarts with the cache (every block's list is folded below)
     for (u32 b = 0; b < nEntries; b++) {
         u64 n = g_rsExec[b];
@@ -1178,9 +1203,12 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     int ri = ms_reg(dreg);
     if (c->j->memStubs && ri >= 0) {  // the shared stub: two words here instead of the check and access inline
         int k = size == 4 ? MS_L32 : size == 2 ? (sign ? MS_L16S : MS_L16U) : MS_L8;
-        branch_abs(e, C_AL, true, c->j->code + c->j->memStub[k][ri]);
+        bool v2 = (c->j->sched & SCHED_STUBS) != 0;
+        branch_abs(e, C_AL, true, c->j->code + (v2 ? c->j->memStub2[k][ri] : c->j->memStub[k][ri]));
         slow[0] = branch_c(e, C_CS, 0);
         slow[1] = NO_BRANCH;
+        if (v2 && size == 4) rev(e, dreg, dreg);  // the scheduled stubs leave the swap here (see emit_mem_stubs)
+        else if (v2 && size == 2) { if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
     } else {
         mem1_check(c, size, slow);
         if (size == 4) { ldr_reg(e, dreg, RRAM, R0); rev(e, dreg, dreg); }
@@ -1276,7 +1304,7 @@ static void emit_store(Cg* c, u32 size, int vreg) {
     int ri = ms_reg(vreg);
     if (c->j->memStubs && ri >= 0) {
         int k = size == 4 ? MS_S32 : size == 2 ? MS_S16 : MS_S8;
-        branch_abs(e, C_AL, true, c->j->code + c->j->memStub[k][ri]);
+        branch_abs(e, C_AL, true, c->j->code + ((c->j->sched & SCHED_STUBS) ? c->j->memStub2[k][ri] : c->j->memStub[k][ri]));
         slow[0] = branch_c(e, C_CS, 0);
         slow[1] = NO_BRANCH;
     } else {
@@ -2682,6 +2710,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         ldr_imm(e, R0, R12, 0);
         dp_imm(e, ADD, 0, R0, R0, 1);
         str_imm(e, R0, R12, 0);
+        if (g_proLen) { g_proLen[g_rsCur] = e->n; g_hotLen[g_rsCur] = 0; }
     }
 #endif
     u32 startPa = pa;
@@ -2765,6 +2794,9 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (g_regStat) { g_rsE[g_rsCur].written = g_rsWritten; g_rsE[g_rsCur].touched = g_rsSeen; g_rxHave = false; }
 #endif
     u32 hotEnd = e->n;
+#ifndef __3DS__
+    if (g_regStat && g_hotLen) g_hotLen[g_rsCur] = hotEnd;
+#endif
     u32 total = hle_is_hook(g, pc) ? 0 : c->count;  // a stand-in takes off what it ran itself
     e->buf[budgetSub] |= total;  // SUBS RDC, RDC, #total (at most MAX_BLOCK_INSNS: a plain immediate)
     for (u32 k = 0; k < c->nTfix; k++) {
@@ -2893,6 +2925,7 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
 // scene (2DS, 862fe63), about one instruction-cache miss per two guest instructions, so code size per guest
 // instruction is what to cut; a stub costs a predicted call and return. They return with the carry flag clear after
 // the access, or set (access not done) for the site's out-of-line slow path, with r0 kept; they clobber r1, r3 and lr.
+static void cond_last(Emit* e, int cond) { e->buf[e->n - 1] = (e->buf[e->n - 1] & 0x0FFFFFFFu) | cc(cond); }
 static void emit_mem_stubs(Jit* j, Emit* e) {
     for (int k = 0; k < MS_KINDS; k++) {
         for (int ri = 0; ri < MS_REGS; ri++) {
@@ -2919,6 +2952,37 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
             default: strb_reg(e, r, RRAM, R0); break;
             }
             bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+        }
+    }
+    // The scheduled set (SCHED_STUBS), from the ARM11 interlock model (tools/arm11_sched.py: loads were 63% of TP's
+    // modelled interlock cycles, lwz alone 17.5%). The range check reads r0, which the call's address computation made
+    // ready, instead of the SUB's fresh result as a shifted operand (one cycle): r0 - 0x80000000 is r0 with bit 31
+    // flipped, and rotation distributes over EOR. A load leaves its byte swap to the site, after the site's branch to
+    // its slow path, so the swap no longer waits on the load (two cycles). The access is conditional and there is one
+    // return: carry clear, done; set, not done (r0 kept).
+    for (int k = 0; k < MS_KINDS; k++) {
+        for (int ri = 0; ri < MS_REGS; ri++) {
+            int r = ri == 0 ? R2 : R4 + ri - 1;
+            u32 size = k == MS_L32 || k == MS_S32 ? 4 : k == MS_L8 || k == MS_S8 ? 1 : 2;
+            u32 sh = size == 4 ? 2 : size == 2 ? 1 : 0;
+            j->memStub2[k][ri] = (u16)e->n;
+            if (sh) {
+                mov_shift(e, 0, R12, R0, ROR, (int)sh);
+                dp_imm(e, EOR, 0, R12, R12, IMM(0x80000000u >> sh));
+            } else {
+                dp_imm(e, EOR, 0, R12, R0, IMM(0x80000000u));
+            }
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u >> sh));
+            switch (k) {
+            case MS_L32: ldr_reg(e, r, RRAM, R0); break;
+            case MS_L16U: case MS_L16S: ldrh_reg(e, r, RRAM, R0); break;
+            case MS_L8: ldrb_reg(e, r, RRAM, R0); break;
+            case MS_S32: rev(e, R3, r); cond_last(e, C_CC); str_reg(e, R3, RRAM, R0); break;
+            case MS_S16: rev16(e, R3, r); cond_last(e, C_CC); strh_reg(e, R3, RRAM, R0); break;
+            default: strb_reg(e, r, RRAM, R0); break;
+            }
+            cond_last(e, C_CC);
+            bx_reg_c(e, C_AL, LR);
         }
     }
 }
@@ -3502,6 +3566,12 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_rsE = calloc(MAX_ENTRIES, sizeof(RsEntry));
         g_rx = calloc(RX_POOL, sizeof(RsExit));
         g_rxCount = calloc(RX_POOL, sizeof(u32));
+        if (getenv("JIT_SCHEDDUMP")) {
+            g_schedOut = fopen(getenv("JIT_SCHEDDUMP"), "wb");
+            g_hotLen = calloc(MAX_ENTRIES, sizeof(u32));
+            g_proLen = calloc(MAX_ENTRIES, sizeof(u32));
+            if (!g_hotLen || !g_proLen) { if (g_schedOut) fclose(g_schedOut); g_schedOut = NULL; }
+        }
         g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead &&
                     g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount;
     }
@@ -3620,6 +3690,14 @@ void jit_set_slow_inline(Jit* j, bool on) {
     jit_invalidate_all(j);
 }
 bool jit_slow_inline(const Jit* j) { return j->slowInline; }
+
+void jit_set_sched(Jit* j, u32 mask) {
+    g_addChunks = (mask & SCHED_CONST) ? 2 : 1;
+    if (j->sched == mask) return;
+    j->sched = mask;
+    jit_invalidate_all(j);
+}
+u32 jit_sched(const Jit* j) { return j->sched; }
 
 void jit_set_mem_stubs(Jit* j, bool on) {
     if (j->memStubs == on) return;

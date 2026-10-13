@@ -83,6 +83,12 @@ extern void (*jit_run_end_hook)(void);
 void jit_set_fault_mem(Jit* j, bool on);
 bool jit_fault_mem(const Jit* j);
 bool jit_fault(u32 hostPc, u32* resume);
+// Code scheduled against ARM11 interlocks (tools/arm11_sched.py), for A/B: SCHED_STUBS, memory stubs whose range check
+// reads r0 and whose loads leave the byte swap to the site; SCHED_CONST, constants added in two immediates instead of
+// loaded (a negative 16-bit displacement: 2 words instead of up to 5). Drops all compiled code.
+enum { SCHED_STUBS = 1, SCHED_CONST = 2, SCHED_ALL = 3 };
+void jit_set_sched(Jit* j, u32 mask);
+u32 jit_sched(const Jit* j);
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);
 // XER[SO] in CR updates: compares and record forms leave CR bit SO out while XER[SO] has never been seen set (games

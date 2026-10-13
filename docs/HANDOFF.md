@@ -836,3 +836,23 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   (sdmc:/luma/dumps/arm11, as hex: header, 23 registers r0-r12 sp lr pc cpsr dfsr ifsr far fpexc fpinst fpinst2,
   then the process name) in perf.csv ("# crash log", "# luma dump"). An exception the kernel or another process
   takes shows up only in Luma's dump. ELFs of relay builds are kept in WSL /root/elfs for decoding addresses.
+
+## 2026-10-13: the ARM11 interlock model, and code scheduled against it
+
+- **The model (`core/tools/arm11_sched.py`):** a qemu run with `JIT_REGSTAT=1 JIT_SCHEDDUMP=path` writes every executed
+  block's hot code, its (guest opcode, hot words) list and its execution count, plus the shared stubs; the script runs
+  each block through an in-order issue model with the TRM's result latencies (ALU 1, +1 for a shifted operand or an
+  address base; load 3; VFP add 8, mul 8/9; VFP load 4; ARM->VFP 4; VFP->ARM 2), follows calls into the stubs, skips
+  the statistics build's counters, and reports interlock cycles by producer and by guest opcode (`--show KEY` prints
+  the hottest block holding KEY word by word; the scratchpad's showop.py disassembles it). Check: it gives 0.34 stall
+  cycles per instruction from interlocks alone; the 2DS counter says 0.64, and ~1.3 M D-cache misses/s at ~50 cycles
+  account for most of the rest.
+- **TP's interlocks (40 fields of the cutscene):** loads 63% (lwz alone 17.5%: 3.7 cycles each, a fresh SUB as a
+  shifted operand in the stub's check and the swap right after the load), VFP 23% (fmuls 15.7 cycles each, psq_st
+  14.3, ps ops 11-12, psq_l 9.6: every float instruction loads its FPRs, computes, converts and stores in a chain).
+- **Scheduled code (`jit_set_sched`, `--sched on`, `--ab sched`):** memory stubs whose check reads r0 (r0 - 0x80000000
+  is r0 with bit 31 flipped, and rotation distributes over EOR) and whose loads leave the byte swap to the site after
+  its slow-path branch; and `add_const` building constants from up to two immediates (a negative 16-bit displacement
+  from r13 / r2 was mov + 3 orr + add). Model: interlock cycles 1.70e8 -> 1.39e8 (-18%), executed instructions
+  -4%, lwz 3.73 -> 0.78 cycles, hot words 4.7 -> 4.6 per guest instruction. Verified: fuzz seeds 1 and 3 with fault mode
+  off (the stubs in use), DOL check, TP under qemu on vs off: identical instruction count and last frame.
