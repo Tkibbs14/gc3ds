@@ -1460,7 +1460,12 @@ static void emit_store(Cg* c, u32 size, int vreg) {
 
 static void emit_fallback(Cg* c, u32 inst) {
     Emit* e = &c->e;
-    c->single = 0;  // the interpreter may write any FPR
+    // The interpreter may write any FPR; lanes still held as float lanes (cold code: the hot path's) keep their bits.
+    {
+        u64 keep = 0;
+        for (int k = 0; k < NFS; k++) if (c->rc.fid[k] >= 0) keep |= 1ull << c->rc.fid[k];
+        c->single &= c->inCold ? keep : 0;
+    }
 #ifndef __3DS__
     g_rwWhy = RW_INTERP;
 #endif
@@ -2197,6 +2202,8 @@ static void ld_fpr(Cg* c, int d, u32 fr, u32 lane) {
 #ifndef __3DS__
     if (!c->inCold) fs_ld(fr, lane);
 #endif
+    int k = fc_find(&c->rc, fr, lane);
+    if (k >= 0) { vcvt_f64_f32(&c->e, d, 16 + k); return; }  // a float lane (OPT_FCACHE): its single, exactly
     vldr_d(&c->e, d, RG, OFF_FPR(fr) + 8u * lane);
 }
 static void st_fpr(Cg* c, int d, u32 fr, u32 lane) {
@@ -2220,7 +2227,8 @@ static void round_pair(Cg* c, int d0, int d1) {
 // (x + 2^27) & ~(2^28 - 1) on the 64-bit pattern (the interpreter's sf_round25; identity for exact singles). Uses r0, r1.
 static void ld_c25(Cg* c, int d, u32 fr, u32 lane) {
     Emit* e = &c->e;
-    if ((c->single >> (2 * fr + lane)) & 1) { ld_fpr(c, d, fr, lane); return; }  // an exact single: the cut changes nothing
+    // An exact single (a float lane always is): the cut changes nothing.
+    if (((c->single >> (2 * fr + lane)) & 1) || fc_find(&c->rc, fr, lane) >= 0) { ld_fpr(c, d, fr, lane); return; }
     ldr_imm(e, R0, RG, OFF_FPR(fr) + 8u * lane);
     ldr_imm(e, R1, RG, OFF_FPR(fr) + 8u * lane + 4);
     dp_imm(e, ADD, 1, R0, R0, IMM(0x08000000u));
@@ -2797,10 +2805,21 @@ static void fc_set(Cg* c, u32 fr, int k0, int k1) {
     c->rc.fdirty[k1] = true;
     c->single |= 3ull << (2 * fr);
 }
-#define FC_SINGLE(fr, lane) (((c->single >> (2 * (fr) + (lane))) & 1) != 0)
+#define FC_SINGLE(fr, lane) (((c->single >> (2 * (fr) + (lane))) & 1) != 0 || fc_find(&c->rc, fr, lane) >= 0)
 
 // Instructions that name FPRs but are compiled without the float lanes: write back the named FPRs' lanes, and forget
 // the destination's (written to guest state by the old code).
+// Most of that code reads FPRs through ld_fpr, which takes a lane from its register; only the sign operations, fctiw,
+// stfd and the GPR-word reads of a lane read guest state directly, so only their sources are written back. A
+// destination the instruction overwrites is forgotten without a write-back when the instruction cannot fault and does
+// not read it (arithmetic, which never leaves halfway); a load's (which can fault) is written back first.
+static void fc_drop_lane(Cg* c, u32 fr, u32 lane) {
+    int k = fc_find(&c->rc, fr, lane);
+    if (k < 0) return;
+    c->rc.fid[k] = -1;
+    c->rc.fdirty[k] = false;
+    c->single &= ~(1ull << (2 * fr + lane));
+}
 static void fc_prepare_old(Cg* c, u32 inst) {
     u32 op = inst >> 26, fd = (inst >> 21) & 31, fa = (inst >> 16) & 31, fb = (inst >> 11) & 31, fcr = (inst >> 6) & 31;
     u32 xo = (inst >> 1) & 0x3FF;
@@ -2813,8 +2832,34 @@ static void fc_prepare_old(Cg* c, u32 inst) {
     for (int k = 0; k < NFS; k++) if (c->rc.fid[k] >= 0) goto any;
     return;
 any:
-    if (arith) { fc_sync(c, fa); fc_sync(c, fb); fc_sync(c, fcr); }
-    if (store) fc_sync(c, fd); else fc_release(c, fd);
+    if (store) {
+        bool dbl = op == 54 || op == 55 || (op == 31 && (xo == 727 || xo == 759));  // stfd reads the words of ps0
+        if (dbl) fc_sync(c, fd);
+        return;
+    }
+    if (!arith) {  // loads: may fault before writing, so the old value is written back; lfd writes ps0 only
+        bool lfd = op == 50 || op == 51 || (op == 31 && (xo == 599 || xo == 631));
+        if (lfd) {
+            int k = fc_find(&c->rc, fd, 0);
+            if (k >= 0 && c->rc.fdirty[k]) { fc_wb(c, k); c->rc.fdirty[k] = false; }
+            fc_drop_lane(c, fd, 0);
+        } else fc_release(c, fd);
+        return;
+    }
+    // Direct readers of guest state: fneg / fabs / fnabs, ps_neg / ps_abs / ps_nabs, fctiw / fctiwz.
+    bool direct = (op == 63 && (xo == 40 || xo == 136 || xo == 264 || xo == 14 || xo == 15)) ||
+                  (op == 4 && (xo == 40 || xo == 136 || xo == 264));
+    if (direct) fc_sync(c, fb);
+    // Lanes the instruction writes: double-precision results (op 63) only ps0; single and paired-single results both.
+    bool lane0only = op == 63 && xo != 12;
+    bool readsFd = fd == fa || fd == fb || fd == fcr;
+    // No FPR written: fcmpu / fcmpo and ps_cmpu0/o0/u1/o1 write CR; dcbz_l names GPRs. FPSCR moves (mcrfs, mtfsb0/1,
+    // mtfsfi, mtfsf; mffs writes frD) name no destination FPR either: written back, not dropped.
+    if ((op == 63 && (xo == 0 || xo == 32)) || (op == 4 && (xo == 0 || xo == 32 || xo == 64 || xo == 96 || xo == 1014))) return;
+    if (op == 63 && (xo == 583 || xo == 711 || xo == 70 || xo == 38 || xo == 64 || xo == 134)) { fc_release(c, fd); return; }
+    if (readsFd || direct) { if (lane0only) { fc_sync(c, fd); fc_drop_lane(c, fd, 0); } else fc_release(c, fd); return; }
+    fc_drop_lane(c, fd, 0);
+    if (!lane0only) fc_drop_lane(c, fd, 1);
 }
 
 static int fc_compile(Cg* c, u32 inst) {
@@ -2965,48 +3010,80 @@ static int fc_compile(Cg* c, u32 inst) {
         int cl[2] = { 0, 1 };
         if (op == 4 && (xo5 == 12 || xo5 == 14)) cl[1] = 0;
         if (op == 4 && (xo5 == 13 || xo5 == 15)) cl[0] = 1;
-        if (sum) {  // sum0: a0 + b1, c1 / sum1: c0, a0 + b1
-            if (!FC_SINGLE(fa, 0) || !FC_SINGLE(fb, 1) || !FC_SINGLE(fcr, xo5 == 10 ? 1 : 0)) return -1;
-            sa[0] = fc_src(c, fa, 0);
-            sb[0] = fc_src(c, fb, 1);
-            sc[0] = fc_src(c, fcr, xo5 == 10 ? 1 : 0);
-            if (sa[0] < 0 || sb[0] < 0 || sc[0] < 0) return -1;
+        bool allSingle = true;
+        if (sum) {
+            allSingle = FC_SINGLE(fa, 0) && FC_SINGLE(fb, 1) && FC_SINGLE(fcr, xo5 == 10 ? 1 : 0);
         } else {
             for (u32 l = 0; l < lanes; l++) {
-                if (!FC_SINGLE(fa, l)) return -1;
-                if ((plain || madd) && !FC_SINGLE(fb, l)) return -1;
-                if ((mul || madd) && !FC_SINGLE(fcr, cl[l])) return -1;
-            }
-            for (u32 l = 0; l < lanes; l++) {
-                sa[l] = fc_src(c, fa, l);
-                sb[l] = plain || madd ? fc_src(c, fb, l) : 0;
-                sc[l] = mul || madd ? fc_src(c, fcr, cl[l]) : 0;
-                if (sa[l] < 0 || sb[l] < 0 || sc[l] < 0) return -1;
+                if (!FC_SINGLE(fa, l)) allSingle = false;
+                if ((plain || madd) && !FC_SINGLE(fb, l)) allSingle = false;
+                if ((mul || madd) && !FC_SINGLE(fcr, cl[l])) allSingle = false;
             }
         }
-        int d0 = fc_dst(c, fd, 0), d1 = fc_dst(c, fd, 1);
-        if (d0 < 0 || d1 < 0) return -1;
-        if (sum) {
-            int at = xo5 == 10 ? 0 : 1;
-            vfp_s(e, VF_ADD, at, 16 + sa[0], 16 + sb[0]);
-            vmov_s(e, 1 - at, 16 + sc[0]);
-        } else {
-            for (u32 l = 0; l < lanes; l++) {
-                if (plain) vfp_s(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, (int)l, 16 + sa[l], 16 + sb[l]);
-                else if (mul) vfp_s(e, VF_MUL, (int)l, 16 + sa[l], 16 + sc[l]);
-                else {  // b + a*c in double (as Gekko, product rounded first on the VFP11 as before), then to single
-                    int dd = 2 + 3 * (int)l;  // d2-d4, d5-d7
-                    vcvt_f64_f32(e, dd, 16 + sa[l]);
-                    vcvt_f64_f32(e, dd + 1, 16 + sc[l]);
-                    vcvt_f64_f32(e, dd + 2, 16 + sb[l]);
-                    vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, dd + 2, dd, dd + 1);
-                    if (xo5 >= 30) vneg_d(e, dd + 2, dd + 2);
-                    vcvt_f32_f64(e, (int)l, dd + 2);
+        // The results end in s0 / s1 (single path) or s2 / s3 (double path); the destination's lanes are taken only
+        // after the sources were read (a fresh lane for frD would otherwise be read as one of them).
+        int r0 = 0, r1 = lanes == 2 ? 1 : 0;
+        if (allSingle && !madd) {
+            if (sum) {
+                sa[0] = fc_src(c, fa, 0);
+                sb[0] = fc_src(c, fb, 1);
+                sc[0] = fc_src(c, fcr, xo5 == 10 ? 1 : 0);
+                if (sa[0] < 0 || sb[0] < 0 || sc[0] < 0) return -1;
+                int at = xo5 == 10 ? 0 : 1;
+                vfp_s(e, VF_ADD, at, 16 + sa[0], 16 + sb[0]);
+                vmov_s(e, 1 - at, 16 + sc[0]);
+                r1 = 1;
+            } else {
+                for (u32 l = 0; l < lanes; l++) {
+                    sa[l] = fc_src(c, fa, l);
+                    sb[l] = plain ? fc_src(c, fb, l) : 0;
+                    sc[l] = mul ? fc_src(c, fcr, cl[l]) : 0;
+                    if (sa[l] < 0 || sb[l] < 0 || sc[l] < 0) return -1;
+                }
+                for (u32 l = 0; l < lanes; l++) {
+                    if (plain) vfp_s(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, (int)l, 16 + sa[l], 16 + sb[l]);
+                    else vfp_s(e, VF_MUL, (int)l, 16 + sa[l], 16 + sc[l]);
                 }
             }
+        } else {
+            // In double as the old code (ps_arith, compile_float: frC cut to 25 bits for the multiplies), each result
+            // rounded to single into s2 / s3. Lane k works in d(4k)..d(4k+2); ld_fpr takes lanes from their registers.
+            if (sum) {
+                ld_fpr(c, 0, fa, 0);
+                ld_fpr(c, 1, fb, 1);
+                ld_fpr(c, 4, fcr, xo5 == 10 ? 1 : 0);
+                vfp_d(e, VF_ADD, 0, 0, 1);
+                int at = xo5 == 10 ? 0 : 1;
+                vcvt_f32_f64(e, 2 + at, 0);
+                vcvt_f32_f64(e, 3 - at, 4);
+            } else {
+                int res[2] = { 0, 4 };
+                for (u32 l = 0; l < lanes; l++) {
+                    int d = (int)(4 * l);
+                    ld_fpr(c, d, fa, l);
+                    if (plain) ld_fpr(c, d + 1, fb, l);
+                    else if (op == 59 && xo5 >= 25) {  // single precision: frC cut to 25 bits
+                        ld_c25(c, d + 1, fcr, 0);
+                    } else ld_c25(c, d + 1, fcr, (u32)cl[l]);
+                    if (madd) ld_fpr(c, d + 2, fb, l);
+                    res[l] = madd ? d + 2 : d;
+                }
+                for (u32 l = 0; l < lanes; l++) {
+                    int d = (int)(4 * l);
+                    if (plain) vfp_d(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, d, d, d + 1);
+                    else if (!madd) vfp_d(e, VF_MUL, d, d, d + 1);
+                    else vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, d + 2, d, d + 1);
+                    if (madd && xo5 >= 30) vneg_d(e, res[l], res[l]);
+                }
+                for (u32 l = 0; l < lanes; l++) vcvt_f32_f64(e, 2 + (int)l, res[l]);
+            }
+            r0 = 2;
+            r1 = lanes == 2 || sum ? 3 : 2;
         }
-        vmov_s(e, 16 + d0, 0);
-        vmov_s(e, 16 + d1, lanes == 2 ? 1 : 0);  // single-precision results go to both lanes
+        int d0 = fc_dst(c, fd, 0), d1 = fc_dst(c, fd, 1);
+        if (d0 < 0 || d1 < 0) return -1;  // (not reached: at most 6 lanes are pinned)
+        vmov_s(e, 16 + d0, r0);
+        vmov_s(e, 16 + d1, r1);  // single-precision results go to both lanes
         fc_set(c, fd, d0, d1);
         return 1;
     }
