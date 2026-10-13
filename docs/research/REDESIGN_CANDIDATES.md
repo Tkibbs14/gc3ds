@@ -137,3 +137,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Unknown:** how much TP waits in the heavy scenes (the JIT profile was flat, D3, which argues for little).
   **Measure first:** count blocks that branch to themselves without changing state, from the JIT's block profile.
 - **Re-evaluate when:** the measurement says waiting is a large share of core 0.
+
+## C11. Float lanes: exact singles kept in VFP registers within a block (OPT_FCACHE)
+
+- **Status:** built 2026-10-13 (18d6248, second pass 2026-10-13), exact, **off by default** (`--fcache on`,
+  `--ab fcache`).
+- **Model** (arm11_sched over TP's cutscene, 20 fields): 6.29 + 2.48 -> 6.17 + 2.30 host instructions + stall cycles
+  per guest instruction (-3.4%); lfs 18.7 -> 12.9 cycles, stfs 22.4 -> 15.3, psq_st 39.0 -> 30.1, fadds 22.0 -> 12.7,
+  ps_mul 31.4 -> 18.4.
+- **2DS, job 132 (600 s):** cutscene core 0 22.42% -> 23.38% (+4.3%, ~1.3 sigma); core-0-bound stretch 11.56% ->
+  11.25% (-2.7%, ~0.7 sigma). Inconclusive. Job 131 (first pass): +1% / noise.
+- **Lesson:** the model leaves out instruction fetch, and on the 2DS core 0 loses ~9.7 cycles per guest instruction to
+  fetch stalls (OPT_JIT_PLAN). The lanes made hot code ~2-3% larger (and exit stubs bigger); TP's blocks are short, so
+  values seldom live long in lanes. **Judge JIT changes by hot words per guest instruction as well as by the model.**
+- **Re-evaluate when:** blocks get longer (region compilation or traces that pay), or code size per guest instruction
+  drops elsewhere so the lanes' extra words matter less.
