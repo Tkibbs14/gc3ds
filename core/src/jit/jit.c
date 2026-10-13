@@ -29,9 +29,19 @@
 #define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
-enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_N,
-       ST_WORDS = 2048 };
-enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT };
+enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
+       ST_HOISTCHK, ST_N, ST_WORDS = 2048 };
+enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
+// Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
+// address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
+// first displacement and every later one are within +-0x8000 and accesses at most 8 bytes, so with 0x10000 (+8) left
+// on both sides every later access stays inside MEM1. The size is one ARM immediate.
+#define HOIST_LO 0x80010000u
+#define HOIST_SIZE 0x017C0000u
+_Static_assert(HOIST_LO - 0x80000000u >= 0x10000u && 0x01800000u - (HOIST_LO - 0x80000000u) - HOIST_SIZE >= 0x10008u,
+               "check hoisting's window margins");
+#define DEOPT_BITS 12  // blocks whose window check failed once: compiled with per-access checks from then on
+#define DEOPT_SLOTS (1u << DEOPT_BITS)
 // The shared memory-access stubs (emit_mem_stubs): kinds load 32, 16 unsigned, 16 signed, 8; store 32, 16, 8, by the
 // register that holds the loaded value or the value to store (r2 or a cached-GPR slot, r4-r8).
 enum { MS_L32, MS_L16U, MS_L16S, MS_L8, MS_S32, MS_S16, MS_S8, MS_KINDS };
@@ -115,6 +125,9 @@ struct Jit {
     bool slowInline;            // jit_set_slow_inline: the old per-site slow paths instead of the shared stubs (A/B)
     bool soExact;               // jit_set_so_exact: CR updates include XER[SO] (set once XER[SO] has been seen set)
     bool profile;               // jit_set_profile: blocks store their start in Gekko.hostPc
+    u32 opt;                    // jit_set_opt: OPT_* optimizations
+    u32 deopt[DEOPT_SLOTS];     // guest PCs of blocks deoptimized by a failed window check (0: empty); kept across flushes
+    u32 deoptN;
 };
 
 static Jit* g_jit;  // helpers called from generated code reach the JIT through this (one JIT per process)
@@ -375,6 +388,11 @@ typedef struct {
     bool faultMem;
     struct { u32 at, cold; } fsite[MAX_BLOCK_INSNS * 2];
     u32 nFsite;
+    // Check hoisting (OPT_HOIST): guest GPRs whose value passed the window check in this block and has not been written
+    // since; chkClear: the GPRs the instruction being compiled writes (cleared from chk before the next one).
+    bool hoist;
+    u32 chk, chkClear;
+    u32 blockPc;
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -504,6 +522,31 @@ static u32 g_eaRun[6];
 // most NSLOT_STAT ids could keep them all in slots: its traffic goes, and each entry loads them and each exit stores the
 // written ones instead. g_rsLoopFit / g_rsLoopBig: traffic in loops that fit / do not; g_rsLoopEntryCost.
 static u64 g_rsLoopFit, g_rsLoopBig, g_rsLoopEntryCost, g_rsLoops[2];
+// Memory-check hoisting model (docs/OPT_JIT_PLAN.md): D-form loads and stores by whether their base register was already
+// used as a base earlier in the block and not written since (its MEM1 check could be done once), integer / float.
+// UPD: also counting a base that an update form (stwu r1, -16(r1)) moved since. FIRST: the base's first use in the block.
+enum { HC_INT_FIRST, HC_INT_HOIST, HC_INT_UPD, HC_FLT_FIRST, HC_FLT_HOIST, HC_FLT_UPD, HC_ABS, HC_N };
+static u8 (*g_hc)[HC_N];
+static u64 g_hcTot[HC_N];
+static u32 g_hcChk, g_hcChk2;  // bases checked in the block being compiled (strict / across update forms)
+static void hc_count(int k) { if (g_hc[g_rsCur][k] < 255) g_hc[g_rsCur][k]++; }
+static void hc_inst(u32 inst) {
+    u32 op = inst >> 26, ra = (inst >> 16) & 31;
+    bool mem = (op >= 32 && op <= 45) || (op >= 48 && op <= 57) || op == 60 || op == 61;
+    if (mem) {
+        int f = op >= 48 ? HC_FLT_FIRST : HC_INT_FIRST;
+        if (!ra) hc_count(HC_ABS);
+        else if ((g_hcChk >> ra) & 1) hc_count(f + 1);
+        else if ((g_hcChk2 >> ra) & 1) hc_count(f + 2);
+        else hc_count(f);
+        if (ra) { g_hcChk |= 1u << ra; g_hcChk2 |= 1u << ra; }
+    }
+    u64 rd = 0, wr = 0;
+    if (!gekko_regs(inst, &rd, &wr)) { g_hcChk = g_hcChk2 = 0; return; }
+    u32 w = (u32)wr;
+    g_hcChk &= ~w;
+    g_hcChk2 &= ~(mem && (op & 1) ? w & ~(1u << ra) : w);
+}
 static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled code (r12, lr; flags kept)
     load_const(e, R12, (u32)(uintptr_t)counter);
     ldr_imm(e, LR, R12, 0);
@@ -713,6 +756,8 @@ static void rs_fold(Jit* j, u32 nEntries) {
         g_dopLen[b] = 0;
         g_fsLdTot += n * g_fsLd[b]; g_fsHitTot += n * g_fsHit[b]; g_fsStTot += n * g_fsSt[b]; g_fsDeadTot += n * g_fsDead[b];
         g_fsLd[b] = g_fsHit[b] = g_fsSt[b] = g_fsDead[b] = 0;
+        for (int k = 0; k < HC_N; k++) g_hcTot[k] += n * g_hc[b][k];
+        memset(g_hc[b], 0, HC_N);
         g_rsExec[b] = 0;
         memset(g_rsLd[b], 0, RS_IDS);
         memset(g_rsSt[b], 0, RS_IDS);
@@ -902,6 +947,14 @@ static void exit_kind_if(Cg* c, int cond, int kind, u32 pc) {
 static void exit_if(Cg* c, int cond) { exit_snap(c, cond, false, 0, NULL); }
 // The same, writing g->pc = pc first; the dispatcher never links it (state the block depends on may have changed).
 static void exit_pc_if(Cg* c, int cond, u32 pc) { exit_snap(c, cond, true, pc, NULL); }
+// A failed window check (check hoisting): leave before the current instruction runs, with g->pc = it, and have the
+// dispatcher recompile the block with per-access checks (ST_DEOPT).
+static void exit_deopt_if(Cg* c, int cond) {
+    if (jit_debug_plant != 9) c->count--;  // the current instruction has not run (plant 9, the fuzzer's self-test: it counts)
+    exit_snap(c, cond, true, c->pc, NULL);
+    if (jit_debug_plant != 9) c->count++;
+    if (c->nExits) c->exits[c->nExits - 1].kind = EXIT_DEOPT;
+}
 
 // Unconditional exit to the guest address `target`, emitted in place: a link site, one word in the hot path (a branch
 // to its stub after the block, which asks the dispatcher for the target; link_site then points it at the target block).
@@ -954,7 +1007,7 @@ static const void* const kJitFns[] = { (const void*)jit_load, (const void*)jit_s
                                        (const void*)jit_interp, (const void*)jit_mtmsr, (const void*)jit_load64,
                                        (const void*)jit_store64, (const void*)jit_hle };
 // Gekko.jitFn after the C helpers: the shared slow-path stubs, and the write-gather pipe's address, length and buffer.
-enum { JF_LOADSLOW = 8, JF_STORESLOW, JF_STOREPIPE, JF_GATHER_EA, JF_GATHER_LEN, JF_GATHER_BUF, JF_N };
+enum { JF_LOADSLOW = 8, JF_STORESLOW, JF_STOREPIPE, JF_GATHER_EA, JF_GATHER_LEN, JF_GATHER_BUF, JF_DEOPT, JF_N };
 _Static_assert(sizeof kJitFns / sizeof kJitFns[0] <= JF_LOADSLOW, "kJitFns overlaps the stub slots");
 _Static_assert(JF_N <= sizeof ((Gekko*)0)->jitFn / sizeof(u32), "Gekko.jitFn too small");
 static void call(Cg* c, const void* fn) {
@@ -1583,6 +1636,52 @@ static void op_imm(Cg* c, int opc, int d, int s, u32 imm) {
     else { load_const(&c->e, R12, imm); dp_reg(&c->e, opc, 0, d, s, R12); }
 }
 
+// Check hoisting: the index register of a D-form access rA + d (r0 = the address, or rA's register when d = 0 without
+// update and rA was checked before). The first access through rA in the block calls ST_HOISTCHK on its address: outside
+// the window, the block leaves before the instruction and is recompiled with per-access checks (exit_deopt_if).
+static int hoist_addr(Cg* c, u32 ra, u32 d, bool update) {
+    Emit* e = &c->e;
+    int b = src(c, ra, R0);
+    bool first = !((c->chk >> ra) & 1);
+    if (!first && !d && !update) return b;
+    add_const(e, R0, b, d, R12);
+    if (first) {
+        branch_abs(e, C_AL, true, stub(c, ST_HOISTCHK));
+        exit_deopt_if(c, C_CS);
+        c->chk |= 1u << ra;
+    }
+    return R0;
+}
+
+// lwz lbz lhz lha (and update forms) through a hoisted base: no check, no slow path.
+static void hoist_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, u32 d, bool update) {
+    Emit* e = &c->e;
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) rs_emit_count(e, &g_eaRun[ra == 1 ? 0 : ra == 2 ? 1 : ra == 13 ? 2 : 3]);
+#endif
+    int x = hoist_addr(c, ra, d, update);
+    int t = dst(c, rd, R2);
+    if (size == 4) { ldr_reg(e, t, RRAM, x); rev(e, t, t); }
+    else if (size == 2) { ldrh_reg(e, t, RRAM, x); if (sign) revsh(e, t, t); else rev16(e, t, t); }
+    else ldrb_reg(e, t, RRAM, x);
+    dst_done(c, rd, t);
+    if (update) st_gpr(c, R0, ra);
+}
+
+// stw stb sth (and update forms) through a hoisted base.
+static void hoist_store(Cg* c, u32 size, u32 rs, u32 ra, u32 d, bool update) {
+    Emit* e = &c->e;
+#ifndef __3DS__
+    if (g_regStat && !c->inCold) rs_emit_count(e, &g_eaRun[ra == 1 ? 0 : ra == 2 ? 1 : ra == 13 ? 2 : 3]);
+#endif
+    int x = hoist_addr(c, ra, d, update);
+    int v = src(c, rs, R2);
+    if (size == 4) { rev(e, R3, v); str_reg(e, R3, RRAM, x); }
+    else if (size == 2) { rev16(e, R3, v); strh_reg(e, R3, RRAM, x); }
+    else strb_reg(e, v, RRAM, x);
+    if (update) st_gpr(c, R0, ra);
+}
+
 // Integer load of `size` bytes from the address in r0 into rD; with update, rA = the address.
 static void int_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, bool update) {
     int d = dst(c, rd, R2);
@@ -1705,6 +1804,7 @@ static bool compile_int(Cg* c, u32 inst) {
     case 32: case 33: case 34: case 35: case 40: case 41: case 42: case 43: {  // lwz lwzu lbz lbzu lhz lhzu lha lhau
         bool update = op & 1;
         if (update && (ra == 0 || ra == rd)) return false;  // invalid forms
+        if (c->hoist && ra) { hoist_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, simm, update); return true; }
         ea_disp(c, ra, simm);
         int_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, update);
         return true;
@@ -1712,6 +1812,7 @@ static bool compile_int(Cg* c, u32 inst) {
     case 36: case 37: case 38: case 39: case 44: case 45: {  // stw stwu stb stbu sth sthu
         bool update = op & 1;
         if (update && ra == 0) return false;
+        if (c->hoist && ra) { hoist_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, simm, update); return true; }
         ea_disp(c, ra, simm);
         int_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, update);
         return true;
@@ -2651,6 +2752,26 @@ static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] +=
 
 static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
 
+// The deoptimized blocks (check hoisting): an open-addressed set of guest PCs, kept across flushes.
+static u32 deopt_hash(u32 pc) { return (pc * 2654435761u) >> (32 - DEOPT_BITS); }
+static bool deopt_has(const Jit* j, u32 pc) {
+    if (!j->deoptN) return false;
+    for (u32 h = deopt_hash(pc);; h = (h + 1) & (DEOPT_SLOTS - 1)) {
+        if (j->deopt[h] == pc) return true;
+        if (!j->deopt[h]) return false;
+    }
+}
+// false: the set is full (the caller turns hoisting off).
+static bool deopt_add(Jit* j, u32 pc) {
+    if (deopt_has(j, pc)) return true;
+    if (j->deoptN >= DEOPT_SLOTS / 4 * 3 || !pc) return false;
+    u32 h = deopt_hash(pc);
+    while (j->deopt[h]) h = (h + 1) & (DEOPT_SLOTS - 1);
+    j->deopt[h] = pc;
+    j->deoptN++;
+    return true;
+}
+
 static u32 fault_hash(u32 key) { return (key * 2654435761u) >> (32 - FAULT_BITS); }
 static void fault_add(Jit* j, u32 key, u32 val) {
     u32 h = fault_hash(key);
@@ -2684,6 +2805,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     c->pr = (g->msr & MSR_PR) != 0;
+    c->blockPc = pc;
+    c->hoist = (j->opt & OPT_HOIST) && c->fastmem && !c->faultMem && !deopt_has(j, pc);
     Emit* e = &c->e;
     // Budget: the block's instructions come off RDC at its entry (the immediate is patched once the block's length is
     // known), and the block only runs while some budget is left; the dispatcher enters after these two words with the
@@ -2706,6 +2829,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         for (int k = 0; k < NSLOT_STAT; k++) E->id[k] = -1;
         E->readFirst = 0;
         E->written = 0;
+        g_hcChk = g_hcChk2 = 0;
+        memset(g_hc[g_rsCur], 0, HC_N);
         load_const(e, R12, (u32)(uintptr_t)&g_rsExec[g_rsCur]);
         ldr_imm(e, R0, R12, 0);
         dp_imm(e, ADD, 0, R0, R0, 1);
@@ -2759,6 +2884,14 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         c->pinned = 0;
         c->tailN = 0;
         c->tailFpr = -1;
+#ifndef __3DS__
+        if (g_regStat) hc_inst(inst);
+#endif
+        {   // check hoisting: GPRs the previous instruction wrote lose their check; this one's writes are applied after it
+            u64 rd = 0, wr = 0;
+            c->chk &= ~c->chkClear;
+            c->chkClear = gekko_regs(inst, &rd, &wr) ? (u32)wr : 0xFFFFFFFFu;
+        }
         j->stats.instrsCompiled++;
         if (is_branch(inst)) {
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
@@ -2829,6 +2962,11 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             continue;
         }
         if (c->exits[k].setPc) { load_const(e, R1, c->exits[k].pc); str_imm(e, R1, RG, OFF_PC); }
+        if (c->exits[k].kind == EXIT_DEOPT) {  // ST_DEOPT with the block's PC
+            branch_abs(e, C_AL, true, stub(c, ST_DEOPT));
+            word(e, pc);
+            continue;
+        }
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
     }
     // Link stubs: ST_LINK with the target's guest address and the site to patch.
@@ -3197,6 +3335,16 @@ static void emit_stubs(Jit* j) {
     str_imm(e, R1, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
+    j->stub[ST_DEOPT] = e->n;  // literal: the block's PC, for the dispatcher (Gekko.jitFn[JF_DEOPT]); g->pc already written
+    ldr_imm(e, R1, LR, 0);
+    str_imm(e, R1, RG, OFF_JITFN(JF_DEOPT));
+    dp_imm(e, MOV, 0, R0, 0, 2);  // 2: recompile that block with per-access checks
+    branch_c(e, C_AL, j->stub[ST_EXIT]);
+    j->stub[ST_HOISTCHK] = e->n;  // r0 = address: carry set when outside check hoisting's window (r12 clobbered)
+    dp_imm(e, EOR, 0, R12, R0, IMM(0x80000000u));
+    dp_imm(e, SUB, 0, R12, R12, IMM(HOIST_LO - 0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(HOIST_SIZE));
+    bx_reg_c(e, C_AL, LR);
     j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
     mov_shift(e, 0, R1, R2, LSL, 30 - FAST_BITS);  // fast_index: (pc >> 2) & (FAST_SIZE - 1)
     mov_shift(e, 0, R1, R1, LSR, 32 - FAST_BITS);
@@ -3392,6 +3540,30 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     return en;
 }
 
+// A block whose window check failed (ST_DEOPT): from now on it is compiled with per-access checks. Its entry is retired
+// and the new block takes a fresh one; the old code's first word becomes a branch to the new block, so link sites and
+// indirect-table slots that point at it follow. (A flush while compiling drops both anyway.)
+static void deopt_block(Jit* j, u32 pc, u32 key) {
+    j->stats.deopts++;
+    if (!deopt_add(j, pc)) {  // the set is full: no more hoisting
+        j->opt &= ~(u32)OPT_HOIST;
+        jit_invalidate_all(j);
+        return;
+    }
+    Entry* old = NULL;
+    for (u32 i = j->buckets[bucket_of(pc, key)]; i != NO_ENTRY; i = j->table[i].next)
+        if (j->table[i].pc == pc && j->table[i].msrBits == key) { old = &j->table[i]; break; }
+    if (!old) return;
+    u32* oldFn = (u32*)(void*)old->fn;
+    u32 gen = j->gen;
+    old->pc = 1;  // never a guest PC: lookup compiles the block again
+    Entry* en = lookup(j, pc, key);
+    if (!en || j->gen != gen) return;
+    s32 off = (s32)((const u32*)(void*)en->fn - (oldFn + 2));
+    *oldFn = 0xEA000000u | ((u32)off & 0xFFFFFF);  // B new block
+    jit_host_sync_icache(oldFn, 4);
+}
+
 // The indirect table's slot for a guest address, as ST_INDIRECT computes it. Folding in the address bits from 4 KB up did
 // not reduce TP's misses (qemu, 30 fields from tp_arm_850: 86,499 -> 91,663), so they are not code 16 KB apart sharing a
 // slot; blr / bctr to polling-loop and idle blocks, which are never put in the table, are the likely rest.
@@ -3520,7 +3692,11 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!n) break;  // cannot happen for a well-formed block; never spin
         total += n;
         j->stats.instrsRun += n;
-        if (s == (u32*)1) { j->stats.dispIndirect++; lastMiss = true; missKey = block_key(g); }
+        if (s == (u32*)2) {  // a window check failed (check hoisting): recompile that block with per-access checks
+            deopt_block(j, g->jitFn[JF_DEOPT], key);
+            s = NULL;
+            j->stats.dispOther++;
+        } else if (s == (u32*)1) { j->stats.dispIndirect++; lastMiss = true; missKey = block_key(g); }
         else if (s) j->stats.dispLink++;
         else if ((s64)n >= room) j->stats.dispBudget++;
         else j->stats.dispOther++;
@@ -3564,6 +3740,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_rwLd = calloc(MAX_ENTRIES, RL_N);
         g_rwSt = calloc(MAX_ENTRIES, RW_N);
         g_rsE = calloc(MAX_ENTRIES, sizeof(RsEntry));
+        g_hc = calloc(MAX_ENTRIES, HC_N);
         g_rx = calloc(RX_POOL, sizeof(RsExit));
         g_rxCount = calloc(RX_POOL, sizeof(u32));
         if (getenv("JIT_SCHEDDUMP")) {
@@ -3573,7 +3750,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
             if (!g_hotLen || !g_proLen) { if (g_schedOut) fclose(g_schedOut); g_schedOut = NULL; }
         }
         g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead &&
-                    g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount;
+                    g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount && g_hc;
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
@@ -3684,6 +3861,13 @@ bool jit_fault(u32 hostPc, u32* resume) {
     return false;
 }
 
+void jit_set_opt(Jit* j, u32 mask) {
+    if (j->opt == mask) return;
+    j->opt = mask;
+    jit_invalidate_all(j);
+}
+u32 jit_opt(const Jit* j) { return j->opt; }
+
 void jit_set_slow_inline(Jit* j, bool on) {
     if (j->slowInline == on) return;
     j->slowInline = on;
@@ -3733,7 +3917,22 @@ u32 jit_run_one_block(Jit* j) {
     if (!en) return 0;
     fast_select(j, msrBits);
     u32* site;
-    return run(j, en->fn, 0x3FFFFFFF, g->cycles, &site, 0);
+    u32 n = run(j, en->fn, 0x3FFFFFFF, g->cycles, &site, 0);
+    // A failed window check (check hoisting) left before instruction n: the block is recompiled with checks, and the
+    // rest of it runs as a block of the instructions that remain (the tests' blocks are jit_debug_max_insns long).
+    u32 total = jit_debug_max_insns, before = 0;  // 0: unlimited; before: instructions run ahead of the block that left
+    while (site == (u32*)2) {
+        jit_debug_max_insns = total ? total - before : 0;  // the block is recompiled at its own length
+        deopt_block(j, g->jitFn[JF_DEOPT], msrBits);
+        if (total && n >= total) break;
+        jit_debug_max_insns = total ? total - n : 0;
+        Entry* rest = lookup(j, g->pc, msrBits);
+        if (!rest) break;
+        before = n;
+        n += run(j, rest->fn, 0x3FFFFFFF, g->cycles + n, &site, 0);
+    }
+    jit_debug_max_insns = total;
+    return n;
 }
 
 u32 jit_run(Jit* j, s64 budget) { return jit_entry(j->g, budget, j); }
@@ -3983,6 +4182,18 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                  (unsigned long long)g_rsLoops[1], (double)g_rsLoopBig / runs);
         print(line);
         double tt = g_rsTrafTot ? (double)g_rsTrafTot : 1.0;
+        {
+            u64 it = g_hcTot[HC_INT_FIRST] + g_hcTot[HC_INT_HOIST] + g_hcTot[HC_INT_UPD];
+            u64 ft = g_hcTot[HC_FLT_FIRST] + g_hcTot[HC_FLT_HOIST] + g_hcTot[HC_FLT_UPD];
+            snprintf(line, sizeof line, "  check hoisting model (D forms): integer %llu: base first used %.1f%%, checked before %.1f%%, "
+                     "+ across update forms %.1f%%; float %llu: %.1f%% / %.1f%% / %.1f%%; absolute (rA = 0) %llu",
+                     (unsigned long long)it, it ? 100.0 * (double)g_hcTot[HC_INT_FIRST] / (double)it : 0.0,
+                     it ? 100.0 * (double)g_hcTot[HC_INT_HOIST] / (double)it : 0.0, it ? 100.0 * (double)g_hcTot[HC_INT_UPD] / (double)it : 0.0,
+                     (unsigned long long)ft, ft ? 100.0 * (double)g_hcTot[HC_FLT_FIRST] / (double)ft : 0.0,
+                     ft ? 100.0 * (double)g_hcTot[HC_FLT_HOIST] / (double)ft : 0.0, ft ? 100.0 * (double)g_hcTot[HC_FLT_UPD] / (double)ft : 0.0,
+                     (unsigned long long)g_hcTot[HC_ABS]);
+            print(line);
+        }
         snprintf(line, sizeof line, "  memory instructions executed by address form: r1+d %u, r2+d %u, r13+d %u, other rA+d %u, 0+d %u, rA+rB %u",
                  g_eaRun[0], g_eaRun[1], g_eaRun[2], g_eaRun[3], g_eaRun[4], g_eaRun[5]);
         print(line);

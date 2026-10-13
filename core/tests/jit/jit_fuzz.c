@@ -68,12 +68,16 @@ typedef struct {
     bool fmem;    // fill the memory window with normal single-precision floats
     bool irq;     // an external interrupt is pending (mtmsr setting EE must leave compiled code)
     bool user;    // MSR[PR] = 1 (supervisor instructions must raise the program exception)
+    u32 lastBase; // the base register of the last D-form access (reused, as check hoisting needs; 0: none)
 } St;
 
 static u32 load_base(St* st, u32 ra, u32 size) {
     u32 off = rnd() % (WIN_SIZE - 0x400) + 0x200;
     if (rnd() % 8) off &= ~(size - 1);       // mostly aligned (fast path), sometimes not (slow path)
     st->gpr[ra] = ((rnd() & 1) ? 0x80000000u : 0xC0000000u) | (WIN_PA + off);
+    u32 k = rnd() % 16;  // the edges of check hoisting's window (jit.c HOIST_LO / HOIST_SIZE): just inside or outside
+    if (k == 0) st->gpr[ra] = 0x80010000u - 0x140u + 4u * (rnd() % 160);
+    else if (k == 1) st->gpr[ra] = 0x817D0000u - 0x140u + 4u * (rnd() % 160);
     return st->gpr[ra];
 }
 
@@ -115,9 +119,14 @@ static u32 gen(St* st) {
             static const u32 ops[] = { 32, 33, 34, 35, 40, 41, 42, 43, 36, 37, 38, 39, 44, 45 };
             u32 op = ops[rnd() % 14];
             u32 size = op <= 33 || op == 36 || op == 37 ? 4 : (op <= 35 || op == 38 || op == 39) ? 1 : 2;
-            ra = 1 + rnd() % 31;
-            if ((op & 1) && rd == ra) rd = (ra + 1) & 31;
-            load_base(st, ra, size);
+            if (st->lastBase && rnd() % 2) {
+                ra = st->lastBase;  // the same base again: check hoisting's unchecked accesses
+            } else {
+                ra = 1 + rnd() % 31;
+                load_base(st, ra, size);
+                st->lastBase = ra;
+            }
+            if (rd == ra && ((op & 1) || op <= 35 || (op >= 40 && op <= 43))) rd = (ra + 1) & 31;  // (a load into its base: wild)
             u32 d = (u32)(s32)((s32)(rnd() % 512) - 256);
             if (rnd() % 8) d &= ~(size - 1);
             return (op << 26) | (rd << 21) | (ra << 16) | (d & 0xFFFF);
@@ -698,6 +707,7 @@ int main(int argc, char** argv) {
     if (!getenv("JIT_FUZZ_NOFAULT")) jit_set_fault_mem(jit, true);  // as gcemu and the 2DS: unchecked MEM1 accesses
     g_faultMode = jit_fault_mem(jit);
     jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);
+    if (getenv("JIT_FUZZ_OPT")) jit_set_opt(jit, (u32)strtoul(getenv("JIT_FUZZ_OPT"), NULL, 0));  // optimizing-JIT stages
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;

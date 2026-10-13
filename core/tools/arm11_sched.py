@@ -7,7 +7,7 @@ Branches are taken as falling through (the hot path); the budget check and the s
 are skipped. Reports stall cycles per executed instruction (the 2DS counter: ~0.64 data-dependency stall cycles per
 instruction), by class of producer and by guest opcode, so that scheduling work goes where the stalls are.
 
-    python3 arm11_sched.py /root/sched.bin [--top N]
+    python3 arm11_sched.py /root/sched.bin [--top N] [--cycles]
 """
 import struct
 import sys
@@ -347,6 +347,20 @@ def main():
     if show is not None:
         show_block(best, show)
     print('by guest opcode (key = op << 10 | xo): share of stall cycles, stalls per execution, host words per execution:')
+    guest = sum(v[2] for k, v in by_op.items() if k >= 0)
+    print('%.3g guest instructions: %.2f host instructions and %.2f stall cycles per guest instruction' %
+          (guest, insts / max(guest, 1), stalls / max(guest, 1)))
+    if '--cycles' in sys.argv:  # sorted by issue + stall cycles (words + stalls), with the running total
+        tot = insts + stalls
+        cum = 0.0
+        print('by guest opcode, sorted by modelled cycles (words + stalls): share, cumulative, cycles per execution:')
+        for key, (hw, st, g) in sorted(by_op.items(), key=lambda x: -(x[1][0] + x[1][1]))[:top]:
+            cum += hw + st
+            name = 'tail' if key < 0 else 'op %d xo %d' % (key >> 10, key & 1023)
+            print('  %-16s %5.1f%%  %5.1f%%  %5.1f cycles (%4.1f words)  %5.2f%% of guest  (%.3g executions)' %
+                  (name, 100 * (hw + st) / tot, 100 * cum / tot, (hw + st) / max(g, 1), hw / max(g, 1),
+                   100 * g / max(guest, 1), g))
+        return
     rows = sorted(by_op.items(), key=lambda x: -x[1][1])[:top]
     for key, (hw, st, g) in rows:
         name = 'tail' if key < 0 else 'op %d xo %d' % (key >> 10, key & 1023)

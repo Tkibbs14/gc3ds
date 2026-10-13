@@ -6,7 +6,8 @@
 Heavy rows are rows with draws_s above --min-draws (the TP title scene and cutscene; light screens run at full speed
 and would dilute every average). Each file's last header line names the columns, so files from different builds
 compare by name. --by splits the average by the value of an A/B column (traces, hle, ...). Prints mean and standard
-error of the mean for speed, then the requested columns (default: the core 0 / core 2 / core 3 profile columns).
+error of the mean for speed and for core 0's own speed (speed / (1 - gxwait_pct): JIT changes show up there while the
+GX thread limits the game), then the requested columns (default: the core 0 / core 2 / core 3 profile columns).
 """
 import sys, math
 
@@ -75,6 +76,14 @@ def main():
             if m is None:
                 print(f"{label}: no heavy rows"); continue
             print(f"{label}: {n} heavy rows, speed {m:.2f}% +- {se:.2f}")
+            # Core 0's own speed: what it ran in the time it did not spend waiting for the GX thread (gxwait_pct). While
+            # the GX thread limits the game, a faster core 0 shows up here and as more gxwait, not as speed (2DS job 88:
+            # fault mode on / off 19.44 / 19.53% speed, gxwait 16.1 / 7.5%, so core 0 itself ~10% faster).
+            c0, c0se, c0n = stats([num(r, "speed_pct") / (1 - num(r, "gxwait_pct") / 100)
+                                   for r in rs if num(r, "speed_pct") is not None and num(r, "gxwait_pct") is not None
+                                   and num(r, "gxwait_pct") < 95])
+            if c0 is not None:
+                print(f"   core 0 speed (speed / (1 - gxwait)): {c0:.2f}% +- {c0se:.2f}")
             line = []
             for c in cols:
                 cm, _, cn = stats([num(r, c) for r in rs])

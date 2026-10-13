@@ -29,6 +29,7 @@ typedef struct {
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
     u64 missPoll, missFirst, missTaken, missEmpty, missKey;
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
+    u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
@@ -89,6 +90,13 @@ bool jit_fault(u32 hostPc, u32* resume);
 enum { SCHED_STUBS = 1, SCHED_CONST = 2, SCHED_ALL = 3 };
 void jit_set_sched(Jit* j, u32 mask);
 u32 jit_sched(const Jit* j);
+// Optimizations of the optimizing JIT (docs/OPT_JIT_PLAN.md), for A/B; each change drops all compiled code.
+// OPT_HOIST: the first D-form load or store through base register rA in a block checks rA against a window inside MEM1;
+// later accesses through the unchanged rA run unchecked. A failed check recompiles that block with per-access checks.
+// Has no effect in fault mode (accesses are unchecked there already).
+enum { OPT_HOIST = 1, OPT_ALL = 1 };
+void jit_set_opt(Jit* j, u32 mask);
+u32 jit_opt(const Jit* j);
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);
 // XER[SO] in CR updates: compares and record forms leave CR bit SO out while XER[SO] has never been seen set (games
@@ -109,7 +117,7 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
-extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run
 u32 jit_run_one_block(Jit* j);
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with

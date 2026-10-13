@@ -329,6 +329,8 @@ typedef struct {
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
     bool sched;          // --sched on|off (on): code scheduled against interlocks (jit_set_sched SCHED_ALL)
     bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
+    bool opt;            // --opt on|off (off): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
+    bool abOpt;          // --ab opt: on and off (opt and deopts columns; each switch drops all compiled code)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -363,7 +365,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -378,6 +380,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
+        else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -426,7 +429,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -585,6 +588,7 @@ static const char* run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
+        jit_set_opt(g_jit, g_opt.opt ? OPT_ALL : 0);  // --ab opt starts off
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
@@ -728,6 +732,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_vfastPrefetch ? 1 : 0);
                 fprintf(g_perf, ",%d,%llu", g_jit && jit_fault_mem(g_jit) ? 1 : 0, g_jit ? (unsigned long long)jit_stats(g_jit)->faults : 0ULL);
                 fprintf(g_perf, ",%lu", g_jit ? (unsigned long)jit_sched(g_jit) : 0UL);
+                fprintf(g_perf, ",%lu,%llu", g_jit ? (unsigned long)jit_opt(g_jit) : 0UL, g_jit ? (unsigned long long)jit_stats(g_jit)->deopts : 0ULL);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -753,6 +758,7 @@ static const char* run(const char* path) {
                 if (g_opt.abPld && perfRows % AB_SECS == 0) vfast_set_prefetch(!g_vfastPrefetch);  // worker reads it per job
                 if (g_opt.abFault && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_fault_mem(g_jit, !jit_fault_mem(g_jit));
                 if (g_opt.abSched && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_sched(g_jit, jit_sched(g_jit) ? 0 : SCHED_ALL);
+                if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ? 0 : OPT_ALL);
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
@@ -940,6 +946,51 @@ static bool load_pending(RelayJob* j) {
     return ok && j->id;
 }
 
+// Restart into the .3dsx at `path` without the owner touching anything: Luma3DS's homebrew loader (service hb:ldr, the
+// one the Homebrew Launcher uses to start a program) loads it the next time the homebrew title starts, and the
+// chainloader restarts that title when gc3ds exits. false: the service is not there (the caller asks for a restart
+// by hand). Commands as new-hbmenu's hbldr.c: 2 SetTarget (path without "sdmc:", static buffer 0), 3 SetArgv (u32 argc,
+// then the NUL-separated strings, static buffer 1).
+static bool relaunch_into(const char* path) {
+    Handle h;
+    if (R_FAILED(srvGetServiceHandle(&h, "hb:ldr"))) return false;
+    const char* target = !strncmp(path, "sdmc:", 5) ? path + 5 : path;
+    static u32 argBuf[0x400 / 4];
+    memset(argBuf, 0, sizeof argBuf);
+    argBuf[0] = 1;  // argv[0] = the full path, as the launcher passes it (main takes its own path from it)
+    snprintf((char*)&argBuf[1], sizeof argBuf - 4, "%s", path);
+    u32* cmd = getThreadCommandBuffer();
+    cmd[0] = IPC_MakeHeader(2, 0, 2);
+    cmd[1] = IPC_Desc_StaticBuffer(strlen(target) + 1, 0);
+    cmd[2] = (u32)target;
+    Result rc = svcSendSyncRequest(h);
+    if (R_SUCCEEDED(rc)) rc = (Result)cmd[1];
+    if (R_SUCCEEDED(rc)) {
+        cmd = getThreadCommandBuffer();
+        cmd[0] = IPC_MakeHeader(3, 0, 2);
+        cmd[1] = IPC_Desc_StaticBuffer(sizeof argBuf, 1);
+        cmd[2] = (u32)argBuf;
+        rc = svcSendSyncRequest(h);
+        if (R_SUCCEEDED(rc)) rc = (Result)cmd[1];
+    }
+    svcCloseHandle(h);
+    if (R_FAILED(rc)) return false;
+    aptSetChainloaderToSelf();
+    return true;
+}
+
+// After a job was kept for the next start (save_pending): restart into `selfPath` by itself, or ask for it.
+static void restart_for_job(const char* selfPath, const char* why) {
+    if (relaunch_into(selfPath)) {
+        printf("\n%s\nRestarting by itself...\n", why);
+        for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();  // a second to read it
+    } else {
+        printf("\n%s\nPress START, then open gc3ds again:\nthe job runs when Remote runs starts.\n", why);
+        wait_key(KEY_START);
+    }
+    g_quitApp = true;
+}
+
 // Remote runs: jobs queued from the PC through the relay (relay.c, core/tools/relay.sh) run one after another, each
 // streaming its perf log back; a job for another build downloads it, keeps the job and asks for a restart.
 // SELECT leaves. Jobs default to 600 s so a forgotten --seconds cannot run forever.
@@ -983,17 +1034,15 @@ static void remote_mode(const char* selfPath) {
                 continue;
             }
             save_pending(&job);
-            printf("\nNew build installed at %s.\nPress START, then open gc3ds again:\nthe job runs when Remote runs starts.\n", selfPath);
-            wait_key(KEY_START);
-            g_quitApp = true;
+            char why[200];
+            snprintf(why, sizeof why, "New build installed at %s.", selfPath);
+            restart_for_job(selfPath, why);
             return;
         }
         if (strstr(job.args, "--fuzz")) {
             // The JIT fuzzer needs two machines of its own: it runs at the next start, before gc3ds allocates anything.
             save_pending(&job);
-            printf("\nThis job runs the JIT fuzzer at startup.\nPress START, then open gc3ds again.\n");
-            wait_key(KEY_START);
-            g_quitApp = true;
+            restart_for_job(selfPath, "This job runs the JIT fuzzer at startup.");
             return;
         }
         RunOpts o;
@@ -1122,10 +1171,13 @@ int main(int argc, char** argv) {
     }
     // relay.txt "auto 1": remote runs start by themselves (B within 3 s for the menu), so the 2DS can be left waiting.
     if (!g_quitApp && relay_auto()) {
-        printf("\nRemote runs start in 3 s (B: menu)\n");
+        bool pending = false;  // a job kept across a restart into a new build starts at once
+        FILE* pf = fopen(RELAY_PENDING, "r");
+        if (pf) { pending = true; fclose(pf); }
+        printf("\nRemote runs start in %s (B: menu)\n", pending ? "1 s" : "3 s");
         u64 t = svcGetSystemTick();
         bool menu = false;
-        while (!menu && aptMainLoop() && svcGetSystemTick() - t < 3ull * SYSCLOCK_ARM11) {
+        while (!menu && aptMainLoop() && svcGetSystemTick() - t < (pending ? 1ull : 3ull) * SYSCLOCK_ARM11) {
             hidScanInput();
             menu = hidKeysDown() & KEY_B;
             gspWaitForVBlank();

@@ -79,6 +79,7 @@ bool host_jit_enable(System* s) {
     if (getenv("GC3DS_SLOW_INLINE")) jit_set_slow_inline(g_hostJit, true);  // the old per-site memory slow paths
     if (!getenv("GC3DS_NOFAULTMEM")) jit_set_fault_mem(g_hostJit, true);  // checked loads and stores for comparison
     jit_set_sched(g_hostJit, getenv("GC3DS_NOSCHED") ? 0 : SCHED_ALL);
+    if (getenv("GC3DS_OPT")) jit_set_opt(g_hostJit, (u32)strtoul(getenv("GC3DS_OPT"), NULL, 0));  // optimizing-JIT stages (with GC3DS_NOFAULTMEM)
     s->icbiCtx = g_hostJit;
     return true;
 }
