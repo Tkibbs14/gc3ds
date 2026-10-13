@@ -16,6 +16,8 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
 - Core 0: ~13 ARM instructions per guest instruction; memory instructions ~40% of guest instructions; float and
   paired-single loads/stores are the most expensive per execution. Check hoisting: core 0 +5.7% (job 97, cutscene).
 
+Parked redesign ideas, with their evidence and when to look again: REDESIGN_CANDIDATES.md.
+
 ## Ranked levers (expected gain for TP, cost)
 
 1. **Cache gathered vertices per display list (GX side; largest).** TP draws models by replaying display lists stored in
