@@ -939,3 +939,21 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   hits (compute positions straight from the record), or to cache smaller (positions as the stream's own format).
 - **JIT fuzzer:** compares the pages compiled dcbf/dcbst/dcbz stamp with the interpreter's (planted bug 9); window edges
   randomized and compared; float sequences store sanitized values; unmapped-alias cases skipped like DSI ones.
+
+## 2026-10-13 night: what moves TP's speed (jobs 117-129); core 0 is the wall now
+
+- **Read first:** docs/research/REDESIGN_CANDIDATES.md (C1-C10, each with its evidence and re-evaluation trigger; the
+  owner's rule: log every redesign idea, re-evaluate later, never delete).
+- **Defaults now:** check hoisting on (job 117: core 0 +5.0% cutscene, +4.7% core-0-bound section), known-single
+  stores on (OPT_KSTORE, job 129: +1%, within noise, exact). Every older switch re-measured on today's build (jobs
+  120-124): merge is worth 24%; pld, traces, sched and splitopen are within noise (defaults kept).
+- **Rejected with measurements:** the CPU display-list cache (hits cost as much as gathers: RAM latency, job 119);
+  the second vertex worker on core 1 (core 0 -6%: its gathers evict core 0's working set from the shared 2 MB L2,
+  jobs 125/127, not the polling); the shared-index fast path (TP: under 1% of indexed vertices qualify, job 127).
+- **Frame skip experiment (`--ab fskip`, job 128):** +10% speed; with half the vertex work gone, core 0 waits on the
+  GX side only ~5%: **core 0 (~23% own speed in the cutscene, ~11% in the later stretch) is the wall.** 30-40% needs
+  the JIT: C8 single precision (research done; the store half of it is OPT_KSTORE), constant propagation, fault mode's
+  +11% (kept off for the kernel crash), float values kept in VFP registers.
+- **Relay:** builds restart by themselves (hb:ldr via svcConnectToPort); downloads retry on a stall (job 126's first
+  attempt stalled and the second finished). A run interrupted by the 2DS sleeping stays "running" on the relay:
+  cancel it (job 126).

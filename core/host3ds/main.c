@@ -337,7 +337,7 @@ typedef struct {
     bool vw2;            // --vw2 on|off (off): a second vertex worker on core 1 (pica_set_worker2)
     bool abVw2;          // --ab vw2: on and off (vw2 column; starts off)
     bool fskip;          // --fskip on|off (off): every other rendered frame draws nothing (pica_set_fskip)
-    bool kstore;         // --kstore on|off (off): stfs / psq_st of known exact singles skip the round trip (OPT_KSTORE)
+    bool kstore;         // --kstore on|off (on): stfs / psq_st of known exact singles skip the round trip (OPT_KSTORE)
     bool abKstore;       // --ab kstore: OPT_KSTORE on and off (opt column; each switch drops all compiled code)
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
 } RunOpts;
@@ -359,6 +359,7 @@ static void opts_default(RunOpts* o) {
     o->merge = true;
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
+    o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
