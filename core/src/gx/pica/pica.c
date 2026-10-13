@@ -29,6 +29,7 @@
 #include "../vfast.h"
 #include "gxpass_shbin.h"
 #include "pica.h"
+#include "../../../host3ds/crashlog.h"
 
 #define TW 512
 #define TH 256
@@ -1055,6 +1056,7 @@ static void vw_do(const VWork* w) {
 
 static void vw_main(void* arg) {
     (void)arg;
+    crashlog_thread(CRASH_VWORKER);
     __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));  // as the GX thread: round to nearest, flush to zero
     u32 idle = 0, jobs = 0;
     while (!g_vwQuit) {

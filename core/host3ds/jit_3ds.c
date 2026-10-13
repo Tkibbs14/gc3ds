@@ -8,6 +8,7 @@
 #include <3ds.h>
 #define GC3DS_HOST_TYPES
 #include <malloc.h>
+#include "crashlog.h"
 #include <string.h>
 #include "../src/jit/jit.h"
 
@@ -24,6 +25,8 @@ void* jit_host_alloc_exec(u32 bytes) {
     if (!g_proc && R_FAILED(svcDuplicateHandle(&g_proc, CUR_PROCESS_HANDLE))) return NULL;
     if (R_FAILED(svcControlProcessMemory(g_proc, (u32)p, (u32)p, bytes, MEMOP_PROT,
                                          MEMPERM_READ | MEMPERM_WRITE | MEMPERM_EXECUTE))) return NULL;
+    crashlog_set_info(CRASH_INFO_JIT_START, (u32)p);
+    crashlog_set_info(CRASH_INFO_JIT_END, (u32)p + bytes);
     return p;
 }
 
@@ -48,6 +51,7 @@ static void on_fault(ERRF_ExceptionInfo* ex, CpuRegisters* r) {
         r->pc = resume;
         jit_fault_resume(r);
     }
+    crashlog_record(ex, r, CRASH_MAIN);  // not a fault-mode site: recorded, then the default handling
     threadOnException(NULL, NULL, NULL);
     jit_fault_resume(r);
 }

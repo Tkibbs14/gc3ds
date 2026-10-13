@@ -19,6 +19,7 @@
 #include "gxthread.h"
 #include "pmu.h"
 #include "jitsample.h"
+#include "crashlog.h"
 #include "asyncfile.h"
 #include "relay.h"
 
@@ -545,6 +546,7 @@ static const char* run(const char* path) {
     }
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     perf_open(path);
+    crashlog_report(g_perf);
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
     const char* result = "done";
@@ -1043,6 +1045,8 @@ int main(int argc, char** argv) {
     gfxInitDefault();
     gfxSetDoubleBuffering(GFX_TOP, true);
     consoleInit(GFX_BOTTOM, NULL);
+    crashlog_open();               // a crash of the last run goes to the next perf.csv
+    crashlog_thread(CRASH_MAIN);
     double mhzBefore = cpu_mhz();
     osSetSpeedupEnable(true);
     double mhzSpeedup = cpu_mhz();
@@ -1060,6 +1064,7 @@ int main(int argc, char** argv) {
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
+    crashlog_set_info(CRASH_INFO_MEM1, (u32)g_sys.mem1);
     // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
     // recompiled about a million blocks in 12 emulated seconds (35% of the time).
     g_jit = jit_create(&g_sys.cpu, g_sys.mem1, MEM1_SIZE, 16u << 20);

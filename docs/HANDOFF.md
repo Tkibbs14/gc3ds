@@ -816,3 +816,23 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   `jit_create`, before `jit_set_gather` set it, so code run without `jit_entry` (the fuzzer) sent stores to guest
   address 0 into the pipe (seeds 1 and 7 failed at HEAD); and fast paths ignored that a supervisor-only BAT gives
   problem-state code a DSI (`fastmemUser`). Mismatches now print their case number for `JIT_FUZZ_CASE`.
+- **2DS result: no gain, and a kernel crash (relay 86-90, 65f291ac).** In-run A/B (`--ab faultmem`, cutscene, job 88):
+  on 19.44% +- 0.65 (69 heavy rows), off 19.53% +- 0.60 (60): no difference. Both runs with fault mode crashed (after
+  ~700 and ~2,700 faults); Luma's dump (reported by the next run, see below) is a **prefetch abort in the kernel**
+  (supervisor mode, pc fffffffe, lr 0, core 0) while it handled our data abort on a fault-mode store to the gather
+  pipe (far 54025000 = MEM1 + 0x4C008000, dfsr 805). The kernel's delivery of user exceptions fails now and then (the
+  probe's 202 faults passed); nothing on our side can make that safe. **Fault mode stays off on the 2DS** (default;
+  gcemu and the fuzzer keep it on, where it is verified). The lesson is the useful part: removing ~7 executed
+  instructions per memory access did not move speed, because a shared stub reached with a predicted call and return
+  is cheap on the ARM11 and core 0 is bound by stalls, not instruction count.
+- **Where core 0's cycles go (title and cutscene, d0b37d79-era, relay 83-84):** ~802 M cycles/s; 262-294 M
+  instructions; instruction-fetch stalls 195 M cycles/s (24%, 6.4 M I-cache misses/s); **data-dependency stalls 173 M
+  (22%) with only ~1.3 M D-cache misses/s**, so they are pipeline interlocks (a load's or a multiply's result used too
+  soon), not memory; branch mispredicts ~0.5 M/s; TLB misses 127 k/s. Next: schedule the emitted code against ARM11
+  interlocks (simulate first: weight each block's host code by its executions under qemu and count interlock cycles
+  with the TRM's latencies), and keep shrinking hot code.
+- **Crash reports from the device (crashlog.c):** our threads (main, GX, vertex worker) record an exception to
+  sdmc:/gc3ds/crash.bin, and every run reports a previous record and the newest Luma dump not yet reported
+  (sdmc:/luma/dumps/arm11, as hex: header, 23 registers r0-r12 sp lr pc cpsr dfsr ifsr far fpexc fpinst fpinst2,
+  then the process name) in perf.csv ("# crash log", "# luma dump"). An exception the kernel or another process
+  takes shows up only in Luma's dump. ELFs of relay builds are kept in WSL /root/elfs for decoding addresses.

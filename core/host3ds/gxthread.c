@@ -4,6 +4,7 @@
 // speed, and a spin-flag handoff between the cores takes about 0.9 us; LightEvent wake-ups across cores were not
 // reliable (3 of 2000), so both sides poll.
 #include <3ds.h>
+#include "crashlog.h"
 #define GC3DS_HOST_TYPES
 #include <string.h>
 #include "gxthread.h"
@@ -44,6 +45,7 @@ static void ev_post(System* s, u32 kind, u32 value) {
 
 static void gx_main(void* arg) {
     System* s = arg;
+    crashlog_thread(CRASH_GX);
     __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));  // round to nearest (threads start rounding to zero)
     u32 idle = 0;
     while (!g_quit) {
