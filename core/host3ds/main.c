@@ -39,6 +39,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
+void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
 static void scan_dir(const char* dir) {
@@ -321,6 +322,7 @@ typedef struct {
     u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
+    bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
 } RunOpts;
 static RunOpts g_opt;
 
@@ -366,6 +368,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on");
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
+        else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -539,6 +542,7 @@ static const char* run(const char* path) {
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     perf_open(path);
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
+    if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
     const char* result = "done";
     bool saved = false;
     u32 perfRows = 0;
