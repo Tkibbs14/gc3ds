@@ -1025,14 +1025,16 @@ static bool load_pending(RelayJob* j) {
 // chainloader restarts that title when gc3ds exits. false: the service is not there (the caller asks for a restart
 // by hand). Commands as new-hbmenu's hbldr.c: 2 SetTarget (path without "sdmc:", static buffer 0), 3 SetArgv (u32 argc,
 // then the NUL-separated strings, static buffer 1).
+static Result g_relaunchRc;  // why relaunch_into failed (0: it did not)
 static bool relaunch_into(const char* path) {
+    g_relaunchRc = 0;
     Handle h;
     // Non-blocking: with its sessions in use, srvGetServiceHandle waits forever (2DS, jobs 97-104: "hung after the
     // download" was this wait); then the owner restarts by hand instead.
     srvSetBlockingPolicy(true);
     Result got = srvGetServiceHandle(&h, "hb:ldr");
     srvSetBlockingPolicy(false);
-    if (R_FAILED(got)) { printf("(hb:ldr: %08lx)\n", (unsigned long)got); return false; }
+    if (R_FAILED(got)) { g_relaunchRc = got; printf("(hb:ldr: %08lx)\n", (unsigned long)got); return false; }
     const char* target = !strncmp(path, "sdmc:", 5) ? path + 5 : path;
     static u32 argBuf[0x400 / 4];
     memset(argBuf, 0, sizeof argBuf);
@@ -1053,7 +1055,7 @@ static bool relaunch_into(const char* path) {
         if (R_SUCCEEDED(rc)) rc = (Result)cmd[1];
     }
     svcCloseHandle(h);
-    if (R_FAILED(rc)) return false;
+    if (R_FAILED(rc)) { g_relaunchRc = rc; return false; }
     aptSetChainloaderToSelf();
     return true;
 }
@@ -1062,12 +1064,19 @@ static bool relaunch_into(const char* path) {
 #define RELAY_RESTART "sdmc:/gc3ds/relay_restart.txt"
 
 // After a job was kept for the next start (save_pending): restart into `selfPath` by itself, or ask for it.
+static void relay_note(const char* msg);
 static void restart_for_job(const char* selfPath, const char* why) {
     printf("%s\nRestarting...\n", why);
-    relay_flush();  // the download notes reach the job's log before this process ends
     FILE* rf = fopen(RELAY_RESTART, "w");
     if (rf) { fprintf(rf, "%llu\n", (unsigned long long)osGetTime()); fclose(rf); }
-    if (relaunch_into(selfPath)) {
+    bool autoRestart = relaunch_into(selfPath);
+    if (!autoRestart) {
+        char note[96];
+        snprintf(note, sizeof note, "relay: automatic restart unavailable (%08lx): asked for a restart by hand", (unsigned long)g_relaunchRc);
+        relay_note(note);
+    }
+    relay_flush();  // the download notes reach the job's log before this process ends
+    if (autoRestart) {
         printf("Restarting by itself...\n");
         for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();  // a second to read it
     } else {
