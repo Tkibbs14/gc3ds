@@ -257,7 +257,12 @@ VFastStats g_vfastStats;
 
 // One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen. pn and
 // tm[] index the job's own matrix copies once vfast_prepare has finished.
-typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 pn, hasColor, tm[8]; } VIn;
+typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 hasColor; } VIn;
+// A vertex's matrix indices, in their own array: the GX thread writes them (gather_indices, the matrix copies) and the
+// vertex worker writes VIn, so no cache line is written by both cores. Inside VIn every line of a deferred job moved
+// between cores 2 and 3, and a cache hit cost as much as a gather (2DS job 115: hits 33-35% of the worker, ~1.5 us a
+// vertex).
+typedef struct { u8 pn, tm[8]; } VIx;
 
 // What a texture unit's coordinate comes from: zero, channel 0's colour, or texgen `gi` from `kind` input at `off`.
 typedef struct { u8 mode, gi, kind; bool stq; u32 off; } VUnit;  // mode: 0 zero, 1 colour, 2 texgen
@@ -278,6 +283,7 @@ struct VJob {
     u32 onePa, oneSeg; // a single segment's, held in the job
     u32 made;          // g_memStamps.now before the job read guest RAM (the stream copy of a deferred gather is that old)
     VIn* in;
+    VIx* ix;           // the vertices' matrix indices (VIx)
     float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
     float (*tex)[12];  // texture matrices (3x4), per local index
     // The gather's inputs. A deferred job (vfast_prepare's `defer`) has only pn / tm read and a copy of the stream in
@@ -322,7 +328,7 @@ static u32 align8(u32 v) { return (v + 7) & ~7u; }
 // use. vfast_prepare packs the matrices it used at the start of that room, so the job ends at vfast_job_used bytes and a
 // ring allocator can take the rest back (the 3DS vertex worker's job ring: most draws use a few of the 64 matrices).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
-    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * vsize) +
+    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize) +
            align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4);
 }
 u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
@@ -331,7 +337,7 @@ u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
 static void gather_indices(VJob* job) {
     for (u32 vi = 0; vi < job->count; vi++) {
         const u8* p = job->raw + vi * job->vsize;
-        VIn* in = &job->in[vi];
+        VIx* in = &job->ix[vi];
         in->pn = job->pnDefault;
         if (job->pnDirect) in->pn = *p++;
         memcpy(in->tm, job->tmDefault, 8);
@@ -385,10 +391,11 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
         }
         VIn* in = &job->in[vi];
         if (indices) {
-            in->pn = job->pnDefault;
-            if (pnDirect) in->pn = *p++;
-            memcpy(in->tm, job->tmDefault, 8);
-            for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) in->tm[i] = *p++;
+            VIx* x = &job->ix[vi];
+            x->pn = job->pnDefault;
+            if (pnDirect) x->pn = *p++;
+            memcpy(x->tm, job->tmDefault, 8);
+            for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) x->tm[i] = *p++;
         } else {
             p += skip;
         }
@@ -787,7 +794,13 @@ static void gather_cached(VJob* job, bool indices) {
                     static VIn fresh[1024], keep[1024];  // (PC only; static: the 3DS worker's stack is 32 KB)
                     if (cnt <= 1024) {
                         memcpy(keep, job->in + at, cnt * sizeof(VIn));
+                        // The self-test (VCACHE_PLANT): one hit in 97 sees its stream changed under it, unstamped, as a
+                        // game writing vertex data without a flush would; those must show as differences. (Ignoring
+                        // the stamps alone proved nothing: TP's stamped pages held unchanged vertex data, job 113 PC.)
+                        u8* flip = g_vcachePlant && g_vcacheChecked % 97 == 0 ? (u8*)job->raw + (at + 1) * job->vsize - 1 : NULL;
+                        if (flip) *flip ^= 0x5A;
                         gather_range(job, false, at, at + cnt);
+                        if (flip) *flip ^= 0x5A;
                         memcpy(fresh, job->in + at, cnt * sizeof(VIn));
                         memcpy(job->in + at, keep, cnt * sizeof(VIn));
                         g_vcacheChecked++;
@@ -835,6 +848,8 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     u8* m = (u8*)mem + align8(sizeof(VJob));
     job->in = (VIn*)m;
     m += align8(count * (u32)sizeof(VIn));
+    job->ix = (VIx*)m;
+    m += align8(count * (u32)sizeof(VIx));
     u8* rawCopy = m;  // the stream, for a gather left to vfast_finish
     m += align8(count * vsize);
     job->pos = (float (*)[21])m;
@@ -939,7 +954,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
             const VIn* in = &g_in[vi];
             VLit* v = &lv[vi];
             if (eyeUsed) {
-                u32 pn = in->pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
+                u32 pn = job->ix[vi].pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
                 float* n = v->n;
                 for (int r = 0; r < 3; r++)
                     v->eye[r] = xf_f(gx, pm + 4 * r) * in->p[0] + xf_f(gx, pm + 4 * r + 1) * in->p[1] + xf_f(gx, pm + 4 * r + 2) * in->p[2] + xf_f(gx, pm + 4 * r + 3);
@@ -975,7 +990,7 @@ matrices:
     u32 usedGi = 0;
     for (u32 u = 0; u < 3; u++) if (job->unit[u].mode == VU_GEN) usedGi |= 1u << job->unit[u].gi;
     for (u32 vi = 0; vi < count; vi++) {
-        VIn* in = &g_in[vi];
+        VIx* in = &job->ix[vi];
         u32 pn = in->pn & 63;
         if (posLocal[pn] == 0xFF) {
             float* d = job->pos[job->nPos];
@@ -1008,7 +1023,7 @@ static void job_origin(VJob* job);
 
 #define TG_LOOP(KIND, STQ) do { \
     _Pragma("GCC unroll 4") \
-    for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[in[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
+    for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[ix[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
 } while (0)
 
 // Per-phase time of vfast_finish on calls the caller marks (g_vfPhaseTimed: the 3DS vertex worker, one job in 16):
@@ -1024,6 +1039,7 @@ void vfast_finish(VJob* job, PVert* out) {
     tp1 = vf_clock();
     u32 count = job->count;
     const VIn* in = job->in;
+    const VIx* ix = job->ix;
     const float* P = job->P;
     if (job->gpuPos && !job->originDone) job_origin(job);
     if (job->gpuPos) {  // the shader transforms: position from the origin and palette row; normals for shader lighting
@@ -1031,12 +1047,12 @@ void vfast_finish(VJob* job, PVert* out) {
         float ox = job->origin[0], oy = job->origin[1], oz = job->origin[2];
         for (u32 vi = 0; vi < count; vi++) {
             float* o = out[vi].pos;
-            o[0] = in[vi].p[0] - ox; o[1] = in[vi].p[1] - oy; o[2] = in[vi].p[2] - oz; o[3] = slot3[in[vi].pn];
+            o[0] = in[vi].p[0] - ox; o[1] = in[vi].p[1] - oy; o[2] = in[vi].p[2] - oz; o[3] = slot3[ix[vi].pn];
         }
         if (job->gpuLight) {
 #pragma GCC unroll 4
             for (u32 vi = 0; vi < count; vi++) {
-                const float* N = job->pos[in[vi].pn] + 12;
+                const float* N = job->pos[ix[vi].pn] + 12;
                 float nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
                 PVert* o = &out[vi];
                 o->nrm[0] = N[0] * nx + N[1] * ny + N[2] * nz;
@@ -1049,7 +1065,7 @@ void vfast_finish(VJob* job, PVert* out) {
     // Position: branch-free, so the compiler unrolls and interleaves the loop (see the lighting notes).
 #pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
-        const float* M = job->pos[in[vi].pn];
+        const float* M = job->pos[ix[vi].pn];
         float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2];
         float e0 = M[0] * x + M[1] * y + M[2] * z + M[3];
         float e1 = M[4] * x + M[5] * y + M[6] * z + M[7];
@@ -1060,7 +1076,7 @@ void vfast_finish(VJob* job, PVert* out) {
     if (job->gpuLight) {
 #pragma GCC unroll 4
         for (u32 vi = 0; vi < count; vi++) {
-            const float* M = job->pos[in[vi].pn];
+            const float* M = job->pos[ix[vi].pn];
             const float* N = M + 12;
             float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2], nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
             PVert* o = &out[vi];
@@ -1130,7 +1146,7 @@ static void job_origin(VJob* job) {
         const u8* src = fetch(job->mem1, &job->pos_, &q, job->pos_.n * job->pos_.cs);
         for (u32 k = 0; k < job->pos_.n; k++) p[k] = read_comp(src + k * job->pos_.cs, job->pos_.fmt, job->pos_.scale);
     }
-    const float* M = job->pos[job->in[0].pn];
+    const float* M = job->pos[job->ix[0].pn];
     float e = 0, sc = 0;  // eye distance (largest component), matrix scale (largest row sum)
     for (int r = 0; r < 3; r++) {
         float c = fabsf(M[4 * r] * p[0] + M[4 * r + 1] * p[1] + M[4 * r + 2] * p[2] + M[4 * r + 3]);

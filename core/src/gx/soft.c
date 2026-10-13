@@ -995,7 +995,7 @@ static void merge_draw(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u
 
 // VCACHE_CHECK: the display-list vertex cache (vfast.c) on every draw that streams from guest RAM, through both gather
 // paths (on the preparing thread, and deferred to vfast_finish as on the 3DS worker); every hit is gathered again and
-// compared. VCACHE_PLANT=1 ignores the page stamps: differences then show the stamps are what keeps entries right.
+// compared. VCACHE_PLANT=1, its self-test: page stamps ignored, and one hit in 97 regathered over a changed stream byte.
 static VCache* g_vcPc;
 static void vcache_report(void) {
     const VCacheStats* st = vcache_stats(g_vcPc);
