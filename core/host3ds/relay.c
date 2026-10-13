@@ -376,13 +376,13 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
     return true;
 }
 
-void relay_job_begin(unsigned id) {
+void relay_job_begin(unsigned id, int firstSeq) {
     g_cmdTail = g_cmdHead;
     g_frameTail = g_frameHead;
     g_frameNo = 0;
     g_head = g_tail = 0;
     g_dropped = 0;
-    g_seq = 0;
+    g_seq = firstSeq;  // the relay upserts chunks by number: a resumed job must not reuse the numbers it already sent
     __sync_synchronize();
     g_jobId = id;
 }

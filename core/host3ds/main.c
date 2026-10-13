@@ -1177,7 +1177,7 @@ static void remote_mode(const char* selfPath) {
         }
         have = false;
         printf("job %u: %s\n", job.id, job.args);
-        relay_job_begin(job.id);
+        relay_job_begin(job.id, fromPending ? RELAY_RESUME_SEQ : 0);
         if (fromPending && restartAt) {
             char note[96];
             snprintf(note, sizeof note, "relay: restarted into this build %.1f s after the download", (double)(osGetTime() - restartAt) / 1000.0);
@@ -1246,7 +1246,7 @@ static void fuzz_job_at_startup(void) {
     char err[200];
     printf("JIT fuzzer for relay job %u...\n", job.id);
     if (!relay_start(err, sizeof err)) { printf("relay: %s\n", err); return; }
-    relay_job_begin(job.id);
+    relay_job_begin(job.id, RELAY_RESUME_SEQ);
     char cases[16] = "20000", seed[24] = "1", mode[24] = "";
     const char* p = strstr(job.args, "--fuzz");
     sscanf(p, "--fuzz %15s %23s %23s", cases, seed, mode);

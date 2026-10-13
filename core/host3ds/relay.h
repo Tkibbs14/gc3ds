@@ -17,7 +17,10 @@ bool relay_start(char* err, size_t n);
 const char* relay_self_id(const char* selfPath);
 int relay_next(RelayJob* j, char* err, size_t n);  // 1: a job, 0: none queued, -1: error
 bool relay_fetch_build(const char* id, const char* path, char* err, size_t n);
-void relay_job_begin(unsigned id);  // log lines from now on go to this job
+// Log lines from now on go to this job. firstSeq: 0, or RELAY_RESUME_SEQ for a job resumed after a restart (the relay
+// upserts chunks by number, so the new instance must not reuse the numbers the old one sent: job 111 lost its header).
+#define RELAY_RESUME_SEQ 100000
+void relay_job_begin(unsigned id, int firstSeq);
 FILE* relay_tee(FILE* f);           // a FILE writing to f and to the current job's log
 void relay_job_end(const char* status);  // sends the rest of the log, then the status (done, failed, stopped)
 void relay_stop(void);
