@@ -856,3 +856,15 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   from r13 / r2 was mov + 3 orr + add). Model: interlock cycles 1.70e8 -> 1.39e8 (-18%), executed instructions
   -4%, lwz 3.73 -> 0.78 cycles, hot words 4.7 -> 4.6 per guest instruction. Verified: fuzz seeds 1 and 3 with fault mode
   off (the stubs in use), DOL check, TP under qemu on vs off: identical instruction count and last frame.
+- **2DS (relay 91-94):** `--ab sched` within noise (cutscene 19.89 off / 19.72 on, title 18.86 / 19.94, +-0.5; the
+  data-stall counter fell only 2-3%, less than the model's 18% of interlock cycles); kept on as the default (fewer
+  instructions and words, no harm seen). **Indirect table 64K entries (d613012):** indirect misses 13k -> 3.6k/s, the
+  dispatcher's share of core 0 in the cutscene ~10-16% -> 4.5-6%; speed cutscene 21.35% (21.17 before), title 20.58%
+  (21.11; a different stretch, 136 heavy rows against 188). Malloc's largest free block 17-20 MB.
+- **Where this leaves TP (2026-10-13):** both cores near their limits at ~21%: core 0 98% busy (fetch stalls 24%,
+  interlocks ~20%, dispatcher 5-12%), the GX thread 80% with 9-16% of it waiting on the vertex worker. Each remaining
+  lever measured or modelled this session is worth a point or less. 80% needs ~4x on core 0 and on core 2; this JIT's
+  design (~13 ARM instructions per guest instruction, FPRs through memory, registers cached only within a block) does
+  not get there by tuning. Options for the owner: an optimizing JIT (registers and FPRs across blocks, constant
+  folding, flags only when read; Dolphin-class code is ~4-6 ARM instructions per guest instruction), game patches for
+  TP (fewer draws, effects off), or TP as the stress test while other games set the playable target.
