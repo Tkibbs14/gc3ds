@@ -464,6 +464,7 @@ static void perf_shot(double realS, double emuS) {
 //   shot                      a frame now (uploaded to the job)
 //   set opt|sched N           JIT optimizations / scheduling masks
 //   set merge|vtrim|pld|splitopen 0|1, set vwmem KB
+//   tev [N]                   describe the next N draws' TEV, textures and combiner result (default 6)
 //   stop                      end the run
 static bool g_stopReq;
 static bool g_relayRun;  // a relay job is running (frames every 15 s instead of 30)
@@ -472,6 +473,7 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
     bool ok = true;
     if (!strcmp(cmd, "shot")) perf_shot(realS, emuS);
     else if (!strcmp(cmd, "stop")) g_stopReq = true;
+    else if (!strncmp(cmd, "tev", 3) && g_pica) pica_describe(cmd[3] ? (u32)strtoul(cmd + 3, NULL, 10) : 6);
     else if (sscanf(cmd, "set %23s %23s", name, val) == 2) {
         u32 v = (u32)strtoul(val, NULL, 0);
         if (!strcmp(name, "opt") && g_jit) jit_set_opt(g_jit, v);
@@ -772,6 +774,10 @@ static const char* run(const char* path) {
                 ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % (g_relayRun ? 15 : 30) == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
+                if (g_pica && pica_take_description()) {
+                    if (g_perf) fputs(pica_take_description(), g_perf);
+                    pica_description_taken();
+                }
                 for (char cmd[128]; relay_take_cmd(cmd, sizeof cmd);)
                     apply_cmd(cmd, (double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
@@ -1025,8 +1031,14 @@ static bool relaunch_into(const char* path) {
     return true;
 }
 
+// When a restart into a new build began (ms, osGetTime): the new build reports how long it took.
+#define RELAY_RESTART "sdmc:/gc3ds/relay_restart.txt"
+
 // After a job was kept for the next start (save_pending): restart into `selfPath` by itself, or ask for it.
 static void restart_for_job(const char* selfPath, const char* why) {
+    relay_flush();  // the download notes reach the job's log before this process ends
+    FILE* rf = fopen(RELAY_RESTART, "w");
+    if (rf) { fprintf(rf, "%llu\n", (unsigned long long)osGetTime()); fclose(rf); }
     if (relaunch_into(selfPath)) {
         printf("\n%s\nRestarting by itself...\n", why);
         for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();  // a second to read it
@@ -1048,6 +1060,9 @@ static void remote_mode(const char* selfPath) {
     const char* self = relay_self_id(selfPath);
     RelayJob job;
     bool have = load_pending(&job), fromPending = have;
+    FILE* rf = fopen(RELAY_RESTART, "r");
+    unsigned long long restartAt = 0;
+    if (rf) { if (fscanf(rf, "%llu", &restartAt) != 1) restartAt = 0; fclose(rf); remove(RELAY_RESTART); }
     u64 lastPoll = 0;
     u32 polls = 0;
     for (;;) {
@@ -1068,6 +1083,12 @@ static void remote_mode(const char* selfPath) {
         have = false;
         printf("job %u: %s\n", job.id, job.args);
         relay_job_begin(job.id);
+        if (fromPending && restartAt) {
+            char note[96];
+            snprintf(note, sizeof note, "relay: restarted into this build %.1f s after the download", (double)(osGetTime() - restartAt) / 1000.0);
+            relay_note(note);
+            restartAt = 0;
+        }
         if (strcmp(job.build, "-") && strcmp(job.build, self)) {
             if (fromPending) {
                 snprintf(err, sizeof err, "still build %s after the update to %s", self, job.build);

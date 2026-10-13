@@ -67,6 +67,11 @@ extern u64 g_picaMerge[7];
 extern u64 g_vwStats[5];
 void pica_set_vw_trim(bool on);  // give back the unused end of each job's reservation (default on; A/B)
 bool pica_vw_trim(void);
+// Describes the next `draws` draws (TEV registers, texture maps, the combiner compiler's result) for the log: the
+// text is ready once pica_take_description returns it; pica_description_taken releases it.
+void pica_describe(u32 draws);
+const char* pica_take_description(void);
+void pica_description_taken(void);
 u32 pica_queue_offset(void);
 extern u64 g_picaDrawPaths[8];
 bool pica_vertex_worker_idle(void);  // no draw queued on the vertex worker (callable from any thread)  // draws by batch path (pica.c)

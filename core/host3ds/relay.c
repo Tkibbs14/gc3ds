@@ -26,6 +26,7 @@ static u32* g_socBuf;
 static CURL* g_curl;
 static LightLock g_curlLock;
 static char g_selfId[17];
+static int tee_write(void* cookie, const char* p, _READ_WRITE_BUFSIZE_TYPE len);
 
 static char* g_ring;
 static volatile u32 g_head, g_tail;  // bytes ever written / ever posted (wrap at RING_SIZE)
@@ -281,16 +282,75 @@ int relay_next(RelayJob* j, char* err, size_t n) {
     return r;
 }
 
+// Download progress on the bottom screen, at most every half second.
+static u64 g_dlShown;
+static int on_progress(void* user, curl_off_t total, curl_off_t now, curl_off_t ut, curl_off_t un) {
+    (void)user; (void)ut; (void)un;
+    u64 t = svcGetSystemTick();
+    if (t - g_dlShown < SYSCLOCK_ARM11 / 2) return 0;
+    g_dlShown = t;
+    if (total > 0) printf("\r  %lu / %lu KB   ", (unsigned long)(now >> 10), (unsigned long)(total >> 10));
+    else printf("\r  %lu KB   ", (unsigned long)(now >> 10));
+    return 0;
+}
+
+// A build into `f`: gzipped on the wire (the relay compresses it, curl inflates it), progress shown, and given up
+// when it moves less than 512 bytes/s for 30 s (a stall, instead of waiting out the whole timeout). The status, or 0.
+static long download(const char* path, FILE* f, char* err, size_t en) {
+    char url[384], tok[300];
+    snprintf(url, sizeof url, "%s%s", g_url, path);
+    snprintf(tok, sizeof tok, "x-relay-token: %s", g_token);
+    struct curl_slist* h = curl_slist_append(NULL, tok);
+    char ebuf[CURL_ERROR_SIZE] = "";
+    Sink s = { .file = f };
+    LightLock_Lock(&g_curlLock);
+    curl_easy_reset(g_curl);
+    curl_easy_setopt(g_curl, CURLOPT_URL, url);
+    curl_easy_setopt(g_curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(g_curl, CURLOPT_CAINFO, "romfs:/relay_ca.pem");
+    curl_easy_setopt(g_curl, CURLOPT_USERAGENT, "gc3ds-relay/1");
+    curl_easy_setopt(g_curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(g_curl, CURLOPT_CONNECTTIMEOUT, 20L);
+    curl_easy_setopt(g_curl, CURLOPT_TIMEOUT, 900L);
+    curl_easy_setopt(g_curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
+    curl_easy_setopt(g_curl, CURLOPT_LOW_SPEED_TIME, 30L);
+    curl_easy_setopt(g_curl, CURLOPT_ACCEPT_ENCODING, "gzip");
+    curl_easy_setopt(g_curl, CURLOPT_ERRORBUFFER, ebuf);
+    curl_easy_setopt(g_curl, CURLOPT_WRITEFUNCTION, on_data);
+    curl_easy_setopt(g_curl, CURLOPT_WRITEDATA, &s);
+    curl_easy_setopt(g_curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(g_curl, CURLOPT_XFERINFOFUNCTION, on_progress);
+    g_dlShown = 0;
+    CURLcode rc = curl_easy_perform(g_curl);
+    long status = 0;
+    if (rc == CURLE_OK) curl_easy_getinfo(g_curl, CURLINFO_RESPONSE_CODE, &status);
+    LightLock_Unlock(&g_curlLock);
+    curl_slist_free_all(h);
+    printf("\n");
+    if (rc != CURLE_OK) snprintf(err, en, "%s", ebuf[0] ? ebuf : curl_easy_strerror(rc));
+    else if (status != 200) snprintf(err, en, "HTTP %ld", status);
+    return status;
+}
+
 bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
     char tmp[300], url[64];
     snprintf(tmp, sizeof tmp, "%s.new", path);
-    FILE* f = fopen(tmp, "wb");
-    if (!f) { snprintf(err, n, "cannot write %s", tmp); return false; }
     snprintf(url, sizeof url, "/build/%s", id);
-    Sink s = { .file = f };
-    long st = http("GET", url, NULL, 0, &s, 300, err, n);
-    bool ok = fclose(f) == 0 && st == 200;
-    if (!ok) { remove(tmp); return false; }
+    bool ok = false;
+    for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+        FILE* f = fopen(tmp, "wb");
+        if (!f) { snprintf(err, n, "cannot write %s", tmp); return false; }
+        u64 t0 = svcGetSystemTick();
+        long st = download(url, f, err, n);
+        ok = fclose(f) == 0 && st == 200;
+        double secs = (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11;
+        char note[300];
+        snprintf(note, sizeof note, "# relay: build %s download attempt %d %s after %.1f s%s%s\n", id, attempt,
+                 ok ? "done" : "failed", secs, ok ? "" : ": ", ok ? "" : err);
+        tee_write(NULL, note, (int)strlen(note));
+        if (!ok) { remove(tmp); printf("download failed (%s), attempt %d of 3\n", err, attempt); }
+    }
+    if (!ok) return false;
     // Check what arrived before replacing the running build.
     char was[17];
     snprintf(was, sizeof was, "%s", g_selfId);
@@ -349,6 +409,12 @@ FILE* relay_tee(FILE* f) {
     if (!g_started || !g_jobId) return f;
     FILE* t = funopen(f, NULL, tee_write, NULL, tee_close);
     return t ? t : f;
+}
+
+void relay_flush(void) {
+    if (!g_started || !g_jobId) return;
+    g_flushReq = true;
+    LightEvent_WaitTimeout(&g_flushed, 30000000000LL);
 }
 
 void relay_job_end(const char* status) {

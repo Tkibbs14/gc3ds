@@ -1260,10 +1260,38 @@ static void draw_cpu_alone(VWork* w, const GXCore* gx, const VFold* f, u32 prim,
     if (g.arenaUsed > first) draw_arrays(first, g.arenaUsed - first);
 }
 
+// Draw descriptions on request (pica_describe, the live "tev" command): the next draws' TEV registers (tev_key),
+// texture maps (format, size, address) and what the combiner compiler made of them, as text for perf.csv. Written by
+// this (GX) thread, taken by the CPU thread once complete.
+static char g_desc[6144];
+static u32 g_descLen;
+static volatile u32 g_descWant, g_descReady;
+void pica_describe(u32 draws) { if (!g_descReady && !g_descWant) { g_descLen = 0; g_descWant = draws > 16 ? 16 : draws; } }
+const char* pica_take_description(void) { return g_descReady ? g_desc : NULL; }
+void pica_description_taken(void) { g_descReady = 0; }
+static void describe_draw(const GXCore* gx, u32 prim, u32 count) {
+    u32 k[72], n = tev_key(gx, k);
+    PicaTev t;
+    tev_pica_compile(gx, &t);
+    int w = snprintf(g_desc + g_descLen, sizeof g_desc - g_descLen, "# tev draw prim %u n %u: pica stages %u approx %02x tex",
+                     (unsigned)prim, (unsigned)count, (unsigned)t.numStages, (unsigned)t.approx);
+    for (u32 i = 0; i < t.numTex && w > 0 && g_descLen + (u32)w < sizeof g_desc; i++) {
+        u32 map = t.texMap[i] & 7, hi = map >= 4 ? 0x20 : 0, m = map & 3, img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi];
+        w += snprintf(g_desc + g_descLen + w, sizeof g_desc - g_descLen - w, " [map %u fmt %u %ux%u @%06x]", (unsigned)map,
+                      (unsigned)((img0 >> 20) & 15), (unsigned)((img0 & 0x3FF) + 1), (unsigned)(((img0 >> 10) & 0x3FF) + 1),
+                      (unsigned)((img3 & 0xFFFFFF) << 5));
+    }
+    for (u32 i = 0; i < n && w > 0 && g_descLen + (u32)w + 12 < sizeof g_desc; i++)
+        w += snprintf(g_desc + g_descLen + w, sizeof g_desc - g_descLen - w, "%s%08lx", i ? " " : "; key ", (unsigned long)k[i]);
+    if (w > 0 && g_descLen + (u32)w + 2 < sizeof g_desc) { g_descLen += (u32)w; g_desc[g_descLen++] = '\n'; g_desc[g_descLen] = 0; }
+    if (--g_descWant == 0) { __sync_synchronize(); g_descReady = 1; }
+}
+
 // One draw, or a merged draw (nSeg > 0: seg[] lists its draws as prim << 16 | count, vertices back to back in raw;
 // always triangles, always indexed).
 static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const u32* seg, u32 nSeg) {
     vw_apply();
+    if (g_descWant && !g_descReady) describe_draw(&s->gx.core, prim, count);
     static u32 drawN;
     g_drawScale = 16;
     g_drawTimed = !(++drawN & 15);  // per-draw timers on one draw in 16
