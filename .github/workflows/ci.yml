@@ -1,0 +1,34 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pc-and-jit-fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf qemu-user python3
+      - name: PC build
+        run: make -C core
+      - name: JIT differential fuzzer (default, chain mode, planted bugs)
+        run: bash core/tests/jit/run_jit_fuzz.sh 5000 1
+      - name: JIT fuzzer, every optimization on, fault mode off
+        run: |
+          JIT_FUZZ_OPT=7 JIT_FUZZ_NOFAULT=1 bash core/tests/jit/run_jit_fuzz.sh 5000 3
+
+  build-3ds:
+    runs-on: ubuntu-24.04
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Portlibs
+        run: dkp-pacman -Sy --noconfirm --needed 3ds-curl 3ds-mbedtls 3ds-zlib
+      - name: 3DS build
+        run: bash core/host3ds/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gc3ds-3dsx
+          path: core/host3ds/gc3ds.3dsx
