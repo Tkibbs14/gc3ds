@@ -336,6 +336,8 @@ typedef struct {
     bool abDlcache;      // --ab dlcache: the cache on and off (dlcache column; starts off)
     bool vw2;            // --vw2 on|off (off): a second vertex worker on core 1 (pica_set_worker2)
     bool abVw2;          // --ab vw2: on and off (vw2 column; starts off)
+    bool fskip;          // --fskip on|off (off): every other rendered frame draws nothing (pica_set_fskip)
+    bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -371,7 +373,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -389,6 +391,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
         else if (!strcmp(a, "--dlcache")) o->dlcache = !strcmp(v, "on");
         else if (!strcmp(a, "--vw2")) o->vw2 = !strcmp(v, "on");
+        else if (!strcmp(a, "--fskip")) o->fskip = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -437,7 +440,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -490,6 +493,7 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "vtrim")) pica_set_vw_trim(v != 0);
         else if (!strcmp(name, "dlcache")) g_vcacheOn = v != 0;
         else if (!strcmp(name, "vw2") && g_pica) pica_set_worker2(v != 0);
+        else if (!strcmp(name, "fskip") && g_pica) pica_set_fskip(v != 0);
         else if (!strcmp(name, "pld")) vfast_set_prefetch(v != 0);
         else if (!strcmp(name, "splitopen") && g_pica) pica_set_split_open(v != 0);
         else if (!strcmp(name, "vwmem") && g_pica) pica_set_job_ring(v << 10);
@@ -619,6 +623,7 @@ static const char* run(const char* path) {
     if (g_jit) { xLast[0] = jit_stats(g_jit)->blocksCompiled; xLast[1] = jit_stats(g_jit)->pollSkips; }
     g_vcacheOn = g_opt.dlcache;  // --ab dlcache starts off
     if (g_pica) pica_set_worker2(g_opt.vw2);  // --ab vw2 starts off
+    if (g_pica) pica_set_fskip(g_opt.fskip);  // --ab fskip starts off
     PicaStats pLast = g_picaStats;
     u64 linksLast = g_jit ? jit_stats(g_jit)->links : 0;
     if (g_jit) {
@@ -781,6 +786,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", pica_vw_trim() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_vcacheOn ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_worker2() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_fskip() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -817,6 +823,7 @@ static const char* run(const char* path) {
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());
+                if (g_opt.abFskip && g_pica && perfRows % AB_SECS == 0) pica_set_fskip(!pica_fskip());
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
@@ -896,6 +903,11 @@ static const char* run(const char* path) {
                                         dv > 0 ? 100.0 * (double)(sv[4] - lastS[4]) / dv : 0.0);
                                 memcpy(lastS, sv, sizeof sv);
                             }
+                            static u64 lastFsD, lastFsF;
+                            fprintf(g_perf, "# frame skip 10s: %.1f frames/s skipped, %.0f draws/s not made (%s)\n",
+                                    (double)(g_fskipFrames - lastFsF) / 10.0, (double)(g_fskipDraws - lastFsD) / 10.0,
+                                    g_pica && pica_fskip() ? "on" : "off");
+                            lastFsD = g_fskipDraws; lastFsF = g_fskipFrames;
                             static u64 lastW2;
                             fprintf(g_perf, "# vworker 2 10s: %.0f jobs/s on core 1 (%s)\n", (double)(g_vw2Jobs - lastW2) / 10.0,
                                     g_pica && pica_worker2() ? "on" : "off");

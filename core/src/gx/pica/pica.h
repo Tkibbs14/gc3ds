@@ -75,6 +75,9 @@ bool pica_vw_trim(void);
 // text is ready once pica_take_description returns it; pica_description_taken releases it.
 // The display-list vertex cache's counters: the GX thread's (0) or the vertex worker's (1); NULL before it exists.
 const VCacheStats* pica_vcache_stats(int worker);
+void pica_set_fskip(bool on);  // frame skip (pica.c): every other rendered frame draws nothing
+bool pica_fskip(void);
+extern u64 g_fskipDraws, g_fskipFrames;
 void pica_set_worker2(bool on);  // a second vertex worker on core 1 (indexed and fixed-place jobs)
 bool pica_worker2(void);
 extern u64 g_vw2Jobs;

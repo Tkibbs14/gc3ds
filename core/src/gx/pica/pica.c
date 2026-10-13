@@ -1647,8 +1647,19 @@ void pica_merge_flush(System* s, bool idle) {
 void pica_set_merge(bool on) { g_mergeWant = on; }
 bool pica_merge(void) { return g_mergeWant; }
 
+// Frame skip (REDESIGN_CANDIDATES C9; --fskip on, --ab fskip, live "set fskip"): every other rendered frame (frames
+// end at the EFB copy to the XFB) draws nothing and makes no EFB copies; the game's GX stream still runs, and the
+// screen keeps the previous frame. An experiment first: how much speed the vertex work holds (copies to textures in
+// skipped frames are not made, so render-to-texture effects lag a frame).
+static volatile bool g_fskipWant;
+static bool g_fskipNow;
+u64 g_fskipDraws, g_fskipFrames;
+void pica_set_fskip(bool on) { g_fskipWant = on; }
+bool pica_fskip(void) { return g_fskipWant; }
+
 static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
+    if (g_fskipNow) { g_fskipDraws++; return; }
     g_picaMerge[0]++;
     u32 bytes = count * vsize;
     // A draw inside a display list streams straight from guest RAM: its address keys the vertex cache.
@@ -1846,6 +1857,11 @@ static void clear_efb(const GXCore* gx, u32 x0, u32 y0, u32 w, u32 h) {
 static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
+    if (g_fskipNow) {  // a skipped frame: no copies; its end starts a drawn one
+        if ((ctl >> 14) & 1) { g_fskipNow = false; g_fskipFrames++; }
+        return true;
+    }
+    if (((ctl >> 14) & 1) && g_fskipWant) g_fskipNow = true;  // after this drawn frame's copy, the next is skipped
     begin_frame();
     if ((ctl >> 14) & 1) copy_to_xfb(x0, y0, w, h, dest);
     else copy_to_texture(s, gx, ctl, x0, y0, w, h, dest);
