@@ -158,6 +158,11 @@ static inline u32 vf_sm(int s) { return (u32)(s >> 1) | ((u32)(s & 1) << 5); }
 static inline void vfp_d(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000B00u | op | ((u32)n << 16) | ((u32)d << 12) | (u32)m); }
 static inline void vfp_s(Emit* e, u32 op, int d, int n, int m) { E(e, 0xEE000A00u | op | vf_sd(d) | vf_sn(n) | vf_sm(m)); }
 static inline void vmov_d(Emit* e, int d, int m) { E(e, 0xEEB00B40u | ((u32)d << 12) | (u32)m); }
+static inline void vmov_s(Emit* e, int d, int m) { E(e, 0xEEB00A40u | vf_sd(d) | vf_sm(m)); }
+static inline void vneg_s(Emit* e, int d, int m) { E(e, 0xEEB10A40u | vf_sd(d) | vf_sm(m)); }
+static inline void vabs_s(Emit* e, int d, int m) { E(e, 0xEEB00AC0u | vf_sd(d) | vf_sm(m)); }
+static inline void vpush_d8_d15(Emit* e) { E(e, 0xED2D8B10u); }  // vstmdb sp!, {d8-d15}
+static inline void vpop_d8_d15(Emit* e) { E(e, 0xECBD8B10u); }   // vldmia sp!, {d8-d15}
 static inline void vsqrt_d(Emit* e, int d, int m) { E(e, 0xEEB10BC0u | ((u32)d << 12) | (u32)m); }
 static inline void vneg_d(Emit* e, int d, int m) { E(e, 0xEEB10B40u | ((u32)d << 12) | (u32)m); }
 static inline void vcvt_f32_f64(Emit* e, int sd, int dm) { E(e, 0xEEB70BC0u | vf_sd(sd) | (u32)dm); }

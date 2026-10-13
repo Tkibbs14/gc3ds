@@ -30,7 +30,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_N, ST_WORDS = 4096 };  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_N, ST_WORDS = 8192 };  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -109,6 +109,8 @@ struct Jit {
     u16 psqUStub[2][8][2], stfsUStub, lfsUStub, lfdUStub, stfdUStub;  // ... unchecked, for hoisted bases (OPT_HOIST)
     // psq_st / stfs of values known to be exact singles (OPT_KSTORE): checked and unchecked
     u16 psqStK[8][2], psqUStK[8][2], stfsStK, stfsUStK;
+    // ... with single bits in core registers (OPT_FCACHE): loads and stores, checked and unchecked
+    u16 lfsB, lfsUB, stfsB, stfsUB, psqLB[8][2], psqULB[8][2], psqSB[8][2], psqUSB[8][2];
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -336,7 +338,14 @@ enum { ID_CR = 32, ID_XER = 33 };  // cache ids beyond the GPRs
 // swap: the slot holds the value byte-reversed, as a hoisted lwz loaded it (check hoisting); the `rev` is emitted where
 // the value is first read or written back, so the load's result is not needed by the very next instruction (an
 // ARM11 load-use interlock, two cycles).
-typedef struct { s8 id[NSLOT]; bool dirty[NSLOT], swap[NSLOT]; u32 use[NSLOT]; } Rc;  // id: GPR 0-31, ID_CR, ID_XER, or -1
+// Float lanes (OPT_FCACHE): FPR lanes that hold exact single-precision values live as singles in s16-s31 (d8-d15,
+// callee-saved: C helpers keep them; ST_ENTER / ST_EXIT save the host's), fid = 2 * fr + lane, from a load or a
+// single-precision result until the block ends; written back as doubles (fdirty) wherever the GPR slots are.
+#define NFS 16
+typedef struct {
+    s8 id[NSLOT]; bool dirty[NSLOT], swap[NSLOT]; u32 use[NSLOT];  // id: GPR 0-31, ID_CR, ID_XER, or -1
+    s8 fid[NFS]; bool fdirty[NFS]; u32 fuse[NFS];
+} Rc;
 static u32 rc_off(u32 id) { return id < 32 ? OFF_GPR(id) : id == ID_CR ? OFF_CR : OFF_XER; }
 
 typedef struct {
@@ -399,6 +408,7 @@ typedef struct {
     // since; chkClear: the GPRs the instruction being compiled writes (cleared from chk before the next one).
     bool hoist;
     u32 chk, chkClear;
+    u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
 } Cg;
 
@@ -821,12 +831,63 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
         str_imm(&c->e, kSlot[k], RG, rc_off((u32)rc->id[k]));
         if (!c->inCold && rc == &c->rc) rs_store((u32)rc->id[k]);  // hot flushes only: exit stubs would count once per stub, not per run
     }
+    for (int k = 0; k < NFS; k++) {  // float lanes, as doubles (d7: free between instructions and at exits)
+        if (rc->fid[k] < 0 || !rc->fdirty[k]) continue;
+        vcvt_f64_f32(&c->e, 7, 16 + k);
+        vstr_d(&c->e, 7, RG, OFF_FPR((u32)rc->fid[k] >> 1) + 8u * ((u32)rc->fid[k] & 1));
+    }
 }
+// A copy of the cache with nothing dirty (what an exit after a flush writes back).
+static Rc rc_clean(const Rc* rc) {
+    Rc r = *rc;
+    for (int k = 0; k < NSLOT; k++) r.dirty[k] = false;
+    for (int k = 0; k < NFS; k++) r.fdirty[k] = false;
+    return r;
+}
+// ---- float lanes (OPT_FCACHE) ----
+static int fc_find(const Rc* rc, u32 fr, u32 lane) {
+    s8 id = (s8)(2 * fr + lane);
+    for (int k = 0; k < NFS; k++) if (rc->fid[k] == id) return k;
+    return -1;
+}
+// The single bits (Cg.single layout) of fr's lanes held in the float cache.
+static u64 fc_bits(const Cg* c, u32 fr) {
+    u64 b = 0;
+    for (u32 lane = 0; lane < 2; lane++) if (fc_find(&c->rc, fr, lane) >= 0) b |= 1ull << (2 * fr + lane);
+    return b;
+}
+// Writes the lane in slot k back to guest state as a double (uses d7).
+static void fc_wb(Cg* c, int k) {
+    vcvt_f64_f32(&c->e, 7, 16 + k);
+    vstr_d(&c->e, 7, RG, OFF_FPR((u32)c->rc.fid[k] >> 1) + 8u * ((u32)c->rc.fid[k] & 1));
+}
+// fr's dirty lanes to guest state (they stay cached, clean in hot code).
+static void fc_sync(Cg* c, u32 fr) {
+    for (u32 lane = 0; lane < 2; lane++) {
+        int k = fc_find(&c->rc, fr, lane);
+        if (k < 0 || !c->rc.fdirty[k]) continue;
+        fc_wb(c, k);
+        if (!c->inCold) c->rc.fdirty[k] = false;
+    }
+}
+// Forgets fr's lanes (hot code; written back first when dirty) and their single bits: guest state is fr's value again.
+static void fc_release(Cg* c, u32 fr) {
+    fc_sync(c, fr);
+    if (c->inCold) return;
+    for (u32 lane = 0; lane < 2; lane++) {
+        int k = fc_find(&c->rc, fr, lane);
+        if (k < 0) continue;
+        c->rc.fid[k] = -1;
+        c->single &= ~(1ull << (2 * fr + lane));
+    }
+}
+
 
 // Writes back every dirty slot; in hot code they are clean afterwards.
 static void rc_flush(Cg* c) {
     rc_emit_flush(c, &c->rc);
     if (!c->inCold) for (int k = 0; k < NSLOT; k++) { if (c->rc.dirty[k]) c->rc.swap[k] = false; c->rc.dirty[k] = false; }
+    if (!c->inCold) for (int k = 0; k < NFS; k++) c->rc.fdirty[k] = false;
 }
 
 // After the interpreter ran an instruction (it reads and writes guest state in memory): hot code forgets the cache;
@@ -838,9 +899,15 @@ static void rc_after_interp(Cg* c) {
                 ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)c->rc.id[k]));
                 if (c->rc.swap[k]) rev(&c->e, kSlot[k], kSlot[k]);  // as the hot path holds it
             }
+        for (int k = 0; k < NFS; k++)
+            if (c->rc.fid[k] >= 0) {
+                vldr_d(&c->e, 7, RG, OFF_FPR((u32)c->rc.fid[k] >> 1) + 8u * ((u32)c->rc.fid[k] & 1));
+                vcvt_f32_f64(&c->e, 16 + k, 7);
+            }
         return;
     }
     for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; c->rc.swap[k] = false; }
+    for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
 }
 
 #ifndef __3DS__
@@ -1145,8 +1212,7 @@ static void stop_tail(Cg* c) {
         vstr_d(e, 1, RG, OFF_FPR((u32)c->tailFpr));
         vstr_d(e, 1, RG, OFF_FPR((u32)c->tailFpr) + 8);
     }
-    Rc clean = c->rc;
-    for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
+    Rc clean = rc_clean(&c->rc);
     exit_snap(c, C_AL, false, 0, &clean);  // g->pc is already the next instruction
     patch_branch(e, skip, e->n);
     c->pendingStop = false;
@@ -1403,8 +1469,7 @@ static void emit_fallback(Cg* c, u32 inst) {
     g_rwWhy = RW_OTHER;
     if (!c->inCold && g_regStat) fs_reset();  // a float register cache would be forgotten here too
 #endif
-    Rc clean = c->rc;
-    for (int k = 0; k < NSLOT; k++) clean.dirty[k] = false;
+    Rc clean = rc_clean(&c->rc);
     if (c->inCold) {  // cold code moves when it is appended: no branches to absolute addresses
         mov_reg(e, R0, RG);
         load_const(e, R1, c->pc);
@@ -2189,6 +2254,14 @@ static void cut_single_bits(Cg* c, int dst, u32 o, int t1, int t2) {
 static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2) {
     Emit* e = &c->e;
     u32 o = OFF_FPR(fr) + 8u * lane;
+    int fk = fc_find(&c->rc, fr, lane);
+    if (fk >= 0) {  // a float lane: its single bits, a denormal or zero as a signed zero (what the cut gives)
+        vmov_r_s(e, dst, 16 + fk);
+        mov_shift(e, 0, t1, dst, LSL, 1);
+        dp_imm(e, TST, 1, 0, t1, IMM(0xFF000000u));
+        dp_imm_c(e, C_EQ, AND, 0, dst, dst, IMM(0x80000000u));
+        return;
+    }
     if (c->inCold) { cut_single_bits(c, dst, o, t1, t2); return; }  // no cold code inside cold code
     vldr_d(e, 7, RG, o);
     vcvt_f32_f64(e, 12, 7);  // s12 (in d6)
@@ -2677,11 +2750,293 @@ static void ps_arith(Cg* c, u32 xo5, u32 fd, u32 fa, u32 fb, u32 fc) {
     c->single |= 3ull << (2 * fd);
 }
 
+
+// ---- float lanes: compiling with them (OPT_FCACHE) ----
+// Paired-single and single-precision work keeps its values as singles in s16-s31 within a block: lfs / psq_l load the
+// single bits straight into a lane, psq_st / stfs store them straight back, and arithmetic on exact singles runs in
+// single precision. That is exact: Gekko computes in double and rounds to single, and for single operands add, sub, mul
+// and div rounded once to single equal the same operation done in single (double rounding is innocuous at 53 >= 2*24+2
+// bits; a product of two singles is exact in double); multiply-adds are still computed in double (VFP11 rounds the
+// product first) and only their result is kept as a single. Any other instruction first writes back the lanes of the
+// FPRs it names and forgets its destination's (fc_prepare_old), so the rest of the JIT keeps working on guest state.
+static int fc_alloc(Cg* c, u32 fr, u32 lane) {
+    int best = -1;
+    for (int k = 0; k < NFS; k++) {
+        if (c->fpinned & (1u << k)) continue;
+        if (c->rc.fid[k] < 0) { best = k; break; }
+        if (best < 0 || c->rc.fuse[k] < c->rc.fuse[best]) best = k;
+    }
+    if (best < 0) return -1;
+    if (c->rc.fid[best] >= 0 && c->rc.fdirty[best]) fc_wb(c, best);  // its single bit stays: the value is unchanged
+    c->rc.fid[best] = (s8)(2 * fr + lane);
+    c->rc.fdirty[best] = false;
+    return best;
+}
+static void fc_pin(Cg* c, int k) { c->fpinned |= 1u << k; c->rc.fuse[k] = ++c->tick; }
+// The slot holding fr's lane (an exact single: Cg.single) for reading, loaded from guest state if needed; -1: none free.
+static int fc_src(Cg* c, u32 fr, u32 lane) {
+    int k = fc_find(&c->rc, fr, lane);
+    if (k < 0) {
+        k = fc_alloc(c, fr, lane);
+        if (k < 0) return -1;
+        vldr_d(&c->e, 7, RG, OFF_FPR(fr) + 8u * lane);
+        vcvt_f32_f64(&c->e, 16 + k, 7);
+    }
+    fc_pin(c, k);
+    return k;
+}
+// The slot fr's lane will be written into (an existing one keeps its dirty old value until fc_set).
+static int fc_dst(Cg* c, u32 fr, u32 lane) {
+    int k = fc_find(&c->rc, fr, lane);
+    if (k < 0) k = fc_alloc(c, fr, lane);
+    if (k >= 0) fc_pin(c, k);
+    return k;
+}
+static void fc_set(Cg* c, u32 fr, int k0, int k1) {
+    c->rc.fdirty[k0] = true;
+    c->rc.fdirty[k1] = true;
+    c->single |= 3ull << (2 * fr);
+}
+#define FC_SINGLE(fr, lane) (((c->single >> (2 * (fr) + (lane))) & 1) != 0)
+
+// Instructions that name FPRs but are compiled without the float lanes: write back the named FPRs' lanes, and forget
+// the destination's (written to guest state by the old code).
+static void fc_prepare_old(Cg* c, u32 inst) {
+    u32 op = inst >> 26, fd = (inst >> 21) & 31, fa = (inst >> 16) & 31, fb = (inst >> 11) & 31, fcr = (inst >> 6) & 31;
+    u32 xo = (inst >> 1) & 0x3FF;
+    bool arith = op == 59 || op == 63 || (op == 4 && (xo & 63) != 6 && (xo & 63) != 7 && (xo & 63) != 38 && (xo & 63) != 39);
+    bool store = (op >= 52 && op <= 55) || op == 60 || op == 61 || (op == 31 && xo >= 663 && xo <= 759) ||
+                 (op == 4 && ((xo & 63) == 7 || (xo & 63) == 39));
+    bool mem = (op >= 48 && op <= 61) || (op == 31 && xo >= 535 && xo <= 759 && (xo - 535) % 32 == 0) ||
+               (op == 4 && !arith);
+    if (!arith && !mem) return;
+    for (int k = 0; k < NFS; k++) if (c->rc.fid[k] >= 0) goto any;
+    return;
+any:
+    if (arith) { fc_sync(c, fa); fc_sync(c, fb); fc_sync(c, fcr); }
+    if (store) fc_sync(c, fd); else fc_release(c, fd);
+}
+
+static int fc_compile(Cg* c, u32 inst) {
+    Emit* e = &c->e;
+    Jit* j = c->j;
+    u32 op = inst >> 26, fd = (inst >> 21) & 31, fa = (inst >> 16) & 31, fb = (inst >> 11) & 31, fcr = (inst >> 6) & 31;
+    u32 xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
+    switch (op) {
+    case 48: case 49: case 52: case 53: {  // lfs lfsu stfs stfsu (D form)
+        bool update = op & 1, load = op < 52;
+        u32 ra = fa, simm = (u32)(s32)(s16)(inst & 0xFFFF);
+        if ((update && ra == 0) || !j->memStubs || !c->fastmem) return -1;
+        int k0 = -1, k1 = -1;
+        if (load) {
+            k0 = fc_dst(c, fd, 0);
+            k1 = fc_dst(c, fd, 1);
+            if (k0 < 0 || k1 < 0) return -1;
+        } else {
+            k0 = fc_find(&c->rc, fd, 0);
+            if (k0 < 0) return -1;  // not in a lane: the old store (known-single stubs when it is an exact single)
+            fc_pin(c, k0);
+        }
+        if (c->hoist && ra) {
+            int x = hoist_addr(c, ra, simm, update);
+            if (x != R0) mov_reg(e, R0, x);
+            if (!load) vmov_r_s(e, R2, 16 + k0);
+            branch_abs(e, C_AL, true, j->code + (load ? j->lfsUB : j->stfsUB));
+            if (load) { vmov_s_r(e, 16 + k0, R2); vmov_s_r(e, 16 + k1, R2); fc_set(c, fd, k0, k1); }
+            if (update) st_gpr(c, R0, ra);
+            return 1;
+        }
+        ea_disp(c, ra, simm);
+        set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+        if (load) c->tailFpr = (int)fd;
+        else vmov_r_s(e, R2, 16 + k0);
+        branch_abs(e, C_AL, true, j->code + (load ? j->lfsB : j->stfsB));
+        u32 slow = branch_c(e, C_CS, 0);
+        u32 resume = e->n;
+        if (load) { vmov_s_r(e, 16 + k0, R2); vmov_s_r(e, 16 + k1, R2); }
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        if (load) load_slow(c, 4, false, R2);  // the value in r2, back to the moves
+        else store_slow(c, 4, R2);             // the stub left the bits to store in r2
+        cold_end(c, resume);
+        if (load) fc_set(c, fd, k0, k1);
+        if (update) st_gpr(c, R0, ra);
+        return 1;
+    }
+    case 56: case 57: case 60: case 61: {  // psq_l psq_lu psq_st psq_stu (D form), plain-float GQR
+        if (!c->fastmem || !c->ps || !c->lsq || !j->memStubs) return -1;
+        bool store = op >= 60, update = op & 1;
+        u32 ra = fa, w = (inst >> 15) & 1, idx = (inst >> 12) & 7, simm = (u32)((s32)(inst << 20) >> 20);
+        if (update && ra == 0) return -1;
+        u32 q = j->g->spr[SPR_GQR0 + idx], half = (store ? q : q >> 16) & 0x3F07u;
+        if (half & 7) return -1;  // quantized or reserved: the old code
+        int k0, k1 = -1;
+        if (!store) {
+            k0 = fc_dst(c, fd, 0);
+            k1 = fc_dst(c, fd, 1);
+            if (k0 < 0 || k1 < 0) return -1;
+        } else {
+            k0 = fc_find(&c->rc, fd, 0);
+            if (!w) k1 = fc_find(&c->rc, fd, 1);
+            if (k0 < 0 || (!w && k1 < 0)) return -1;
+            fc_pin(c, k0);
+            if (!w) fc_pin(c, k1);
+        }
+        bool hoisted = c->hoist && ra;
+        if (hoisted) {
+            int x = hoist_addr(c, ra, simm, update);
+            if (x != R0) mov_reg(e, R0, x);
+        } else {
+            ea_disp(c, ra, simm);  // (no cache change after the first branch to cold code)
+        }
+        if (store) { vmov_r_s(e, R2, 16 + k0); if (!w) vmov_r_s(e, R3, 16 + k1); }
+        branch_abs(e, C_AL, true, j->code + (hoisted ? (store ? j->psqUSB[idx][w] : j->psqULB[idx][w])
+                                                       : (store ? j->psqSB[idx][w] : j->psqLB[idx][w])));
+        u32 slow = branch_c(e, hoisted ? C_NE : C_CS, 0);
+        if (!store) { vmov_s_r(e, 16 + k0, R2); vmov_s_r(e, 16 + k1, R3); }
+        if (update) st_gpr(c, R0, ra);
+        u32 resume = e->n;
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        u32 toInterp[2], nInterp = 0;
+        if (!hoisted && store && j->gatherPut) {  // outside MEM1 at the gather pipe: element by element (as compile_psq)
+            dp_imm(e, CMP, 1, 0, R3, 1);
+            toInterp[nInterp++] = branch_c(e, C_NE, 0);
+            load_const(e, R1, j->gatherEa);
+            dp_reg(e, CMP, 1, 0, R0, R1);
+            toInterp[nInterp++] = branch_c(e, C_NE, 0);
+            set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
+            u32 sizePc = c->pc | 2u;
+            for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
+                psq_store_value(c, fd, lane, 0, 0, false, 4);
+                push_regs(e, (1u << R0) | (1u << R3));
+                mov_reg(e, R1, R2);
+                mov_reg(e, R0, RG);
+                load_const(e, R2, sizePc);
+                emit_time(c);
+                call(c, (const void*)jit_gather);
+                mov_reg(e, R12, R0);
+                pop_regs(e, (1u << R0) | (1u << R3));
+                if (lane == 0) mov_reg(e, R3, R12); else dp_reg(e, ORR, 0, R3, R3, R12);
+            }
+            c->pendingStop = true;
+            stop_tail(c);
+            if (update) st_gpr(c, R0, ra);  // (cold: straight to memory)
+            branch_c(e, C_AL, 0);
+            add_fix(c, true, e->n - 1, false, resume);
+        }
+        for (u32 k = 0; k < nInterp; k++) patch_branch(e, toInterp[k], e->n);
+        emit_fallback(c, inst);  // (cold: the lanes are reloaded from guest state after it)
+        cold_end(c, resume);
+        if (!store) fc_set(c, fd, k0, k1);
+        return 1;
+    }
+    case 4: case 59: {
+        if (inst & 1) return -1;  // record forms: the old code
+        if (op == 4 && !c->ps) return -1;
+        int sa[2], sb[2], sc[2];
+        if (op == 4 && (xo == 528 || xo == 560 || xo == 592 || xo == 624 || xo == 72 || xo == 40 || xo == 136 || xo == 264)) {
+            // ps_merge00/01/10/11, ps_mr, ps_neg, ps_nabs, ps_abs: lanes moved (or their sign changed) as they are
+            u32 r0f = (xo == 72 || (xo >= 40 && xo < 528)) ? fb : fa, l0 = xo >= 528 ? (xo >> 6) & 1 : 0;
+            u32 r1f = fb, l1 = xo >= 528 ? (xo >> 5) & 1 : 1;
+            if (!FC_SINGLE(r0f, l0) || !FC_SINGLE(r1f, l1)) return -1;
+            sa[0] = fc_src(c, r0f, l0);
+            sa[1] = fc_src(c, r1f, l1);
+            int d0 = fc_dst(c, fd, 0), d1 = fc_dst(c, fd, 1);
+            if (sa[0] < 0 || sa[1] < 0 || d0 < 0 || d1 < 0) return -1;
+            for (int l = 0; l < 2; l++) {
+                if (xo == 40) vneg_s(e, l, 16 + sa[l]);
+                else if (xo == 136) { vabs_s(e, l, 16 + sa[l]); vneg_s(e, l, l); }
+                else if (xo == 264) vabs_s(e, l, 16 + sa[l]);
+                else vmov_s(e, l, 16 + sa[l]);
+            }
+            vmov_s(e, 16 + d0, 0);
+            vmov_s(e, 16 + d1, 1);
+            fc_set(c, fd, d0, d1);
+            return 1;
+        }
+        bool sum = op == 4 && (xo5 == 10 || xo5 == 11);
+        bool plain = xo5 == 18 || xo5 == 20 || xo5 == 21;
+        bool mul = xo5 == 25 || (op == 4 && (xo5 == 12 || xo5 == 13));
+        bool madd = xo5 >= 28 || (op == 4 && (xo5 == 14 || xo5 == 15));
+        if (!sum && !plain && !mul && !madd) return -1;
+        u32 lanes = op == 4 ? 2 : 1;
+        // Which lane of frC each result lane multiplies by (muls0/madds0: lane 0, muls1/madds1: lane 1).
+        int cl[2] = { 0, 1 };
+        if (op == 4 && (xo5 == 12 || xo5 == 14)) cl[1] = 0;
+        if (op == 4 && (xo5 == 13 || xo5 == 15)) cl[0] = 1;
+        if (sum) {  // sum0: a0 + b1, c1 / sum1: c0, a0 + b1
+            if (!FC_SINGLE(fa, 0) || !FC_SINGLE(fb, 1) || !FC_SINGLE(fcr, xo5 == 10 ? 1 : 0)) return -1;
+            sa[0] = fc_src(c, fa, 0);
+            sb[0] = fc_src(c, fb, 1);
+            sc[0] = fc_src(c, fcr, xo5 == 10 ? 1 : 0);
+            if (sa[0] < 0 || sb[0] < 0 || sc[0] < 0) return -1;
+        } else {
+            for (u32 l = 0; l < lanes; l++) {
+                if (!FC_SINGLE(fa, l)) return -1;
+                if ((plain || madd) && !FC_SINGLE(fb, l)) return -1;
+                if ((mul || madd) && !FC_SINGLE(fcr, cl[l])) return -1;
+            }
+            for (u32 l = 0; l < lanes; l++) {
+                sa[l] = fc_src(c, fa, l);
+                sb[l] = plain || madd ? fc_src(c, fb, l) : 0;
+                sc[l] = mul || madd ? fc_src(c, fcr, cl[l]) : 0;
+                if (sa[l] < 0 || sb[l] < 0 || sc[l] < 0) return -1;
+            }
+        }
+        int d0 = fc_dst(c, fd, 0), d1 = fc_dst(c, fd, 1);
+        if (d0 < 0 || d1 < 0) return -1;
+        if (sum) {
+            int at = xo5 == 10 ? 0 : 1;
+            vfp_s(e, VF_ADD, at, 16 + sa[0], 16 + sb[0]);
+            vmov_s(e, 1 - at, 16 + sc[0]);
+        } else {
+            for (u32 l = 0; l < lanes; l++) {
+                if (plain) vfp_s(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, (int)l, 16 + sa[l], 16 + sb[l]);
+                else if (mul) vfp_s(e, VF_MUL, (int)l, 16 + sa[l], 16 + sc[l]);
+                else {  // b + a*c in double (as Gekko, product rounded first on the VFP11 as before), then to single
+                    int dd = 2 + 3 * (int)l;  // d2-d4, d5-d7
+                    vcvt_f64_f32(e, dd, 16 + sa[l]);
+                    vcvt_f64_f32(e, dd + 1, 16 + sc[l]);
+                    vcvt_f64_f32(e, dd + 2, 16 + sb[l]);
+                    vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, dd + 2, dd, dd + 1);
+                    if (xo5 >= 30) vneg_d(e, dd + 2, dd + 2);
+                    vcvt_f32_f64(e, (int)l, dd + 2);
+                }
+            }
+        }
+        vmov_s(e, 16 + d0, 0);
+        vmov_s(e, 16 + d1, lanes == 2 ? 1 : 0);  // single-precision results go to both lanes
+        fc_set(c, fd, d0, d1);
+        return 1;
+    }
+    case 63:
+        if (inst & 1) return -1;
+        if (xo == 12) {  // frsp of an exact single: the same value in both lanes
+            if (!FC_SINGLE(fb, 0)) return -1;
+            int s0 = fc_src(c, fb, 0), d0 = fc_dst(c, fd, 0), d1 = fc_dst(c, fd, 1);
+            if (s0 < 0 || d0 < 0 || d1 < 0) return -1;
+            vmov_s(e, 0, 16 + s0);
+            vmov_s(e, 16 + d0, 0);
+            vmov_s(e, 16 + d1, 0);
+            fc_set(c, fd, d0, d1);
+            return 1;
+        }
+        return -1;
+    }
+    return -1;
+}
+
 static bool compile_float(Cg* c, u32 inst) {
     Emit* e = &c->e;
     u32 op = inst >> 26, frd = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31, frc = (inst >> 6) & 31;
     u32 xo = (inst >> 1) & 0x3FF, xo5 = xo & 31, simm = (u32)(s32)(s16)(inst & 0xFFFF);
     if (!c->fp) return false;
+    if ((c->j->opt & OPT_FCACHE) && !c->inCold) {
+        int r = fc_compile(c, inst);
+        if (r >= 0) return r != 0;
+    }
+    fc_prepare_old(c, inst);
     switch (op) {
     case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55:
         return float_mem(c, (op - 48) >> 1, frd, ra, 0, simm, false, op & 1);
@@ -2859,6 +3214,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->alt = (Emit){ j->code + j->coldUsed, 0, BLOCK_MAX_WORDS, false };  // cold code is emitted where it stays
     c->flagsAt = NO_BRANCH;
     for (int k = 0; k < NSLOT; k++) c->rc.id[k] = -1;
+    for (int k = 0; k < NFS; k++) c->rc.fid[k] = -1;
     c->j = j;
     c->noLink = noLink;
     c->trace = j->traces && !noLink;
@@ -2942,9 +3298,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         {   // the destination FPR is not known single until its producer says so (conservative: any instruction of these
             // classes; op 31's FPR loads are among its other forms)
             u32 pop = inst >> 26;
-            if (pop == 4 || pop == 31 || (pop >= 48 && pop <= 57) || pop == 59 || pop == 63) c->single &= ~(3ull << (2 * ((inst >> 21) & 31)));
+            // (a lane still in the float cache holds an exact single until the instruction replaces it)
+            if (pop == 4 || pop == 31 || (pop >= 48 && pop <= 57) || pop == 59 || pop == 63)
+                c->single &= ~(3ull << (2 * ((inst >> 21) & 31))) | fc_bits(c, (inst >> 21) & 31);
         }
         c->pinned = 0;
+        c->fpinned = 0;
         c->tailN = 0;
         c->tailFpr = -1;
 #ifndef __3DS__
@@ -3244,6 +3603,13 @@ static void fs_gqr(Jit* j, Emit* e, u32 q) {  // r1 = GQR q
     (void)j;
 }
 
+// r = a single's bits with a denormal or zero turned into a signed zero (r12, flags clobbered).
+static void fs_flush_denormal(Emit* e, int r) {
+    mov_shift(e, 0, R12, r, LSL, 1);
+    dp_imm(e, TST, 1, 0, R12, IMM(0xFF000000u));
+    dp_imm_c(e, C_EQ, AND, 0, r, r, IMM(0x80000000u));
+}
+
 static void emit_float_stubs(Jit* j, Emit* e) {
     u32 cut1 = e->n;
     fs_cut(e, R2, 1);
@@ -3477,6 +3843,112 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     rev(e, R3, R2);
     str_reg(e, R3, RRAM, R0);
     bx_reg_c(e, C_AL, LR);
+    // OPT_FCACHE: the same accesses with single bits in r2 (and r3) instead of doubles in d1 (and d2): loads return them
+    // (W=1: r3 = 1.0f), stores take them. Stores give a denormal or zero single a signed zero, as the cut does.
+    j->lfsB = (u16)e->n;  // as lfsStub
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    ldr_reg(e, R2, RRAM, R1);
+    rev(e, R2, R2);
+    bx_reg_c(e, C_AL, LR);
+    j->lfsUB = (u16)e->n;
+    ldr_reg(e, R2, RRAM, R0);
+    rev(e, R2, R2);
+    bx_reg_c(e, C_AL, LR);
+    j->stfsB = (u16)e->n;  // as stfsStub
+    fs_flush_denormal(e, R2);
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R1);
+    bx_reg_c(e, C_AL, LR);
+    j->stfsUB = (u16)e->n;
+    fs_flush_denormal(e, R2);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R0);
+    bx_reg_c(e, C_AL, LR);
+    for (u32 q = 0; q < 8; q++)
+        for (u32 w = 0; w < 2; w++) {
+            j->psqLB[q][w] = (u16)e->n;  // as psqStub[0]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, fail);
+            if (!w) {
+                dp_imm(e, ADD, 0, R3, R12, 4);
+                dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
+                branch_c(e, C_CS, fail);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            if (w) {
+                ldr_imm(e, R2, R1, 0);
+                rev(e, R2, R2);
+                load_const(e, R3, 0x3F800000u);  // ps1 = 1.0
+            } else {
+                ldmia(e, R1, (1u << R2) | (1u << R3));
+                rev(e, R2, R2);
+                rev(e, R3, R3);
+            }
+            bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+            j->psqULB[q][w] = (u16)e->n;  // as psqUStub[0]: Z set when done
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));
+            bx_reg_c(e, C_NE, LR);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            ldr_imm(e, R2, R1, 0);
+            if (w) load_const(e, R3, 0x3F800000u);
+            else { ldr_imm(e, R3, R1, 4); rev(e, R3, R3); }
+            rev(e, R2, R2);
+            dp_reg(e, CMP, 1, 0, R0, R0);
+            bx_reg_c(e, C_AL, LR);
+            j->psqSB[q][w] = (u16)e->n;  // as psqStub[1]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            fs_flush_denormal(e, R2);
+            if (!w) fs_flush_denormal(e, R3);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, failOut);
+            if (!w) {
+                dp_imm(e, ADD, 0, R12, R12, 4);
+                dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+                branch_c(e, C_CS, failOut);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            rev(e, R2, R2);
+            if (w) str_imm(e, R2, R1, 0);
+            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            bx_reg_c(e, C_AL, LR);
+            j->psqUSB[q][w] = (u16)e->n;  // as psqUStub[1]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            bx_reg_c(e, C_NE, LR);
+            fs_flush_denormal(e, R2);
+            if (!w) fs_flush_denormal(e, R3);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            rev(e, R2, R2);
+            str_imm(e, R2, R1, 0);
+            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done
+            bx_reg_c(e, C_AL, LR);
+        }
     j->lfsUStub = (u16)e->n;
     ldr_reg(e, R2, RRAM, R0);
     rev(e, R2, R2);
@@ -3506,11 +3978,13 @@ static void emit_stubs(Jit* j) {
     Emit* e = &em;
     j->stub[ST_ENTER] = e->n;
     push_regs(e, 0x4FF8);  // {r3-r11, lr}: 10 registers keep the stack 8-byte aligned for C calls
+    vpush_d8_d15(e);       // the float lanes (OPT_FCACHE) live there; the caller's values are kept
     mov_reg(e, RG, R0);
     load_const(e, RRAM, (u32)(uintptr_t)j->ram - 0x80000000u);
     mov_reg(e, RDC, R2);
     bx_reg_c(e, C_AL, R1);
     j->stub[ST_EXIT] = e->n;
+    vpop_d8_d15(e);
     ldr_imm(e, R3, SP, 0);  // the saved r3: `left`
     str_imm(e, RDC, R3, 0);
     pop_regs(e, 0x8FF8);    // {r3-r11, pc}

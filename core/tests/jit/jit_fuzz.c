@@ -766,6 +766,8 @@ int main(int argc, char** argv) {
         // or branches on its compare (the JIT's register cache, forwarding of flags and write-back at exits).
         u32 seq[48] = { isFloat ? genf(&st) : gen(&st), 0 }, len = 1;
         bool floatSeq = false;  // float loads and stores through one base: memory holds normal floats only
+        bool psChain = false;   // a paired-single chain (below): its slots hold moderate normal floats
+        u32 chainPa = 0;
         while (intOnly && is_branch_op(seq[0])) seq[0] = gen(&st);
         bool traceCase = !isFloat && (intOnly || rnd() % 100 < 30) && !is_branch_op(seq[0]);
         if (traceCase) {
@@ -778,6 +780,39 @@ int main(int argc, char** argv) {
                 if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
                 seq[i] = next;
             }
+        } else if (isFloat && rnd() % 3 == 0) {
+            // Paired-single chains through one base (OPT_FCACHE's float lanes): psq_l / lfs into three FPRs, one or two
+            // paired-single or single-precision operations on them, psq_st / stfs of the result (and sometimes of a
+            // loaded lane as it is). Moderate normal floats only: results stay normal (the fast float model's flush to
+            // zero is a known, separate limit).
+            u32 rb = 1 + rnd() % 31, idx = rnd() % 8;
+            chainPa = WIN_PA + 0x400 + 64u * (rnd() % 64);
+            st.gpr[rb] = 0x80000000u | chainPa;
+            st.gqr[idx] = 0;
+            st.fpOff = false;
+            st.fpscr &= ~3u;
+            u32 f[3] = { rbits(5), rbits(5), rbits(5) }, fdst = rbits(5);
+            len = 0;
+            bool single = rnd() % 4 == 0;  // lfs and fadds-style single-precision operations instead
+            for (u32 i = 0; i < 3; i++)
+                seq[len++] = single ? (48u << 26) | (f[i] << 21) | (rb << 16) | (8u * i)
+                                    : (56u << 26) | (f[i] << 21) | (rb << 16) | (idx << 12) | (8u * i);
+            static const u32 psA[] = { 10, 11, 12, 13, 14, 15, 18, 20, 21, 25, 28, 29, 30, 31 };
+            static const u32 psX[] = { 528, 560, 592, 624, 72, 40, 136, 264 };
+            static const u32 sA[] = { 18, 20, 21, 25, 28, 29, 30, 31 };
+            u32 nops = 1 + rnd() % 2;
+            for (u32 o = 0; o < nops; o++) {
+                u32 a = o ? fdst : f[0], b = f[1], cc = f[2];
+                if (single) seq[len++] = (59u << 26) | (fdst << 21) | (a << 16) | (b << 11) | (cc << 6) | (sA[rnd() % 8] << 1);
+                else if (rnd() % 4) seq[len++] = (4u << 26) | (fdst << 21) | (a << 16) | (b << 11) | (cc << 6) | (psA[rnd() % 14] << 1);
+                else seq[len++] = (4u << 26) | (fdst << 21) | (a << 16) | (b << 11) | (psX[rnd() % 8] << 1);
+            }
+            u32 w = rnd() & 1;
+            seq[len++] = single ? (52u << 26) | (fdst << 21) | (rb << 16) | 24u
+                                : (60u << 26) | (fdst << 21) | (rb << 16) | (w << 15) | (idx << 12) | 24u;
+            if (rnd() & 1) seq[len++] = (52u << 26) | (f[rnd() % 3] << 21) | (rb << 16) | 32u;
+            psChain = true;
+            floatSeq = true;
         } else if (isFloat && rnd() % 2 == 0 && (((seq[0] >> 26) >= 48 && (seq[0] >> 26) <= 57) || (seq[0] >> 26) == 60 || (seq[0] >> 26) == 61)) {
             // Float cases of 2-4 instructions whose D-form loads and stores share one base register: check hoisting's
             // unchecked float accesses (the first one checks the base, the later ones do not).
@@ -866,6 +901,13 @@ int main(int argc, char** argv) {
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         if (st.fmem && (floatSeq || rnd() % 8)) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
+        if (psChain) {  // the chain's slots: moderate normal floats (exponents -7..8)
+            for (u32 i = 0; i < 64; i += 4) {
+                u32 v = (rnd() & 1) << 31 | (120u + rnd() % 16) << 23 | (rnd() & 0x7FFFFF);
+                mem1_write32(&A, chainPa + i, v);
+                mem1_write32(&B, chainPa + i, v);
+            }
+        }
         for (int k = 0; k < 2; k++) {
             for (u32 i = 0; i < EDGE_SIZE; i++) A.mem1[kEdgePa[k] + i] = (u8)rnd();
             if (st.fmem || floatSeq) fill_floats_at(&A, kEdgePa[k], EDGE_SIZE);
