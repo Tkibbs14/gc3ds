@@ -21,3 +21,7 @@ void relay_job_begin(unsigned id);  // log lines from now on go to this job
 FILE* relay_tee(FILE* f);           // a FILE writing to f and to the current job's log
 void relay_job_end(const char* status);  // sends the rest of the log, then the status (done, failed, stopped)
 void relay_stop(void);
+// Live control of a running job: commands the PC sent (relay.sh cmd), one at a time; false when none is waiting.
+bool relay_take_cmd(char* out, size_t n);
+// Uploads the BMP file at `path` (a top-screen frame) to the current job, from the relay thread.
+void relay_frame(const char* path);

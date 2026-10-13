@@ -18,7 +18,7 @@
 #define SOC_BUF_SIZE 0x80000
 #define RING_SIZE (512u * 1024)
 #define CHUNK_MAX (256u * 1024)
-#define POST_TICKS (5ull * SYSCLOCK_ARM11)  // a chunk at least every 5 s while lines arrive
+#define POST_TICKS (2ull * SYSCLOCK_ARM11)  // a chunk at least every 2 s while lines arrive (live commands ride on it)
 
 static char g_url[256], g_token[256];
 static bool g_auto, g_started, g_sslc;
@@ -108,6 +108,72 @@ static long http(const char* method, const char* path, const void* body, size_t 
     return status;
 }
 
+// ---- live commands and frames ----
+// Commands for the running job arrive in the replies to log posts ("cmd <text>" lines) and wait here for the emulation
+// thread (relay_take_cmd). Frames are BMP files the emulation thread saved; this thread uploads them.
+#define CMD_N 16
+static char g_cmd[CMD_N][128];
+static volatile u32 g_cmdHead, g_cmdTail;
+#define FRAME_N 4
+static char g_frame[FRAME_N][64];
+static volatile u32 g_frameHead, g_frameTail;
+static u32 g_frameNo;
+
+static void take_cmds(const char* reply) {
+    for (const char* p = reply ? strstr(reply, "cmd ") : NULL; p; p = strstr(p + 1, "\ncmd ")) {
+        if (*p == '\n') p++;
+        const char* e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (g_cmdHead - g_cmdTail < CMD_N && len > 4) {
+            snprintf(g_cmd[g_cmdHead % CMD_N], sizeof g_cmd[0], "%.*s", (int)(len - 4), p + 4);
+            __sync_synchronize();
+            g_cmdHead = g_cmdHead + 1;
+        }
+        if (!e) break;
+    }
+}
+
+bool relay_take_cmd(char* out, size_t n) {
+    if (g_cmdTail == g_cmdHead) return false;
+    __sync_synchronize();
+    snprintf(out, n, "%s", g_cmd[g_cmdTail % CMD_N]);
+    g_cmdTail = g_cmdTail + 1;
+    return true;
+}
+
+void relay_frame(const char* path) {
+    if (!g_started || !g_jobId || g_frameHead - g_frameTail >= FRAME_N) return;
+    snprintf(g_frame[g_frameHead % FRAME_N], sizeof g_frame[0], "%s", path);
+    __sync_synchronize();
+    g_frameHead = g_frameHead + 1;
+}
+
+static void post_frame(void) {
+    if (g_frameTail == g_frameHead || !g_jobId) return;
+    __sync_synchronize();
+    const char* path = g_frame[g_frameTail % FRAME_N];
+    FILE* f = fopen(path, "rb");
+    u8* buf = NULL;
+    long len = 0;
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        len = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        buf = len > 0 && len < (2l << 20) ? malloc((size_t)len) : NULL;
+        if (buf && fread(buf, 1, (size_t)len, f) != (size_t)len) { free(buf); buf = NULL; }
+        fclose(f);
+    }
+    if (buf) {
+        char url[64];
+        snprintf(url, sizeof url, "/jobs/%u/frame?n=%lu", g_jobId, (unsigned long)g_frameNo++);
+        Sink s = { 0 };
+        http("POST", url, buf, (size_t)len, &s, 120, NULL, 0);
+        free(s.buf);
+        free(buf);
+    }
+    g_frameTail = g_frameTail + 1;  // sent or not: a frame is not worth holding up the next
+}
+
 // ---- log thread ----
 static bool post_chunk(void) {
     u32 head = g_head, tail = g_tail;
@@ -123,6 +189,7 @@ static bool post_chunk(void) {
     Sink s = { 0 };
     long st = http("POST", path, buf, n, &s, 60, NULL, 0);
     free(buf);
+    if (st == 200) take_cmds(s.buf);
     free(s.buf);
     if (st != 200) return false;
     g_seq++;
@@ -136,6 +203,7 @@ static void log_thread(void* arg) {
     u64 last = svcGetSystemTick();
     while (!g_quit) {
         svcSleepThread(200000000LL);
+        post_frame();
         bool flush = g_flushReq;
         u32 pending = g_head - g_tail;
         if (!flush && (!pending || (pending < 64 * 1024 && svcGetSystemTick() - last < POST_TICKS))) continue;
@@ -253,6 +321,9 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
 }
 
 void relay_job_begin(unsigned id) {
+    g_cmdTail = g_cmdHead;
+    g_frameTail = g_frameHead;
+    g_frameNo = 0;
     g_head = g_tail = 0;
     g_dropped = 0;
     g_seq = 0;

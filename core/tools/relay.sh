@@ -6,6 +6,9 @@
 #   bash core/tools/relay.sh queue [options]       the same without following (prints the job id)
 #   bash core/tools/relay.sh log JOB               follow a job's log into core/out/relay_JOB.csv until it ends
 #   bash core/tools/relay.sh jobs | cancel JOB | push
+#   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
+#        set opt|sched|merge|vtrim|pld|splitopen|vwmem VALUE, stop (host3ds/main.c apply_cmd)
+#   bash core/tools/relay.sh frames JOB              the job's frames so far into core/out/frames_JOB/ (BMP, + PNG)
 # Settings: core/host3ds/relay.txt ("url <base>", "token <secret>"; never committed). Copy the same file to
 # sdmc:/gc3ds/relay.txt on the card, adding "auto 1" there to start Remote runs at launch.
 set -euo pipefail
@@ -49,6 +52,20 @@ follow() {
     rm -f "$hdr"
 }
 
+frames() {
+    local job="$1" dir="$here/out/frames_$1" name
+    mkdir -p "$dir"
+    for name in $(api "$url/jobs/$job/frames" | tr -d '\r'); do
+        [ -f "$dir/$name" ] && continue
+        api -o "$dir/$name" "$url/jobs/$job/frame/$name"
+        # PNG beside it when ImageMagick or Python + Pillow is there (image viewers and Claude read PNG)
+        if command -v magick >/dev/null 2>&1; then magick "$dir/$name" "$dir/${name%.bmp}.png" 2>/dev/null || true
+        elif command -v python3 >/dev/null 2>&1; then python3 -c "import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])" "$dir/$name" "$dir/${name%.bmp}.png" 2>/dev/null || true
+        fi
+        echo "$dir/$name"
+    done
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
     push) push ;;
@@ -57,5 +74,7 @@ case "$cmd" in
     log) follow "$1" ;;
     jobs) api "$url/jobs" ;;
     cancel) api -X POST "$url/jobs/$1/cancel" ;;
+    cmd) job="$1"; shift; printf '%s' "$*" | api -X POST -H 'Content-Type: text/plain' --data-binary @- "$url/jobs/$job/cmd" ;;
+    frames) frames "$1" ;;
     *) sed -n '2,10p' "$0"; exit 1 ;;
 esac

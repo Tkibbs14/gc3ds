@@ -452,10 +452,38 @@ static void perf_shot(double realS, double emuS) {
     char path[64];
     snprintf(path, sizeof path, "sdmc:/gc3ds/shots/shot_%02d.bmp", g_shotNext % 16);
     pica_capture(path);
+    relay_frame(path);  // a relay job also gets the frame (relay.sh frames)
     if (g_perf) fprintf(g_perf, "# shot %s at real %.1f s, emulated %.2f s\n", path + 5, realS, emuS);
     g_shotNext = (g_shotNext + 1) % 16;
     FILE* f = fopen("sdmc:/gc3ds/shots/next.txt", "w");
     if (f) { fprintf(f, "%d\n", g_shotNext); fclose(f); }
+}
+
+// A live command from the PC (relay.sh cmd JOB "..."), applied between perf rows; perf.csv records each one, and the
+// option columns show what was in effect on every row. Returns false for "stop" (the run ends).
+//   shot                      a frame now (uploaded to the job)
+//   set opt|sched N           JIT optimizations / scheduling masks
+//   set merge|vtrim|pld|splitopen 0|1, set vwmem KB
+//   stop                      end the run
+static bool g_stopReq;
+static bool g_relayRun;  // a relay job is running (frames every 15 s instead of 30)
+static void apply_cmd(const char* cmd, double realS, double emuS) {
+    char name[24] = "", val[24] = "";
+    bool ok = true;
+    if (!strcmp(cmd, "shot")) perf_shot(realS, emuS);
+    else if (!strcmp(cmd, "stop")) g_stopReq = true;
+    else if (sscanf(cmd, "set %23s %23s", name, val) == 2) {
+        u32 v = (u32)strtoul(val, NULL, 0);
+        if (!strcmp(name, "opt") && g_jit) jit_set_opt(g_jit, v);
+        else if (!strcmp(name, "sched") && g_jit) jit_set_sched(g_jit, v);
+        else if (!strcmp(name, "merge") && g_pica) pica_set_merge(v != 0);
+        else if (!strcmp(name, "vtrim")) pica_set_vw_trim(v != 0);
+        else if (!strcmp(name, "pld")) vfast_set_prefetch(v != 0);
+        else if (!strcmp(name, "splitopen") && g_pica) pica_set_split_open(v != 0);
+        else if (!strcmp(name, "vwmem") && g_pica) pica_set_job_ring(v << 10);
+        else ok = false;
+    } else ok = false;
+    if (g_perf) fprintf(g_perf, "# cmd \"%s\" at real %.1f s: %s\n", cmd, realS, ok ? "applied" : "unknown");
 }
 
 // The 8 most frequent interpreted instructions since the last call.
@@ -616,6 +644,7 @@ static const char* run(const char* path) {
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
         if (g_opt.seconds && svcGetSystemTick() - t0 >= (u64)g_opt.seconds * SYSCLOCK_ARM11) break;
+        if (g_stopReq) { g_stopReq = false; break; }  // a live "stop" (apply_cmd)
         if (hidKeysDown() & KEY_X) { g_profClock = g_profClock ? NULL : prof_clock; printf("\x1b[9;0H\x1b[0J"); }
         u64 it0 = svcGetSystemTick(), waitBefore = waitTicks;
         sys_run(&g_sys, CYCLES_PER_FIELD);
@@ -741,8 +770,10 @@ static const char* run(const char* path) {
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
                 ++perfRows;
-                if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
+                if (perfRows == 5 || perfRows == 15 || perfRows % (g_relayRun ? 15 : 30) == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
+                for (char cmd[128]; relay_take_cmd(cmd, sizeof cmd);)
+                    apply_cmd(cmd, (double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
                 // and off (hle column; each switch drops all compiled code, so read each phase after its first seconds).
                 if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
@@ -1073,7 +1104,9 @@ static void remote_mode(const char* selfPath) {
         else if ((gi = find_program(o.game)) < 0) snprintf(err, sizeof err, "no program matches --game \"%s\"", o.game);
         if (gi < 0) { printf("%s\n", err); relay_note(err); relay_job_end("failed"); continue; }
         g_opt = o;
+        g_relayRun = true;
         const char* result = run(g_files[gi]);
+        g_relayRun = false;
         if (g_runErr[0]) relay_note(g_runErr);
         relay_job_end(result);
         opts_default(&g_opt);
