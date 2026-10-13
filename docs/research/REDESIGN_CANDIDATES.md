@@ -103,3 +103,24 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   double-then-round differs by 1 ULP in real games (Dolphin bug 13865, Mario Strikers Charged).
 - **Before building:** a bit-exact harness (the JIT fuzzer already compares against the interpreter); denormals under
   RunFast flush on conversions (Dolphin bug 6936 is the same hazard on x86 DAZ) - our fuzzer keeps them out today.
+
+## C9. Frame skip on the GX side
+
+- **Status:** parked (2026-10-13).
+- **What:** for fields that will not be shown, skip vertex work (gather, worker jobs, GPU draws) while still running
+  the game's GX command stream for its side effects (EFB copies the game reads back, tokens, interrupts, draw done).
+  TP renders at 30 fps; skipping every other rendered frame halves the GX side's load in a GX-bound scene.
+- **For:** the cutscene is GX-bound (~20-21%, core 0 alone ~23-24%); common practice in handheld emulators.
+- **Against / risk:** EFB copies used as textures (TP's bloom, shadows, map) must still be produced, or skipped
+  frames feed stale textures; frame pacing; it lifts only the GX cap, never core 0's.
+- **Re-evaluate when:** after C5/C6, or as the cheapest way to see the core-0 ceiling in GX-bound scenes.
+
+## C10. Idle-loop skipping and an emulated-CPU underclock
+
+- **Status:** parked (2026-10-13).
+- **What:** detect the game's busy-wait loops (polling a register or a variable until an interrupt) and jump the
+  emulated clock to the next event; optionally run fewer emulated cycles per field (Dolphin's CPU clock override).
+- **For:** time the guest spends waiting is pure cost for core 0. Dolphin does both.
+- **Unknown:** how much TP waits in the heavy scenes (the JIT profile was flat, D3, which argues for little).
+  **Measure first:** count blocks that branch to themselves without changing state, from the JIT's block profile.
+- **Re-evaluate when:** the measurement says waiting is a large share of core 0.
