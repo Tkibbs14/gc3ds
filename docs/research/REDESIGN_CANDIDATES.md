@@ -100,7 +100,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C8. Single-precision floats in the JIT (PERF_LEVERS lever 2)
 
-- **Status:** next after the GX-side tests; research done 2026-10-13 (Haiku pass on Dolphin's sources).
+- **Status:** **next, top priority** (2026-10-13): job 128 showed core 0 is the wall once the GX side is relieved.
+  Research done 2026-10-13 (Haiku pass on Dolphin's sources).
 - **Plan from the research:** port Dolphin's per-op analysis (`fprIsSingle`, `fprIsDuplicated`, `fprIsStoreSafe`,
   PPCAnalyst.cpp); fadds/fsubs/fdivs on known-single inputs are exact in single (double rounding is innocuous when
   q >= 2p+2: Roux, JFR); fmuls only when frC is known single (Gekko cuts frC to 25 bits otherwise: Dolphin's
@@ -119,7 +120,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **For:** the cutscene is GX-bound (~20-21%, core 0 alone ~23-24%); common practice in handheld emulators.
 - **Against / risk:** EFB copies used as textures (TP's bloom, shadows, map) must still be produced, or skipped
   frames feed stale textures; frame pacing; it lifts only the GX cap, never core 0's.
-- **Re-evaluate when:** after C5/C6, or as the cheapest way to see the core-0 ceiling in GX-bound scenes.
+- **Built as an experiment 2026-10-13 (`--fskip on`, `--ab fskip`); job 128 (cutscene, 300 s):** speed 19.81% ->
+  21.80% (+10%, ~3 sigma); core 0's own speed 22.33% -> 23.29% (within noise); core 0's wait for the GX side
+  10.2% -> 5.4%; the worker 54% -> 30% busy. (The first 110 rows read +21%: the early cutscene is heavier on the GX
+  side.) **Reading: with half the vertex work gone, core 0 is the wall at ~23%;** removing all vertex work would add
+  little more. The JIT (C8 and the optimizing stages) is what 30-40% needs. Visible glitches: skipped frames repeat
+  the previous image and render-to-texture effects lag (owner saw "rendering bugs and jitters").
+- **Status now:** parked as a user option for later (needs the EFB-copy glitches fixed); not the main lever.
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
