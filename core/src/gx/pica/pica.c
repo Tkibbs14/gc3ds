@@ -1116,16 +1116,17 @@ static void vw_helper(void* arg) {
     (void)arg;
     crashlog_thread(CRASH_VWORKER);
     __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));
-    u32 idle = 0, c;
+    u32 c;
     while (!g_vwQuit) {
         if (g_vw2 && vw_claim(&c, true)) {
             if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, NULL);
             vw_do(&g_vw[c % VW_SLOTS]);
             g_vw2Jobs++;
             vw_done(c);
-            idle = 0;
-        } else if (++idle > 2000) {
-            svcSleepThread(50000);
+        } else {
+            // No spinning: polling the queue's counters, which the GX thread keeps writing, pulled their cache lines
+            // between cores on every read, and core 0 ran 3-7% slower with the helper on (job 125).
+            svcSleepThread(g_vw2 ? 30000 : 1000000);
         }
     }
 }

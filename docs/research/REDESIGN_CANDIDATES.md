@@ -33,7 +33,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **For:** the worker on core 3 is the GX side's busiest part (~60% busy, the GX thread waiting for ring space ~23%).
 - **Against:** core 1 also hosts the log writer and samplers; L2 and RAM bandwidth are shared, and the gather is
   memory-latency bound, so two workers may contend.
-- **Re-evaluate when:** job 125's result is in.
+- **Job 125 (2DS, `--ab vw2`, 400 s):** the second worker took ~820 jobs/s (a third) in the cutscene and did its job on
+  the GX side (core 0's wait for it 10.0% -> 5.7%, the GX thread's wait for ring space 21% -> 12.5%), but core 0 itself
+  ran slower with it on: cutscene speed 20.28% -> 19.83% (core 0 22.77% -> 21.16%), the core-0-bound section 11.70% ->
+  11.36% (+-0.05: real). Net zero or worse. Suspect: the helper spin-polled the queue counters the GX thread writes
+  (cache lines moving between cores on every read); job 126 sleeps instead. If core 0 still slows, it is memory
+  contention, and the helper would only pay when the GX side is the cap (switch it on by gxwait).
+- **Re-evaluate when:** job 126's result is in.
 
 ## C3. Display-list vertex cache on the CPU
 
