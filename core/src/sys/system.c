@@ -17,7 +17,11 @@ static void unknown_access(System* s, const char* what, u32 pa, u32 v) {
 }
 
 static bool in_mem1(u32 pa, u32 len) { return pa < PA_MEM1_END && pa + len <= PA_MEM1_END; }
-static bool in_lc(u32 pa, u32 len) { return pa >= PA_LOCKED_CACHE && pa + len <= PA_LOCKED_CACHE + LOCKED_CACHE_SIZE; }
+// (Written so that pa + len cannot wrap: a 128 KB block at 0xFFFE0000 once passed as locked cache and handed the CPU's
+// slow path a pointer 512 MB past it; found by the JIT fuzzer's chain mode, 2026-10-12.)
+static bool in_lc(u32 pa, u32 len) {
+    return pa >= PA_LOCKED_CACHE && pa - PA_LOCKED_CACHE < LOCKED_CACHE_SIZE && len <= LOCKED_CACHE_SIZE - (pa - PA_LOCKED_CACHE);
+}
 
 // Hardware blocks are 16-bit or 32-bit wide; other widths are composed from the native one.
 typedef enum { W16, W32 } Width;

@@ -140,6 +140,7 @@ static void time_leave(GuestTime t) { t.g->cycles = t.saved; }
 
 static u32 jit_load_at(Gekko* g, u32 ea, u32 size, u32 pc) {
     g_jit->stats.slowLoads++;
+    if (ea - 0xC0000000u < 0x01800000u) g_jit->stats.slowMirror++;
     GkPriv* p = GKP(g);
     p->curPc = pc;
     p->npc = pc + 4;
@@ -153,6 +154,7 @@ static u32 jit_load_at(Gekko* g, u32 ea, u32 size, u32 pc) {
 // sizePc = pc | log2(size): instructions are word aligned, so the two low bits are free.
 static void jit_store_at(Gekko* g, u32 ea, u32 v, u32 sizePc) {
     g_jit->stats.slowStores++;
+    if (ea - 0xC0000000u < 0x01800000u) g_jit->stats.slowMirror++;
     GkPriv* p = GKP(g);
     u32 size = 1u << (sizePc & 3), pc = sizePc & ~3u;
     p->curPc = pc;
@@ -1060,13 +1062,20 @@ static void ea_index(Cg* c, u32 ra, u32 rb) {
 // The inline MEM1 check of the fast paths: r1 = the physical offset of the guest address in r0 (0xC0000000 folded
 // onto 0x80000000); branches to the slow path (returned in slow[], NO_BRANCH = none) when the address is not
 // `align`-byte aligned or not inside MEM1 (an aligned access of `align` bytes then fits entirely).
+// r1 = ea - 0x80000000; the alignment and the MEM1 range in one compare: rotated right by log2(align), a misaligned
+// offset has bits at the top and fails the same unsigned bound as one past the end. The uncached mirror (0xC0000000)
+// takes the slow path. Uses r12.
 static void mem1_check(Cg* c, u32 align, u32 slow[2]) {
     Emit* e = &c->e;
     slow[0] = slow[1] = NO_BRANCH;
-    if (align > 1) { dp_imm(e, TST, 1, 0, R0, align - 1); slow[0] = branch_c(e, C_NE, 0); }
-    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    u32 sh = align >= 8 ? 3 : align >= 4 ? 2 : align >= 2 ? 1 : 0;
+    dp_imm(e, SUB, 0, R1, R0, IMM(0x80000000u));
+    if (sh) {
+        mov_shift(e, 0, R12, R1, ROR, (int)sh);
+        dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u >> sh));
+    } else {
+        dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    }
     slow[1] = branch_c(e, C_CS, 0);
 }
 
@@ -2829,15 +2838,16 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
             int r = ri == 0 ? R2 : R4 + ri - 1;
             u32 size = k == MS_L32 || k == MS_S32 ? 4 : k == MS_L8 || k == MS_S8 ? 1 : 2;
             j->memStub[k][ri] = (u16)e->n;
-            if (size > 1) {  // misaligned: "cmp r0, #0" sets the carry (r0 is not 0) and returns
-                dp_imm(e, TST, 1, 0, R0, size - 1);
-                dp_imm_c(e, C_NE, CMP, 1, 0, R0, 0);
-                bx_reg_c(e, C_NE, LR);
+            // Alignment and range in one compare (see mem1_check); a failure returns with the carry set.
+            u32 sh = size == 4 ? 2 : size == 2 ? 1 : 0;
+            dp_imm(e, SUB, 0, R1, R0, IMM(0x80000000u));
+            if (sh) {
+                mov_shift(e, 0, R12, R1, ROR, (int)sh);
+                dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u >> sh));
+            } else {
+                dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
             }
-            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
-            bx_reg_c(e, C_CS, LR);  // outside MEM1
+            bx_reg_c(e, C_CS, LR);  // misaligned, outside MEM1 or the uncached mirror
             switch (k) {
             case MS_L32: ldr_reg(e, r, RRAM, R1); rev(e, r, r); break;
             case MS_L16U: ldrh_reg(e, r, RRAM, R1); rev16(e, r, r); break;
@@ -3642,6 +3652,9 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsNative,
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
+    print(line);
+    snprintf(line, sizeof line, "JIT: slow-path loads %llu, stores %llu (of them in the uncached mirror %llu)",
+             (unsigned long long)s->slowLoads, (unsigned long long)s->slowStores, (unsigned long long)s->slowMirror);
     print(line);
     snprintf(line, sizeof line, "JIT: returns to the dispatcher: link requests %llu, indirect-table misses %llu (to polling / idle "
              "blocks %llu, to blocks compiled then %llu; else slot taken %llu, empty %llu, key changed %llu), budget ends "

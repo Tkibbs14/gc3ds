@@ -716,6 +716,20 @@ int main(int argc, char** argv) {
             st.fpOff = false;
             u32 words = chain_case(&st, prog);
             CODE_PA = 0x3000u + 4 * (rnd() % (1024 - words));
+            if (getenv("JIT_FUZZ_TRACE")) { printf("chain case %u at %08x\n", k, CODE_EA); fflush(stdout); }
+            {  // JIT_FUZZ_CASE=k: the program and starting registers of chain case k
+                static long want = -2;
+                if (want == -2) { const char* ev = getenv("JIT_FUZZ_CASE"); want = ev ? atol(ev) : -1; }
+                if ((long)k == want) {
+                    for (u32 i = 0; i < words; i++) {
+                        char dis[96];
+                        gekko_disasm(CODE_EA + 4 * i, prog[i], dis, sizeof dis);
+                        printf("  %08x %08x %s\n", CODE_EA + 4 * i, prog[i], dis);
+                    }
+                    for (int r = 0; r < 32; r++) printf("  r%d=%08x%s", r, st.gpr[r], r % 8 == 7 ? "\n" : "");
+                    fflush(stdout);
+                }
+            }
             int n = (int)chain_run(&st, prog, words, plant);
             if (!compare(prog[0], prog[1], n, n)) {
                 fails++;
