@@ -35,6 +35,7 @@ push() {
 queue() {
     local id args
     id="$(push)"
+    [ -n "$id" ] || { echo "build upload failed: no job queued" >&2; exit 1; }
     args="$*"
     printf '{"args": %s, "build": "%s"}' "$(printf '%s' "$args" | sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/')" "$id" |
         api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p'
