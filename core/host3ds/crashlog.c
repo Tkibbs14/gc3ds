@@ -30,13 +30,18 @@ void crashlog_set_info(int k, u32 v) { if (k >= 0 && k < CRASH_INFO_N) g_info[k]
 
 static int put(char* p, int left, const char* fmt, u32 v) { int n = snprintf(p, (size_t)left, fmt, (unsigned long)v); return n < 0 ? 0 : n < left ? n : left - 1; }
 
-// Luma3DS's own dumps (sdmc:/luma/dumps/arm11/crash_dump_NNNNNNNN.dmp), for an exception our handlers never saw (a
-// thread without one, or another process): the newest one not reported yet goes to the next perf.csv as hex words
-// (Luma's ExceptionDumpHeader, the registers, then the end of the file: the process name and title ID).
-static char g_luma[1600];
-static void luma_dump_scan(void) {
-    DIR* d = opendir("sdmc:/luma/dumps/arm11");
-    if (!d) { snprintf(g_luma, sizeof g_luma, "# luma dumps: none (no sdmc:/luma/dumps/arm11)\n"); return; }
+// Luma3DS's own dumps (sdmc:/luma/dumps/arm11/ and arm9/crash_dump_NNNNNNNN.dmp), for an exception our handlers never
+// saw (a thread without one, another process, or the ARM9: Process9 runs the SD card and the file system): the newest
+// one of each kind not reported yet goes to the next perf.csv as hex words (Luma's ExceptionDumpHeader, the registers,
+// then the end of the file: the process name and title ID). Only arm11 was read until 2026-10-13, when a Luma
+// exception screen left no new arm11 dump.
+static char g_luma[3200];
+static void luma_dump_scan_one(const char* kind, char* out, int outLeft) {
+    char dir[48], rep[48];
+    snprintf(dir, sizeof dir, "sdmc:/luma/dumps/%s", kind);
+    snprintf(rep, sizeof rep, "sdmc:/gc3ds/luma_reported%s.txt", strcmp(kind, "arm11") ? "_arm9" : "");
+    DIR* d = opendir(dir);
+    if (!d) { snprintf(out, (size_t)outLeft, "# luma %s dumps: none (no %s)\n", kind, dir); return; }
     char newest[64] = "";
     int count = 0;
     struct dirent* e;
@@ -46,28 +51,34 @@ static void luma_dump_scan(void) {
         if (strlen(e->d_name) < sizeof newest && strcmp(e->d_name, newest) > 0) strcpy(newest, e->d_name);
     }
     closedir(d);
-    if (!newest[0]) { snprintf(g_luma, sizeof g_luma, "# luma dumps: none\n"); return; }
+    if (!newest[0]) { snprintf(out, (size_t)outLeft, "# luma %s dumps: none\n", kind); return; }
     char last[64] = "";
-    FILE* f = fopen("sdmc:/gc3ds/luma_reported.txt", "r");
+    FILE* f = fopen(rep, "r");
     if (f) { if (!fgets(last, sizeof last, f)) last[0] = 0; fclose(f); last[strcspn(last, "\r\n")] = 0; }
-    if (!strcmp(last, newest)) { snprintf(g_luma, sizeof g_luma, "# luma dumps: %d, newest %s already reported\n", count, newest); return; }
+    if (!strcmp(last, newest)) { snprintf(out, (size_t)outLeft, "# luma %s dumps: %d, newest %s already reported\n", kind, count, newest); return; }
     char path[128];
-    snprintf(path, sizeof path, "sdmc:/luma/dumps/arm11/%s", newest);
+    snprintf(path, sizeof path, "%s/%s", dir, newest);
     f = fopen(path, "rb");
     if (!f) return;
     static u32 w[400];
-    size_t n = fread(w, 4, 400, f) ;
+    size_t n = fread(w, 4, 400, f);
     fclose(f);
-    char* p = g_luma;
-    int left = sizeof g_luma;
-    int k = snprintf(p, (size_t)left, "# luma dump %s (%d dumps, %u bytes read):", newest, count, (unsigned)(n * 4));
+    char* p = out;
+    int left = outLeft;
+    int k = snprintf(p, (size_t)left, "# luma dump %s/%s (%d dumps, %u bytes read):", kind, newest, count, (unsigned)(n * 4));
     p += k; left -= k;
     for (size_t i = 0; i < n && i < 40 && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
     k = snprintf(p, (size_t)left, "\n# luma dump end:"); p += k; left -= k;
     for (size_t i = n > 12 ? n - 12 : 0; i < n && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
     if (left > 2) { *p++ = '\n'; *p = 0; }
-    f = fopen("sdmc:/gc3ds/luma_reported.txt", "w");
+    f = fopen(rep, "w");
     if (f) { fprintf(f, "%s\n", newest); fclose(f); }
+}
+static void luma_dump_scan(void) {
+    g_luma[0] = 0;
+    luma_dump_scan_one("arm11", g_luma, (int)sizeof g_luma / 2);
+    size_t used = strlen(g_luma);
+    luma_dump_scan_one("arm9", g_luma + used, (int)(sizeof g_luma - used));
 }
 
 void crashlog_open(void) {

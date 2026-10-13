@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 cflags="-std=c11 -O2 -g -Wall -Wextra -Wno-unused-parameter -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE"
-gcc $cflags src/gx/soft.c src/gx/tev_pica.c src/gx/texture.c src/gx/xform.c src/gx/vertex.c src/host/log.c \
+gcc $cflags src/gx/soft.c src/gx/tev_pica.c src/gx/texture.c src/gx/xform.c src/gx/vertex.c src/gx/vfast.c src/gx/fifo.c src/gx/tev_pica_sim.c src/host/log.c \
     tests/tev/tev_test.c -lm -o "$out/tev_test" || exit 2
 # The 3DS build uses devkitARM; check the translator also builds warning-free for 32-bit ARM when a cross compiler exists.
 if command -v arm-linux-gnueabihf-gcc > /dev/null; then

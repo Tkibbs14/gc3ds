@@ -451,8 +451,8 @@ static void perf_shot(double realS, double emuS) {
     }
     char path[64];
     snprintf(path, sizeof path, "sdmc:/gc3ds/shots/shot_%02d.bmp", g_shotNext % 16);
+    pica_capture_done = relay_frame;  // a relay job also gets the frame (relay.sh frames), once its file is complete
     pica_capture(path);
-    relay_frame(path);  // a relay job also gets the frame (relay.sh frames)
     if (g_perf) fprintf(g_perf, "# shot %s at real %.1f s, emulated %.2f s\n", path + 5, realS, emuS);
     g_shotNext = (g_shotNext + 1) % 16;
     FILE* f = fopen("sdmc:/gc3ds/shots/next.txt", "w");
@@ -467,7 +467,7 @@ static void perf_shot(double realS, double emuS) {
 //   tev [N]                   describe the next N draws' TEV, textures and combiner result (default 6)
 //   stop                      end the run
 static bool g_stopReq;
-static bool g_relayRun;  // a relay job is running (frames every 15 s instead of 30)
+static bool g_relayRun;  // a relay job is running
 static void apply_cmd(const char* cmd, double realS, double emuS) {
     char name[24] = "", val[24] = "";
     bool ok = true;
@@ -772,7 +772,7 @@ static const char* run(const char* path) {
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
                 ++perfRows;
-                if (perfRows == 5 || perfRows == 15 || perfRows % (g_relayRun ? 15 : 30) == 0)
+                if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 if (g_pica && pica_take_description()) {
                     if (g_perf) fputs(pica_take_description(), g_perf);

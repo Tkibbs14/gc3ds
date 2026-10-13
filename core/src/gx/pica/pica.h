@@ -15,6 +15,8 @@ void pica_reset(void);
 // Saves the next presented top-screen image as a 400 x 240 BMP at `path` (ignored while one is in progress).
 // Callable from the CPU thread; the GX thread does the work at its next two presents.
 void pica_capture(const char* path);
+// Called (on a background thread) when a capture's file is completely written; NULL: none.
+extern void (*pica_capture_done)(const char* path);
 // Lighting in the vertex shader (on by default when the shader provides it); off lights on the CPU (comparison).
 void pica_set_shader_light(bool on);
 bool pica_shader_light(void);

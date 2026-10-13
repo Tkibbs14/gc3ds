@@ -11,6 +11,15 @@
 
 #define TOL 2.0f
 
+// What soft.c and vfast.c read from the rest of the machine (sys/system.c, not linked here).
+u64 g_hostProf[PROF_N];
+bool g_drawTimed;
+u32 g_drawScale = 1;
+u64 (*g_profClock)(void);
+struct System;
+void pi_raise(struct System* s, u32 cause);
+void pi_raise(struct System* s, u32 cause) { (void)s; (void)cause; }  // fifo.c (never reached: no FIFO here)
+
 // ---- random numbers ----
 static u64 rng = 0x9E3779B97F4A7C15ull;
 static u32 rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (u32)(rng >> 16); }
@@ -166,7 +175,10 @@ static void set_konst(GXCore* g, int r, int R, int G, int B, int A) {
     g->kHi[r] = (u32)B | (u32)G << 12;
 }
 
-static void gx_reset(GXCore* g) { memset(g, 0, sizeof *g); }
+static void gx_reset(GXCore* g) {
+    memset(g, 0, sizeof *g);
+    for (int m = 0; m < 8; m++) g->bp[0x88 + (m & 3) + (m >= 4 ? 0x20 : 0)] = 6u << 20;  // RGBA8: four independent channels
+}
 
 // Convenience: stage with colour (a,b,c,d) and alpha (aa,ab,ac,ad), texture map m on coordinate m.
 static Stage mk(u8 ca, u8 cb, u8 cc, u8 cd, u8 aa, u8 ab, u8 ac, u8 ad) {
@@ -209,6 +221,11 @@ static float max_error(const GXCore* g, const PicaTev* t, int n, float* qerr) {
     for (int i = 0; i < n; i++) {
         float ras[2][4], texel[8][4], ref[4], sim[4], simq[4];
         random_inputs(ras, texel);
+        for (int m = 0; m < 8; m++) {  // intensity formats hold one value in every channel (IA: and alpha apart)
+            u32 fmt = (g->bp[0x88 + (m & 3) + (m >= 4 ? 0x20 : 0)] >> 20) & 15;
+            if (fmt <= 1) texel[m][1] = texel[m][2] = texel[m][3] = texel[m][0];
+            else if (fmt <= 3) texel[m][1] = texel[m][2] = texel[m][0];
+        }
         gx_soft_eval_tev(g, ras, texel, ref);
         pica_eval(t, ras, texel, false, sim);
         pica_eval(t, ras, texel, true, simq);
@@ -472,6 +489,28 @@ static void hand_cases(void) {
     BEGIN(1); s = mk_tex(0, mk(CC_ZERO, CC_TEXC, CC_RASC, CC_ZERO, CA_ZERO, CA_TEXA, CA_RASA, CA_ZERO)); s.cdest = DST_C0; s.adest = DST_C0; set_stage(g, 0, &s);
     set_reg(g, 0, 70, 80, 90, 100);
     run_case("last stage writes C0: PREV is the preset", true, 0, g);
+
+    {  // Twilight Princess's THP movie (YUV -> RGB with a negative register preset): the registers as the 2DS's live
+       // "tev" command reported them (2026-10-13). The PICA clamps each stage, so it came out purple until the linear path.
+        static const u32 key[] = { 0x00000c02,
+            0x003ca3c9, 0x003803c0, 0x00380380, 0x00380380, 0x00380380, 0x00380380, 0x00380380, 0x00380380,
+            0x0000f8e2, 0x0004f310, 0x0010f8e0, 0x0004f300, 0x0008f8c0, 0x00089f80, 0x000810ef, 0x0008fff0,
+            0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0,
+            0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0,
+            0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0, 0x0008afff, 0x0008bff0,
+            0x00eb78c4, 0x0003806e, 0x00018060, 0x0001806c, 0x00018065, 0x0001806d, 0x0001806a, 0x0001806e,
+            0x000ff0ff, 0x000ff0ff, 0x00858000, 0x008000e2, 0x000877a6, 0x0000078e, 0x008b60b3, 0x00800000,
+            0x000ff0ff, 0x000ff0ff, 0x008800ff, 0x008000ff, 0x000ff0ff, 0x000ff0ff, 0x008ff0ff, 0x008ff0ff };
+        gx_reset(g);
+        u32 n = 0;
+        g->bp[0x00] = key[n++];
+        for (u32 r = 0x28; r <= 0x2F; r++) g->bp[r] = key[n++];
+        for (u32 r = 0xC0; r <= 0xDF; r++) g->bp[r] = key[n++];
+        for (u32 r = 0xF6; r <= 0xFD; r++) g->bp[r] = key[n++];
+        for (u32 i = 0; i < 4; i++) { g->tevLo[i] = key[n++]; g->tevHi[i] = key[n++]; g->kLo[i] = key[n++]; g->kHi[i] = key[n++]; }
+        for (int m = 0; m < 3; m++) g->bp[0x88 + m] = 1u << 20;  // Y, U, V: I8
+        run_case("THP movie YUV -> RGB (TP, from the 2DS)", true, 0, g);
+    }
 
     printf(" -- approximations (reported, not failed)\n");
     BEGIN(2);

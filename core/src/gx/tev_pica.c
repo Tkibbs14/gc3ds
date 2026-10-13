@@ -15,6 +15,7 @@
 // PICA stage's single constant colour: a scalar takes one byte and is read through an R/G/B/A operand, a vector takes RGB.
 // Whatever cannot be expressed is approximated and flagged in PicaTev.approx; with no flag the result matches run_tev to
 // 8-bit rounding (the GX lerp weight (c + (c >= 128)) / 256 against the PICA's c / 255 is the one difference that stays).
+#include <math.h>
 #include "tev_pica.h"
 
 #define BUFRD_MAX 24
@@ -519,6 +520,301 @@ static void commit_group(Ctx* c, int base, const u8 dest[2], const u8 need[2], c
     c->nst = (u8)(c->nst + g);
 }
 
+// ---- linear programs (out-of-range intermediates) ----
+// The PICA clamps every stage's output to 0-1, GX keeps 11-bit signed registers. Twilight Princess's THP movie player
+// (and any game using the SDK's THP player) converts YUV with a negative register preset added first (R = C0 + U*K0,
+// then ... + Y): the PICA lost the negative part and the movie came out purple (2DS, 2026-10-13, the live "tev"
+// command). When a GX program is linear in its texels and rasterised colour (lerp weights constant, or both lerp ends
+// constant; a clamp only on a value that is then passed on whole), each output channel is k + sum v_i x_i with x_i the
+// texel / colour components in 0-1. That is computed exactly in unsigned stages: v_i x_i with v_i < 0 becomes
+// |v_i| (1 - x_i) - |v_i|, every term is added first (MODULATE, then MULTIPLY_ADD), the negative constant is subtracted
+// last, and the whole sum runs at 1/s of its value with the last stage's scale s. While a partial sum clamps at 1, the
+// true result is at least s - |k|/255 >= 1, so the clamp only cuts what the output clamp would cut anyway.
+#define LV_N 16  // texture units 0-2 x raw channels R G B A, then the rasterised colour's R G B A
+typedef struct { float k, v[LV_N]; bool clamped; } Lin;  // value = k + sum v[i] x_i, in 0-255 units
+
+static Lin lin_k(float k) { Lin l; memset(&l, 0, sizeof l); l.k = k; return l; }
+static bool lin_var(const Lin* l) { for (int i = 0; i < LV_N; i++) if (l->v[i] != 0) return true; return false; }
+static void lin_axpy(Lin* r, float a, const Lin* x) { r->k += a * x->k; for (int i = 0; i < LV_N; i++) r->v[i] += a * x->v[i]; }
+
+typedef struct {
+    Lin reg[4][4];  // GX register r, component R G B A
+    u8 unitMap[3], unitCoord[3], nUnits;
+    int ras;        // the rasterised colour channel used (-1: none)
+} LinCtx;
+
+static int lin_unit(LinCtx* L, u8 map, u8 coord) {
+    for (int u = 0; u < L->nUnits; u++) if (L->unitMap[u] == map && L->unitCoord[u] == coord) return u;
+    if (L->nUnits == 3) return -1;
+    L->unitMap[L->nUnits] = map; L->unitCoord[L->nUnits] = coord;
+    return L->nUnits++;
+}
+
+typedef struct { Lin c[3], a; } LinIn;  // a stage input: colour components and alpha
+
+// The raw channel a texel component really is: intensity formats (I4, I8) hold one value in all four, IA4 / IA8 one in
+// R G B and alpha apart (the THP movie's Y, U and V are I8: as four separate inputs they needed more stages than exist).
+static u8 tex_channel(const GXCore* gx, u8 map, u8 ch) {
+    u32 hi = map >= 4 ? 0x20 : 0, fmt = (gx->bp[0x88 + (map & 3) + hi] >> 20) & 15;
+    if (fmt <= 1) return 0;
+    if (fmt <= 3) return ch == 3 ? 3 : 0;
+    return ch;
+}
+
+static bool lin_leaf_tex(LinCtx* L, const GXCore* gx, u8 map, u8 coord, const u8 ts[4], LinIn* o) {
+    int u = lin_unit(L, map, coord);
+    if (u < 0) return false;
+    for (int k = 0; k < 3; k++) { o->c[k] = lin_k(0); o->c[k].v[u * 4 + tex_channel(gx, map, ts[k])] = 255; }
+    o->a = lin_k(0); o->a.v[u * 4 + tex_channel(gx, map, ts[3])] = 255;
+    return true;
+}
+
+// GX stage for one component: (d + (sub ? -1 : 1) lerp(a, b, c) + bias) * scale, clamped or not. false: not linear.
+static bool lin_stage(const Lin* a, const Lin* b, const Lin* cw, const Lin* d, int sub, float bias, float scale, bool clamp, Lin* out) {
+    Lin r = lin_k(0);
+    float s = sub ? -1.0f : 1.0f;
+    const Lin* used[3];
+    float coef[3];
+    int n = 0;
+    if (!lin_var(cw) && !cw->clamped) {  // constant weight: a (1 - w) + b w, w as GX rounds it
+        float c = cw->k < 0 ? 0 : cw->k > 255 ? 255 : cw->k, w = (c + (c >= 128 ? 1 : 0)) / 256.0f;
+        lin_axpy(&r, s * (1 - w) * scale, a); used[n] = a; coef[n++] = s * (1 - w) * scale;
+        lin_axpy(&r, s * w * scale, b); used[n] = b; coef[n++] = s * w * scale;
+    } else if (!lin_var(a) && !lin_var(b) && !cw->clamped) {  // constant ends: a + (b - a) c / 255
+        r.k += s * a->k * scale;
+        for (int i = 0; i < LV_N; i++) r.v[i] += s * (b->k - a->k) * cw->v[i] / 255.0f * scale;
+        r.k += s * (b->k - a->k) * cw->k / 255.0f * scale;
+    } else {
+        return false;
+    }
+    lin_axpy(&r, scale, d); used[n] = d; coef[n++] = scale;
+    r.k += bias * scale;
+    // A clamped (no longer linear) input may only be passed on whole: weight 1, nothing else added.
+    for (int j = 0; j < n; j++) {
+        if (!used[j]->clamped || coef[j] == 0) continue;
+        if (fabsf(coef[j] - 1) > 1e-6f || bias != 0) return false;
+        for (int m = 0; m < n; m++) if (m != j && coef[m] != 0 && (lin_var(used[m]) || used[m]->k != 0)) return false;
+        r.clamped = true;
+    }
+    float lo = r.k, hi = r.k;
+    for (int i = 0; i < LV_N; i++) { if (r.v[i] < 0) lo += r.v[i]; else hi += r.v[i]; }
+    if (lo < -1024 || hi > 1023) return false;  // would wrap the 11-bit register
+    if (clamp) {
+        if (!lin_var(&r)) { r.k = r.k < 0 ? 0 : r.k > 255 ? 255 : r.k; r.clamped = false; }
+        else if (lo < 0 || hi > 255) r.clamped = true;
+    }
+    *out = r;
+    return true;
+}
+
+static Lin lin_cin(const LinCtx* L, const LinIn* tex, const LinIn* ras, const Lin kc[3], u32 sel, int k) {
+    switch (sel) {
+    case 0: case 2: case 4: case 6: return L->reg[sel >> 1][k];
+    case 1: case 3: case 5: case 7: return L->reg[sel >> 1][3];
+    case 8: return tex->c[k];
+    case 9: return tex->a;
+    case 10: return ras->c[k];
+    case 11: return ras->a;
+    case 12: return lin_k(255);
+    case 13: return lin_k(128);
+    case 14: return kc[k];
+    default: return lin_k(0);
+    }
+}
+
+static Lin lin_ain(const LinCtx* L, const LinIn* tex, const LinIn* ras, const Lin* ka, u32 sel) {
+    switch (sel) {
+    case 0: case 1: case 2: case 3: return L->reg[sel][3];
+    case 4: return tex->a;
+    case 5: return ras->a;
+    case 6: return *ka;
+    default: return lin_k(0);
+    }
+}
+
+// The source and operand that read variable i (neg: 1 - x) for the colour or alpha track.
+static void lin_operand(int i, bool neg, bool alpha, u8* src, u8* op) {
+    int ch = i % 4;
+    static const u8 kc[4][2] = { { POPC_R, POPC_1_R }, { POPC_G, POPC_1_G }, { POPC_B, POPC_1_B }, { POPC_ALPHA, POPC_1_ALPHA } };
+    static const u8 ka[4][2] = { { POPA_R, POPA_1_R }, { POPA_G, POPA_1_G }, { POPA_B, POPA_1_B }, { POPA_ALPHA, POPA_1_ALPHA } };
+    *src = i < 12 ? (u8)(PSRC_TEX0 + i / 4) : (u8)PSRC_PRIMARY;
+    *op = alpha ? ka[ch][neg] : kc[ch][neg];
+}
+
+// A track's plan: one stage per (variable, polarity) term with its constant per component, then the constant: added
+// first when positive, subtracted last when negative (per component, so both can occur), all at 1/s.
+typedef struct { int n, s; int var[8]; bool neg[8]; u8 cv[8][3]; bool posK, negK; u8 kPos[3], kNeg[3]; } LinPlan;
+
+static bool lin_plan(const Lin* comp, int nc, LinPlan* p) {
+    memset(p, 0, sizeof *p);
+    float K[3] = { 0, 0, 0 }, maxTerm = 0;
+    for (int c = 0; c < nc; c++) {
+        K[c] = comp[c].k;
+        for (int i = 0; i < LV_N; i++) {
+            if (comp[c].v[i] < 0) K[c] += comp[c].v[i];
+            if (fabsf(comp[c].v[i]) > maxTerm) maxTerm = fabsf(comp[c].v[i]);
+        }
+    }
+    int s = 0;
+    for (int cand = 1; cand <= 4 && !s; cand *= 2) {
+        bool ok = maxTerm / (float)cand <= 255.5f;
+        for (int c = 0; c < nc && ok; c++) {
+            if (K[c] >= 0) ok = K[c] / (float)cand <= 255.5f;
+            else ok = -K[c] <= (float)(cand - 1) * 255.0f + 0.5f && -K[c] / (float)cand <= 255.5f;
+        }
+        if (ok) s = cand;
+    }
+    if (!s) return false;
+    p->s = s;
+    for (int i = 0; i < LV_N; i++)
+        for (int pol = 0; pol < 2; pol++) {
+            bool any = false;
+            u8 cv[3] = { 0, 0, 0 };
+            for (int c = 0; c < nc; c++) {
+                float v = comp[c].v[i];
+                if (v != 0 && (v < 0) == (pol == 1)) { any = true; cv[c] = q8(fabsf(v) / (float)s); }
+            }
+            if (!any) continue;
+            if (p->n == 8) return false;
+            p->var[p->n] = i; p->neg[p->n] = pol == 1;
+            memcpy(p->cv[p->n], cv, 3);
+            p->n++;
+        }
+    for (int c = 0; c < nc; c++) {
+        if (K[c] > 0.25f) { p->posK = true; p->kPos[c] = q8(K[c] / (float)s); }
+        if (K[c] < -0.25f) { p->negK = true; p->kNeg[c] = q8(-K[c] / (float)s); }
+    }
+    return true;
+}
+
+static int lin_plan_len(const LinPlan* p) { int n = p->n + p->posK + p->negK; return n ? n : 1; }
+
+// Writes a track's plan into stages 0.. (the colour or alpha half of each stage), then passes the value through.
+static void lin_emit(const LinPlan* p, bool alpha, int nStages, PicaTev* o) {
+    int j = 0;
+    bool have = false;  // PREVIOUS holds the partial sum
+    u8 opAll = alpha ? POPA_ALPHA : POPC_COLOR;
+    for (int step = 0; step < p->n + 2; step++) {
+        bool isPos = step == 0, isNeg = step == p->n + 1;
+        if ((isPos && !p->posK) || (isNeg && !p->negK)) continue;
+        PicaStage* st = &o->st[j];
+        u8* src = alpha ? st->srcA : st->srcRgb;
+        u8* op = alpha ? st->opA : st->opRgb;
+        u8 fn;
+        const u8* cv;
+        if (isPos) {
+            cv = p->kPos; fn = PFN_REPLACE;
+            src[0] = PSRC_CONSTANT; op[0] = opAll;
+        } else if (isNeg) {
+            cv = p->kNeg; fn = PFN_SUBTRACT;
+            src[0] = PSRC_PREVIOUS; op[0] = opAll;
+            src[1] = PSRC_CONSTANT; op[1] = opAll;
+        } else {
+            int t = step - 1;
+            cv = p->cv[t];
+            lin_operand(p->var[t], p->neg[t], alpha, &src[0], &op[0]);
+            src[1] = PSRC_CONSTANT; op[1] = opAll;
+            if (have) { fn = PFN_MULTIPLY_ADD; src[2] = PSRC_PREVIOUS; op[2] = opAll; }
+            else fn = PFN_MODULATE;
+        }
+        if (alpha) { st->fnA = fn; st->scaleA = PSCALE_1; st->konst = (st->konst & 0x00FFFFFFu) | (u32)cv[0] << 24; }
+        else { st->fnRgb = fn; st->scaleRgb = PSCALE_1; st->konst = (st->konst & 0xFF000000u) | cv[0] | (u32)cv[1] << 8 | (u32)cv[2] << 16; }
+        have = true;
+        j++;
+    }
+    if (!j) {  // no term and no constant: zero
+        PicaStage* st = &o->st[0];
+        if (alpha) { st->fnA = PFN_REPLACE; st->srcA[0] = PSRC_CONSTANT; st->opA[0] = POPA_ALPHA; st->konst &= 0x00FFFFFFu; }
+        else { st->fnRgb = PFN_REPLACE; st->srcRgb[0] = PSRC_CONSTANT; st->opRgb[0] = POPC_COLOR; st->konst &= 0xFF000000u; }
+        j = 1;
+    }
+    u8 sc = p->s == 4 ? PSCALE_4 : p->s == 2 ? PSCALE_2 : PSCALE_1;
+    if (alpha) o->st[j - 1].scaleA = sc; else o->st[j - 1].scaleRgb = sc;
+    for (; j < nStages; j++) {  // the other track has more stages: pass this one through
+        PicaStage* st = &o->st[j];
+        if (alpha) { st->fnA = PFN_REPLACE; st->srcA[0] = PSRC_PREVIOUS; st->opA[0] = POPA_ALPHA; st->scaleA = PSCALE_1; }
+        else { st->fnRgb = PFN_REPLACE; st->srcRgb[0] = PSRC_PREVIOUS; st->opRgb[0] = POPC_COLOR; st->scaleRgb = PSCALE_1; }
+    }
+}
+
+static bool tev_linear(const GXCore* gx, PicaTev* out) {
+    LinCtx L;
+    memset(&L, 0, sizeof L);
+    L.ras = -1;
+    for (int r = 0; r < 4; r++) {
+        s32 v[4] = { sext11(gx->tevLo[r]), sext11(gx->tevHi[r] >> 12), sext11(gx->tevHi[r]), sext11(gx->tevLo[r] >> 12) };  // R G B A
+        for (int k = 0; k < 4; k++) L.reg[r][k] = lin_k((float)v[k]);
+    }
+    u8 kv[4][4];
+    for (int r = 0; r < 4; r++) {
+        u32 lo = gx->kLo[r], hi = gx->kHi[r];
+        kv[r][0] = (u8)(lo & 0xFF); kv[r][3] = (u8)((lo >> 12) & 0xFF);
+        kv[r][2] = (u8)(hi & 0xFF); kv[r][1] = (u8)((hi >> 12) & 0xFF);
+    }
+    static const float kBias[4] = { 0, 128, -128, 0 }, kScale[4] = { 1, 2, 4, 0.5f };
+    u32 stages = ((gx->bp[0x00] >> 10) & 15) + 1;
+    for (u32 st = 0; st < stages; st++) {
+        u32 tref = gx->bp[0x28 + st / 2] >> ((st & 1) * 12);
+        u32 texmap = tref & 7, texcoord = (tref >> 3) & 7, chan = (tref >> 7) & 7;
+        bool texEn = (tref >> 6) & 1;
+        u32 ksel = gx->bp[0xF6 + st / 2];
+        u32 kcs = (ksel >> (4 + (st & 1) * 10)) & 31, kas = (ksel >> (9 + (st & 1) * 10)) & 31;
+        u32 cenv = gx->bp[0xC0 + 2 * st], aenv = gx->bp[0xC1 + 2 * st];
+        u32 cb = (cenv >> 16) & 3, ab = (aenv >> 16) & 3;
+        if (cb == 3 || ab == 3) return false;  // compare modes are not linear
+        u8 rs[4], ts[4];
+        swap_sel(gx, aenv & 3, rs);
+        swap_sel(gx, (aenv >> 2) & 3, ts);
+        LinIn tex, ras;
+        if (texEn) {
+            if (!lin_leaf_tex(&L, gx, (u8)texmap, (u8)texcoord, ts, &tex)) return false;
+        } else {
+            for (int k = 0; k < 3; k++) tex.c[k] = lin_k(255);  // run_tev: a stage without a texture reads white
+            tex.a = lin_k(255);
+        }
+        if (chan < 2) {
+            if (L.ras >= 0 && L.ras != (int)chan) return false;
+            L.ras = (int)chan;
+            for (int k = 0; k < 3; k++) { ras.c[k] = lin_k(0); ras.c[k].v[12 + rs[k]] = 255; }
+            ras.a = lin_k(0); ras.a.v[12 + rs[3]] = 255;
+        } else {
+            for (int k = 0; k < 3; k++) ras.c[k] = lin_k(0);
+            ras.a = lin_k(0);
+        }
+        Opnd kco = konst_op(kv, kcs, false), kao = konst_op(kv, kas, true);
+        Lin kc[3] = { lin_k(kco.cv[0]), lin_k(kco.cv[1]), lin_k(kco.cv[2]) }, ka = lin_k(kao.cv[0]);
+        Lin outC[3], outA;
+        for (int k = 0; k < 3; k++) {
+            Lin in[4];
+            for (int i = 0; i < 4; i++) in[i] = lin_cin(&L, &tex, &ras, kc, (cenv >> (12 - 4 * i)) & 15, k);
+            if (!lin_stage(&in[0], &in[1], &in[2], &in[3], (int)((cenv >> 18) & 1), kBias[cb], kScale[(cenv >> 20) & 3],
+                           (cenv >> 19) & 1, &outC[k])) return false;
+        }
+        Lin ain[4];
+        for (int i = 0; i < 4; i++) ain[i] = lin_ain(&L, &tex, &ras, &ka, (aenv >> (13 - 3 * i)) & 7);
+        if (!lin_stage(&ain[0], &ain[1], &ain[2], &ain[3], (int)((aenv >> 18) & 1), kBias[ab], kScale[(aenv >> 20) & 3],
+                       (aenv >> 19) & 1, &outA)) return false;
+        u32 cd = (cenv >> 22) & 3, ad = (aenv >> 22) & 3;
+        for (int k = 0; k < 3; k++) L.reg[cd][k] = outC[k];
+        L.reg[ad][3] = outA;
+    }
+    LinPlan pc, pa;  // the output is PREV
+    if (!lin_plan(L.reg[0], 3, &pc) || !lin_plan(&L.reg[0][3], 1, &pa)) return false;
+    int n = lin_plan_len(&pc) > lin_plan_len(&pa) ? lin_plan_len(&pc) : lin_plan_len(&pa);
+    if (n > PICA_STAGES) return false;
+    memset(out, 0, sizeof *out);
+    for (int i = 0; i < PICA_STAGES; i++) stage_default(&out->st[i]);
+    for (int i = 0; i < n; i++) out->st[i].konst = 0;
+    lin_emit(&pc, false, n, out);
+    lin_emit(&pa, true, n, out);
+    out->numStages = (u8)n;
+    out->numTex = L.nUnits;
+    for (int u = 0; u < L.nUnits; u++) { out->texMap[u] = L.unitMap[u]; out->texCoord[u] = L.unitCoord[u]; }
+    out->rasChan = (u8)(L.ras < 0 ? 0 : L.ras);
+    out->approx = 0;
+    return true;
+}
+
 void tev_pica_compile(const GXCore* gx, PicaTev* out) {
     Ctx c;
     memset(&c, 0, sizeof c);
@@ -643,5 +939,7 @@ void tev_pica_compile(const GXCore* gx, PicaTev* out) {
     }
 
     c.o.numStages = c.nst ? c.nst : 1;
+    // Out-of-range intermediates or too many stages, and nothing else: a linear program compiles exactly another way.
+    if ((c.o.approx & (TEVA_RANGE | TEVA_STAGES)) && !(c.o.approx & ~(u32)(TEVA_RANGE | TEVA_STAGES)) && tev_linear(gx, out)) return;
     *out = c.o;
 }
