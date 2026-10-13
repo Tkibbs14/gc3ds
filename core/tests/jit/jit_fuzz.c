@@ -507,13 +507,14 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
 }
 
 // Memory window words that are normal single-precision floats (a quarter with any exponent).
-static void fill_floats(System* s) {
-    for (u32 i = 0; i < WIN_SIZE; i += 4) {
+static void fill_floats_at(System* s, u32 pa, u32 size) {
+    for (u32 i = 0; i < size; i += 4) {
         u32 e = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254;
         u32 w = (rnd() & 1) << 31 | e << 23 | (rnd() & 0x7FFFFF);
-        mem1_write32(s, WIN_PA + i, w);
+        mem1_write32(s, pa + i, w);
     }
 }
+static void fill_floats(System* s) { fill_floats_at(s, WIN_PA, WIN_SIZE); }
 
 // ---- gekko_regs (src/cpu/gekko_regs.c) against the interpreter ----
 // The JIT's analysis of guest code trusts gekko_regs: an instruction may read only the registers in `reads` and write
@@ -729,6 +730,7 @@ int main(int argc, char** argv) {
         // Integer cases are often blocks of 2-4 instructions: each later one often reads a GPR an earlier one wrote,
         // or branches on its compare (the JIT's register cache, forwarding of flags and write-back at exits).
         u32 seq[48] = { isFloat ? genf(&st) : gen(&st), 0 }, len = 1;
+        bool floatSeq = false;  // float loads and stores through one base: memory holds normal floats only
         while (intOnly && is_branch_op(seq[0])) seq[0] = gen(&st);
         bool traceCase = !isFloat && (intOnly || rnd() % 100 < 30) && !is_branch_op(seq[0]);
         if (traceCase) {
@@ -741,6 +743,26 @@ int main(int argc, char** argv) {
                 if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
                 seq[i] = next;
             }
+        } else if (isFloat && rnd() % 2 == 0 && (((seq[0] >> 26) >= 48 && (seq[0] >> 26) <= 57) || (seq[0] >> 26) == 60 || (seq[0] >> 26) == 61)) {
+            // Float cases of 2-4 instructions whose D-form loads and stores share one base register: check hoisting's
+            // unchecked float accesses (the first one checks the base, the later ones do not).
+            // Loads and stores only: chained float arithmetic meets the fast float model's known inexactness.
+            u32 want = 2 + rnd() % 3, base = 0;
+            for (u32 i = 0; i < want; i++) {
+                u32 in = i ? genf(&st) : seq[0], op = in >> 26;
+                while (i && !((op >= 48 && op <= 57) || op == 60 || op == 61)) { in = genf(&st); op = in >> 26; }
+                bool dform = (op >= 48 && op <= 57) || op == 60 || op == 61;
+                if (dform && !base) base = (in >> 16) & 31;
+                else if (dform) in = (in & ~(31u << 16)) | (base << 16);
+                // Each access its own 8 bytes, no update forms: an access never reads bytes another wrote (a store's
+                // bits read back as a denormal single meet the fast float model's flush to zero, a known limit).
+                if (dform && (op & 1)) { in &= ~(1u << 26); op &= ~1u; }
+                u32 dd = (u32)(16 * (s32)i - 32);
+                in = op >= 56 ? (in & ~0xFFFu) | (dd & 0xFFFu) : (in & ~0xFFFFu) | (dd & 0xFFFFu);
+                seq[i] = in;
+            }
+            len = want;
+            floatSeq = true;
         } else if (!isFloat && rnd() % 2 == 0 && !is_branch_op(seq[0])) {
             u32 want = 2 + rnd() % 3;
             while (len < want && !is_branch_op(seq[len - 1])) {
@@ -790,7 +812,11 @@ int main(int argc, char** argv) {
         CODE_PA = 0x3000u + 4 * (rnd() % (1024 - len + 1));
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
-        if (st.fmem && rnd() % 8) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
+        if (st.fmem && (floatSeq || rnd() % 8)) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
+        if (floatSeq) {
+            fill_floats_at(&A, MEM1_SIZE - TOP_SIZE, TOP_SIZE);
+            memcpy(B.mem1 + MEM1_SIZE - TOP_SIZE, A.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
+        }
         for (u32 i = 0; i < 16; i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
         memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };

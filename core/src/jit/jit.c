@@ -30,7 +30,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_N, ST_WORDS = 2048 };
+       ST_HOISTCHK, ST_N, ST_WORDS = 4096 };  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -106,6 +106,7 @@ struct Jit {
     u32 sched;                  // jit_set_sched: SCHED_STUBS | SCHED_CONST
     u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
     u16 stfsStub, lfsStub, lfdStub, stfdStub;  // emit_float_stubs
+    u16 psqUStub[2][8][2], stfsUStub, lfsUStub, lfdUStub, stfdUStub;  // ... unchecked, for hoisted bases (OPT_HOIST)
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -329,7 +330,10 @@ static u32 IMM(u32 v) { u32 enc = 0; arm_imm(v, &enc); return enc; }
 #define NSLOT 5
 static const int kSlot[NSLOT] = { R4, R5, R6, R7, R8 };
 enum { ID_CR = 32, ID_XER = 33 };  // cache ids beyond the GPRs
-typedef struct { s8 id[NSLOT]; bool dirty[NSLOT]; u32 use[NSLOT]; } Rc;  // id: GPR 0-31, ID_CR, ID_XER, or -1
+// swap: the slot holds the value byte-reversed, as a hoisted lwz loaded it (check hoisting); the `rev` is emitted where
+// the value is first read or written back, so the load's result is not needed by the very next instruction (an
+// ARM11 load-use interlock, two cycles).
+typedef struct { s8 id[NSLOT]; bool dirty[NSLOT], swap[NSLOT]; u32 use[NSLOT]; } Rc;  // id: GPR 0-31, ID_CR, ID_XER, or -1
 static u32 rc_off(u32 id) { return id < 32 ? OFF_GPR(id) : id == ID_CR ? OFF_CR : OFF_XER; }
 
 typedef struct {
@@ -809,6 +813,8 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
     for (int k = 0; k < NSLOT; k++) {
         if (rc->id[k] < 0 || !rc->dirty[k]) continue;
         if (jit_debug_plant == 4 && !skipped) { skipped = true; continue; }  // the fuzzer's self-test: lose a write
+        // In place: a flush is followed by an exit, by hot code that clears swap (rc_flush), or by the cold reload.
+        if (rc->swap[k] && jit_debug_plant != 10) rev(&c->e, kSlot[k], kSlot[k]);  // plant 10: the swap is lost
         str_imm(&c->e, kSlot[k], RG, rc_off((u32)rc->id[k]));
         if (!c->inCold && rc == &c->rc) rs_store((u32)rc->id[k]);  // hot flushes only: exit stubs would count once per stub, not per run
     }
@@ -817,7 +823,7 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
 // Writes back every dirty slot; in hot code they are clean afterwards.
 static void rc_flush(Cg* c) {
     rc_emit_flush(c, &c->rc);
-    if (!c->inCold) for (int k = 0; k < NSLOT; k++) c->rc.dirty[k] = false;
+    if (!c->inCold) for (int k = 0; k < NSLOT; k++) { if (c->rc.dirty[k]) c->rc.swap[k] = false; c->rc.dirty[k] = false; }
 }
 
 // After the interpreter ran an instruction (it reads and writes guest state in memory): hot code forgets the cache;
@@ -825,10 +831,13 @@ static void rc_flush(Cg* c) {
 static void rc_after_interp(Cg* c) {
     if (c->inCold) {
         for (int k = 0; k < NSLOT; k++)
-            if (c->rc.id[k] >= 0) ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)c->rc.id[k]));
+            if (c->rc.id[k] >= 0) {
+                ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)c->rc.id[k]));
+                if (c->rc.swap[k]) rev(&c->e, kSlot[k], kSlot[k]);  // as the hot path holds it
+            }
         return;
     }
-    for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; }
+    for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = false; c->rc.swap[k] = false; }
 }
 
 #ifndef __3DS__
@@ -860,10 +869,15 @@ static int rc_alloc(Cg* c, u32 r) {
         if (best < 0 || c->rc.use[k] < c->rc.use[best]) best = k;
     }
     if (best < 0) return -1;
-    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) { str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best])); rs_store_why((u32)c->rc.id[best], RW_EVICT); }
+    if (c->rc.id[best] >= 0 && c->rc.dirty[best]) {
+        if (c->rc.swap[best]) rev(&c->e, kSlot[best], kSlot[best]);
+        str_imm(&c->e, kSlot[best], RG, rc_off((u32)c->rc.id[best]));
+        rs_store_why((u32)c->rc.id[best], RW_EVICT);
+    }
     if (c->rc.id[best] >= 0) rs_evicted((u32)c->rc.id[best]);
     c->rc.id[best] = (s8)r;
     c->rc.dirty[best] = false;
+    c->rc.swap[best] = false;
     return best;
 }
 
@@ -874,10 +888,12 @@ static int src(Cg* c, u32 r, int tmp) {
     int k = slot_of(&c->rc, r);
     if (k >= 0) c->j->stats.forwards++;
     if (c->inCold) {
+        if (k >= 0 && c->rc.swap[k]) { rev(&c->e, tmp, kSlot[k]); return tmp; }  // cold code leaves the hot state alone
         if (k >= 0) return kSlot[k];
         ldr_imm(&c->e, tmp, RG, rc_off(r));
         return tmp;
     }
+    if (k >= 0 && c->rc.swap[k]) { rev(&c->e, kSlot[k], kSlot[k]); c->rc.swap[k] = false; }
     if (k < 0) {
         k = rc_alloc(c, r);
         if (k < 0) { ldr_imm(&c->e, tmp, RG, rc_off(r)); rs_load(r); rs_touch(r, true); return tmp; }
@@ -903,9 +919,10 @@ static int dst(Cg* c, u32 r, int tmp) {
 static void dst_done(Cg* c, u32 r, int reg) {
     if (!c->inCold) rs_written(r);
     int k = slot_of(&c->rc, r);
-    if (k >= 0 && kSlot[k] == reg) { c->rc.dirty[k] = true; return; }
+    if (k >= 0 && kSlot[k] == reg) { c->rc.dirty[k] = true; c->rc.swap[k] = false; return; }
     str_imm(&c->e, reg, RG, rc_off(r));
-    if (k >= 0) mov_reg(&c->e, kSlot[k], reg);  // (cold code) keep the cached copy equal to memory
+    if (k >= 0 && c->inCold && c->rc.swap[k]) rev(&c->e, kSlot[k], reg);  // (cold code) the copy as hot code holds it
+    else if (k >= 0) mov_reg(&c->e, kSlot[k], reg);  // (cold code) keep the cached copy equal to memory
 }
 
 // Plain loads and stores of a GPR through a given host register, for code that does not use src / dst.
@@ -1661,10 +1678,13 @@ static void hoist_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, u32 d, bool u
 #endif
     int x = hoist_addr(c, ra, d, update);
     int t = dst(c, rd, R2);
-    if (size == 4) { ldr_reg(e, t, RRAM, x); rev(e, t, t); }
+    int k = slot_of(&c->rc, rd);
+    bool defer = size == 4 && k >= 0 && kSlot[k] == t && !c->inCold;  // the swap waits for the value's first use
+    if (size == 4) { ldr_reg(e, t, RRAM, x); if (!defer) rev(e, t, t); }
     else if (size == 2) { ldrh_reg(e, t, RRAM, x); if (sign) revsh(e, t, t); else rev16(e, t, t); }
     else ldrb_reg(e, t, RRAM, x);
     dst_done(c, rd, t);
+    if (defer) c->rc.swap[k] = true;
     if (update) st_gpr(c, R0, ra);
 }
 
@@ -2240,6 +2260,17 @@ static void emit_store64(Cg* c, u32 frs) {
 static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
     Emit* e = &c->e;
     if (update && ra == 0) return false;  // invalid form
+    if (c->hoist && !indexed && ra && c->j->memStubs && !c->inCold) {  // check hoisting: the unchecked stubs, no slow path
+        if (kind >= 2) ld_fpr(c, 1, fr, 0);
+        int x = hoist_addr(c, ra, simm, update);
+        if (x != R0) mov_reg(e, R0, x);
+        Jit* j = c->j;
+        branch_abs(e, C_AL, true, j->code + (kind == 0 ? j->lfsUStub : kind == 1 ? j->lfdUStub : kind == 2 ? j->stfsUStub : j->stfdUStub));
+        if (kind == 0) { st_fpr(c, 1, fr, 0); st_fpr(c, 1, fr, 1); c->single |= 3ull << (2 * fr); }
+        else if (kind == 1) st_fpr(c, 1, fr, 0);
+        if (update) st_gpr(c, R0, ra);
+        return true;
+    }
     if (kind == 2 && c->j->memStubs && c->fastmem && !c->inCold) {  // the shared stub (emit_float_stubs)
         ld_fpr(c, 1, fr, 0);
         if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
@@ -2342,6 +2373,22 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
 #ifndef __3DS__
     if (g_regStat && !c->inCold) rs_emit_count(e, &g_psqRun[store][qt][w]);
 #endif
+    if (qt == 0 && c->hoist && !indexed && ra && c->j->memStubs && !c->inCold) {  // check hoisting: the unchecked stub
+        if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
+        int x = hoist_addr(c, ra, (u32)((s32)(inst << 20) >> 20), update);
+        if (x != R0) mov_reg(e, R0, x);
+        branch_abs(e, C_AL, true, c->j->code + c->j->psqUStub[store][idx][w]);
+        u32 slow = branch_c(e, C_NE, 0);  // another GQR type: the interpreter
+        if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
+        if (update) st_gpr(c, R0, ra);
+        u32 resume = e->n;
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        emit_fallback(c, inst);
+        cold_end(c, resume);
+        if (!store) c->single |= 3ull << (2 * fr);
+        return true;
+    }
     // The address first: the register cache must not change after the first branch to the cold fallback (that path
     // would skip the write-back of an evicted register).
     if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, (u32)((s32)(inst << 20) >> 20));
@@ -3306,6 +3353,74 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     rev(e, R3, R3);
     dp_reg(e, ADD, 0, R1, R1, RRAM);
     stmia(e, R1, (1u << R2) | (1u << R3));
+    bx_reg_c(e, C_AL, LR);
+    // The unchecked set, for accesses through a base check hoisting has checked (r0 is inside MEM1 through 0x80000000):
+    // no range or alignment checks, and single-word ldr / str (unaligned words load and store correctly; ldm / stm need
+    // word alignment). lfs, lfd, stfs and stfd cannot fail. psq returns Z set when done, clear when the GQR's type is
+    // not plain float (the site's interpreter fallback).
+    for (u32 q = 0; q < 8; q++)
+        for (u32 w = 0; w < 2; w++) {
+            j->psqUStub[0][q][w] = (u16)e->n;
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));
+            bx_reg_c(e, C_NE, LR);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            ldr_imm(e, R2, R1, 0);
+            if (w) {
+                rev(e, R2, R2);
+                vmov_s_r(e, 0, R2);
+                vcvt_f64_f32(e, 1, 0);
+                dp_imm(e, MOV, 0, R2, 0, 0);
+                load_const(e, R3, 0x3FF00000u);
+                vmov_d_rr(e, 2, R2, R3);  // ps1 = 1.0
+            } else {
+                ldr_imm(e, R3, R1, 4);
+                rev(e, R2, R2);
+                rev(e, R3, R3);
+                vmov_ss_rr(e, 0, R2, R3);
+                vcvt_f64_f32(e, 1, 0);
+                vcvt_f64_f32(e, 2, 1);
+            }
+            bx_reg_c(e, C_AL, LR);
+            j->psqUStub[1][q][w] = (u16)e->n;
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            bx_reg_c(e, C_NE, LR);
+            fs_conv(e, R2, 1, cut1);
+            if (!w) fs_conv(e, R3, 2, cut2);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            rev(e, R2, R2);
+            str_imm(e, R2, R1, 0);
+            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done (the conversions changed the flags)
+            bx_reg_c(e, C_AL, LR);
+        }
+    j->stfsUStub = (u16)e->n;
+    fs_conv(e, R2, 1, cut1);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R0);
+    bx_reg_c(e, C_AL, LR);
+    j->lfsUStub = (u16)e->n;
+    ldr_reg(e, R2, RRAM, R0);
+    rev(e, R2, R2);
+    vmov_s_r(e, 0, R2);
+    vcvt_f64_f32(e, 1, 0);
+    bx_reg_c(e, C_AL, LR);
+    j->lfdUStub = (u16)e->n;
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    ldr_imm(e, R2, R1, 0);
+    ldr_imm(e, R3, R1, 4);
+    rev(e, R2, R2);
+    rev(e, R3, R3);
+    vmov_d_rr(e, 1, R3, R2);
+    bx_reg_c(e, C_AL, LR);
+    j->stfdUStub = (u16)e->n;
+    vmov_rr_d(e, R3, R2, 1);
+    rev(e, R2, R2);
+    rev(e, R3, R3);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    str_imm(e, R2, R1, 0);
+    str_imm(e, R3, R1, 4);
     bx_reg_c(e, C_AL, LR);
 }
 

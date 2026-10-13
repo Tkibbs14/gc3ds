@@ -269,6 +269,7 @@ struct VJob {
     bool originDone;
     float P[16];
     VUnit unit[3];
+    u8* end;           // the end of what the job uses (vfast_job_used)
     VIn* in;
     float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
     float (*tex)[12];  // texture matrices (3x4), per local index
@@ -310,10 +311,14 @@ static u32 tex_cap(const GXCore* gx, u32 count) {
 
 static u32 align8(u32 v) { return (v + 7) & ~7u; }
 
+// Job memory: VJob, the vertices, the stream copy, then room for the most position and texture matrices the draw can
+// use. vfast_prepare packs the matrices it used at the start of that room, so the job ends at vfast_job_used bytes and a
+// ring allocator can take the rest back (the 3DS vertex worker's job ring: most draws use a few of the 64 matrices).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
-    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(pos_cap(gx, count) * 21 * 4) +
-           align8(tex_cap(gx, count) * 12 * 4) + count * vsize;
+    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * vsize) +
+           align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4);
 }
+u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
 
 // The vertices' matrix indices (pn, tm) from the stream or the defaults.
 static void gather_indices(VJob* job) {
@@ -542,6 +547,8 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     u8* m = (u8*)mem + align8(sizeof(VJob));
     job->in = (VIn*)m;
     m += align8(count * (u32)sizeof(VIn));
+    u8* rawCopy = m;  // the stream, for a gather left to vfast_finish
+    m += align8(count * vsize);
     job->pos = (float (*)[21])m;
     m += align8(pos_cap(gx, count) * 21 * 4);
     job->tex = (float (*)[12])m;
@@ -613,9 +620,8 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     u64 t0;
     if (!job->gathered) {
         gather_indices(job);
-        u8* copy = (u8*)(job->tex + tex_cap(gx, count));
-        memcpy(copy, raw, count * vsize);
-        job->raw = copy;
+        memcpy(rawCopy, raw, count * vsize);
+        job->raw = rawCopy;
         goto matrices;
     }
     t0 = dprof_begin();  // all reads of guest memory (timed as "dec" on the 3DS profile)
@@ -694,6 +700,11 @@ matrices:
             in->tm[gi] = texLocal[tm];
         }
     }
+    // The texture matrices right after the position matrices used: the job ends there (vfast_job_used).
+    float (*packed)[12] = (float (*)[12])(void*)((u8*)job->pos + align8(job->nPos * 21 * 4));
+    if (packed != job->tex && job->nTex) memmove(packed, job->tex, job->nTex * 12 * 4);
+    job->tex = packed;
+    job->end = (u8*)(job->tex + job->nTex);
     job->originDone = false;
     return job;
 }

@@ -44,7 +44,7 @@ extern u32 g_logMask;  // bit per LogCat
 // the arena and the worker's job ring, queueing): parts of GXVTX.
 enum { PROF_GX, PROF_DISC, PROF_LOG, PROF_JITC, PROF_PRESENT, PROF_GXTEX, PROF_GXVTX, PROF_GXSYNC, PROF_VDEC, PROF_VLIGHT,
        PROF_CPU, PROF_FBFP, PROF_FB, PROF_GXTHREAD, PROF_GXWAIT, PROF_VWORK, PROF_VWAIT, PROF_GXPRES, PROF_GXSTATE, PROF_GXEND,
-       PROF_VPREP, PROF_VPAL, PROF_VQUEUE, PROF_N };
+       PROF_VPREP, PROF_VPAL, PROF_VQUEUE, PROF_VALLOC, PROF_N };  // valloc: the GX thread waiting for job-ring space
 extern u64 g_hostProf[PROF_N];
 // Where core 0 is when it is not inside compiled code (host3ds/jitsample.c reports how often the sampler finds it at each): the
 // code that runs there sets this one byte on entry. WH_NONE is compiled code and its helpers (the sampler uses jit_in_run for those).

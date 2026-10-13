@@ -1152,6 +1152,11 @@ static void split_early(void) {
     queue_run();
 }
 
+u64 g_vwStats[5];
+static volatile bool g_vwTrim = true;
+void pica_set_vw_trim(bool on) { g_vwTrim = on; }
+bool pica_vw_trim(void) { return g_vwTrim; }
+
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
 static u8* vw_alloc(u32 bytes) {
     if (g_vwLimitWant != g_vwLimit && g_vwTail == g_vwHead) { g_vwLimit = g_vwLimitWant; g_vwMemHead = 0; }
@@ -1168,11 +1173,23 @@ static u8* vw_alloc(u32 bytes) {
         u32 os = g_vw[t % VW_SLOTS].memStart, he = g_vwMemHead, end = start + bytes;
         bool overlap = os <= he ? (start < he && end > os) || (os == he) : (start < he || end > os);
         if (!full && !overlap) break;
-        if (!t0) t0 = prof_begin();
+        if (!t0) { t0 = prof_begin(); g_vwStats[3]++; g_vwStats[4] += g_vwHead - t; }
     }
-    if (t0) prof_end(PROF_VWAIT, t0);
+    if (t0) { prof_end(PROF_VWAIT, t0); prof_end(PROF_VALLOC, t0); }
     g_vwMemHead = start + bytes;
+    g_vwStats[0]++;
+    g_vwStats[1] += bytes;
+    g_vwStats[2] += bytes;
     return g_vwMem + start;
+}
+
+// The job at `mem` (vw_alloc's last allocation, `bytes` long) uses only `used` bytes: the ring takes the rest back.
+static void vw_trim(const u8* mem, u32 used, u32 bytes) {
+    u32 start = (u32)(mem - g_vwMem);
+    used = (used + 7) & ~7u;
+    if (!g_vwTrim || used >= bytes || g_vwMemHead != start + bytes) return;
+    g_vwMemHead = start + used;
+    g_vwStats[2] -= bytes - used;
 }
 
 // Queues a prepared draw that may write up to `verts` arena vertices.
@@ -1340,8 +1357,10 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         // Job memory only for what the draw uses: a deferred indexed job finishes straight into the arena (no vertex
         // copy), and GPU-transformed draws are culled by the PICA (no NDC).
         bool needPv = !(deferLit && indexed), needNd = !gpuPos && (cull == 1 || cull == 2);
+        // The draw's own arrays first, then the job (its unused end is given back after vfast_prepare: vw_trim).
         u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
-        u32 bytes = jb + (needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 4;
+        u32 front = ((needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 4 + 7) & ~7u;
+        u32 bytes = front + jb;
         u8* mem = work ? vw_alloc(bytes) : NULL;
         if (!mem) {  // the worker is off, or the draw is larger than its job ring: done here
             work = false;
@@ -1354,7 +1373,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             mem = g_jobMem;
         }
         dprof_end(PROF_VQUEUE, tq);
-        u8* at = mem + jb;
+        u8* at = mem;
         if (needPv) { w.pv = (PVert*)at; at += count * sizeof(PVert); }
         if (needNd) { w.nd = (float (*)[2])at; at += count * 8; }
         if (nSeg) {
@@ -1365,9 +1384,10 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         }
         w.deferred = deferLit;  // vfast_prepare defers shader-lit draws only
         u64 tp = dprof_begin();
-        w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem, w.pv);
+        w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem + front, w.pv);
         dprof_end(PROF_VPREP, tp);
         if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
+        if (work) vw_trim(mem, front + vfast_job_used(w.job), bytes);
         w.memStart = work ? (u32)(mem - g_vwMem) : 0;
         w.prim = prim;
         w.count = count;

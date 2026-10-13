@@ -331,6 +331,7 @@ typedef struct {
     bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
     bool opt;            // --opt on|off (off): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
     bool abOpt;          // --ab opt: on and off (opt and deopts columns; each switch drops all compiled code)
+    bool abVtrim;        // --ab vtrim: the vertex worker's job trim on and off (vtrim column)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -365,7 +366,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -411,8 +412,8 @@ static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the tr
 static bool g_gpuPosFixed = true; // the transform a run starts with
 static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "present", "gxtex", "gxvtx", "gxsync",
                                                 "vdec", "vlight", "cpu", "fbfp", "fb", "gxthread", "gxwait", "vwork",
-                                                "vwait", "gxpres", "gxstate", "gxend", "vprep", "vpal", "vqueue" };
-_Static_assert(PROF_N == 23, "kProfNames must list every PROF_ area");
+                                                "vwait", "gxpres", "gxstate", "gxend", "vprep", "vpal", "vqueue", "valloc" };
+_Static_assert(PROF_N == 24, "kProfNames must list every PROF_ area");
 static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
 static void perf_open(const char* path) {
@@ -429,7 +430,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -733,6 +734,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d,%llu", g_jit && jit_fault_mem(g_jit) ? 1 : 0, g_jit ? (unsigned long long)jit_stats(g_jit)->faults : 0ULL);
                 fprintf(g_perf, ",%lu", g_jit ? (unsigned long)jit_sched(g_jit) : 0UL);
                 fprintf(g_perf, ",%lu,%llu", g_jit ? (unsigned long)jit_opt(g_jit) : 0UL, g_jit ? (unsigned long long)jit_stats(g_jit)->deopts : 0ULL);
+                fprintf(g_perf, ",%d", pica_vw_trim() ? 1 : 0);
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -759,6 +761,7 @@ static const char* run(const char* path) {
                 if (g_opt.abFault && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_fault_mem(g_jit, !jit_fault_mem(g_jit));
                 if (g_opt.abSched && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_sched(g_jit, jit_sched(g_jit) ? 0 : SCHED_ALL);
                 if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ? 0 : OPT_ALL);
+                if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
@@ -803,6 +806,18 @@ static const char* run(const char* path) {
                                 (unsigned long long)(m[4] - lastM[4]), (unsigned long long)(m[5] - lastM[5]),
                                 (unsigned long long)(m[6] - lastM[6]));
                         memcpy(lastM, m, sizeof m);
+                        {  // the vertex worker's job ring (pica.c g_vwStats)
+                            static u64 lastV[5];
+                            u64 v[5];
+                            memcpy(v, g_vwStats, sizeof v);
+                            double jobs = (double)(v[0] - lastV[0]), waits = (double)(v[3] - lastV[3]);
+                            fprintf(g_perf, "# vworker 10s: %.0f jobs/s, %.1f KB reserved and %.1f KB kept per job; %.0f waits for "
+                                    "ring space/s with %.1f jobs in flight\n", jobs / 10.0,
+                                    jobs > 0 ? (double)(v[1] - lastV[1]) / jobs / 1024.0 : 0.0,
+                                    jobs > 0 ? (double)(v[2] - lastV[2]) / jobs / 1024.0 : 0.0, waits / 10.0,
+                                    waits > 0 ? (double)(v[4] - lastV[4]) / waits : 0.0);
+                            memcpy(lastV, v, sizeof v);
+                        }
                         lastPal = g_picaStats.palUploads;
                         lastSub = g_picaStats.subDraws;
                         memcpy(lastP, p, sizeof p);

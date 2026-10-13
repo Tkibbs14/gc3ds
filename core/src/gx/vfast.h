@@ -43,6 +43,7 @@ typedef struct VJob VJob;
 // defer (shader-lit draws only): leave the gather of attributes from guest memory to vfast_finish as well; the caller
 // must then run vfast_finish before the guest can change the vertex arrays (before PE tokens / finish are signalled).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
+u32 vfast_job_used(const VJob* job);  // bytes from the job's start to the end of what it uses, once prepared
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                     u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out);
 void vfast_finish(VJob* job, PVert* out);

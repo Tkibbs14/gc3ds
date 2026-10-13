@@ -62,6 +62,11 @@ void pica_set_merge(bool on);
 bool pica_merge(void);
 void pica_merge_flush(System* s, bool idle);
 extern u64 g_picaMerge[7];
+// The vertex worker's job ring: jobs, bytes reserved, bytes kept (after the trim), waits for space, jobs in flight summed
+// over those waits.
+extern u64 g_vwStats[5];
+void pica_set_vw_trim(bool on);  // give back the unused end of each job's reservation (default on; A/B)
+bool pica_vw_trim(void);
 u32 pica_queue_offset(void);
 extern u64 g_picaDrawPaths[8];
 bool pica_vertex_worker_idle(void);  // no draw queued on the vertex worker (callable from any thread)  // draws by batch path (pica.c)

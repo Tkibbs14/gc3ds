@@ -117,7 +117,7 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
-extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back
 u32 jit_run_one_block(Jit* j);
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with
