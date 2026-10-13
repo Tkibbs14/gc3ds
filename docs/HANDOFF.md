@@ -868,3 +868,32 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   not get there by tuning. Options for the owner: an optimizing JIT (registers and FPRs across blocks, constant
   folding, flags only when read; Dolphin-class code is ~4-6 ARM instructions per guest instruction), game patches for
   TP (fewer draws, effects off), or TP as the stress test while other games set the playable target.
+
+## 2026-10-13 day: TP is GX-bound; check hoisting; live 2DS control (relay commands and frames)
+
+Owner direction this session: work on the 2DS itself, live, and catch slowdowns fast; PC runs (fuzzer, qemu same-frame
+check) only as quick correctness gates before a build reaches the card. Plan in docs/OPT_JIT_PLAN.md.
+- **Read speed through core 0's own speed.** `gxwait_pct` (core 0 waiting for the GX thread, mostly the idle hook's
+  `wait_drained` at polling loops; the sampler files it as "dispatch") is 9-16% in TP's heavy rows, so a faster core 0
+  shows up as more gxwait, not as speed. Fault mode (job 88): speed 19.53 / 19.44% off / on, but core 0 speed 21.2 ->
+  23.6% (+11%). `tools/perf_heavy.py` prints `speed / (1 - gxwait)`. The earlier "stalls, not instruction count" lesson
+  was this effect.
+- **Check hoisting (OPT_HOIST, `--opt on`, `--ab opt`):** one window check per base register per block (ST_HOISTCHK),
+  later D-form accesses unchecked (integer ldr/str + rev, floats through unchecked stubs), a failed check deoptimizes
+  the block (ST_DEOPT, recompiled with per-access checks, ~450 blocks in TP); hoisted lwz defers its `rev` to the
+  value's first use (Rc.swap). Fuzzer: JIT_FUZZ_OPT, plants 9 and 10; qemu TP same last frame (instruction counts differ
+  by ~750 in 30 fields: deopts split blocks, which moves run boundaries). 2DS job 97 (cutscene, first 300 s): core 0
+  speed 21.41 -> 22.62%, speed 19.48 -> 20.07%. Not default yet.
+- **TP after ~300 s of the tp850 state** reaches a section at ~11% speed with half the draws where gxwait is ~0: core 0
+  alone limits there (job 97, 300-620 s).
+- **The GX thread waits for vertex-job ring space ~22-25% of its time** (`valloc_pct`, new; waits with ~3.8 jobs in
+  flight). Trimming unused job reservations (`--ab vtrim`, 23 -> 19.6 KB per job) barely moved it. A bigger ring (live,
+  job 99): 512 KB speed 19.03% vs 20.08% at 128 KB, because core 0's drain wait doubled (30% vs 14%): every polling-loop
+  sync waits for the whole queue. The lever is the worker's cost per job: `# vworker phases 10s` (a23f13f) splits it.
+- **Live 2DS control** (nakama-backend e9ee0a8, 4a82655): `relay.sh cmd JOB "..."` (shot, set opt|sched|merge|vtrim|
+  pld|splitopen|vwmem, tev [N], stop; applied within ~2 s, logged as `# cmd`), `relay.sh frames JOB` (top-screen BMPs,
+  every 15 s and on `shot`; convert to PNG with PowerShell System.Drawing to view). Downloads are gzipped with progress,
+  stall detection (512 B/s for 30 s) and 3 attempts; new builds restart themselves through Luma's hb:ldr target +
+  aptSetChainloaderToSelf (download and restart times go to the job log: check them on the first job of a new build).
+- **Open:** the THP movie after the title renders purple on the 2DS (owner report). Hypothesis: YUV->RGB TEV needs
+  signed intermediates the PICA combiners clamp (TEVA_RANGE); confirm with the live `tev` command while it plays.
