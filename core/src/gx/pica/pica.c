@@ -940,7 +940,7 @@ static volatile u32 g_vwQuit, g_vwPos;
 // against 14.8%), because every batch flush then waits for the worker (vwait 18%).
 static const bool kVwGather = false;  // CPU-transformed draws
 static volatile u32 g_vwDeferEnd;     // the queue index after the last queued draw that reads guest memory
-static Thread g_vwThread;
+static Thread g_vwThread, g_vwHelper;
 static bool g_vwOn = true;  // pica_set_vertex_worker
 static inline void vw_dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory"); }
 
@@ -1055,26 +1055,77 @@ static void vw_do(const VWork* w) {
     if (!w->fixed) g_vwPos = (u32)(o - g.arena);
 }
 
+// Jobs are taken in queue order (g_vwClaim) and may finish out of it with two workers: each marks itself done, and
+// g_vwTail (what every wait and the ring's memory follow) moves over the done jobs in order.
+static volatile u32 g_vwClaim;
+static volatile u32 g_vwDone[VW_SLOTS];  // job index + 1 once that job is done
+static volatile bool g_vw2;              // the second worker takes jobs
+u64 g_vw2Jobs;
+void pica_set_worker2(bool on) { g_vw2 = on; }
+bool pica_worker2(void) { return g_vw2; }
+static bool vw_claim(u32* out, bool helper) {
+    for (;;) {
+        u32 c = g_vwClaim;
+        if (c == g_vwHead) return false;
+        vw_dmb();
+        if (helper) {
+            const VWork* w = &g_vw[c % VW_SLOTS];
+            if (!w->indexed && !w->fixed) return false;  // CPU-culled: the first worker's, in order
+        }
+        if (__sync_bool_compare_and_swap(&g_vwClaim, c, c + 1)) { *out = c; vw_dmb(); return true; }
+    }
+}
+static void vw_done(u32 c) {
+    vw_dmb();
+    g_vwDone[c % VW_SLOTS] = c + 1;
+    vw_dmb();
+    for (;;) {
+        u32 t = g_vwTail;
+        if (t == g_vwHead || g_vwDone[t % VW_SLOTS] != t + 1) return;
+        __sync_bool_compare_and_swap(&g_vwTail, t, t + 1);
+    }
+}
+
 static void vw_main(void* arg) {
     (void)arg;
     crashlog_thread(CRASH_VWORKER);
     __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));  // as the GX thread: round to nearest, flush to zero
-    u32 idle = 0, jobs = 0;
+    u32 idle = 0, jobs = 0, c;
     while (!g_vwQuit) {
-        if (g_vwTail != g_vwHead) {
-            vw_dmb();
+        if (vw_claim(&c, false)) {
             bool timed = !(++jobs & 15);  // timed on one job in 16 (a clock read costs 0.25 us)
             u64 t0 = timed ? prof_begin() : 0;
             g_vfPhaseTimed = timed;
-            if (g_vw[g_vwTail % VW_SLOTS].job) vfast_job_set_cache(g_vw[g_vwTail % VW_SLOTS].job, g_vcWorker);  // gathers here use the worker's cache
-            vw_do(&g_vw[g_vwTail % VW_SLOTS]);
+            if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, g_vcWorker);  // gathers here use the worker's cache
+            vw_do(&g_vw[c % VW_SLOTS]);
             g_vfPhaseTimed = false;
             if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 16; g_vwPhaseAll += d; }
-            vw_dmb();
-            g_vwTail = g_vwTail + 1;
+            vw_done(c);
             idle = 0;
         } else if (++idle > 4000) {
             svcSleepThread(20000);
+        }
+    }
+}
+
+// The second vertex worker (pica_set_worker2, --vw2): on core 1, which the app gets at 80% (APT_SetAppCpuTimeLimit)
+// and which only runs the log writer and samplers. It takes indexed and fixed-place jobs only, whose arena ranges were
+// reserved when queued, so it can finish them out of order; CPU-culled jobs append at g_vwPos and stay with the first
+// worker, in order. Without the display-list cache (its gathers read guest RAM directly).
+static void vw_helper(void* arg) {
+    (void)arg;
+    crashlog_thread(CRASH_VWORKER);
+    __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));
+    u32 idle = 0, c;
+    while (!g_vwQuit) {
+        if (g_vw2 && vw_claim(&c, true)) {
+            if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, NULL);
+            vw_do(&g_vw[c % VW_SLOTS]);
+            g_vw2Jobs++;
+            vw_done(c);
+            idle = 0;
+        } else if (++idle > 2000) {
+            svcSleepThread(50000);
         }
     }
 }
@@ -1222,6 +1273,7 @@ static bool vw_start(void) {
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     g_vwThread = threadCreate(vw_main, NULL, 32 * 1024, prio, 3, false);
+    if (g_vwThread && !g_vwHelper) g_vwHelper = threadCreate(vw_helper, NULL, 32 * 1024, prio + 1 > 0x3F ? 0x3F : prio + 1, 1, false);
     return g_vwThread != NULL;
 }
 
