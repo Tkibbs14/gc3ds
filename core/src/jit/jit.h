@@ -94,7 +94,8 @@ u32 jit_sched(const Jit* j);
 // OPT_HOIST: the first D-form load or store through base register rA in a block checks rA against a window inside MEM1;
 // later accesses through the unchanged rA run unchecked. A failed check recompiles that block with per-access checks.
 // Has no effect in fault mode (accesses are unchecked there already).
-enum { OPT_HOIST = 1, OPT_ALL = 1 };
+// OPT_KSTORE: stfs / psq_st of values the block knows are exact singles convert without the round-trip check.
+enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_ALL = 3 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

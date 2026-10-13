@@ -337,6 +337,8 @@ typedef struct {
     bool vw2;            // --vw2 on|off (off): a second vertex worker on core 1 (pica_set_worker2)
     bool abVw2;          // --ab vw2: on and off (vw2 column; starts off)
     bool fskip;          // --fskip on|off (off): every other rendered frame draws nothing (pica_set_fskip)
+    bool kstore;         // --kstore on|off (off): stfs / psq_st of known exact singles skip the round trip (OPT_KSTORE)
+    bool abKstore;       // --ab kstore: OPT_KSTORE on and off (opt column; each switch drops all compiled code)
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
 } RunOpts;
 static RunOpts g_opt;
@@ -373,7 +375,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -392,6 +394,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--dlcache")) o->dlcache = !strcmp(v, "on");
         else if (!strcmp(a, "--vw2")) o->vw2 = !strcmp(v, "on");
         else if (!strcmp(a, "--fskip")) o->fskip = !strcmp(v, "on");
+        else if (!strcmp(a, "--kstore")) o->kstore = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -636,7 +639,7 @@ static const char* run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
-        jit_set_opt(g_jit, g_opt.opt && !g_opt.abOpt ? OPT_ALL : 0);  // --ab opt starts off
+        jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
@@ -819,7 +822,8 @@ static const char* run(const char* path) {
                 if (g_opt.abPld && perfRows % AB_SECS == 0) vfast_set_prefetch(!g_vfastPrefetch);  // worker reads it per job
                 if (g_opt.abFault && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_fault_mem(g_jit, !jit_fault_mem(g_jit));
                 if (g_opt.abSched && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_sched(g_jit, jit_sched(g_jit) ? 0 : SCHED_ALL);
-                if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ? 0 : OPT_ALL);
+                if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_HOIST);
+                if (g_opt.abKstore && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_KSTORE);
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());

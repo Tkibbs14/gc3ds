@@ -107,6 +107,8 @@ struct Jit {
     u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
     u16 stfsStub, lfsStub, lfdStub, stfdStub;  // emit_float_stubs
     u16 psqUStub[2][8][2], stfsUStub, lfsUStub, lfdUStub, stfdUStub;  // ... unchecked, for hoisted bases (OPT_HOIST)
+    // psq_st / stfs of values known to be exact singles (OPT_KSTORE): checked and unchecked
+    u16 psqStK[8][2], psqUStK[8][2], stfsStK, stfsUStK;
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -2275,7 +2277,8 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         int x = hoist_addr(c, ra, simm, update);
         if (x != R0) mov_reg(e, R0, x);
         Jit* j = c->j;
-        branch_abs(e, C_AL, true, j->code + (kind == 0 ? j->lfsUStub : kind == 1 ? j->lfdUStub : kind == 2 ? j->stfsUStub : j->stfdUStub));
+        bool ks = kind == 2 && (j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1);  // an exact single: no round trip
+        branch_abs(e, C_AL, true, j->code + (kind == 0 ? j->lfsUStub : kind == 1 ? j->lfdUStub : kind == 2 ? (ks ? j->stfsUStK : j->stfsUStub) : j->stfdUStub));
         if (kind == 0) { st_fpr(c, 1, fr, 0); st_fpr(c, 1, fr, 1); c->single |= 3ull << (2 * fr); }
         else if (kind == 1) st_fpr(c, 1, fr, 0);
         if (update) st_gpr(c, R0, ra);
@@ -2285,7 +2288,8 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         ld_fpr(c, 1, fr, 0);
         if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
         set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
-        branch_abs(e, C_AL, true, c->j->code + c->j->stfsStub);
+        bool ks = (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1);
+        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->stfsStK : c->j->stfsStub));
         u32 slow = branch_c(e, C_CS, 0);
         u32 resume = e->n;
         cold_begin(c);
@@ -2387,7 +2391,8 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
         int x = hoist_addr(c, ra, (u32)((s32)(inst << 20) >> 20), update);
         if (x != R0) mov_reg(e, R0, x);
-        branch_abs(e, C_AL, true, c->j->code + c->j->psqUStub[store][idx][w]);
+        bool ks = store && (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & (w ? 1u : 3u)) == (w ? 1u : 3u);
+        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->psqUStK[idx][w] : c->j->psqUStub[store][idx][w]));
         u32 slow = branch_c(e, C_NE, 0);  // another GQR type: the interpreter
         if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
         if (update) st_gpr(c, R0, ra);
@@ -2405,7 +2410,8 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     if (qt == 0 && c->j->memStubs && !c->inCold) {  // plain float: the shared stub (emit_float_stubs)
         bool pipe = store && c->j->gatherPut;
         if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
-        branch_abs(e, C_AL, true, c->j->code + c->j->psqStub[store][idx][w]);
+        bool ks = store && (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & (w ? 1u : 3u)) == (w ? 1u : 3u);
+        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->psqStK[idx][w] : c->j->psqStub[store][idx][w]));
         u32 slow = branch_c(e, C_CS, 0);
         if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
         if (update) st_gpr(c, R0, ra);  // the stub kept the effective address in r0
@@ -3407,6 +3413,67 @@ static void emit_float_stubs(Jit* j, Emit* e) {
         }
     j->stfsUStub = (u16)e->n;
     fs_conv(e, R2, 1, cut1);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R0);
+    bx_reg_c(e, C_AL, LR);
+    // OPT_KSTORE: the same stores for values the block knows are exact singles (Cg.single: from lfs, psq_l or a result
+    // rounded to single). Converting an exact single gives the bits the cut gives (zeros, infinities and the default
+    // NaN included), so the round trip, its compare and the vmrs that waits for the VFP pipeline are left out:
+    // psq_st was ~49 modelled cycles and stfs ~28 (OPT_JIT_PLAN).
+    for (u32 q = 0; q < 8; q++)
+        for (u32 w = 0; w < 2; w++) {
+            j->psqStK[q][w] = (u16)e->n;  // as psqStub[1]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            vcvt_f32_f64(e, 12, 1);
+            vmov_r_s(e, R2, 12);
+            if (!w) { vcvt_f32_f64(e, 14, 2); vmov_r_s(e, R3, 14); }
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, failOut);
+            if (!w) {
+                dp_imm(e, ADD, 0, R12, R12, 4);
+                dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+                branch_c(e, C_CS, failOut);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            rev(e, R2, R2);
+            if (w) str_imm(e, R2, R1, 0);
+            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            bx_reg_c(e, C_AL, LR);
+            j->psqUStK[q][w] = (u16)e->n;  // as psqUStub[1]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            bx_reg_c(e, C_NE, LR);
+            vcvt_f32_f64(e, 12, 1);
+            vmov_r_s(e, R2, 12);
+            if (!w) { vcvt_f32_f64(e, 14, 2); vmov_r_s(e, R3, 14); }
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            rev(e, R2, R2);
+            str_imm(e, R2, R1, 0);
+            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done
+            bx_reg_c(e, C_AL, LR);
+        }
+    j->stfsStK = (u16)e->n;  // as stfsStub
+    vcvt_f32_f64(e, 12, 1);
+    vmov_r_s(e, R2, 12);
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    rev(e, R3, R2);
+    str_reg(e, R3, RRAM, R1);
+    bx_reg_c(e, C_AL, LR);
+    j->stfsUStK = (u16)e->n;  // as stfsUStub
+    vcvt_f32_f64(e, 12, 1);
+    vmov_r_s(e, R2, 12);
     rev(e, R3, R2);
     str_reg(e, R3, RRAM, R0);
     bx_reg_c(e, C_AL, LR);

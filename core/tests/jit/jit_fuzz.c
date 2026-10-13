@@ -801,15 +801,18 @@ int main(int argc, char** argv) {
             // Single stores store values fval_st made: not a register an earlier load of the case wrote (an lfd of two
             // float words can round to a single denormal), and set again here because the instructions genf made and
             // the loop above dropped may have changed the register (seed 1, cases 12097 and 17672 of 2026-10-13).
-            u32 loaded = 0;
+            // A register lfs or psq_l loaded is stored as it is (an exact single: OPT_KSTORE's known-single stores).
+            u32 loaded = 0, loadedS = 0;
             for (u32 i = 0; i < len; i++) {
                 u32 op = seq[i] >> 26, fr = (seq[i] >> 21) & 31;
-                if (op == 48 || op == 50 || op == 56) { loaded |= 1u << fr; continue; }
+                if (op == 50) { loaded |= 1u << fr; loadedS &= ~(1u << fr); continue; }
+                if (op == 48 || op == 56) { loadedS |= 1u << fr; loaded &= ~(1u << fr); continue; }
                 if (op != 52 && op != 60) continue;
                 if (loaded & (1u << fr)) {
-                    for (fr = rnd() % 32; loaded & (1u << fr); fr = (fr + 1) % 32) {}
+                    for (fr = rnd() % 32; (loaded | loadedS) & (1u << fr); fr = (fr + 1) % 32) {}
                     seq[i] = (seq[i] & ~(31u << 21)) | (fr << 21);
                 }
+                if (loadedS & (1u << fr)) continue;
                 st.fpr[fr][0] = fval_st();
                 st.fpr[fr][1] = fval_st();
             }
