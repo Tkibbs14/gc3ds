@@ -769,6 +769,12 @@ static void gather_cached(VJob* job, bool indices) {
     vc_key(job, key);
     u32 at = 0, runK = 0, runAt = 0;
     bool inRun = false;
+    // Lookups run a chunk of segments ahead of the copies, prefetching the slots, then each hit's record: the ring (6 MB)
+    // is larger than the L2, the L2's own prefetch is not reachable from user mode, and without these every record
+    // line waited for RAM (2DS job 116: ~7 us a hit segment, as much as gathering it).
+    enum { VC_AHEAD = 32 };
+    VCEnt* hitE[VC_AHEAD];
+    u32 chunkBase = 0, chunkEnd = 0;
     // Timed only on the worker's deferred gathers (indices false): the GX thread runs this too, and g_vfPhaseTimed is
     // the worker's (job 114 mixed clock readings with zeros there).
     bool timed = !indices && g_vfPhaseTimed && g_profClock;
@@ -778,14 +784,47 @@ static void gather_cached(VJob* job, bool indices) {
         bool end = k == job->srcN || at >= job->count;
         bool hit = false;
         u32 cnt = 0, pa = VC_NO_PA;
+        if (!end && k >= chunkEnd) {  // the next chunk's lookups
+            u32 last = k + VC_AHEAD < job->srcN ? k + VC_AHEAD : job->srcN;
+            for (u32 j = k, a2 = at; j < last && a2 < job->count; j++) {
+                u32 c = seg_count(job, j, a2);
+                if (job->srcPa[j] != VC_NO_PA) {
+                    const u8* q = (const u8*)vc_pair(vc, job->srcPa[j], c, key);
+                    __builtin_prefetch(q);
+                    __builtin_prefetch(q + 32);
+                    __builtin_prefetch(q + 64);
+                    __builtin_prefetch(q + 96);
+                    __builtin_prefetch(q + 128);
+                }
+                a2 += c;
+            }
+            for (u32 j = k, a2 = at; j < last; j++) {
+                hitE[j - k] = NULL;
+                if (a2 >= job->count) continue;
+                u32 c = seg_count(job, j, a2), sp = job->srcPa[j];
+                a2 += c;
+                if (sp == VC_NO_PA) continue;
+                VCEnt* s = vc_pair(vc, sp, c, key);
+                VCEnt* e = vc_match(&s[0], job, sp, c, key) ? &s[0] : vc_match(&s[1], job, sp, c, key) ? &s[1] : NULL;
+                if (!e) { vc->st.misses++; continue; }
+                if (!vc_ring_ok(vc, e)) { vc->st.staleRing++; continue; }
+                vc->st.pagesChecked += vc_pages(e);
+                if (!vc_fresh(e)) { vc->st.stale++; continue; }
+                hitE[j - k] = e;
+                const u8* r = vc->ring + e->off;
+                u32 len = c * vc_rec(job);
+                for (u32 o = 0; o < len; o += 32) __builtin_prefetch(r + o);
+            }
+            chunkBase = k;
+            chunkEnd = last;
+        }
         if (!end) {
             cnt = seg_count(job, k, at);
             pa = job->srcPa[k];
-            VCEnt* s = pa == VC_NO_PA ? NULL : vc_pair(vc, pa, cnt, key);
-            VCEnt* e = !s ? NULL : vc_match(&s[0], job, pa, cnt, key) ? &s[0] : vc_match(&s[1], job, pa, cnt, key) ? &s[1] : NULL;
-            bool ringOk = e && vc_ring_ok(vc, e);
-            hit = ringOk && vc_fresh(e);
-            if (ringOk) vc->st.pagesChecked += vc_pages(e);
+            VCEnt* e = hitE[k - chunkBase];
+            // An insert from a missed run since the lookup may have taken the slot or written over the record.
+            if (e && (!vc_match(e, job, pa, cnt, key) || !vc_ring_ok(vc, e))) { e = NULL; vc->st.misses++; }
+            hit = e != NULL;
             if (hit) {
                 vc_unpack(job->in + at, job, vc->ring + e->off, cnt);
                 vc->st.hits++;
@@ -809,12 +848,6 @@ static void gather_cached(VJob* job, bool indices) {
                 }
             } else if (pa == VC_NO_PA) {
                 vc->st.uncacheable++;
-            } else if (!e) {
-                vc->st.misses++;
-            } else if (!ringOk) {
-                vc->st.staleRing++;
-            } else {
-                vc->st.stale++;
             }
         }
         if (!hit && !end && !inRun) { inRun = true; runK = k; runAt = at; }
