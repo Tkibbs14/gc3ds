@@ -24,7 +24,12 @@ push() {
     [ -f "$build" ] || { echo "no $build (bash core/host3ds/build.sh)" >&2; exit 1; }
     local note
     note="$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)$(git -C "$here" diff --quiet 2>/dev/null || echo -dirty)"
-    api -X PUT --data-binary @"$build" -H 'Content-Type: application/octet-stream' "$url/build?note=$note" | sed -n 's/^build //p'
+    local id
+    id="$(api -X PUT --data-binary @"$build" -H 'Content-Type: application/octet-stream' "$url/build?note=$note" | sed -n 's/^build //p')"
+    # The build's ELF, kept to decode crash addresses from the 2DS (builds are not byte-reproducible).
+    mkdir -p "$here/out/elfs"
+    [ -n "$id" ] && [ -f "$here/host3ds/gc3ds.elf" ] && cp "$here/host3ds/gc3ds.elf" "$here/out/elfs/$id.elf"
+    echo "$id"
 }
 
 queue() {
