@@ -23,7 +23,7 @@
 // (blr, bctr) look the address up in a small direct-mapped table first. Every block starts with a budget check, so a
 // chain of linked blocks stops when RDC runs out.
 #ifndef FAST_BITS
-#define FAST_BITS 14
+#define FAST_BITS 16
 #endif
 #define FAST_SIZE (1u << FAST_BITS)
 #define FAST_TABLES 4  // one table per block key seen recently (switching tables instead of clearing one)

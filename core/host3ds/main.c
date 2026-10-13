@@ -327,7 +327,7 @@ typedef struct {
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
-    bool sched;          // --sched on: code scheduled against interlocks (jit_set_sched SCHED_ALL)
+    bool sched;          // --sched on|off (on): code scheduled against interlocks (jit_set_sched SCHED_ALL)
     bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
 } RunOpts;
 static RunOpts g_opt;
@@ -346,6 +346,7 @@ static void opts_default(RunOpts* o) {
     o->traceSide = TRACE_SIDE_ALL;
     o->link = true;
     o->merge = true;
+    o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
@@ -550,6 +551,11 @@ static const char* run(const char* path) {
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     perf_open(path);
     crashlog_report(g_perf);
+    if (g_perf) {  // malloc's headroom: the largest block it still gives (osGetMemRegionFree reads 0 once libctru took the heap)
+        u32 lo = 0, hi = 64u << 20;
+        while (hi - lo > (64u << 10)) { u32 mid = lo + (hi - lo) / 2; void* p = malloc(mid); if (p) { free(p); lo = mid; } else hi = mid; }
+        fprintf(g_perf, "# heap: largest malloc block %.1f MB\n", lo / 1048576.0);
+    }
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
     const char* result = "done";
@@ -578,7 +584,7 @@ static const char* run(const char* path) {
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
-        jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);
+        jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
