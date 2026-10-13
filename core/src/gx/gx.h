@@ -57,6 +57,7 @@ struct GXBackend {
 };
 // True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
 extern bool g_gxMergeOpen;
+extern u64 g_dlStats[7];  // display-list statistics (fifo.c dl_note)
 
 // One decoded vertex, before transformation (model space, dequantised).
 typedef struct {

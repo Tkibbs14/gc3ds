@@ -1792,7 +1792,7 @@ void pica_capture(const char* path) {
 // The BMP is built in memory on the GX thread (a few ms) and written to the card by a low-priority thread on core 1:
 // writing it on the GX thread, row by row, stalled graphics for 2.8 s on the 2DS (2026-10-11).
 static u8* g_capFile;  // 24-bit BMP, rows bottom-up, 400 x 240
-void (*pica_capture_done)(const char* path);  // called on the writer thread once the file is complete
+void (*pica_capture_done)(const void* bmp, u32 bytes);  // called on the writer thread with the finished BMP
 #define CAP_FILE_BYTES (54u + 400u * 240u * 3u)
 static Thread g_capThread;
 
@@ -1801,10 +1801,9 @@ static void cap_writer(void* arg) {
     for (;;) {
         if (g_capState == 3) {
             __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory");
+            if (pica_capture_done) pica_capture_done(g_capFile, CAP_FILE_BYTES);  // (from memory: no read back from the card)
             FILE* f = fopen(g_capPath, "wb");
-            bool ok = f && fwrite(g_capFile, 1, CAP_FILE_BYTES, f) == CAP_FILE_BYTES;
-            if (f && fclose(f)) ok = false;
-            if (ok && pica_capture_done) pica_capture_done(g_capPath);  // (the path stays put until g_capState is 0)
+            if (f) { fwrite(g_capFile, 1, CAP_FILE_BYTES, f); fclose(f); }
             g_capState = 0;
         }
         svcSleepThread(50000000LL);

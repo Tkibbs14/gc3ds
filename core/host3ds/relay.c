@@ -115,8 +115,10 @@ static long http(const char* method, const char* path, const void* body, size_t 
 #define CMD_N 16
 static char g_cmd[CMD_N][128];
 static volatile u32 g_cmdHead, g_cmdTail;
-#define FRAME_N 4
-static char g_frame[FRAME_N][64];
+// One frame waits at a time, copied from memory (2DS, 2026-10-13: a Luma exception in Process9, the ARM9's file system
+// server, died writing perf.csv while this thread read frames back from the card; nothing here touches the card now).
+static u8* g_frameBuf;
+static u32 g_frameLen;
 static volatile u32 g_frameHead, g_frameTail;
 static u32 g_frameNo;
 
@@ -142,9 +144,15 @@ bool relay_take_cmd(char* out, size_t n) {
     return true;
 }
 
-void relay_frame(const char* path) {
-    if (!g_started || !g_jobId || g_frameHead - g_frameTail >= FRAME_N) return;
-    snprintf(g_frame[g_frameHead % FRAME_N], sizeof g_frame[0], "%s", path);
+void relay_frame(const void* bmp, unsigned bytes) {
+    if (!g_started || !g_jobId || g_frameHead != g_frameTail || !bytes) return;  // one at a time: busy, dropped
+    if (!g_frameBuf || g_frameLen < bytes) {
+        u8* b = realloc(g_frameBuf, bytes);
+        if (!b) return;
+        g_frameBuf = b;
+    }
+    memcpy(g_frameBuf, bmp, bytes);
+    g_frameLen = bytes;
     __sync_synchronize();
     g_frameHead = g_frameHead + 1;
 }
@@ -152,26 +160,12 @@ void relay_frame(const char* path) {
 static void post_frame(void) {
     if (g_frameTail == g_frameHead || !g_jobId) return;
     __sync_synchronize();
-    const char* path = g_frame[g_frameTail % FRAME_N];
-    FILE* f = fopen(path, "rb");
-    u8* buf = NULL;
-    long len = 0;
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        len = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        buf = len > 0 && len < (2l << 20) ? malloc((size_t)len) : NULL;
-        if (buf && fread(buf, 1, (size_t)len, f) != (size_t)len) { free(buf); buf = NULL; }
-        fclose(f);
-    }
-    if (buf) {
-        char url[64];
-        snprintf(url, sizeof url, "/jobs/%u/frame?n=%lu", g_jobId, (unsigned long)g_frameNo++);
-        Sink s = { 0 };
-        http("POST", url, buf, (size_t)len, &s, 120, NULL, 0);
-        free(s.buf);
-        free(buf);
-    }
+    char url[64];
+    snprintf(url, sizeof url, "/jobs/%u/frame?n=%lu", g_jobId, (unsigned long)g_frameNo++);
+    Sink s = { 0 };
+    http("POST", url, g_frameBuf, g_frameLen, &s, 120, NULL, 0);
+    free(s.buf);
+    __sync_synchronize();
     g_frameTail = g_frameTail + 1;  // sent or not: a frame is not worth holding up the next
 }
 

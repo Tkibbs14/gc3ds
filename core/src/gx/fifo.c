@@ -308,6 +308,30 @@ static void load_indexed(System* s, GXCore* gx, u32 which, u32 v) {
 
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
 
+// Display-list statistics (docs/research/PERF_LEVERS.md D1: could the vertices a list gathers be cached across frames?).
+// Per list address the last size, a hash of its bytes and of the array bases / strides it ran with; one call in four
+// is checked against them. g_dlStats: calls, draws inside lists, draws outside, sampled calls, sampled with the same
+// bytes, sampled with the same arrays too, new list addresses.
+u64 g_dlStats[7];
+#define DL_SLOTS 2048
+static struct { u32 addr, size, bytes, arrays; } g_dl[DL_SLOTS];
+static u32 dl_hash(const u8* p, u32 n, u32 h) { for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }
+static void dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
+    g_dlStats[0]++;
+    u32 slot = (addr >> 5) & (DL_SLOTS - 1);
+    if (g_dl[slot].addr != addr || g_dl[slot].size != size) {
+        g_dl[slot].addr = addr; g_dl[slot].size = size; g_dl[slot].bytes = dl_hash(p, size, 2166136261u);
+        g_dl[slot].arrays = dl_hash((const u8*)&gx->cp[CP_ARRAY_BASE], 32 * 4, 2166136261u);
+        g_dlStats[6]++;
+        return;
+    }
+    if (g_dlStats[0] & 3) return;
+    g_dlStats[3]++;
+    u32 b = dl_hash(p, size, 2166136261u), a = dl_hash((const u8*)&gx->cp[CP_ARRAY_BASE], 32 * 4, 2166136261u);
+    if (b == g_dl[slot].bytes) { g_dlStats[4]++; if (a == g_dl[slot].arrays) g_dlStats[5]++; }
+    g_dl[slot].bytes = b; g_dl[slot].arrays = a;
+}
+
 // Executes one command at p; returns its length, or 0 if more bytes are needed.
 static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
     u8 op = p[0];
@@ -317,6 +341,7 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         u32 total = 3 + count * vsize;
         if (avail < total) return 0;
         gx->draws++;
+        g_dlStats[inList ? 1 : 2]++;
         gx->vertices += count;
         gx->primCount[(op >> 3) & 7]++;
         if (gx->backend && count) gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, vat, p + 3, count, vsize);
@@ -352,7 +377,10 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
         if (avail < 9) return 0;
         u32 addr = rd32(p + 1) & 0x03FFFFE0, size = rd32(p + 5);
         if (inList) emu_log(LOG_GX, "nested display list call ignored\n");
-        else if (size <= PA_MEM1_END && addr <= PA_MEM1_END - size) run_list(s, gx, s->mem1 + addr, size, true);  // no wrap
+        else if (size <= PA_MEM1_END && addr <= PA_MEM1_END - size) {  // no wrap
+            dl_note(gx, addr, s->mem1 + addr, size);
+            run_list(s, gx, s->mem1 + addr, size, true);
+        }
         else emu_log(LOG_GX, "display list %08x+%x out of range\n", addr, size);
         return 9;
     }

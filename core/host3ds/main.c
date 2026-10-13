@@ -451,7 +451,7 @@ static void perf_shot(double realS, double emuS) {
     }
     char path[64];
     snprintf(path, sizeof path, "sdmc:/gc3ds/shots/shot_%02d.bmp", g_shotNext % 16);
-    pica_capture_done = relay_frame;  // a relay job also gets the frame (relay.sh frames), once its file is complete
+    pica_capture_done = (void (*)(const void*, u32))relay_frame;  // a relay job also gets the frame (relay.sh frames)
     pica_capture(path);
     if (g_perf) fprintf(g_perf, "# shot %s at real %.1f s, emulated %.2f s\n", path + 5, realS, emuS);
     g_shotNext = (g_shotNext + 1) % 16;
@@ -843,6 +843,18 @@ static const char* run(const char* path) {
                                 (unsigned long long)(m[4] - lastM[4]), (unsigned long long)(m[5] - lastM[5]),
                                 (unsigned long long)(m[6] - lastM[6]));
                         memcpy(lastM, m, sizeof m);
+                        {  // display lists (fifo.c dl_note): could their gathered vertices be cached across frames?
+                            static u64 lastD[7];
+                            u64 d[7];
+                            memcpy(d, g_dlStats, sizeof d);
+                            double calls = (double)(d[0] - lastD[0]), din = (double)(d[1] - lastD[1]), dout = (double)(d[2] - lastD[2]);
+                            double smp = (double)(d[3] - lastD[3]);
+                            fprintf(g_perf, "# dlist 10s: %.0f list calls/s, %.1f%% of draws inside lists, %.0f new list addresses/s; "
+                                    "sampled calls with the same bytes %.1f%%, and the same array bases too %.1f%%\n", calls / 10.0,
+                                    din + dout > 0 ? 100.0 * din / (din + dout) : 0.0, (double)(d[6] - lastD[6]) / 10.0,
+                                    smp > 0 ? 100.0 * (double)(d[4] - lastD[4]) / smp : 0.0, smp > 0 ? 100.0 * (double)(d[5] - lastD[5]) / smp : 0.0);
+                            memcpy(lastD, d, sizeof d);
+                        }
                         {  // the vertex worker's job ring (pica.c g_vwStats)
                             static u64 lastV[5];
                             u64 v[5];

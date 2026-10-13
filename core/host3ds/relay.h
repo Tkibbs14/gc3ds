@@ -24,5 +24,5 @@ void relay_stop(void);
 void relay_flush(void);  // sends what the current job's log holds now (before a restart into a new build)
 // Live control of a running job: commands the PC sent (relay.sh cmd), one at a time; false when none is waiting.
 bool relay_take_cmd(char* out, size_t n);
-// Uploads the BMP file at `path` (a top-screen frame) to the current job, from the relay thread.
-void relay_frame(const char* path);
+// Uploads a top-screen frame (a BMP in memory, copied) to the current job, from the relay thread.
+void relay_frame(const void* bmp, unsigned bytes);
