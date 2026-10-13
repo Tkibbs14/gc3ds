@@ -145,8 +145,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Model** (arm11_sched over TP's cutscene, 20 fields): 6.29 + 2.48 -> 6.17 + 2.30 host instructions + stall cycles
   per guest instruction (-3.4%); lfs 18.7 -> 12.9 cycles, stfs 22.4 -> 15.3, psq_st 39.0 -> 30.1, fadds 22.0 -> 12.7,
   ps_mul 31.4 -> 18.4.
-- **2DS, job 132 (600 s):** cutscene core 0 22.42% -> 23.38% (+4.3%, ~1.3 sigma); core-0-bound stretch 11.56% ->
-  11.25% (-2.7%, ~0.7 sigma). Inconclusive. Job 131 (first pass): +1% / noise.
+- **2DS, jobs 132-134 (three 600 s runs, same build):** every run agrees. Cutscene core 0 +4.3%, +3.5%, +3.0%
+  (22.42 -> 23.38, 22.45 -> 23.23, 22.49 -> 23.16); the later core-0-bound stretch -2.7%, -2.9%, -4.4% (11.56 -> 11.25,
+  11.46 -> 11.13, 11.66 -> 11.15). **A real, scene-dependent effect: +3.5% where float work is dense, -3.5% in the more
+  varied code later; net zero, so off by default.** Job 131 (first pass): +1% / noise.
 - **Lesson:** the model leaves out instruction fetch, and on the 2DS core 0 loses ~9.7 cycles per guest instruction to
   fetch stalls (OPT_JIT_PLAN). The lanes made hot code ~2-3% larger (and exit stubs bigger); TP's blocks are short, so
   values seldom live long in lanes. **Judge JIT changes by hot words per guest instruction as well as by the model.**
