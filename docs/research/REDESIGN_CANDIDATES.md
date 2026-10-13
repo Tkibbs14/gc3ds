@@ -59,7 +59,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C5. Shared-index fast path (no CPU gather)
 
-- **Status:** parked (2026-10-13); first step is a counter.
+- **Status:** rejected for TP (2026-10-13, job 127): only 0.6-0.9% of TP's indexed vertices give all their indexed
+  attributes one index (4.5-8.9% of draws do on every vertex, small ones); TP indexes positions, normals and texture
+  coordinates separately. Re-evaluate only for another game whose counter (`# shared index 10s`) says otherwise.
 - **What:** when every indexed attribute of a draw's vertices uses the same index (and the formats are ones the PICA
   reads), upload each array once (byte-swapped) as a linear attribute buffer and draw with the PICA's one index buffer:
   no per-vertex CPU work. The PICA has one index buffer per draw, not one per attribute (3dbrew GPU/Internal_Registers,
