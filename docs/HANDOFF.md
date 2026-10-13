@@ -791,3 +791,28 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   0.26), title 21.21 / 21.47% (+-0.15 / 0.16): no measurable change in speed, the worker's busy share 62.2 -> 60.5%. Kept
   on: the worker is not the limit now (core 0 is: 98% busy, 93% of it compiled code; the GX thread 78%). A press of X
   on the 2DS turns the time breakdown off (job 82 from 12 s): those columns read 0 then.
+
+## 2026-10-13: fault mode (fault-backpatched loads and stores, Dolphin's fastmem on a 32-bit host)
+
+- **Why:** core 0 is the limit (98% busy, 93% of it compiled code; the GX thread 78%), and memory instructions are 40%
+  of TP's guest instructions, each ~9 executed ARM instructions through a shared stub (call, one-compare check, access,
+  swap, return). In fault mode an integer load is `ldr rd, [RRAM, r0]; rev rd, rd` and a store `rev r3, rs; str r3,
+  [RRAM, r0]`: the same two hot words as the stub call, two executed instead of ~9, no call and return.
+- **How:** RRAM is now ram - 0x80000000, so `[RRAM, ea]` is MEM1 through the cached mapping. Every other guest region
+  lands on host memory that is not mapped, the access faults, and the host handler calls `jit_fault`, which patches the
+  site into `b <its slow path>` (the cold code every site already had) and resumes there; from then on the site is
+  the old slow path. Sites live in an open-addressed table (2^18 slots, 2 MB) cleared with the code.
+- **The 2DS probe (`--probe-faults on`, relay job 85, 249f8dc):** a data abort reaches a `threadOnException` handler
+  under Luma3DS with the exact PC of the faulting instruction (+0), and the handler resumes the thread itself (flags,
+  then `ldmia r0, {r0-r15}`); a fault costs 1.65 us and the patch's cache sync (svc 0x94) 21 us, once per site. MEM1 is at
+  0x0800cfe8, so the uncached mirror, the EFB, MMIO, the gather pipe, the locked cache and physical addresses all land
+  at 0x40000000 or above, which user mode cannot reach: all fault. Unaligned `ldr` loads the right bytes (SCTLR.U set).
+- **Not exact:** an *invalid* guest address whose host alias is mapped memory goes through instead of raising a DSI
+  (on the 2DS: guest 0x78000000-0x7FFEFFFF and 0x81810000-0xB7FFFFFF; no game uses them, a real GameCube would crash
+  there too). MEM1 now sits between two 64 KB no-access guard regions (`host_mem1_alloc`, sys/system.c; 3DS:
+  jit_3ds.c), so displacements past either end of MEM1 fault and stay exact. The fuzzer does not compare a case whose
+  interpreter took a DSI at an aliasing address and counts them (chain mode, seed 1: 28 of 30,000).
+- **Found on the way (fuzzer-only, fixed):** the pipe stub read the gather address from the helper table filled at
+  `jit_create`, before `jit_set_gather` set it, so code run without `jit_entry` (the fuzzer) sent stores to guest
+  address 0 into the pipe (seeds 1 and 7 failed at HEAD); and fast paths ignored that a supervisor-only BAT gives
+  problem-state code a DSI (`fastmemUser`). Mismatches now print their case number for `JIT_FUZZ_CASE`.

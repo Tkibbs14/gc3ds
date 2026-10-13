@@ -272,9 +272,28 @@ void mi_write16(System* s, u32 off, u16 v) { (void)s; (void)off; (void)v; }
 
 // ---- lifecycle ----
 
+// MEM1's host buffer lies between two MEM1_GUARD-byte regions that no access may reach (host_mem1_alloc). With the
+// JIT's fault mode (jit_set_fault_mem) a guest access just outside MEM1 (a base inside it, a displacement past an end)
+// then faults into the slow path, which treats the address as the interpreter does, instead of reaching the host's
+// neighbouring memory. The 3DS frontend provides its own pair (host3ds/jit_3ds.c).
+#define MEM1_GUARD 0x10000u
+u8* host_mem1_alloc(u32 size, u32 guard);
+void host_mem1_free(u8* mem1, u32 size, u32 guard);
+#ifndef __3DS__
+#include <sys/mman.h>
+u8* host_mem1_alloc(u32 size, u32 guard) {
+    u8* p = mmap(NULL, size + 2 * guard, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);  // zeroed
+    if (p == MAP_FAILED) return NULL;
+    mprotect(p, guard, PROT_NONE);
+    mprotect(p + guard + size, guard, PROT_NONE);
+    return p + guard;
+}
+void host_mem1_free(u8* mem1, u32 size, u32 guard) { if (mem1) munmap(mem1 - guard, size + 2 * guard); }
+#endif
+
 bool sys_init(System* s) {
     memset(s, 0, sizeof *s);
-    s->mem1 = calloc(1, MEM1_SIZE);
+    s->mem1 = host_mem1_alloc(MEM1_SIZE, MEM1_GUARD);
     s->lockedCache = calloc(1, LOCKED_CACHE_SIZE);
     s->dsp.aram = calloc(1, 16u * 1024 * 1024);
     if (!s->mem1 || !s->lockedCache || !s->dsp.aram) return false;
@@ -294,7 +313,7 @@ bool sys_init(System* s) {
 void sys_free(System* s) {
     gekko_free(&s->cpu);
     gxcore_free(&s->gx.core);
-    free(s->mem1);
+    host_mem1_free(s->mem1, MEM1_SIZE, MEM1_GUARD);
     free(s->lockedCache);
     free(s->dsp.aram);
 }

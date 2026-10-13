@@ -15,7 +15,7 @@
 
 // Host register roles inside compiled code (set once by the entry stub; blocks jump to each other without saving them).
 #define RG R11   // Gekko*
-#define RRAM R10 // host pointer to physical RAM 0
+#define RRAM R10 // host address of guest 0 through the cached mapping: ram - 0x80000000, so [RRAM, ea] is MEM1's byte ea
 #define RDC R9   // guest instructions left in this run (each exit subtracts what its block executed)
 
 // Blocks are linked: an exit to a known guest address starts as a branch to a stub that returns to the dispatcher,
@@ -79,6 +79,13 @@ struct Jit {
     u32* buckets;          // DISPATCH_SIZE chain heads
     u32 nEntries;
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
+    bool fastmemUser;      // ... in problem state (MSR[PR]) too
+    // Fault mode (jit_set_fault_mem): loads and stores reach MEM1 inline with no checks ([RRAM, ea]); any other
+    // address lands on host memory that is not mapped, the access faults, and the host's fault handler calls jit_fault,
+    // which patches the site into a branch to its slow path and resumes there. faultKey / faultVal: an open-addressed
+    // table from a site's word index in `code` to its slow path's (empty: ~0), cleared with the code.
+    bool faultMem;
+    u32 *faultKey, *faultVal, faultN;
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
     u8* compiledPc;             // one bit per guest word of MEM1: a block started there since the last flush (stats)
     JitStats stats;
@@ -361,6 +368,11 @@ typedef struct {
     // lfs, psq_l or a rounded single-precision result since the block began. Gekko's single multiply cuts frC to 25
     // significant bits (ld_c25), which leaves such a value unchanged, so the cut is skipped for them.
     u64 single;
+    // Fault-mode sites of this block (hot word index of the access, cold word index of its slow path), entered in the
+    // Jit's table once the block is kept.
+    bool faultMem;
+    struct { u32 at, cold; } fsite[MAX_BLOCK_INSNS * 2];
+    u32 nFsite;
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -1088,6 +1100,20 @@ static void cold_start(Cg* c, const u32 slow[2]) {
     for (int k = 0; k < 2; k++) if (slow[k] != NO_BRANCH) fix_to_cold(c, slow[k]);
 }
 
+// Fault mode (see Jit.faultMem): a site may run its access unchecked while the block's sites and the Jit's table have
+// room; fault_site, called at the start of the site's cold slow path, records where the handler sends it.
+#define FAULT_BITS 18
+#define FAULT_SLOTS (1u << FAULT_BITS)
+#define FAULT_MAX (FAULT_SLOTS / 4 * 3)
+static bool fault_ok(const Cg* c) {
+    return c->faultMem && !c->inCold && c->nFsite < sizeof c->fsite / sizeof c->fsite[0] && c->j->faultN + c->nFsite < FAULT_MAX;
+}
+static void fault_site(Cg* c, u32 hotAt) {
+    c->fsite[c->nFsite].at = hotAt;
+    c->fsite[c->nFsite].cold = c->e.n;
+    c->nFsite++;
+}
+
 // Every memory access keeps the effective address in r0 on all its paths (update forms write it to rA afterwards):
 // the slow paths save it around their helper call.
 #define EA_SAVE ((1u << R0) | (1u << R1))  // two registers keep the stack 8-byte aligned
@@ -1136,6 +1162,18 @@ static void load_slow(Cg* c, u32 size, bool sign, int dreg) {
 static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
     if (!c->fastmem) { load_slow(c, size, sign, dreg); return; }
+    if (fault_ok(c)) {  // the access alone; its slow path is reached only by the fault handler's patch
+        u32 at = e->n;
+        if (size == 4) { ldr_reg(e, dreg, RRAM, R0); rev(e, dreg, dreg); }
+        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R0); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+        else ldrb_reg(e, dreg, RRAM, R0);
+        u32 resume = e->n;
+        cold_begin(c);
+        fault_site(c, at);
+        load_slow(c, size, sign, dreg);
+        cold_end(c, resume);
+        return;
+    }
     u32 slow[2];
     int ri = ms_reg(dreg);
     if (c->j->memStubs && ri >= 0) {  // the shared stub: two words here instead of the check and access inline
@@ -1145,9 +1183,9 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
         slow[1] = NO_BRANCH;
     } else {
         mem1_check(c, size, slow);
-        if (size == 4) { ldr_reg(e, dreg, RRAM, R1); rev(e, dreg, dreg); }
-        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R1); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
-        else ldrb_reg(e, dreg, RRAM, R1);
+        if (size == 4) { ldr_reg(e, dreg, RRAM, R0); rev(e, dreg, dreg); }
+        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R0); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+        else ldrb_reg(e, dreg, RRAM, R0);
     }
     u32 resume = e->n;
     cold_start(c, slow);
@@ -1222,6 +1260,18 @@ static void store_slow(Cg* c, u32 size, int vreg) {
 static void emit_store(Cg* c, u32 size, int vreg) {
     Emit* e = &c->e;
     if (!c->fastmem) { store_slow(c, size, vreg); return; }
+    if (fault_ok(c) && vreg != R3) {  // (the slow path needs vreg unchanged: the byte swap goes to r3)
+        u32 at;
+        if (size == 4) { rev(e, R3, vreg); at = e->n; str_reg(e, R3, RRAM, R0); }
+        else if (size == 2) { rev16(e, R3, vreg); at = e->n; strh_reg(e, R3, RRAM, R0); }
+        else { at = e->n; strb_reg(e, vreg, RRAM, R0); }
+        u32 resume = e->n;
+        cold_begin(c);
+        fault_site(c, at);
+        store_slow(c, size, vreg);
+        cold_end(c, resume);
+        return;
+    }
     u32 slow[2];
     int ri = ms_reg(vreg);
     if (c->j->memStubs && ri >= 0) {
@@ -1231,9 +1281,9 @@ static void emit_store(Cg* c, u32 size, int vreg) {
         slow[1] = NO_BRANCH;
     } else {
         mem1_check(c, size, slow);
-        if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R1); }
-        else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R1); }
-        else strb_reg(e, vreg, RRAM, R1);
+        if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R0); }
+        else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R0); }
+        else strb_reg(e, vreg, RRAM, R0);
     }
     u32 resume = e->n;
     cold_start(c, slow);
@@ -1869,8 +1919,8 @@ static bool compile_int(Cg* c, u32 inst) {
         if (!c->fastmem || (xo == 470 && c->pr)) return false;
         ea_index(c, ra, rb);
         dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-        dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-        dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+        dp_imm(e, SUB, 0, R2, R1, IMM(0x80000000u));
+        dp_imm(e, CMP, 1, 0, R2, IMM(0x01800000u));
         u32 slow = branch_c(e, C_CS, 0);
         if (xo == 1014) {  // dcbz: zero the 32-byte line
             u32 zero = (1u << R2) | (1u << R3) | (1u << R12) | (1u << LR);
@@ -2013,7 +2063,7 @@ static void emit_load64(Cg* c, u32 frd) {
     if (!c->fastmem) { load64_slow(c, frd); return; }
     u32 slow[2];
     mem1_check(c, 8, slow);
-    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
     ldmia(e, R1, (1u << R2) | (1u << R3));
     rev(e, R2, R2);
     rev(e, R3, R3);
@@ -2049,7 +2099,7 @@ static void emit_store64(Cg* c, u32 frs) {
     ldr_imm(e, R3, RG, OFF_FPR(frs));
     rev(e, R2, R2);
     rev(e, R3, R3);
-    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
     stmia(e, R1, (1u << R2) | (1u << R3));
     u32 resume = e->n;
     cold_start(c, slow);
@@ -2226,13 +2276,13 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         fb[nfb++] = branch_c(e, C_NE, 0);
     }
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     bool pipe = store && c->j->gatherPut;  // psq_st to the write-gather pipe: element by element, out of line
     u32 outside = branch_c(e, C_CS, 0);
     if (!pipe) fb[nfb++] = outside;
     if (!w) {  // the second element must be inside too
-        dp_imm(e, ADD, 0, R3, R1, sz);
+        dp_imm(e, ADD, 0, R3, R12, sz);
         dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
         fb[nfb++] = branch_c(e, C_CS, 0);
     }
@@ -2573,6 +2623,15 @@ static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] +=
 
 static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
 
+static u32 fault_hash(u32 key) { return (key * 2654435761u) >> (32 - FAULT_BITS); }
+static void fault_add(Jit* j, u32 key, u32 val) {
+    u32 h = fault_hash(key);
+    while (j->faultKey[h] != ~0u) h = (h + 1) & (FAULT_SLOTS - 1);
+    j->faultKey[h] = key;
+    j->faultVal[h] = val;
+    j->faultN++;
+}
+
 static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
@@ -2591,7 +2650,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->j = j;
     c->noLink = noLink;
     c->trace = j->traces && !noLink;
-    c->fastmem = j->fastmem && (g->msr & MSR_DR);
+    c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
+    c->faultMem = c->fastmem && j->faultMem;
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
@@ -2766,6 +2826,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (u32 k = 0; k < c->nFix; k++)
         patch_branch(e, c->fix[k].fromCold ? base + c->fix[k].at : c->fix[k].at,
                      c->fix[k].toCold ? base + c->fix[k].target : c->fix[k].target);
+    for (u32 k = 0; k < c->nFsite; k++) fault_add(j, j->codeUsed + c->fsite[k].at, j->coldUsed + c->fsite[k].cold);
     void* fn = j->code + j->codeUsed;
     jit_debug_last_code = fn;
     jit_debug_last_words = e->n;
@@ -2849,13 +2910,13 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
             }
             bx_reg_c(e, C_CS, LR);  // misaligned, outside MEM1 or the uncached mirror
             switch (k) {
-            case MS_L32: ldr_reg(e, r, RRAM, R1); rev(e, r, r); break;
-            case MS_L16U: ldrh_reg(e, r, RRAM, R1); rev16(e, r, r); break;
-            case MS_L16S: ldrh_reg(e, r, RRAM, R1); revsh(e, r, r); break;
-            case MS_L8: ldrb_reg(e, r, RRAM, R1); break;
-            case MS_S32: rev(e, R3, r); str_reg(e, R3, RRAM, R1); break;
-            case MS_S16: rev16(e, R3, r); strh_reg(e, R3, RRAM, R1); break;
-            default: strb_reg(e, r, RRAM, R1); break;
+            case MS_L32: ldr_reg(e, r, RRAM, R0); rev(e, r, r); break;
+            case MS_L16U: ldrh_reg(e, r, RRAM, R0); rev16(e, r, r); break;
+            case MS_L16S: ldrh_reg(e, r, RRAM, R0); revsh(e, r, r); break;
+            case MS_L8: ldrb_reg(e, r, RRAM, R0); break;
+            case MS_S32: rev(e, R3, r); str_reg(e, R3, RRAM, R0); break;
+            case MS_S16: rev16(e, R3, r); strh_reg(e, R3, RRAM, R0); break;
+            default: strb_reg(e, r, RRAM, R0); break;
             }
             bx_reg_c(e, C_AL, LR);  // carry clear from the range check
         }
@@ -2941,11 +3002,11 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_imm(e, TST, 1, 0, R0, 3);
             branch_c(e, C_NE, fail);
             dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
             branch_c(e, C_CS, fail);
             if (!w) {
-                dp_imm(e, ADD, 0, R3, R1, 4);
+                dp_imm(e, ADD, 0, R3, R12, 4);
                 dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
                 branch_c(e, C_CS, fail);
             }
@@ -2977,14 +3038,14 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             fs_conv(e, R2, 1, cut1);
             if (!w) fs_conv(e, R3, 2, cut2);
             dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-            dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, failOut);
             if (!w) {
-                dp_imm(e, ADD, 0, R12, R1, 4);
+                dp_imm(e, ADD, 0, R12, R12, 4);
                 dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
                 branch_c(e, C_CS, failOut);
             }
-            dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
-            branch_c(e, C_CS, failOut);
             dp_reg(e, ADD, 0, R1, R1, RRAM);
             rev(e, R2, R2);
             if (w) str_imm(e, R2, R1, 0);
@@ -2997,8 +3058,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, TST, 1, 0, R0, 3);
     branch_c(e, C_NE, fail);  // (r3 is not part of stfs's protocol)
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     rev(e, R3, R2);
     str_reg(e, R3, RRAM, R1);
@@ -3008,8 +3069,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, TST, 1, 0, R0, 3);
     branch_c(e, C_NE, fail);
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     ldr_reg(e, R2, RRAM, R1);
     rev(e, R2, R2);
@@ -3021,8 +3082,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, TST, 1, 0, R0, 7);
     branch_c(e, C_NE, fail);
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));  // 8-byte aligned and below the end: all 8 bytes inside
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));  // 8-byte aligned and below the end: all 8 bytes inside
     branch_c(e, C_CS, fail);
     dp_reg(e, ADD, 0, R1, R1, RRAM);
     ldmia(e, R1, (1u << R2) | (1u << R3));
@@ -3035,8 +3096,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, TST, 1, 0, R0, 7);
     branch_c(e, C_NE, fail);
     dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
-    dp_imm(e, SUB, 0, R1, R1, IMM(0x80000000u));
-    dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     vmov_rr_d(e, R3, R2, 1);  // r3 = low word, r2 = high word
     rev(e, R2, R2);
@@ -3052,7 +3113,7 @@ static void emit_stubs(Jit* j) {
     j->stub[ST_ENTER] = e->n;
     push_regs(e, 0x4FF8);  // {r3-r11, lr}: 10 registers keep the stack 8-byte aligned for C calls
     mov_reg(e, RG, R0);
-    load_const(e, RRAM, (u32)(uintptr_t)j->ram);
+    load_const(e, RRAM, (u32)(uintptr_t)j->ram - 0x80000000u);
     mov_reg(e, RDC, R2);
     bx_reg_c(e, C_AL, R1);
     j->stub[ST_EXIT] = e->n;
@@ -3314,6 +3375,13 @@ static bool update_fastmem(Jit* j) {
     u32 a, b;
     j->fastmem = gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
                  gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0 && j->ramSize >= 0x01800000u;
+    // The same in problem state: a BAT valid only for supervisor accesses (Vp = 0) gives user code a DSI, which the
+    // fast paths and the write-gather pipe's shortcut would skip. Games never run in problem state; the fuzzer does.
+    u32 msr = g->msr;
+    g->msr = msr | MSR_PR;
+    j->fastmemUser = j->fastmem && gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
+                     gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0;
+    g->msr = msr;
     return j->fastmem;
 }
 
@@ -3504,6 +3572,48 @@ void jit_set_so_exact(Jit* j, bool on) {
 }
 bool jit_so_exact(const Jit* j) { return j->soExact; }
 
+// The Jits in fault mode, for jit_fault (called from the host's fault handler with only the faulting PC).
+static Jit* g_faultJits[4];
+
+void jit_set_fault_mem(Jit* j, bool on) {
+    if (on && !j->faultKey) {
+        j->faultKey = malloc(FAULT_SLOTS * sizeof(u32));
+        j->faultVal = malloc(FAULT_SLOTS * sizeof(u32));
+        if (!j->faultKey || !j->faultVal) { free(j->faultKey); free(j->faultVal); j->faultKey = j->faultVal = NULL; return; }
+        memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32));
+    }
+    if (on && !jit_host_fault_init(j->ram)) on = false;
+    if (on) {
+        int k = 0;
+        while (k < 4 && g_faultJits[k] && g_faultJits[k] != j) k++;
+        if (k == 4) on = false;
+        else g_faultJits[k] = j;
+    }
+    if (j->faultMem == on) return;
+    j->faultMem = on;
+    jit_invalidate_all(j);
+}
+bool jit_fault_mem(const Jit* j) { return j->faultMem; }
+
+bool jit_fault(u32 hostPc, u32* resume) {
+    for (int k = 0; k < 4 && g_faultJits[k]; k++) {
+        Jit* j = g_faultJits[k];
+        if (!j->faultMem || hostPc < (u32)(uintptr_t)j->code || hostPc >= (u32)(uintptr_t)(j->code + j->codeWords) || (hostPc & 3)) continue;
+        u32 key = (hostPc - (u32)(uintptr_t)j->code) >> 2;
+        for (u32 h = fault_hash(key); j->faultKey[h] != ~0u; h = (h + 1) & (FAULT_SLOTS - 1)) {
+            if (j->faultKey[h] != key) continue;
+            u32* site = j->code + key;
+            u32* dest = j->code + j->faultVal[h];
+            *site = 0xEA000000u | ((u32)(s32)(dest - (site + 2)) & 0xFFFFFFu);  // b dest
+            jit_host_sync_icache(site, 4);
+            j->stats.faults++;
+            *resume = (u32)(uintptr_t)dest;
+            return true;
+        }
+    }
+    return false;
+}
+
 void jit_set_slow_inline(Jit* j, bool on) {
     if (j->slowInline == on) return;
     j->slowInline = on;
@@ -3519,16 +3629,19 @@ void jit_set_mem_stubs(Jit* j, bool on) {
 
 bool jit_mem_stubs(const Jit* j) { return j->memStubs; }
 
+static void jit_fill_fns(Jit* j);
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) {
     j->gatherPut = put;
     j->gatherCtx = ctx;
     j->gatherEa = ea;
+    jit_fill_fns(j);  // the pipe stub reads its address there (the fuzzer runs code without jit_entry, which refills it)
     jit_invalidate_all(j);
 }
 
 void jit_set_gather_buffer(Jit* j, u8* buf, u32* len) {
     j->gatherBuf = buf;
     j->gatherLen = len;
+    jit_fill_fns(j);
     jit_invalidate_all(j);
 }
 
@@ -3557,6 +3670,7 @@ void jit_invalidate_all(Jit* j) {
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;
     j->insnsSinceFlush = 0;
+    if (j->faultKey) { memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32)); j->faultN = 0; }
     if (j->compiledPc) memset(j->compiledPc, 0, (24u << 20) / 32);
     fast_clear(j);
     j->gen++;
@@ -3653,8 +3767,9 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
     print(line);
-    snprintf(line, sizeof line, "JIT: slow-path loads %llu, stores %llu (of them in the uncached mirror %llu)",
-             (unsigned long long)s->slowLoads, (unsigned long long)s->slowStores, (unsigned long long)s->slowMirror);
+    snprintf(line, sizeof line, "JIT: slow-path loads %llu, stores %llu (of them in the uncached mirror %llu); fault mode %s: %lu sites, %llu faults",
+             (unsigned long long)s->slowLoads, (unsigned long long)s->slowStores, (unsigned long long)s->slowMirror,
+             j->faultMem ? "on" : "off", (unsigned long)j->faultN, (unsigned long long)s->faults);
     print(line);
     snprintf(line, sizeof line, "JIT: returns to the dispatcher: link requests %llu, indirect-table misses %llu (to polling / idle "
              "blocks %llu, to blocks compiled then %llu; else slot taken %llu, empty %llu, key changed %llu), budget ends "

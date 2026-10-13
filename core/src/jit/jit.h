@@ -28,6 +28,7 @@ typedef struct {
     u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
     u64 missPoll, missFirst, missTaken, missEmpty, missKey;
+    u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
@@ -75,6 +76,13 @@ u32 jit_entries(const Jit* j);  // blocks in the cache now
 // Called around every run of compiled code when set (the 3DS's performance-counter split, pmu.c).
 extern void (*jit_run_begin_hook)(void);
 extern void (*jit_run_end_hook)(void);
+// Fault mode: integer loads and stores to MEM1 run inline without checks; an access elsewhere faults on the host and the
+// host's handler calls jit_fault, which patches that site into a branch to its slow path and returns where to resume
+// (false: not a fault-mode site). Needs jit_host_fault_init (the host's handler, and nothing mapped where the guest's
+// other regions land); off when the host cannot. Drops all compiled code.
+void jit_set_fault_mem(Jit* j, bool on);
+bool jit_fault_mem(const Jit* j);
+bool jit_fault(u32 hostPc, u32* resume);
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);
 // XER[SO] in CR updates: compares and record forms leave CR bit SO out while XER[SO] has never been seen set (games
@@ -110,6 +118,9 @@ static inline void jit_host_fpscr_init(void) {}
 // Host services each frontend provides: executable memory and instruction-cache maintenance.
 void* jit_host_alloc_exec(u32 bytes);
 void jit_host_sync_icache(void* start, u32 bytes);
+// Installs the host's fault handler (once; it calls jit_fault) and checks that the host addresses the guest's non-MEM1
+// regions land on with base ram - 0x80000000 are not mapped (reserving them where it can). false: fault mode stays off.
+bool jit_host_fault_init(const u8* ram);
 
 // Sampling profiler support: jit_in_run is 1 while compiled code (or a helper it called) runs; each block stores its
 // host start address in Gekko.hostPc. jit_map_hosts replaces host addresses with the guest PC of the block they are

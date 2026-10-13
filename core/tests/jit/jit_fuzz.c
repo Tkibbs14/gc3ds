@@ -417,15 +417,37 @@ static bool lane_ok(u64 jitv, u64 ref, int t, int prodExp) {
     return false;
 }
 
+static u32 g_case;  // the case being checked (printed with a mismatch: JIT_FUZZ_CASE=k shows it)
+
+// Fault mode (jit_set_fault_mem) does not reproduce a DSI at an invalid address whose host alias (ea - 0x80000000 + the
+// host address of MEM1) is mapped host memory: the access goes through. The GameCube's regions all fault (MEM1's two
+// mappings are MEM1; jit_host_fault_init reserves the others), so only addresses no game uses are affected. A case
+// whose interpreter took a DSI at such an address is not compared (counted in g_aliasSkips).
+static bool g_faultMode;
+static u32 g_aliasSkips;
+static bool alias_unchecked(u32 ea) {
+    if (ea - 0x7FFF0000u < 0x01820000u || ea - 0xC0000000u < 0x01800000u || ea < 0x01800000u) return false;  // MEM1 and its guards
+    if (ea - 0xC8000000u < 0x00400000u || ea - 0xCC000000u < 0x00010000u || ea - 0xE0000000u < 0x00010000u) return false;
+    return true;
+}
+
 static bool compare(u32 inst, u32 inst2, int n, int expect) {
     Gekko* a = &A.cpu;
     Gekko* b = &B.cpu;
     bool ok = true;
     char dis[96];
     gekko_disasm(CODE_EA, inst, dis, sizeof dis);
+    if (g_faultMode && b->spr[SPR_DAR] != a->spr[SPR_DAR] && alias_unchecked(b->spr[SPR_DAR])) {
+        // Not compared; what outlives the case (the write-gather pipe) is taken from the interpreter.
+        memcpy(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp);
+        A.gx.wgpLen = B.gx.wgpLen;
+        A.gx.bytesReceived = B.gx.bytesReceived;
+        g_aliasSkips++;
+        return true;
+    }
     for (int r = 0; r < 32; r++)
-        if (a->gpr[r] != b->gpr[r]) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  r%d jit %08x interp %08x\n", r, a->gpr[r], b->gpr[r]); ok = false; }
-#define CHK(f) if (a->f != b->f) { if (ok) printf("MISMATCH %08x  %s\n", inst, dis); printf("  " #f " jit %08x interp %08x\n", a->f, b->f); ok = false; }
+        if (a->gpr[r] != b->gpr[r]) { if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case); printf("  r%d jit %08x interp %08x\n", r, a->gpr[r], b->gpr[r]); ok = false; }
+#define CHK(f) if (a->f != b->f) { if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case); printf("  " #f " jit %08x interp %08x\n", a->f, b->f); ok = false; }
     CHK(cr) CHK(xer) CHK(lr) CHK(ctr) CHK(pc) CHK(msr) CHK(spr[SPR_SRR0]) CHK(spr[SPR_SRR1]) CHK(spr[SPR_DAR]) CHK(spr[SPR_DSISR])
     CHK(spr[SPR_SPRG0]) CHK(spr[SPR_SPRG0 + 3]) CHK(spr[SPR_GQR0]) CHK(spr[SPR_GQR0 + 5]) CHK(spr[SPR_GQR0 + 7])
 #undef CHK
@@ -440,7 +462,7 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
             memcpy(&vj, l ? &a->fpr[r].ps1 : &a->fpr[r].ps0, 8);
             memcpy(&vr, l ? &b->fpr[r].ps1 : &b->fpr[r].ps0, 8);
             if (!lane_ok(vj, vr, t, prodExp)) {
-                if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+                if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
                 printf("  f%d.ps%d jit %016llx interp %016llx\n", r, l, (unsigned long long)vj, (unsigned long long)vr);
                 ok = false;
             }
@@ -448,27 +470,27 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
     u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
     if ((op == 63 && (xo == 0 || xo == 32)) || (op == 4 && (xo == 0 || xo == 32 || xo == 64 || xo == 96)))
         if ((a->fpscr ^ b->fpscr) & 0xF000u) {  // FPSCR[FPCC]
-            if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+            if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
             printf("  fpscr.FPCC jit %x interp %x\n", (a->fpscr >> 12) & 15, (b->fpscr >> 12) & 15);
             ok = false;
         }
     if (memcmp(A.mem1 + MEM1_SIZE - TOP_SIZE, B.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE)) {
-        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         printf("  memory at the end of MEM1 differs\n");
         ok = false;
     }
     if (memcmp(A.mem1 + WIN_PA, B.mem1 + WIN_PA, WIN_SIZE)) {
-        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         for (u32 i = 0; i < WIN_SIZE; i++) if (A.mem1[WIN_PA + i] != B.mem1[WIN_PA + i]) { printf("  mem %08x jit %02x interp %02x\n", WIN_PA + i, A.mem1[WIN_PA + i], B.mem1[WIN_PA + i]); break; }
         ok = false;
     }
     if (A.gx.wgpLen != B.gx.wgpLen || memcmp(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp) || A.gx.bytesReceived != B.gx.bytesReceived) {
-        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         printf("  write-gather pipe differs (jit %u bytes pending, interp %u)\n", A.gx.wgpLen, B.gx.wgpLen);
         ok = false;
     }
     if (n != expect) {
-        if (ok) printf("MISMATCH %08x  %s\n", inst, dis);
+        if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         printf("  JIT executed %d instructions, expected %d (second %08x)\n", n, expect, inst2);
         ok = false;
     }
@@ -632,12 +654,17 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     put_state(&A, st);
     put_state(&B, st);
     s64 b1 = 1 + rnd() % 300, b2 = 1 + rnd() % 300;
+    bool show = getenv("JIT_FUZZ_CASE") && (u32)atol(getenv("JIT_FUZZ_CASE")) == g_case;
     int n1 = (int)jit_run(jit, b1);
+    if (show) printf("  run 1: jit ran %d to %08x, pipe %u\n", n1, A.cpu.pc, A.gx.wgpLen);
     interp_steps(n1);
+    if (show) printf("  interp: to %08x, pipe %u\n", B.cpu.pc, B.gx.wgpLen);
     jit_debug_plant = plant == 8 ? 8 : 0;
     int n2 = (int)jit_run(jit, b2);
     jit_debug_plant = 0;
+    if (show) printf("  run 2: jit ran %d to %08x, pipe %u\n", n2, A.cpu.pc, A.gx.wgpLen);
     interp_steps(n2);
+    if (show) printf("  interp: to %08x, pipe %u\n", B.cpu.pc, B.gx.wgpLen);
     g_chainInfo[0] = (u32)b1; g_chainInfo[1] = (u32)n1; g_chainInfo[2] = (u32)b2; g_chainInfo[3] = (u32)n2;
     return (u32)(n1 + n2);
 }
@@ -668,10 +695,13 @@ int main(int argc, char** argv) {
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
     if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
+    if (!getenv("JIT_FUZZ_NOFAULT")) jit_set_fault_mem(jit, true);  // as gcemu and the 2DS: unchecked MEM1 accesses
+    g_faultMode = jit_fault_mem(jit);
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;
     for (u32 k = 0; k < cases && fails < 10; k++) {
+        g_case = k;
         St st;
         memset(&st, 0, sizeof st);
         for (int r = 0; r < 32; r++) st.gpr[r] = interesting();
@@ -837,6 +867,8 @@ int main(int argc, char** argv) {
                (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->fusedBranches);
     }
     printf("gekko_regs checked on %u instructions, %u mismatches\n", g_regChecked, g_regFails);
+    printf("fault mode %s: %llu sites patched by faults, %u cases not compared (DSI at an address aliasing host memory)\n",
+           jit_fault_mem(jit) ? "on" : "off", (unsigned long long)jit_stats(jit)->faults, g_aliasSkips);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
     jit_destroy(jit);
