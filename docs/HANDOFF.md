@@ -897,3 +897,21 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   aptSetChainloaderToSelf (download and restart times go to the job log: check them on the first job of a new build).
 - **Open:** the THP movie after the title renders purple on the 2DS (owner report). Hypothesis: YUV->RGB TEV needs
   signed intermediates the PICA combiners clamp (TEVA_RANGE); confirm with the live `tev` command while it plays.
+
+## 2026-10-13 evening: research, crash cause, display lists; next = the display-list vertex cache
+
+- **Read first:** docs/research/PERF_LEVERS.md (ranked levers, ruled-out ideas with sources, what only the 2DS answers)
+  and docs/DL_CACHE_PLAN.md (the next build).
+- **Answered on the 2DS:** 99.6% of TP's draws are inside display lists and ~80% of list calls replay identical bytes
+  over the same array bases (D1, job 107); core 0's profile is flat (top 200 blocks 5.4%; no stand-in worth writing)
+  (D3); 43% of core 0's modelled cycles are float loads/stores and maths (D2, qemu model).
+- **THP movies:** no longer purple (linear TEV path, e19200a; checked on a 2DS frame, job 104). They play at ~4.6%:
+  the game decodes JPEG in guest code; a native THP decoder is a later item.
+- **The 2DS crashes of jobs 99 / 102** were a data abort in Process9 (the ARM9's file-system server) with perf.csv text on
+  its stack (Luma arm9 dump, reported since e19200a). Frames are now uploaded from memory, not read back from the card
+  (7732b4f). Watch `# luma arm9 dumps` in every run.
+- **Relay:** downloads are gzipped with progress (~110 s for 4 MB on the 2DS's Wi-Fi); the restart into a new build
+  froze in a blocking srvGetServiceHandle("hb:ldr") (fixed in d18f4c0, first used by the download *after* the build
+  that contains it). The relay server rate-limits bursts (429): relay.sh frames retries.
+- **Order of work:** (1) display-list vertex cache (GX side, the cap today); (2) single-precision floats in the JIT
+  (PERF_LEVERS lever 2); (3) measure check hoisting at length and make it default if it holds; (4) native THP decode.
