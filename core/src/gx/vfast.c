@@ -762,7 +762,11 @@ static void gather_cached(VJob* job, bool indices) {
     vc_key(job, key);
     u32 at = 0, runK = 0, runAt = 0;
     bool inRun = false;
-    u64 tl = vf_clock(), tLook = 0, tGather = 0, tPut = 0;
+    // Timed only on the worker's deferred gathers (indices false): the GX thread runs this too, and g_vfPhaseTimed is
+    // the worker's (job 114 mixed clock readings with zeros there).
+    bool timed = !indices && g_vfPhaseTimed && g_profClock;
+    #define VC_CLOCK() (timed ? g_profClock() : 0)
+    u64 tl = VC_CLOCK(), tLook = 0, tGather = 0, tPut = 0;
     for (u32 k = 0; k <= job->srcN; k++) {
         bool end = k == job->srcN || at >= job->count;
         bool hit = false;
@@ -802,24 +806,25 @@ static void gather_cached(VJob* job, bool indices) {
         }
         if (!hit && !end && !inRun) { inRun = true; runK = k; runAt = at; }
         if ((hit || end) && inRun) {  // the run [runK, k): one gather, then its segments into the cache
-            u64 t0 = vf_clock();
+            u64 t0 = VC_CLOCK();
             tLook += t0 - tl;
             gather_range(job, false, runAt, at);
-            u64 t1 = vf_clock();
+            u64 t1 = VC_CLOCK();
             tGather += t1 - t0;
             for (u32 j = runK, a2 = runAt; j < k; j++) {
                 u32 c = seg_count(job, j, a2);
                 if (job->srcPa[j] != VC_NO_PA) vc_put(vc, job, job->srcPa[j], a2, c, key, job->made);  // as old as the stream
                 a2 += c;
             }
-            tl = vf_clock();
+            tl = VC_CLOCK();
             tPut += tl - t1;
             inRun = false;
         }
         if (end) break;
         at += cnt;
     }
-    tLook += vf_clock() - tl;
+    tLook += VC_CLOCK() - tl;
+    #undef VC_CLOCK
     g_vcPhase[0] += tLook; g_vcPhase[1] += tGather; g_vcPhase[2] += tPut;
     if (at < job->count) gather_range(job, false, at, job->count);
 }
