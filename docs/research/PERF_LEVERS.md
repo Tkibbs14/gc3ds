@@ -42,7 +42,7 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
    way (mask into one window, per-register host pointers, constant addresses) (SOURCED: ppsspp
    Core/MIPS/ARM/ArmCompLoadStore.cpp; flycast core/rec-ARM/rec_arm.cpp). ARMv6 has **no MOVW/MOVT**: constants stay up
    to 4 instructions, so constant folding into immediates matters more than on ARMv7.
-5. **HLE the per-frame matrix chain.** J3D's per-shape matrix work: J3DShapeMtxMultiConcatView::load and the
+5. **~~HLE the per-frame matrix chain.~~ Dropped by D3 (flat profile, no function above 0.5%).** J3D's per-shape matrix work: J3DShapeMtxMultiConcatView::load and the
    loadMtxConcatView_* variants call MTXConcat per used slot; J3DDifferedTexMtx::loadExecute calls MTXInverse,
    MTXConcat, MTXCopy (SOURCED: zeldaret/tp J3DShapeMtx.cpp, not re-read). Measure their share with `--profile on` and
    hot_funcs.py before writing stand-ins; match by MEGA-style signatures with wildcards (SOURCED: Dolphin
@@ -86,9 +86,9 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
 
 | # | Question | Decides | How |
 |---|---|---|---|
-| D1 | Share of TP's draws inside display lists; how often (list, arrays) repeat | lever 1 | counters in fifo.c/pica.c, live job |
+| D1 | **Answered (2DS job 107, tp850 cutscene, 6 x 10 s):** 99.6% of draws come from inside display lists; 2,700-3,700 list calls/s; of sampled calls 87-91% have the same list bytes as last time and 79-85% the same bytes and array bases. Array *contents* (CPU skinning) not measured yet | lever 1: ~80% of drawing replays an identical list over the same arrays | fifo.c dl_note, `# dlist 10s` |
 | D2 | **Answered (qemu model, 40 TP fields):** float loads/stores 27.6%, float/paired-single maths 15.3% (43% float), integer loads/stores 29.1%, integer other 17.0%, branches 10.3% of modelled core-0 cycles | levers 2-3: single precision also removes the double<->single conversions in every float load and store | tools/arm11_sched.py --cycles over JIT_SCHEDDUMP, classified by opcode |
-| D3 | Share of core 0 in J3D matrix functions | lever 5 | `--profile on` + hot_funcs.py with TP symbols |
+| D3 | **Answered (job 107, --profile on):** flat. The top 200 blocks are 5.4% of core 0; the hottest TP function is J3DUClipper::clip at 0.49%; the mDoMtx / J3D matrix functions 0.1-0.2% each | lever 5 dropped: no function is worth a stand-in | hot_funcs.py with zeldaret/tp symbols |
 | X1 | The Luma exceptions in jobs 99 and 102 | stability | arm9 dumps now reported (e19200a) |
 
 ## Sources the research could not read (re-try before relying on them)
