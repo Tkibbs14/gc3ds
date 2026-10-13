@@ -1026,15 +1026,44 @@ static bool load_pending(RelayJob* j) {
 // by hand). Commands as new-hbmenu's hbldr.c: 2 SetTarget (path without "sdmc:", static buffer 0), 3 SetArgv (u32 argc,
 // then the NUL-separated strings, static buffer 1).
 static Result g_relaunchRc;  // why relaunch_into failed (0: it did not)
+// The requests to hb:ldr can block for good (2DS, job 108: stuck at "Restarting..." with the session obtained without
+// blocking), so they run on their own thread and relaunch_into waits for it at most 3 s; a thread still blocked then
+// is left behind (the process ends soon after) and the owner restarts by hand.
+static const char* g_relaunchPath;
+static volatile int g_relaunchDone;  // 0 running, 1 done (g_relaunchRc says how)
+static bool relaunch_ipc(const char* path);
+static void relaunch_thread(void* arg) {
+    (void)arg;
+    bool ok = relaunch_ipc(g_relaunchPath);
+    if (ok && !g_relaunchRc) g_relaunchRc = 0;
+    else if (!ok && !g_relaunchRc) g_relaunchRc = (Result)0xFFFFFFFF;
+    __sync_synchronize();
+    g_relaunchDone = 1;
+}
 static bool relaunch_into(const char* path) {
     g_relaunchRc = 0;
+    g_relaunchDone = 0;
+    g_relaunchPath = path;
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    Thread t = threadCreate(relaunch_thread, NULL, 8 * 1024, prio, 1, true);
+    if (!t) { g_relaunchRc = (Result)0xFFFFFFFE; return false; }
+    u64 limit = svcGetSystemTick() + 3ull * SYSCLOCK_ARM11;
+    while (!g_relaunchDone && svcGetSystemTick() < limit) svcSleepThread(10000000LL);
+    if (!g_relaunchDone) { g_relaunchRc = (Result)0xFFFFFFFD; return false; }  // no answer within 3 s
+    __sync_synchronize();
+    if (R_FAILED(g_relaunchRc)) return false;
+    aptSetChainloaderToSelf();
+    return true;
+}
+static bool relaunch_ipc(const char* path) {
     Handle h;
     // Non-blocking: with its sessions in use, srvGetServiceHandle waits forever (2DS, jobs 97-104: "hung after the
     // download" was this wait); then the owner restarts by hand instead.
     srvSetBlockingPolicy(true);
     Result got = srvGetServiceHandle(&h, "hb:ldr");
     srvSetBlockingPolicy(false);
-    if (R_FAILED(got)) { g_relaunchRc = got; printf("(hb:ldr: %08lx)\n", (unsigned long)got); return false; }
+    if (R_FAILED(got)) { g_relaunchRc = got; return false; }
     const char* target = !strncmp(path, "sdmc:", 5) ? path + 5 : path;
     static u32 argBuf[0x400 / 4];
     memset(argBuf, 0, sizeof argBuf);
@@ -1056,7 +1085,6 @@ static bool relaunch_into(const char* path) {
     }
     svcCloseHandle(h);
     if (R_FAILED(rc)) { g_relaunchRc = rc; return false; }
-    aptSetChainloaderToSelf();
     return true;
 }
 
@@ -1072,7 +1100,9 @@ static void restart_for_job(const char* selfPath, const char* why) {
     bool autoRestart = relaunch_into(selfPath);
     if (!autoRestart) {
         char note[96];
-        snprintf(note, sizeof note, "relay: automatic restart unavailable (%08lx): asked for a restart by hand", (unsigned long)g_relaunchRc);
+        snprintf(note, sizeof note, "relay: automatic restart unavailable (%08lx%s): asked for a restart by hand", (unsigned long)g_relaunchRc,
+                 g_relaunchRc == (Result)0xFFFFFFFD ? ", hb:ldr gave no answer in 3 s" : "");
+        printf("(automatic restart unavailable: %08lx)\n", (unsigned long)g_relaunchRc);
         relay_note(note);
     }
     relay_flush();  // the download notes reach the job's log before this process ends
