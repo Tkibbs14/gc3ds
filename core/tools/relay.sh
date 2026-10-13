@@ -62,7 +62,12 @@ frames() {
     mkdir -p "$dir"
     for name in $(api "$url/jobs/$job/frames" | tr -d '\r'); do
         [ -f "$dir/$name" ] && continue
-        api -o "$dir/$name" "$url/jobs/$job/frame/$name"
+        # The relay's rate limit answers 429 to a burst: wait and try again (a frame is ~290 KB)
+        local tries=0
+        until api -o "$dir/$name" "$url/jobs/$job/frame/$name" 2>/dev/null; do
+            rm -f "$dir/$name"; tries=$((tries + 1)); [ $tries -ge 5 ] && break; sleep $((tries * 3))
+        done
+        [ -f "$dir/$name" ] || { echo "frame $name: not fetched" >&2; continue; }
         # PNG beside it when ImageMagick or Python + Pillow is there (image viewers and Claude read PNG)
         if command -v magick >/dev/null 2>&1; then magick "$dir/$name" "$dir/${name%.bmp}.png" 2>/dev/null || true
         elif command -v python3 >/dev/null 2>&1; then python3 -c "import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])" "$dir/$name" "$dir/${name%.bmp}.png" 2>/dev/null || true
