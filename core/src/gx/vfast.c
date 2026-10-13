@@ -560,6 +560,13 @@ bool g_vcacheOn = true;
 bool g_vcacheCheck;  // VCACHE_CHECK (PC): every hit is gathered again and compared (vcache_check_failures)
 bool g_vcachePlant;  // the checker's self-test: page stamps ignored, so a changed array must show as a failure
 u64 g_vcacheCheckFails, g_vcacheChecked;
+u64 g_vfPhase[3];
+bool g_vfPhaseTimed;
+static inline u64 vf_clock(void) { return g_vfPhaseTimed && g_profClock ? g_profClock() : 0; }
+// The display-list cache's share of the gather on marked calls: [0] lookups and copies of hits, [1] gathers of missed
+// runs, [2] inserts (2DS job 113: 84% of lookups hit and the gather phase did not shrink).
+u64 g_vcPhase[3];
+
 #define VC_RANGES 8
 typedef struct {
     u32 pa, count, vsize, made, key[2];
@@ -631,6 +638,7 @@ static bool vc_fresh(const VCEnt* e) {
             if ((s32)(g_memStamps.page[p] - e->made) > 0) return false;
     return true;
 }
+static u32 vc_pages(const VCEnt* e) { u32 n = 0; for (u32 r = 0; r < e->nr; r++) n += e->r1[r] - e->r0[r] + 1u; return n; }
 
 // The pages [lo, hi] (bytes) into the entry's ranges, merging overlaps; false when they do not fit.
 static bool vc_range(VCEnt* e, u32 lo, u32 hi) {
@@ -754,6 +762,7 @@ static void gather_cached(VJob* job, bool indices) {
     vc_key(job, key);
     u32 at = 0, runK = 0, runAt = 0;
     bool inRun = false;
+    u64 tl = vf_clock(), tLook = 0, tGather = 0, tPut = 0;
     for (u32 k = 0; k <= job->srcN; k++) {
         bool end = k == job->srcN || at >= job->count;
         bool hit = false;
@@ -765,6 +774,7 @@ static void gather_cached(VJob* job, bool indices) {
             VCEnt* e = !s ? NULL : vc_match(&s[0], job, pa, cnt, key) ? &s[0] : vc_match(&s[1], job, pa, cnt, key) ? &s[1] : NULL;
             bool ringOk = e && vc_ring_ok(vc, e);
             hit = ringOk && vc_fresh(e);
+            if (ringOk) vc->st.pagesChecked += vc_pages(e);
             if (hit) {
                 vc_unpack(job->in + at, job, vc->ring + e->off, cnt);
                 vc->st.hits++;
@@ -792,17 +802,25 @@ static void gather_cached(VJob* job, bool indices) {
         }
         if (!hit && !end && !inRun) { inRun = true; runK = k; runAt = at; }
         if ((hit || end) && inRun) {  // the run [runK, k): one gather, then its segments into the cache
+            u64 t0 = vf_clock();
+            tLook += t0 - tl;
             gather_range(job, false, runAt, at);
+            u64 t1 = vf_clock();
+            tGather += t1 - t0;
             for (u32 j = runK, a2 = runAt; j < k; j++) {
                 u32 c = seg_count(job, j, a2);
                 if (job->srcPa[j] != VC_NO_PA) vc_put(vc, job, job->srcPa[j], a2, c, key, job->made);  // as old as the stream
                 a2 += c;
             }
+            tl = vf_clock();
+            tPut += tl - t1;
             inRun = false;
         }
         if (end) break;
         at += cnt;
     }
+    tLook += vf_clock() - tl;
+    g_vcPhase[0] += tLook; g_vcPhase[1] += tGather; g_vcPhase[2] += tPut;
     if (at < job->count) gather_range(job, false, at, job->count);
 }
 
@@ -990,9 +1008,6 @@ static void job_origin(VJob* job);
 
 // Per-phase time of vfast_finish on calls the caller marks (g_vfPhaseTimed: the 3DS vertex worker, one job in 16):
 // [0] the deferred gather and colours, [1] positions and normals, [2] texture coordinates.
-u64 g_vfPhase[3];
-bool g_vfPhaseTimed;
-static inline u64 vf_clock(void) { return g_vfPhaseTimed && g_profClock ? g_profClock() : 0; }
 
 void vfast_finish(VJob* job, PVert* out) {
     u64 tp0 = vf_clock(), tp1, tp2;

@@ -876,16 +876,22 @@ static const char* run(const char* path) {
                                     jobs > 0 ? (double)(v[2] - lastV[2]) / jobs / 1024.0 : 0.0, waits / 10.0,
                                     waits > 0 ? (double)(v[4] - lastV[4]) / waits : 0.0);
                             memcpy(lastV, v, sizeof v);
-                            static u64 lastPh[4];
+                            static u64 lastPh[4], lastVc[3];
                             u64 ph[4] = { g_vfPhase[0], g_vfPhase[1], g_vfPhase[2], g_vwPhaseAll };
+                            u64 vcp[3] = { g_vcPhase[0], g_vcPhase[1], g_vcPhase[2] };
                             double all = (double)(ph[3] - lastPh[3]);
                             if (all > 0) {
                                 double a = (double)(ph[0] - lastPh[0]), b = (double)(ph[1] - lastPh[1]), c = (double)(ph[2] - lastPh[2]);
                                 fprintf(g_perf, "# vworker phases 10s: gather and colours %.1f%%, positions and normals %.1f%%, "
                                         "texture coordinates %.1f%%, rest (copy, cull, triangles) %.1f%% of the worker's time\n",
                                         100 * a / all, 100 * b / all, 100 * c / all, 100 * (all - a - b - c) / all);
+                                double h = (double)(vcp[0] - lastVc[0]), m = (double)(vcp[1] - lastVc[1]), i = (double)(vcp[2] - lastVc[2]);
+                                if (h + m + i > 0)
+                                    fprintf(g_perf, "# vworker cache phases 10s: hits (lookups, copies) %.1f%%, missed runs gathered %.1f%%, "
+                                            "inserts %.1f%% of the worker's time\n", 100 * h / all, 100 * m / all, 100 * i / all);
                             }
                             memcpy(lastPh, ph, sizeof ph);
+                            memcpy(lastVc, vcp, sizeof vcp);
                         }
                         for (int w = 0; w < 2; w++) {  // the display-list vertex caches (vfast.c): GX thread, vertex worker
                             static VCacheStats lastC[2];
@@ -895,13 +901,14 @@ static const char* run(const char* path) {
                                                    c->staleRing - lastC[w].staleRing);
                             fprintf(g_perf, "# dlcache 10s (%s): %.0f hits/s (%.0f vertices/s), %.0f misses/s, %.0f stale/s (page "
                                     "stamped), %.0f written over/s, %.1f%% of lookups hit; %.0f inserts/s, %.0f evictions/s, %.0f "
-                                    "uncacheable segments/s; cache on %u of the 10 s\n", w ? "worker" : "gx thread",
+                                    "uncacheable segments/s; %.1f pages checked per lookup; cache on %u of the 10 s\n", w ? "worker" : "gx thread",
                                     (double)(c->hits - lastC[w].hits) / 10.0, (double)(c->hitVerts - lastC[w].hitVerts) / 10.0,
                                     (double)(c->misses - lastC[w].misses) / 10.0, (double)(c->stale - lastC[w].stale) / 10.0,
                                     (double)(c->staleRing - lastC[w].staleRing) / 10.0,
                                     look > 0 ? 100.0 * (double)(c->hits - lastC[w].hits) / look : 0.0,
                                     (double)(c->inserts - lastC[w].inserts) / 10.0, (double)(c->evicted - lastC[w].evicted) / 10.0,
-                                    (double)(c->uncacheable - lastC[w].uncacheable) / 10.0, (unsigned)g_dlOnSecs);
+                                    (double)(c->uncacheable - lastC[w].uncacheable) / 10.0,
+                                    look > 0 ? (double)(c->pagesChecked - lastC[w].pagesChecked) / look : 0.0, (unsigned)g_dlOnSecs);
                             lastC[w] = *c;
                         }
                         g_dlOnSecs = 0;

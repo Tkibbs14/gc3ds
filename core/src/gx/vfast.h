@@ -50,7 +50,7 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
 #define VC_NO_PA 0xFFFFFFFFu
 typedef struct VCache VCache;
 // stale: a page it covers was stamped since; staleRing: the ring wrote over its data; evicted: a live entry replaced
-typedef struct { u64 hits, hitVerts, misses, stale, staleRing, inserts, uncacheable, evicted; } VCacheStats;
+typedef struct { u64 hits, hitVerts, misses, stale, staleRing, inserts, uncacheable, evicted, pagesChecked; } VCacheStats;
 VCache* vcache_create(u32 bytes, u32 entries);
 void vcache_reset(VCache* vc);
 const VCacheStats* vcache_stats(const VCache* vc);
@@ -60,6 +60,7 @@ extern bool g_vcacheOn;     // off: every draw gathers (A/B)
 extern bool g_vcacheCheck;  // PC checker: hits are gathered again and compared
 extern bool g_vcachePlant;  // the checker's self-test: page stamps ignored
 extern u64 g_vcacheCheckFails, g_vcacheChecked;
+extern u64 g_vcPhase[3];  // of g_vfPhase[0], the display-list cache: hits (lookups, copies), missed runs gathered, inserts
 extern u64 g_vfPhase[3];  // vfast_finish's time by phase on marked calls (vfast.c)
 extern bool g_vfPhaseTimed;
 u32 vfast_job_used(const VJob* job);  // bytes from the job's start to the end of what it uses, once prepared
