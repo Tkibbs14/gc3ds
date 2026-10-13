@@ -135,6 +135,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Hardware facts worth knowing (measured on a New 2DS XL; FINDINGS.md and GPU_GUIDANCE.md have the rest)
 
+- L1 instruction and data caches are 16 KB each (4-way, 32-byte lines). Linked JIT blocks cost 13 ns while the hot
+  code fits in 16 KB and 53-62 ns from 32 KB: **hot code size is a first-class cost**. Data latency: L1 4 cycles, L2
+  ~29, FCRAM 126-170.
 - Cores run at 804 MHz; the app gets cores 0, 2, 3 and 80% of core 1. User mode cannot reach the L2 prefetcher, AXI
   WRAM or large pages; WFE does not sleep in user mode.
 - A second core reading through emulated RAM evicts core 0's working set from the shared 2 MB L2 (core 0 -6%).
