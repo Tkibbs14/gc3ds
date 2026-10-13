@@ -27,7 +27,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C2. A second vertex worker on core 1
 
-- **Status:** next: built 2026-10-13 (722caa0, `--vw2 on`, `--ab vw2`), first measurement job 125.
+- **Status:** rejected 2026-10-13 (jobs 125, 127); built (722caa0, `--vw2 on`, `--ab vw2`), off by default.
 - **What:** core 1 (the app gets 80%, ~0.75 of core 0's speed) takes indexed and fixed-place jobs from the same queue;
   jobs finish out of order and g_vwTail moves over finished jobs in order.
 - **For:** the worker on core 3 is the GX side's busiest part (~60% busy, the GX thread waiting for ring space ~23%).
@@ -39,7 +39,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   11.36% (+-0.05: real). Net zero or worse. Suspect: the helper spin-polled the queue counters the GX thread writes
   (cache lines moving between cores on every read); job 126 sleeps instead. If core 0 still slows, it is memory
   contention, and the helper would only pay when the GX side is the cap (switch it on by gxwait).
-- **Re-evaluate when:** job 126's result is in.
+- **Job 127 (helper sleeps when idle; queue counters padded, C7):** the same: cutscene 20.29% -> 19.87%, core 0's
+  own speed 22.66% -> 21.24% (-6%), the core-0-bound section 11.75% -> 11.19%. **Rejected (2026-10-13):** not the
+  polling; the helper's gathers through guest RAM evict core 0's working set from the shared 2 MB L2. The same tax is
+  likely paid already for the core-3 worker's gathers: less vertex work helps core 0 too (raises C9, C6).
+- **Re-evaluate when:** the gather no longer streams through guest RAM (C1, C6), or core 0 stops being L2-sensitive.
 
 ## C3. Display-list vertex cache on the CPU
 
