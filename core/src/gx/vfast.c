@@ -563,7 +563,8 @@ u64 g_vcacheCheckFails, g_vcacheChecked;
 #define VC_RANGES 8
 typedef struct {
     u32 pa, count, vsize, made, key[2];
-    u64 at;  // the data's position in the ring's running byte count
+    u64 at;   // the data's position in the ring's running byte count
+    u32 off;  // and in the ring (no 64-bit modulo on the 2DS: it is a library call)
     u8 nr;
     u16 r0[VC_RANGES], r1[VC_RANGES];
 } VCEnt;
@@ -573,6 +574,7 @@ struct VCache {
     u8* ring;
     u32 size;
     u64 total;
+    u32 pos;  // total's place in the ring
     VCacheStats st;
 };
 
@@ -710,11 +712,12 @@ static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const
         ok = vc_range(&e, ix[k].base + lo * ix[k].stride, ix[k].base + hi * ix[k].stride + 63);
     }
     if (!ok) { vc->st.uncacheable++; return; }
-    u32 pos = (u32)(vc->total % vc->size);
-    if (pos + len > vc->size) { vc->total += vc->size - pos; pos = 0; }
-    vc_pack(vc->ring + pos, job, job->in + from, cnt);
+    if (vc->pos + len > vc->size) { vc->total += vc->size - vc->pos; vc->pos = 0; }
+    vc_pack(vc->ring + vc->pos, job, job->in + from, cnt);
     e.at = vc->total;
+    e.off = vc->pos;
     vc->total += len;
+    vc->pos += len;
     // The slot of the pair that holds the same segment, else a free or written-over one, else the older one.
     VCEnt* s = vc_pair(vc, pa, cnt, key);
     VCEnt* d = vc_match(&s[1], job, pa, cnt, key) ? &s[1] : vc_match(&s[0], job, pa, cnt, key) ? &s[0]
@@ -735,42 +738,69 @@ static bool vc_same(const VJob* job, const VIn* a, const VIn* b, u32 n) {
 }
 
 static void gather_range(VJob* job, bool indices, u32 from, u32 to);
+// A segment's vertex count, clipped to the job.
+static u32 seg_count(const VJob* job, u32 k, u32 at) {
+    u32 cnt = job->srcSeg[k] & 0xFFFF;
+    return at + cnt > job->count ? job->count - at : cnt;
+}
+
+// Segments that missed are gathered in runs, not one by one: TP's segments average ~5 vertices, and per-segment calls
+// lost the prefetch of indexed attributes 4 vertices ahead (2DS job 112: the cache hit 60% and was still slower).
 static void gather_cached(VJob* job, bool indices) {
     VCache* vc = job->vc;
     if (!vc || !g_vcacheOn || !job->srcN) { gather_range(job, indices, 0, job->count); return; }
     if (indices) gather_indices(job);  // matrix indices: from the stream and this draw's registers, never cached
     u32 key[2];
     vc_key(job, key);
-    u32 at = 0;
-    for (u32 k = 0; k < job->srcN && at < job->count; k++) {
-        u32 cnt = job->srcSeg[k] & 0xFFFF, pa = job->srcPa[k];
-        if (at + cnt > job->count) cnt = job->count - at;
-        VCEnt* s = pa == VC_NO_PA ? NULL : vc_pair(vc, pa, cnt, key);
-        VCEnt* e = !s ? NULL : vc_match(&s[0], job, pa, cnt, key) ? &s[0] : vc_match(&s[1], job, pa, cnt, key) ? &s[1] : NULL;
-        bool ringOk = e && vc_ring_ok(vc, e), match = e != NULL;
-        if (ringOk && vc_fresh(e)) {
-            vc_unpack(job->in + at, job, vc->ring + (u32)(e->at % vc->size), cnt);
-            vc->st.hits++;
-            vc->st.hitVerts += cnt;
-            if (g_vcacheCheck) {  // the checker: gather again and compare
-                static VIn fresh[1024], keep[1024];  // (PC only; static: the 3DS worker's stack is 32 KB)
-                if (cnt <= 1024) {
-                    memcpy(keep, job->in + at, cnt * sizeof(VIn));
-                    gather_range(job, false, at, at + cnt);
-                    memcpy(fresh, job->in + at, cnt * sizeof(VIn));
-                    memcpy(job->in + at, keep, cnt * sizeof(VIn));
-                    g_vcacheChecked++;
-                    if (!vc_same(job, fresh, keep, cnt)) g_vcacheCheckFails++;
+    u32 at = 0, runK = 0, runAt = 0;
+    bool inRun = false;
+    for (u32 k = 0; k <= job->srcN; k++) {
+        bool end = k == job->srcN || at >= job->count;
+        bool hit = false;
+        u32 cnt = 0, pa = VC_NO_PA;
+        if (!end) {
+            cnt = seg_count(job, k, at);
+            pa = job->srcPa[k];
+            VCEnt* s = pa == VC_NO_PA ? NULL : vc_pair(vc, pa, cnt, key);
+            VCEnt* e = !s ? NULL : vc_match(&s[0], job, pa, cnt, key) ? &s[0] : vc_match(&s[1], job, pa, cnt, key) ? &s[1] : NULL;
+            bool ringOk = e && vc_ring_ok(vc, e);
+            hit = ringOk && vc_fresh(e);
+            if (hit) {
+                vc_unpack(job->in + at, job, vc->ring + e->off, cnt);
+                vc->st.hits++;
+                vc->st.hitVerts += cnt;
+                if (g_vcacheCheck) {  // the checker: gather again and compare
+                    static VIn fresh[1024], keep[1024];  // (PC only; static: the 3DS worker's stack is 32 KB)
+                    if (cnt <= 1024) {
+                        memcpy(keep, job->in + at, cnt * sizeof(VIn));
+                        gather_range(job, false, at, at + cnt);
+                        memcpy(fresh, job->in + at, cnt * sizeof(VIn));
+                        memcpy(job->in + at, keep, cnt * sizeof(VIn));
+                        g_vcacheChecked++;
+                        if (!vc_same(job, fresh, keep, cnt)) g_vcacheCheckFails++;
+                    }
                 }
+            } else if (pa == VC_NO_PA) {
+                vc->st.uncacheable++;
+            } else if (!e) {
+                vc->st.misses++;
+            } else if (!ringOk) {
+                vc->st.staleRing++;
+            } else {
+                vc->st.stale++;
             }
-        } else if (pa == VC_NO_PA) {
-            vc->st.uncacheable++;
-            gather_range(job, false, at, at + cnt);
-        } else {
-            if (!match) vc->st.misses++; else if (!ringOk) vc->st.staleRing++; else vc->st.stale++;
-            gather_range(job, false, at, at + cnt);
-            vc_put(vc, job, pa, at, cnt, key, job->made);  // as old as the job's stream: a deferred job copied it earlier
         }
+        if (!hit && !end && !inRun) { inRun = true; runK = k; runAt = at; }
+        if ((hit || end) && inRun) {  // the run [runK, k): one gather, then its segments into the cache
+            gather_range(job, false, runAt, at);
+            for (u32 j = runK, a2 = runAt; j < k; j++) {
+                u32 c = seg_count(job, j, a2);
+                if (job->srcPa[j] != VC_NO_PA) vc_put(vc, job, job->srcPa[j], a2, c, key, job->made);  // as old as the stream
+                a2 += c;
+            }
+            inRun = false;
+        }
+        if (end) break;
         at += cnt;
     }
     if (at < job->count) gather_range(job, false, at, job->count);

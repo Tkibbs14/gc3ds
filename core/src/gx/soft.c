@@ -1009,7 +1009,7 @@ static void vcache_report(void) {
 }
 static void vcache_check_draw(System* s, GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize) {
     if (!g_vcPc) {
-        g_vcPc = vcache_create(6u << 20, 16384);  // as the 2DS vertex worker's (pica.c vw_start)
+        g_vcPc = vcache_create(6u << 20, 32768);  // as the 2DS vertex worker's (pica.c vw_start)
         if (!g_vcPc) return;
         g_vcacheCheck = true;
         g_vcachePlant = getenv("VCACHE_PLANT") != NULL;

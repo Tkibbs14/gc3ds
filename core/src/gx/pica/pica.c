@@ -1215,7 +1215,7 @@ static bool vw_start(void) {
     if (g_vwThread) return true;
     if (!g_vcGx) g_vcGx = vcache_create(1536u << 10, 4096);  // ~1.5 MB of records + 0.3 MB of slots
     // The worker gathers ~40k segments/s of TP (job 111): ~6 MB of compact records hold several frames.
-    if (!g_vcWorker) g_vcWorker = vcache_create(6u << 20, 16384);
+    if (!g_vcWorker) g_vcWorker = vcache_create(6u << 20, 32768);  // job 112: 16,384 slots evicted 16k live entries/s
     g_vwMem = malloc(VW_MEM);
     if (!g_vwMem) g_vwMem = linearAlloc(VW_MEM);
     if (!g_vwMem) return false;
