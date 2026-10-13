@@ -62,6 +62,15 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
 - **Dolphin's ARMv7 JIT** depended on fastmem and was removed in June 2015 after its load/store paths broke (SOURCED:
   Dolphin commits 59e2225, b038b61): no ARM32 fastmem design to copy, and none works on the 3DS kernel for us.
 
+- **Already measured on the 2DS (GPU_GUIDANCE.md, gcbench 4/4b/5; the research passes did not know them):** shader
+  length is free (+128 MAD: no change) (rule 3); a uniform change between draws stalls the GPU ~2 us (rule 7); several
+  draws share one draw window at 0.34 us CPU each (rule 20); WFE does not sleep in user mode (rule 17); the GPU does not
+  slow CPU memory (rule 25); a 4th vertex attribute costs ~45% of the vertex rate (rule 2); integer attributes are as
+  fast as float (rule 4). The published sources call most of these unknown: our own measurements outrank them.
+- **Draw-call cost is not a lever now:** pica.c still draws through citro3d (3.25 us CPU per call against 0.34 in one
+  draw window), but batching and merging leave ~1,100 GPU draw calls/s in TP's heavy rows (gpu_calls_s, jobs 93-98):
+  ~0.3% of core 2.
+
 ## Ruled out (with the reason)
 
 - **DSP as a coprocessor:** loads only RSA-signed firmware (SOURCED: 3dbrew DSP Services, snippet).
@@ -80,11 +89,6 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
 | D1 | Share of TP's draws inside display lists; how often (list, arrays) repeat | lever 1 | counters in fifo.c/pica.c, live job |
 | D2 | **Answered (qemu model, 40 TP fields):** float loads/stores 27.6%, float/paired-single maths 15.3% (43% float), integer loads/stores 29.1%, integer other 17.0%, branches 10.3% of modelled core-0 cycles | levers 2-3: single precision also removes the double<->single conversions in every float load and store | tools/arm11_sched.py --cycles over JIT_SCHEDDUMP, classified by opcode |
 | D3 | Share of core 0 in J3D matrix functions | lever 5 | `--profile on` + hot_funcs.py with TP symbols |
-| G1 | Vertex-shader cycles per instruction (unpublished: 3dbrew "not stated") | GPU texgen / dequantize in the shader | MEASURE_PLAN G1 |
-| G3 | Uniform upload cost per draw (unpublished) | palette size | MEASURE_PLAN G3 |
-| G5 | Several draws in one draw window (unpublished; may hang) | per-draw GPU overhead | MEASURE_PLAN G5 behind the watchdog |
-| C1 | WFE/SEV from user mode | sleeping instead of spinning between cores | MEASURE_PLAN C1 |
-| M2 | Memory bandwidth while the GPU renders | where hot buffers live | MEASURE_PLAN M2 |
 | X1 | The Luma exceptions in jobs 99 and 102 | stability | arm9 dumps now reported (e19200a) |
 
 ## Sources the research could not read (re-try before relying on them)
