@@ -391,7 +391,7 @@ cycles per block): the level-1 dispatcher (C hash lookup, 10-register save/resto
 
 ## NEXT SESSION: move everything we can onto the GPU (owner's direction, 2026-10-11)
 
-The PICA200 draws for ~20 ms of each ~190 ms frame; cores 0, 2 and 3 are the limit. James: "try absolutely
+The PICA200 draws for ~20 ms of each ~190 ms frame; cores 0, 2 and 3 are the limit. The owner: "try absolutely
 everything with the GPU". Take these in order, each as its own commit, each measured on the 2DS (one card run per
 step) and checked against the reference (`core/tools/vfast_check.sh`, NeHe and TP in Azahar on the software
 renderer only):

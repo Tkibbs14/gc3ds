@@ -33,3 +33,6 @@ core/host3ds/relay.txt
 core/build-arm*/
 
 core/tools/__pycache__/
+
+# Reference relay server state (tools/relay-server)
+relay-data/

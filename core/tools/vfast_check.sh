@@ -15,6 +15,6 @@ mkdir -p "$out"
     echo "$res" | grep -E '^VFAST_GPU'
 done
 if [ -n "${2:-}" ]; then
-    iso="$(ls /mnt/c/Users/tyler/TP3DS/game/*.iso | head -1)"
+    iso="${GC3DS_ISO:?set GC3DS_ISO to your own disc image}"
     VFAST_CHECK=1 timeout 3600 core/build/gcemu "$iso" --frames "$2" --press A@200-206,A@400-406 --out "$out/tp" 2>&1 | grep -E '^VFAST|^  vs double' | tail -45
 fi

@@ -3,7 +3,8 @@
 param([Parameter(Mandatory = $true)][string]$Prog, [int]$Seconds = 25, [int]$GpuPos = 1)
 $root = Split-Path (Split-Path $PSScriptRoot)
 $azahar = Join-Path (Split-Path $root) "tools\azahar\azahar-windows-msvc-2126.2\azahar.exe"
-wsl -d Debian -- bash -c "cd /mnt/c/Users/tyler/TP3DS/emu && GPUPOS=$GpuPos AUTORUN=$Prog bash core/host3ds/build.sh 2>&1 | grep -E 'error|warning: [^/]' ; true"
+$wslRoot = (wsl -d Debian -- wslpath -a ($root -replace '\\', '/')).Trim()
+wsl -d Debian -- bash -c "cd $wslRoot && GPUPOS=$GpuPos AUTORUN=$Prog bash core/host3ds/build.sh 2>&1 | grep -E 'error|warning: [^/]' ; true"
 & "$PSScriptRoot\azahar_shot.ps1" -Azahar $azahar -App "$PSScriptRoot\gc3ds.3dsx" -Seconds $Seconds -Out "$root\core\out\az_${Prog}_gpupos$GpuPos.png"
 # Azahar logs faults that real hardware would take (reads near address 0 return 0 there instead of aborting), so
 # a clean screenshot is not enough: list them.

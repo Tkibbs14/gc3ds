@@ -1,6 +1,6 @@
 # Guidance for the GPU work, from measurements on the 2DS (2026-10-11)
 
-These rules come from gcbench 4 and 4b, run on James's New 2DS XL. The raw tables are in MEASURE_PLAN.md
+These rules come from gcbench 4 and 4b, run on the owner's New 2DS XL. The raw tables are in MEASURE_PLAN.md
 ("Results"); the reasoning behind them is in PICA200.md.
 
 Each rule is a measured result, not a guess. Where a rule changes the plan in HANDOFF.md ("NEXT SESSION: move

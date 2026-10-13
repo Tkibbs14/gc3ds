@@ -1,6 +1,6 @@
 # GameCube and Wii: what games need, and what the 3DS still has to prove
 
-## Owner decisions pending (James decides; no session settles these on its own)
+## Owner decisions pending (the owner decides; no session settles these on its own)
 
 1. **fres / frsqrte estimate tables.**
    - Real hardware returns table-based estimates. Twilight Princess, Mario Sunshine, Mario Kart Double Dash, Mario

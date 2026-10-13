@@ -1,68 +1,108 @@
-# Remote runs: testing on the 2DS from anywhere
+# Remote runs: testing on the console from anywhere
 
-The 2DS and the PC never need to be on the same network. Builds, jobs and results go through a small relay on the
-owner's server (nakama-backend, `src/routes/devRelay.js` on `main`, `/api/devrelay`):
+The console and the PC never need to be on the same network. Builds, jobs, logs, live commands and screenshots go
+through a small HTTP relay that you run yourself (bring your own server):
 
 ```
-PC  core/tools/relay.sh ──HTTPS──►  relay (builds, job queue, logs)  ◄──HTTPS──  2DS  gc3ds "Remote runs" (host3ds/relay.c)
+PC  core/tools/relay.sh ──HTTP(S)──►  relay (builds, job queue, logs, frames)  ◄──HTTP(S)──  console: gc3ds "Remote runs" (core/host3ds/relay.c)
 ```
+
+The console polls the relay, downloads a build it does not have, installs it over its own `.3dsx`, restarts into it by
+itself, runs the job and streams its `perf.csv` back. A full measurement loop (edit, build, queue, read the A/B result)
+needs no hands on the console.
+
+## Running a relay
+
+A reference server with no dependencies is in `tools/relay-server/server.js` (Node 18+; state is a directory):
+
+```bash
+export RELAY_TOKEN=$(openssl rand -hex 32)           # keep it: the PC and the console use the same token
+node tools/relay-server/server.js --port 8787 --data ./relay-data
+```
+
+Put it behind HTTPS (for example Caddy as a reverse proxy) if it is reachable from the internet: the token travels in a
+header. The console checks the server's certificate against `core/host3ds/certs/relay_ca.pem`, which holds Let's
+Encrypt's roots (ISRG Root X1 and X2, what Caddy uses by default); add your CA's root there for another one. Plain
+`http://` works too on a network you trust. Any server that implements the protocol below works the same.
+
+## Client settings
+
+`core/host3ds/relay.txt` on the PC and `sdmc:/gc3ds/relay.txt` on the console (both outside git):
+
+```
+url https://your-host
+token <RELAY_TOKEN>
+auto 1          # console only: enter Remote runs 3 s after launch (B for the menu; menu key L enters it by hand)
+```
+
+The routes below are appended to `url`.
 
 ## Everyday use (PC)
 
 ```bash
-bash core/host3ds/build.sh                         # build gc3ds.3dsx
-bash core/tools/relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces
+bash core/host3ds/build.sh                         # build core/host3ds/gc3ds.3dsx
+bash core/tools/relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab fcache
 bash core/tools/relay.sh queue <options>           # queue without following (prints the job id)
 bash core/tools/relay.sh log <job>                 # follow a job into core/out/relay_<job>.csv
 bash core/tools/relay.sh jobs                      # the last 20 jobs and their status
 bash core/tools/relay.sh cancel <job>              # a job still queued
+bash core/tools/relay.sh cmd <job> "set opt 1"     # a live command for the running job (see host3ds/main.c apply_cmd)
+bash core/tools/relay.sh frames <job>              # the job's top-screen frames (BMP, PNG when ImageMagick is there)
 ```
 
 `run` / `queue` upload the current `gc3ds.3dsx` if the relay does not have it (builds are named by the first 16 hex
-digits of their sha256) and tie the job to it.
+digits of their sha256) and tie the job to it; `queue` refuses to queue when the upload failed.
 
-## On the 2DS
+## On the console
 
-- `sdmc:/gc3ds/relay.txt` holds `url ...`, `token ...` and `auto 1`; gc3ds then enters Remote runs 3 s after
-  launch (B for the menu; menu key L enters it by hand). It polls every 10 s and runs jobs one after another.
-- A job for a build the 2DS does not have: it downloads the build over its own `.3dsx` (RomFS is closed first, since it
-  keeps that file open), keeps the job in `sdmc:/gc3ds/relay_pending.txt` and asks for one restart (START, then open
-  gc3ds again); the job runs when Remote runs starts.
-- The 2DS needs internet: phone or laptop hotspot, or home Wi-Fi (many work networks isolate devices or need a
-  sign-in page the 3DS cannot use). Keep the lid open: sleep drops Wi-Fi.
-- **Never queue jobs for a build whose self-update code is broken:** the 2DS claims each one, fails the download and
-  marks it failed. If the card's build cannot install builds, copy the new `gc3ds.3dsx` to `sdmc:/3ds/` by card once.
+- It polls every 10 s and runs jobs one after another.
+- A job for a build the console does not have: it downloads it (gzip, with progress, stall detection and retries) over
+  its own `.3dsx`, keeps the job in `sdmc:/gc3ds/relay_pending.txt`, and restarts into the new build through Luma3DS's
+  homebrew loader (the `hb:ldr` port, opened with `svcConnectToPort` as the Homebrew Launcher does). The job log
+  records how long the restart took. If the loader does not answer, gc3ds asks for a restart by hand.
+- A restarted job numbers its log chunks from 100000, so they never replace the chunks the first instance sent.
+- The console needs internet (phone hotspot or home Wi-Fi; many work networks isolate devices). Keep the lid open:
+  sleep drops Wi-Fi, and a job interrupted that way stays "running" on the relay (cancel it).
 
 ## Job options (also 3dslink arguments: `3dslink -a <ip> gc3ds.3dsx -- <options>`)
 
 | Option | Meaning |
 |---|---|
 | `--game SUBSTR` | the first program whose path contains SUBSTR (case-insensitive) |
-| `--state PATH` | load a save state right after boot |
-| `--save-state FIELD:PATH` | save the machine when the VI reaches FIELD |
+| `--state PATH` / `--save-state FIELD:PATH` | load a save state after boot / save one when the VI reaches FIELD |
 | `--seconds N` | end after N real seconds (relay jobs default to 600) |
-| `--ab traces\|hle\|none` | which setting alternates every 20 s (`traces` / `hle` columns in perf.csv) |
-| `--traces on\|off`, `--hle on\|off` | start values (both off by default; `--ab none` is the default too) |
-| `--trace-follow on\|off` | traces follow unconditional `b` |
-| `--trace-side on\|off\|MASK` | side exits: 1 `bc` on a CR bit, 2 `bc` with CTR, 4 conditional `blr`/`bctr`, 8 fused flags |
-| `--trace-len N` | block length limit |
-| `--link on\|off` | block linking |
-| `--fuzz CASES [SEED]` | the JIT differential fuzzer (tests/jit/jit_fuzz.c) on the 2DS's own CPU, at the next start |
+| `--ab NAME` | alternate one setting every 20 s within the run: `opt`, `kstore`, `fcache`, `dlcache`, `vw2`, `fskip`, `merge`, `traces`, `sched`, `pld`, `splitopen`, `vtrim`, `faultmem`, `hle` (its column in perf.csv says which half each row is in) |
+| `--opt`, `--kstore`, `--fcache`, `--dlcache`, `--vw2`, `--fskip`, `--merge`, `--traces`, `--sched`, `--faultmem`, `--hle` `on\|off` | start values (see `host3ds/main.c` `RunOpts` for the defaults) |
+| `--trace-follow on\|off`, `--trace-side on\|off\|MASK`, `--trace-len N`, `--link on\|off` | JIT block shape |
+| `--profile on` | hot guest code sampling (`# hot guest code` lines) |
+| `--fuzz CASES [SEED]` | the JIT differential fuzzer (tests/jit/jit_fuzz.c) on the console's own CPU |
+
+Read results with `python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by <column>`: mean and standard error of
+speed and of core 0's own speed (`speed / (1 - gxwait)`) over the heavy rows, split by the A/B column. Only compare
+within one run: the same build varies ~5% between runs.
 
 ## Save states
 
-`System` is 0x6b78 bytes and `GXCore` 0x4a68 in both the qemu ARM build and the 3DS build (same ARM EABI), so a state
-written under qemu (`gcemu ... --jit --save-state 850:<path>`) loads on the 2DS. A build that changes either size refuses
-old states; make a new one (qemu, or a 2DS job with `--save-state`). `tp850.state` is TP just before the Link/Epona
-cutscene.
+`System` and `GXCore` have the same layout in the qemu ARM build and the 3DS build (same ARM EABI), so a state written
+under qemu (`gcemu <disc> --jit --save-state 850:<path>`) loads on the console. A build that changes either size
+refuses old states.
 
-## Access and recovery
+## Protocol
 
-- `core/host3ds/relay.txt` (PC) and `sdmc:/gc3ds/relay.txt` (card) hold the token; both are outside git. A copy is kept
-  at `C:\Users\tyler\Nakama-Backups\gc3ds-relay.txt`. The relay stores only the token's sha256 (`devrelay_tokens`).
-- A new token: generate 32 random bytes as hex, insert its sha256 into `devrelay_tokens`, write the new relay.txt to the
-  PC and the card.
-- Relay side: tables `devrelay_tokens`, `devrelay_builds`, `devrelay_jobs`, `devrelay_log` (nakama-backend
-  `sql/2026-10-12_devrelay.sql`), builds in the private storage bucket `devrelay`. If the route ever disappears from the
-  backend's `main` (for example a branch pushed over it), restore `src/routes/devRelay.js` and its one `app.use` line
-  in `src/index.js` from commit 527c5b4.
+Every request carries the header `x-relay-token: <token>` (401 otherwise). Replies to the console are plain
+`key value` lines, so its C client needs no JSON parser.
+
+| Method and path | Who | Request | Reply |
+|---|---|---|---|
+| `PUT /build?note=TEXT` | PC | the `.3dsx` | `build <id>` and `bytes <n>`; id = first 16 hex digits of its sha256 |
+| `GET /build/<id>` | console | (`Accept-Encoding: gzip` honoured) | the `.3dsx`; header `X-Raw-Length` |
+| `POST /jobs` | PC | JSON `{"args": "...", "build": "<id>"}` | `job <n>` |
+| `GET /jobs` | PC | | the last 20 jobs: `id status build created args`, tab-separated, newest first |
+| `POST /jobs/<n>/cancel` | PC | | `ok` (only a queued job changes) |
+| `GET /next` | console | | `job <n>`, `build <id or ->`, `args <...>`; 204 when nothing is queued (claims the oldest queued job) |
+| `POST /jobs/<n>/cmd` | PC | one line of text | `queued <count>` |
+| `POST /jobs/<n>/log?seq=<k>` | console | a chunk of the run's log | `ok`, then `cmd <text>` for each pending command; a chunk with the same seq replaces the old one |
+| `GET /jobs/<n>/log?after=<k>` | PC | | chunks with seq > k, concatenated; headers `X-Relay-Last` (last seq sent) and `X-Relay-Status` |
+| `POST /jobs/<n>/frame?n=<k>` | console | a BMP | `ok` |
+| `GET /jobs/<n>/frames`, `GET /jobs/<n>/frame/<kkkk>.bmp` | PC | | frame names, one per line; one frame |
+| `POST /jobs/<n>/done` | console | `done`, `failed` or `stopped` | `ok` |

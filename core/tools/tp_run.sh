@@ -4,6 +4,6 @@
 #   bash core/tools/tp_run.sh --load-state /root/tp_900.state --frames 960
 set -uo pipefail
 cd "$(dirname "$0")/.."
-iso="$(ls /mnt/c/Users/tyler/TP3DS/game/*.iso | head -1)"
+iso="${GC3DS_ISO:?set GC3DS_ISO to your own disc image}"
 mkdir -p /tmp/tprun
 timeout 3600 build/gcemu "$iso" --out /tmp/tprun "$@" 2>&1 | grep -vE '^\[' | tail -60

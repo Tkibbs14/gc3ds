@@ -1,4 +1,4 @@
-// Dev relay client. The 2DS can sit on any network: it polls nakama-backend's /api/devrelay for jobs queued from the
+// Dev relay client. The 2DS can sit on any network: it polls a relay server (docs/REMOTE_RUNS.md) for jobs queued from the
 // PC (core/tools/relay.sh), downloads a build it does not have, runs the job and streams perf.csv lines back, so runs
 // need no card swap and no PC on the same network. HTTPS through libcurl + mbedTLS (portlibs), the server's roots in
 // romfs:/relay_ca.pem. sdmc:/gc3ds/relay.txt holds "url <base>", "token <secret>" and optionally "auto 1"; the token

@@ -60,7 +60,7 @@ The guidance drawn from both runs: GPU_GUIDANCE.md.
 
 
 Research (PICA200.md, AUDIO.md) answers what the hardware *can* do. This plan covers what nobody has published:
-each test settles one open question on James's New 2DS XL.
+each test settles one open question on the owner's New 2DS XL.
 
 **Home:** the tests go into `bench/` (gcbench; build with `build.sh`, check with `test/run_qemu.sh`, results in
 `sdmc:/gcbench/results.txt`), or into the hwprobe section of gc3ds where they need emulator state.

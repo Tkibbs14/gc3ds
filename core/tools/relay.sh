@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remote 2DS runs through the dev relay (host3ds/relay.c on the 2DS, nakama-backend /api/devrelay in between), so the
+# Remote 2DS runs through the dev relay (host3ds/relay.c on the 2DS, a relay server in between: docs/REMOTE_RUNS.md), so the
 # 2DS and this PC can be on different networks. The 2DS must be in gc3ds "Remote runs" (menu: L, or "auto 1").
 #   bash core/tools/relay.sh run [gc3ds options]   upload this build if new, queue a job for it, follow its log
 #        e.g. relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces

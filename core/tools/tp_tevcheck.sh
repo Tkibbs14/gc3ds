@@ -4,7 +4,7 @@
 # whose approximation flags are within it (unset: all draws).
 #   [MASK=0] bash core/tools/tp_tevcheck.sh N
 cd "$(dirname "$0")/../.."
-iso="$(ls /mnt/c/Users/tyler/TP3DS/game/*.iso | head -1)"
+iso="${GC3DS_ISO:?set GC3DS_ISO to your own disc image}"
 n="$1"
 mkdir -p core/out/tp
 if [ -n "${MASK:-}" ]; then export PICA_TEV_FLAGS="$MASK"; fi

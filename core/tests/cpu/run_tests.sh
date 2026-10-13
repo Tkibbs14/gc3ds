@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Single entry point for the Gekko interpreter tests. Run inside WSL Debian:
-#   bash /mnt/c/Users/tyler/TP3DS/emu/core/tests/cpu/run_tests.sh
+#   bash core/tests/cpu/run_tests.sh   (from the repository root)
 # Environment: FUZZ_BATCHES (default 200), FUZZ_CASES (cases per batch, default 64), FUZZ_SEED (default 1),
 #              NO_BENCH=1 to skip the speed measurement.
 # Steps: warning-free builds (gcc, clang, devkitARM) -> directed tests -> differential fuzzing against qemu-ppc ->

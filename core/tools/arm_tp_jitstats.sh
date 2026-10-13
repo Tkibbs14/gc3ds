@@ -7,7 +7,7 @@
 #   bash core/tools/arm_tp_jitstats.sh 760 --load-state /root/tp_arm_700.state
 set -uo pipefail
 cd "$(dirname "$0")/.."
-iso="$(ls /mnt/c/Users/tyler/TP3DS/game/*.iso | head -1)"
+iso="${GC3DS_ISO:?set GC3DS_ISO to your own disc image}"
 out=/root/jitdyn
 mkdir -p "$out"
 frames="$1"; shift

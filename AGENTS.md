@@ -1,0 +1,143 @@
+# AGENTS.md: working on gc3ds
+
+For people and coding agents. Read this whole file before changing anything; then read the end of
+`docs/HANDOFF.md` (the newest state) and `docs/research/REDESIGN_CANDIDATES.md` (what has been tried).
+
+gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
+PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
+reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
+test. Today it runs its heavy scenes at ~20% of full speed.
+
+## Rules
+
+1. **No game data, ever.** No disc images, save states of commercial games, BIOS, firmware or extracted assets in the
+   repository, in issues or in pull requests. Scripts take a disc image from `GC3DS_ISO`. Test programs are built from
+   libogc's open-source examples (`gc-tests/`).
+2. **Exactness first.** The interpreter (`core/src/cpu/gekko*.c`) is the reference. A JIT or graphics change that
+   changes results is a bug, not a trade-off. Known, documented differences are limited to the host float model
+   (`jit.c`, the comment above `ld_fpr`: flush-to-zero denormals, default NaN, no FPSCR exception bits); do not add new
+   ones.
+3. **Measure, do not guess.** Every performance change is judged by an A/B *within one run* on real hardware
+   (`--ab NAME`, see "Measuring"). Runs of the same build differ by ~5%, so comparisons across runs are hints only.
+   Report the mean and standard error, and split long runs at the scene change (`real_s` 300 for the tp850 state).
+4. **Keep the evidence.** Every idea with redesign potential goes into `docs/research/REDESIGN_CANDIDATES.md` with its
+   evidence, cost, status (parked / next / built / rejected) and a "re-evaluate when" trigger. Never delete an entry;
+   update its status. A rejected idea keeps the measurement that rejected it, so nobody re-runs it blind.
+5. **Off by default until measured.** New optimizations come behind a switch (`jit_set_opt` bits, `--name on|off`,
+   `--ab name`), off by default, and become default only after a hardware A/B shows a gain and the checks pass.
+6. **Small, reviewable changes.** One idea per pull request, with its checks and its measurement in the description.
+
+## Repository map
+
+| Path | What |
+|---|---|
+| `core/src/cpu/` | Gekko interpreter (`gekko_int.c` integer, `gekko_fpu.c` float and paired singles, `gekko_softfp.c` exact soft float, `gekko_mem.c` MMU/BATs), `gekko_regs.c` (registers each instruction reads and writes, fuzzed), `hle_tp.c` (stand-ins, off by default) |
+| `core/src/jit/jit.c` | The JIT: ARMv6K code generation, register cache (`Rc`, r4-r8), float lanes (`OPT_FCACHE`, s16-s31), check hoisting (`OPT_HOIST`), known-single stores (`OPT_KSTORE`), shared memory and float stubs, block linking and traces, cold code, exits |
+| `core/src/jit/arm_emit.h` | ARM and VFPv2 instruction encoders |
+| `core/src/sys/`, `core/src/hw/` | System bus, interrupts, VI, DI (disc), DSP/ARAM (`dsp_hle.c`), EXI, SI |
+| `core/src/gx/fifo.c` | GX command FIFO and display lists; page stamps (`gx.h` `MemStamps`) for cache invalidation |
+| `core/src/gx/vfast.c` | The fast vertex path: gather (`gather_range`), lighting, texgen, split into `vfast_prepare` (GX thread) and `vfast_finish` (vertex worker); the display-list vertex cache (off by default) |
+| `core/src/gx/pica/pica.c` | PICA200 backend: batching, draw merging, palette-based GPU transform, the vertex worker's job ring (`vw_*`), second worker (`--vw2`, rejected), frame skip (`--fskip`, experiment) |
+| `core/src/gx/tev_pica.c` | GameCube TEV to PICA combiners (with a linear path for out-of-range programs such as THP's YUV) |
+| `core/src/gx/soft.c` | Software renderer (PC reference) and the PC-side checkers (`VFAST_CHECK`, `VCACHE_CHECK`, `MERGE_CHECK`) |
+| `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
+| `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
+| `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `arm11_sched.py` (ARM11 cycle model), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh` |
+| `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
+| `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
+| `docs/` | Designs, findings and the running log (see README) |
+
+Threads on the 3DS: core 0 runs the emulated CPU (JIT); core 1 (80% for the app) the log writer, samplers and relay
+client; core 2 the GX thread (FIFO, `vfast_prepare`, PICA command lists); core 3 the vertex worker (`vfast_finish`,
+culling, triangle assembly).
+
+## Toolchain
+
+Linux or WSL (Debian). devkitPro at `/opt/devkitpro` (devkitARM, libctru, citro3d, 3ds portlibs: curl, mbedtls, zlib),
+devkitPPC for `gc-tests/`, a host gcc, `arm-linux-gnueabihf-gcc` and `qemu-arm` (`qemu-user`) for the ARM checks,
+Python 3 for the tools, Node 18+ for the relay server.
+
+```bash
+make -C core                      # PC: core/build/gcemu
+bash core/host3ds/build.sh        # 3DS: core/host3ds/gc3ds.3dsx
+bash core/tools/arm_build.sh      # ARM Linux for qemu: core/build-arm/gcemu (the real JIT, run under qemu-arm)
+```
+
+The PC build runs the interpreter and the software renderer; the JIT is exercised through the ARM build under qemu and
+on the console.
+
+## Checks (run the rows your change touches; all must pass before review)
+
+| Change | Checks |
+|---|---|
+| JIT (anything in `jit.c` / `arm_emit.h`) | `bash core/tests/jit/run_jit_fuzz.sh 20000 1` (default and chain mode, planted bugs must be caught); then with `JIT_FUZZ_OPT=7` and with `JIT_FUZZ_NOFAULT=1` for seeds 1 and 3. New code paths need new fuzzer cases (see the paired-single chains in `jit_fuzz.c`). Then the whole-game check below. |
+| JIT, whole game | Under qemu from a save state, the JIT with and without the change must run **the same number of guest instructions and produce the same final frame** (`core/build-arm/gcemu "$GC3DS_ISO" --load-state S --frames N --jit --out DIR`, compare `last.png` and the `JIT: N instructions run` line). `--frames` counts fields from boot, not from the state. This caught a bug the fuzzer missed (HANDOFF, float lanes). |
+| Interpreter | `bash core/tests/cpu/run_tests.sh` |
+| Vertex path (`vfast.c`, `xform.c`) | `bash core/tools/vfast_check.sh 2` (all test DOLs, 0 draws over tolerance) |
+| Display-list cache | `VCACHE_CHECK=1` on the PC build (every hit gathered again, 0 differences) and `VCACHE_PLANT=1` (must report differences) |
+| TEV / combiners | `bash core/tests/tev/run_tev_tests.sh` |
+| Draw merging | `MERGE_CHECK=1` on the PC build |
+| 3DS host code | `bash core/host3ds/build.sh` with no new warnings |
+
+Every check that compares has a planted-bug self-test; a check whose self-test cannot fail proves nothing (the first
+`VCACHE_PLANT` did not: its planted change never altered vertex data).
+
+## Measuring
+
+On a console: `docs/REMOTE_RUNS.md` (relay, job options). Typical:
+
+```bash
+bash core/tools/relay.sh queue --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 600 --ab fcache
+bash core/tools/relay.sh log <job>
+python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait_pct,valloc_pct,vwork_pct
+```
+
+- The A/B switch flips every 20 s (`AB_SECS`); each row of perf.csv records which half it is in. Read "speed" and
+  **core 0's own speed** (`speed / (1 - gxwait_pct)`): while the GX side limits the game, a faster core 0 only turns
+  into waiting.
+- `# ...` lines in perf.csv report every 10 s: vertex worker phases, job ring waits, display lists, caches, JIT code
+  size, fallbacks, hot guest code (`--profile on`). PMU columns (`icmiss_k`, `inst_m`, `stall_inst_m`) are sampled on
+  some rows.
+- **The cycle model** (no console needed): run the ARM build under qemu with `JIT_REGSTAT=1 JIT_SCHEDDUMP=path`, then
+  `python3 core/tools/arm11_sched.py path --cycles --top 40`: host instructions and modelled stall cycles per guest
+  instruction, by guest opcode. Use it to rank and check ideas before spending console time. **Its blind spot is
+  instruction fetch**, which costs core 0 ~10 cycles per guest instruction on the console: a change that grows hot
+  code can lose on the console while winning in the model (float lanes, job 132). Report hot words per guest
+  instruction (the `JIT: kept blocks` line) next to the model.
+
+## Where things stand (read the end of docs/HANDOFF.md for the latest)
+
+- **Bottleneck:** core 0 (~23% own speed in the tp850 cutscene, ~12% later) and the GX side (~20-21%) are close; with
+  half the vertex work gone (frame skip), core 0 is the wall. Core 0's cost is broad: ~33 cycles per guest
+  instruction, no hot function, memory instructions ~60% of modelled cycles, load latency 55% of stalls.
+- **Defaults that measured as gains:** draw merging (+24%), check hoisting (core 0 +5%), the job-ring and TEV work in
+  HANDOFF, matrix indices apart from vertex records (VIx).
+- **Built, off, measured without a clear gain:** display-list vertex cache, float lanes, known-single stores (on; +1%),
+  frame skip (+10%, visual glitches; a candidate user option).
+- **Rejected with measurements:** second vertex worker on core 1 (evicts core 0's L2), shared-index fast path (TP: <1%
+  of vertices), CPU display-list cache as a speed lever (RAM latency), matrix-chain HLE (flat profile). See
+  REDESIGN_CANDIDATES for the numbers.
+- **Open directions:** less hot code per guest instruction; cheaper memory instructions (psq GQR assumptions, constant
+  addresses, fewer first-access checks); longer blocks; GPU-resident vertex data for repeated display lists (C1);
+  texgen and normal transforms in the PICA shader (C6); measuring the hardware itself further (I-cache, L2 and RAM
+  latencies, cross-core effects) so the cycle model predicts the console.
+
+## Code style
+
+- C11, 4-space indent, lines up to ~120 columns, `u8`/`u32`/`s32`/`u64` types.
+- Comments say why, with the measurement that justified a choice (job numbers, model numbers). No commented-out code.
+- JIT code: hot code must stay small (instruction fetch is expensive); rare paths go to cold code (`cold_begin` /
+  `cold_end`); cold code may read the register cache but never changes its state; every exit writes back through the
+  `Rc` snapshot. Read the comments on `Rc`, `rc_emit_flush`, `fc_*` and `emit_fallback` before touching them.
+- Commit subjects: `type: summary` (`feat`, `fix`, `perf`, `docs`, `tools`, `test`), lower case, with the measurement
+  or check in the body.
+
+## Hardware facts worth knowing (measured on a New 2DS XL; FINDINGS.md and GPU_GUIDANCE.md have the rest)
+
+- Cores run at 804 MHz; the app gets cores 0, 2, 3 and 80% of core 1. User mode cannot reach the L2 prefetcher, AXI
+  WRAM or large pages; WFE does not sleep in user mode.
+- A second core reading through emulated RAM evicts core 0's working set from the shared 2 MB L2 (core 0 -6%).
+- The PICA200: shader length is free; a fourth vertex attribute costs ~45% of the vertex rate; a uniform change
+  between draws stalls ~2 µs; ~1,100 draw calls/s is cheap.
+- Luma3DS's homebrew loader is the named port `hb:ldr` (`svcConnectToPort`), not a srv service.
