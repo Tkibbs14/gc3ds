@@ -1048,7 +1048,7 @@ static bool load_pending(RelayJob* j) {
     return ok && j->id;
 }
 
-// Restart into the .3dsx at `path` without the owner touching anything: Luma3DS's homebrew loader (service hb:ldr, the
+// Restart into the .3dsx at `path` without the owner touching anything: Luma3DS's homebrew loader (port hb:ldr, the
 // one the Homebrew Launcher uses to start a program) loads it the next time the homebrew title starts, and the
 // chainloader restarts that title when gc3ds exits. false: the service is not there (the caller asks for a restart
 // by hand). Commands as new-hbmenu's hbldr.c: 2 SetTarget (path without "sdmc:", static buffer 0), 3 SetArgv (u32 argc,
@@ -1086,11 +1086,10 @@ static bool relaunch_into(const char* path) {
 }
 static bool relaunch_ipc(const char* path) {
     Handle h;
-    // Non-blocking: with its sessions in use, srvGetServiceHandle waits forever (2DS, jobs 97-104: "hung after the
-    // download" was this wait); then the owner restarts by hand instead.
-    srvSetBlockingPolicy(true);
-    Result got = srvGetServiceHandle(&h, "hb:ldr");
-    srvSetBlockingPolicy(false);
+    // hb:ldr is a named port of Luma's loader sysmodule (sysmodules/loader/source/main.c, 2 sessions), and the Homebrew
+    // Launcher opens it with svcConnectToPort (3ds-hbmenu source/loaders/rosalina.c). Through srv (jobs 97-112) the
+    // request never answered: "hb:ldr gave no answer in 3 s" on every new build.
+    Result got = svcConnectToPort(&h, "hb:ldr");
     if (R_FAILED(got)) { g_relaunchRc = got; return false; }
     const char* target = !strncmp(path, "sdmc:", 5) ? path + 5 : path;
     static u32 argBuf[0x400 / 4];
