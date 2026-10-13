@@ -884,6 +884,18 @@ static const char* run(const char* path) {
                                     jobs > 0 ? (double)(v[2] - lastV[2]) / jobs / 1024.0 : 0.0, waits / 10.0,
                                     waits > 0 ? (double)(v[4] - lastV[4]) / waits : 0.0);
                             memcpy(lastV, v, sizeof v);
+                            {  // REDESIGN_CANDIDATES C5: vertices that could use the PICA's one index buffer
+                                static u64 lastS[5];
+                                u64 sv[5] = { g_vfastStats.idxDraws, g_vfastStats.idxVerts, g_vfastStats.sharedVerts,
+                                              g_vfastStats.sharedDraws, g_vfastStats.oneIdxVerts };
+                                double dv = (double)(sv[1] - lastS[1]), dd = (double)(sv[0] - lastS[0]);
+                                fprintf(g_perf, "# shared index 10s (1 draw in 32): %.1f%% of indexed vertices give all indexed attributes "
+                                        "one index; %.1f%% of indexed draws do on every vertex; %.1f%% of indexed vertices have a "
+                                        "single indexed attribute\n", dv > 0 ? 100.0 * (double)(sv[2] - lastS[2]) / dv : 0.0,
+                                        dd > 0 ? 100.0 * (double)(sv[3] - lastS[3]) / dd : 0.0,
+                                        dv > 0 ? 100.0 * (double)(sv[4] - lastS[4]) / dv : 0.0);
+                                memcpy(lastS, sv, sizeof sv);
+                            }
                             static u64 lastW2;
                             fprintf(g_perf, "# vworker 2 10s: %.0f jobs/s on core 1 (%s)\n", (double)(g_vw2Jobs - lastW2) / 10.0,
                                     g_pica && pica_worker2() ? "on" : "off");

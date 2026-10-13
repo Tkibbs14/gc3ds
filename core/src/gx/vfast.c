@@ -969,6 +969,28 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     job->nrmUsed = nrmUsed; job->nbt = nbt; job->index3 = index3; job->pnDirect = pnDirect;
     job->texUsed = texUsed; job->tmDirect = tmDirect; job->rasChan = sel->rasChan;
     job->pnDefault = (u8)pnDefault;
+    // REDESIGN_CANDIDATES C5: on one draw in 32, how many vertices give every indexed attribute the same index (those
+    // could be drawn from the arrays with the PICA's one index buffer, with no gather).
+    if (!(++g_vfastStats.sharedSampled & 31)) {
+        VIdx ix[16];
+        u32 ni = index_list(job, ix);
+        if (ni) {
+            g_vfastStats.idxDraws++;
+            g_vfastStats.idxVerts += count;
+            u32 shared = 0;
+            for (u32 vi = 0; vi < count; vi++) {
+                const u8* q = raw + vi * vsize;
+                u32 first = ix[0].wide ? ((u32)q[ix[0].off] << 8 | q[ix[0].off + 1]) : q[ix[0].off];
+                bool same = true;
+                for (u32 k = 1; k < ni && same; k++)
+                    same = (ix[k].wide ? ((u32)q[ix[k].off] << 8 | q[ix[k].off + 1]) : q[ix[k].off]) == first;
+                shared += same;
+            }
+            g_vfastStats.sharedVerts += shared;
+            if (shared == count) g_vfastStats.sharedDraws++;
+            if (ni == 1) g_vfastStats.oneIdxVerts += count;
+        }
+    }
     memcpy(job->tmDefault, tmDefault, 8);
     // Shader-lit draws may leave the gather to vfast_finish (another core): only the matrix indices are read here,
     // and the stream is copied into the job (it does not outlive the draw).

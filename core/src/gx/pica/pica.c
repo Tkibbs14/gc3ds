@@ -137,7 +137,13 @@ static u32 g_vcap;
 static u32* g_scratch;
 static u32 g_scratchCap;
 
-static volatile u32 g_vwHead, g_vwTail;  // the vertex worker's queue (below): jobs queued / done
+// The vertex worker's queue (below): jobs queued / done. Each counter written by one core has a 32-byte cache line of
+// its own: side by side, the GX thread's head and the worker's tail moved one line between cores 2 and 3 on every job
+// (ARM11 MPCore: 32-byte lines, the SCU migrates modified lines; REDESIGN_CANDIDATES C7).
+typedef struct { volatile u32 v; } __attribute__((aligned(32))) VwLine;
+static VwLine g_vwHeadL, g_vwTailL;
+#define g_vwHead g_vwHeadL.v
+#define g_vwTail g_vwTailL.v
 // g_vwHead when the open batch (or its open sub-batch) began: the older jobs only feed draw calls already recorded,
 // which is all an early split needs finished (split_early).
 static u32 g_recJob;
@@ -934,12 +940,15 @@ static VWork g_vw[VW_SLOTS];
 static VCache *g_vcGx, *g_vcWorker;  // display-list vertex caches (vfast.c): one per gathering thread
 static u8* g_vwMem;
 static u32 g_vwMemHead;
-static volatile u32 g_vwQuit, g_vwPos;
+static VwLine g_vwPosL;  // written by the worker (CPU-culled draws), read by the GX thread
+#define g_vwPos g_vwPosL.v
+static volatile u32 g_vwQuit;
 // The worker also gathers shader-lit draws from guest memory (vfast_prepare defer) when they are GPU-transformed:
 // their batches never wait for the worker. For CPU-transformed draws it measured slower on the 2DS (6673eb2: 14.2%
 // against 14.8%), because every batch flush then waits for the worker (vwait 18%).
 static const bool kVwGather = false;  // CPU-transformed draws
-static volatile u32 g_vwDeferEnd;     // the queue index after the last queued draw that reads guest memory
+static VwLine g_vwDeferEndL;  // the queue index after the last queued draw that reads guest memory
+#define g_vwDeferEnd g_vwDeferEndL.v
 static Thread g_vwThread, g_vwHelper;
 static bool g_vwOn = true;  // pica_set_vertex_worker
 static inline void vw_dmb(void) { __asm__ volatile("mcr p15, 0, %0, c7, c10, 5" : : "r"(0) : "memory"); }
@@ -1057,7 +1066,8 @@ static void vw_do(const VWork* w) {
 
 // Jobs are taken in queue order (g_vwClaim) and may finish out of it with two workers: each marks itself done, and
 // g_vwTail (what every wait and the ring's memory follow) moves over the done jobs in order.
-static volatile u32 g_vwClaim;
+static VwLine g_vwClaimL;
+#define g_vwClaim g_vwClaimL.v
 static volatile u32 g_vwDone[VW_SLOTS];  // job index + 1 once that job is done
 static volatile bool g_vw2;              // the second worker takes jobs
 u64 g_vw2Jobs;

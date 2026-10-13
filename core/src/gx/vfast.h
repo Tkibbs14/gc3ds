@@ -25,6 +25,9 @@ void vfast_attribs(const VSel* sel, const SVert* v, PVert* o);
 typedef struct {
     u64 draws, verts, composes, lightEvals, litHalves, indexed, texgens, nrmReads, setups, setupWhy[6];
     u64 gpuLit[2][2][3][3];  // shader-lit draws by colour half lit, alpha half lit, their attenuation (none, spot, specular)
+    // Sampled (one draw in 32): draws with indexed attributes, their vertices, vertices whose indexed attributes all
+    // carry one index, draws where every vertex does, vertices of draws with a single indexed attribute.
+    u64 sharedSampled, idxDraws, idxVerts, sharedVerts, sharedDraws, oneIdxVerts;
 } VFastStats;
 extern VFastStats g_vfastStats;
 
