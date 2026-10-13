@@ -1015,7 +1015,12 @@ static bool load_pending(RelayJob* j) {
 // then the NUL-separated strings, static buffer 1).
 static bool relaunch_into(const char* path) {
     Handle h;
-    if (R_FAILED(srvGetServiceHandle(&h, "hb:ldr"))) return false;
+    // Non-blocking: with its sessions in use, srvGetServiceHandle waits forever (2DS, jobs 97-104: "hung after the
+    // download" was this wait); then the owner restarts by hand instead.
+    srvSetBlockingPolicy(true);
+    Result got = srvGetServiceHandle(&h, "hb:ldr");
+    srvSetBlockingPolicy(false);
+    if (R_FAILED(got)) { printf("(hb:ldr: %08lx)\n", (unsigned long)got); return false; }
     const char* target = !strncmp(path, "sdmc:", 5) ? path + 5 : path;
     static u32 argBuf[0x400 / 4];
     memset(argBuf, 0, sizeof argBuf);
@@ -1046,14 +1051,15 @@ static bool relaunch_into(const char* path) {
 
 // After a job was kept for the next start (save_pending): restart into `selfPath` by itself, or ask for it.
 static void restart_for_job(const char* selfPath, const char* why) {
+    printf("%s\nRestarting...\n", why);
     relay_flush();  // the download notes reach the job's log before this process ends
     FILE* rf = fopen(RELAY_RESTART, "w");
     if (rf) { fprintf(rf, "%llu\n", (unsigned long long)osGetTime()); fclose(rf); }
     if (relaunch_into(selfPath)) {
-        printf("\n%s\nRestarting by itself...\n", why);
+        printf("Restarting by itself...\n");
         for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();  // a second to read it
     } else {
-        printf("\n%s\nPress START, then open gc3ds again:\nthe job runs when Remote runs starts.\n", why);
+        printf("Press START, then open gc3ds again:\nthe job runs when Remote runs starts.\n");
         wait_key(KEY_START);
     }
     g_quitApp = true;

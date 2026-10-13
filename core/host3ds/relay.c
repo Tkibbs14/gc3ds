@@ -351,6 +351,7 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
         if (!ok) { remove(tmp); printf("download failed (%s), attempt %d of 3\n", err, attempt); }
     }
     if (!ok) return false;
+    printf("verifying...\n");
     // Check what arrived before replacing the running build.
     char was[17];
     snprintf(was, sizeof was, "%s", g_selfId);
@@ -362,6 +363,7 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n) {
     // RomFS reads from our own .3dsx and keeps it open, so it must be closed before the file can be replaced (2DS,
     // 2026-10-12: "cannot replace"). The caller leaves right after a success; on failure RomFS comes back (the
     // relay's CA file lives there).
+    printf("installing...\n");
     romfsExit();
     remove(path);
     if (rename(tmp, path)) {
