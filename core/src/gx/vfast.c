@@ -329,14 +329,48 @@ static void gather_indices(VJob* job) {
 
 // All reads of guest memory: the attributes from the stream and the arrays (the indices too unless `indices` is
 // false, when gather_indices has already run and pn / tm may hold local matrix numbers).
+// Prefetching the array elements of indexed attributes a few vertices ahead (vfast_set_prefetch). Twilight Princess's
+// vertices read ~3.6 indexed attributes each from scattered places in guest RAM, and the 3DS vertex worker spent ~2.2 us
+// (~1,750 cycles) per vertex (2DS, bf169a0): mostly waiting for memory.
+bool g_vfastPrefetch = true;
+void vfast_set_prefetch(bool on) { g_vfastPrefetch = on; }
+#define PF_AHEAD 4
+typedef struct { u32 off, base, stride; u8 wide; } VPf;  // an index's byte offset in the record; 16-bit index when wide
+
+static u32 prefetch_table(const VJob* job, VPf* pf) {
+    u32 n = 0, off = (job->pnDirect ? 1u : 0u) + (u32)__builtin_popcount(job->tmDirect);
+    const VAttr* a[12] = { &job->pos_, &job->nrm_, &job->col_[0], &job->col_[1] };
+    for (int i = 0; i < 8; i++) a[4 + i] = &job->tex_[i];
+    for (int i = 0; i < 12; i++) {
+        const VAttr* v = a[i];
+        if (!v->mode) continue;
+        u32 direct = i == 2 || i == 3 ? v->cs : (u32)v->n * v->cs;
+        if (v->mode == 1) { off += direct; continue; }
+        u32 isz = v->mode == 2 ? 1 : 2, count = i == 1 && job->nbt && job->index3 ? 3 : 1;
+        if (n < 8) pf[n++] = (VPf){ off, v->base, v->stride, (u8)(isz == 2) };
+        off += isz * count;
+    }
+    return n;
+}
+
 static void gather(VJob* job, bool indices) {
     const u8* mem1 = job->mem1;
     VAttr pos = job->pos_, nrm = job->nrm_, col[2] = { job->col_[0], job->col_[1] }, tex[8];
     memcpy(tex, job->tex_, sizeof tex);
     bool nrmUsed = job->nrmUsed, nbt = job->nbt, index3 = job->index3, pnDirect = job->pnDirect;
     u32 texUsed = job->texUsed, tmDirect = job->tmDirect, skip = (pnDirect ? 1u : 0u) + (u32)__builtin_popcount(tmDirect);
+    VPf pf[8];
+    u32 npf = g_vfastPrefetch ? prefetch_table(job, pf) : 0;
     for (u32 vi = 0; vi < job->count; vi++) {
         const u8* p = job->raw + vi * job->vsize;
+        if (npf && vi + PF_AHEAD < job->count) {
+            const u8* q = job->raw + (vi + PF_AHEAD) * job->vsize;
+            for (u32 k = 0; k < npf; k++) {
+                u32 idx = pf[k].wide ? be16(q + pf[k].off) : q[pf[k].off];
+                u32 pa = pf[k].base + idx * pf[k].stride;
+                if (pa < PA_MEM1_END) __builtin_prefetch(mem1 + pa);
+            }
+        }
         VIn* in = &job->in[vi];
         if (indices) {
             in->pn = job->pnDefault;

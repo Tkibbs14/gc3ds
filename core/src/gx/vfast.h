@@ -62,6 +62,9 @@ void vfast_job_gpu_pos(VJob* job, const u8* slots);                // slots[i]: 
 // inputs and every product and sum rounded to the PICA's 24-bit floats (vfast_f24).
 void vfast_gpu_pos_model(const float (*pal)[12], const float P[16], const PVert* v, bool f24, float clip[4], float eye[3]);
 float vfast_f24(float x);  // rounded to the PICA's 24-bit float (16 mantissa bits, to nearest; exponent range ignored)
+// Prefetch of indexed attributes' array elements a few vertices ahead in the gather (on by default; comparison off).
+void vfast_set_prefetch(bool on);
+extern bool g_vfastPrefetch;
 // Forgets the cached draw setup (call when GX state is replaced, e.g. a reset or a loaded state).
 void vfast_reset_cache(void);
 
