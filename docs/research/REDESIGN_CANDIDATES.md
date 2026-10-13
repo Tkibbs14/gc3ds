@@ -56,3 +56,50 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   21.3-21.4% (116, 118): the worker's memory traffic per vertex matters.
 - **Cost:** texgen and the finish phases index `t[unit]`; a packed layout needs a per-job map.
 - **Re-evaluate when:** after C2's result (the same bottleneck); cheap enough to try next if C2 does not lift the cap.
+
+## C5. Shared-index fast path (no CPU gather)
+
+- **Status:** parked (2026-10-13); first step is a counter.
+- **What:** when every indexed attribute of a draw's vertices uses the same index (and the formats are ones the PICA
+  reads), upload each array once (byte-swapped) as a linear attribute buffer and draw with the PICA's one index buffer:
+  no per-vertex CPU work. The PICA has one index buffer per draw, not one per attribute (3dbrew GPU/Internal_Registers,
+  via a Haiku research pass), so draws with different indices per attribute cannot use it.
+- **Unknown:** how many of TP's draws qualify. **Measure first:** a `# vfast` counter of draws whose indexed attributes
+  carry equal indices on every vertex.
+- **Risk:** the byte-swap pass, the 12 attribute buffers, formats the PICA cannot read (8-bit normals, fractional
+  fixed point), and arrays that change (page stamps already exist for that, DL_CACHE_PLAN).
+- **Re-evaluate when:** the counter says a large share of vertices qualifies.
+
+## C6. Texgen and normal transforms in the PICA vertex shader
+
+- **Status:** parked (2026-10-13).
+- **What:** the CPU writes raw attributes; the shader applies texture matrices (texgen) and normal transforms, as
+  Dolphin's VertexShaderGen does (matrix index as an attribute, matrices in uniform arrays). Texture coordinates take
+  11% of the worker and positions/normals 17% (job 115).
+- **For:** shader length measured free on the 2DS (+128 MADs: no change; GPU_GUIDANCE rule 3).
+- **Risk:** 96 vec4 uniforms shared with the palette; `a0` relative addressing for per-vertex matrix choice is
+  unverified on hardware; variants per texgen setup; a 4th attribute costs ~45% of the vertex rate (rule 2).
+- **Re-evaluate when:** the worker is still the cap after C7 and C2's follow-up.
+
+## C7. Queue counters on their own cache lines
+
+- **Status:** next (cheap).
+- **What:** `g_vwHead` (GX thread writes) and `g_vwTail` (worker writes) are declared together (pica.c:140), so they
+  share a 32-byte line that moves between cores 2 and 3 on every job, even with one worker; with C2, `g_vwClaim` too.
+  ARM11 MPCore: 32-byte lines, MESI, the SCU moves modified lines core to core (ARM DDI 0360F §1.3.4, §7.1.1, read by a
+  Haiku pass; the TRM text is in the session scratchpad).
+- **Also from that pass:** the 2 MB L2 is shared by all cores, so a second worker streaming through guest RAM evicts
+  core 0's working set: the likeliest reason job 125's core 0 slowed even with few helper jobs, if job 126 (helper
+  sleeps instead of spinning) does not recover it.
+
+## C8. Single-precision floats in the JIT (PERF_LEVERS lever 2)
+
+- **Status:** next after the GX-side tests; research done 2026-10-13 (Haiku pass on Dolphin's sources).
+- **Plan from the research:** port Dolphin's per-op analysis (`fprIsSingle`, `fprIsDuplicated`, `fprIsStoreSafe`,
+  PPCAnalyst.cpp); fadds/fsubs/fdivs on known-single inputs are exact in single (double rounding is innocuous when
+  q >= 2p+2: Roux, JFR); fmuls only when frC is known single (Gekko cuts frC to 25 bits otherwise: Dolphin's
+  Force25BitPrecision, truncate vs round still open); lfs/stfs and frsp elision with per-register format tracking;
+  paired singles as two S ops; float-type psq without conversion. fmadds last: VFPv2 has no fused multiply-add and
+  double-then-round differs by 1 ULP in real games (Dolphin bug 13865, Mario Strikers Charged).
+- **Before building:** a bit-exact harness (the JIT fuzzer already compares against the interpreter); denormals under
+  RunFast flush on conversions (Dolphin bug 6936 is the same hazard on x86 DAZ) - our fuzzer keeps them out today.
