@@ -1000,15 +1000,16 @@ static VCache* g_vcPc;
 static void vcache_report(void) {
     const VCacheStats* st = vcache_stats(g_vcPc);
     if (!st) return;
-    fprintf(stderr, "VCACHE_CHECK: hits %llu (%llu vertices), misses %llu, stale %llu, inserts %llu, uncacheable %llu; "
-            "%llu hits gathered again, %llu differ%s\n", (unsigned long long)st->hits, (unsigned long long)st->hitVerts,
-            (unsigned long long)st->misses, (unsigned long long)st->stale, (unsigned long long)st->inserts,
-            (unsigned long long)st->uncacheable, (unsigned long long)g_vcacheChecked, (unsigned long long)g_vcacheCheckFails,
+    fprintf(stderr, "VCACHE_CHECK: hits %llu (%llu vertices), misses %llu, stale %llu (page stamped) %llu (written over), "
+            "inserts %llu, evictions %llu, uncacheable %llu; %llu hits gathered again, %llu differ%s\n",
+            (unsigned long long)st->hits, (unsigned long long)st->hitVerts, (unsigned long long)st->misses,
+            (unsigned long long)st->stale, (unsigned long long)st->staleRing, (unsigned long long)st->inserts,
+            (unsigned long long)st->evicted, (unsigned long long)st->uncacheable, (unsigned long long)g_vcacheChecked, (unsigned long long)g_vcacheCheckFails,
             g_vcachePlant ? " (planted: page stamps ignored)" : "");
 }
 static void vcache_check_draw(System* s, GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize) {
     if (!g_vcPc) {
-        g_vcPc = vcache_create(16u << 20, 1u << 16);
+        g_vcPc = vcache_create(6u << 20, 16384);  // as the 2DS vertex worker's (pica.c vw_start)
         if (!g_vcPc) return;
         g_vcacheCheck = true;
         g_vcachePlant = getenv("VCACHE_PLANT") != NULL;

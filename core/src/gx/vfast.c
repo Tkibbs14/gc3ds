@@ -560,15 +560,16 @@ bool g_vcacheOn = true;
 bool g_vcacheCheck;  // VCACHE_CHECK (PC): every hit is gathered again and compared (vcache_check_failures)
 bool g_vcachePlant;  // the checker's self-test: page stamps ignored, so a changed array must show as a failure
 u64 g_vcacheCheckFails, g_vcacheChecked;
-#define VC_RANGES 13
+#define VC_RANGES 8
 typedef struct {
     u32 pa, count, vsize, made, key[2];
     u64 at;  // the data's position in the ring's running byte count
-    u16 nr, r0[VC_RANGES], r1[VC_RANGES];
+    u8 nr;
+    u16 r0[VC_RANGES], r1[VC_RANGES];
 } VCEnt;
 struct VCache {
     VCEnt* ent;
-    u32 nEnt;  // a power of two
+    u32 nEnt;  // a power of two; two-way: a segment's slots are the pair at its even index
     u8* ring;
     u32 size;
     u64 total;
@@ -578,7 +579,7 @@ struct VCache {
 VCache* vcache_create(u32 bytes, u32 entries) {
     VCache* vc = calloc(1, sizeof *vc);
     if (!vc) return NULL;
-    u32 n = 1;
+    u32 n = 2;
     while (n < entries) n <<= 1;
     vc->ent = calloc(n, sizeof *vc->ent);
     vc->ring = malloc(bytes);
@@ -611,13 +612,17 @@ static void vc_key(const VJob* job, u32 key[2]) {
     key[0] = h0; key[1] = h1;
 }
 
-static VCEnt* vc_slot(VCache* vc, u32 pa, u32 count, const u32 key[2]) {
+// The pair of slots a segment may live in.
+static VCEnt* vc_pair(VCache* vc, u32 pa, u32 count, const u32 key[2]) {
     u32 h = (pa >> 5) * 2654435761u ^ count * 40503u ^ key[0];
-    return &vc->ent[(h ^ (h >> 16)) & (vc->nEnt - 1)];
+    return &vc->ent[(h ^ (h >> 16)) & (vc->nEnt - 2)];
 }
+static bool vc_match(const VCEnt* e, const VJob* job, u32 pa, u32 cnt, const u32 key[2]) {
+    return e->pa == pa && e->count == cnt && e->vsize == job->vsize && e->key[0] == key[0] && e->key[1] == key[1];
+}
+static bool vc_ring_ok(const VCache* vc, const VCEnt* e) { return vc->total - e->at <= vc->size; }  // not written over
 
-static bool vc_valid(const VCache* vc, const VCEnt* e) {
-    if (vc->total - e->at > vc->size) return false;  // the ring has gone past its data
+static bool vc_fresh(const VCEnt* e) {
     if (g_vcachePlant) return true;
     for (u32 r = 0; r < e->nr; r++)
         for (u32 p = e->r0[r]; p <= e->r1[r]; p++)
@@ -659,8 +664,34 @@ static u32 index_list(const VJob* job, VIdx* out) {
     return n;
 }
 
+// A cached vertex holds only what the draw uses (2DS job 111: whole 116-byte VIns filled a 2.5 MB ring in less than a
+// frame and the worker's cache hit 0.7%): position, the normal when used, both colours and which are present, and the
+// used texture coordinates. Not c0, pn or tm (per draw).
+static u32 vc_rec(const VJob* job) { return 24u + (job->nrmUsed ? 12u : 0u) + 8u * (u32)__builtin_popcount(job->texUsed); }
+static void vc_pack(u8* d, const VJob* job, const VIn* in, u32 n) {
+    for (u32 i = 0; i < n; i++, in++) {
+        memcpy(d, in->p, 12); d += 12;
+        if (job->nrmUsed) { memcpy(d, in->n, 12); d += 12; }
+        memcpy(d, in->col, 8); d += 8;
+        u32 hc = in->hasColor;
+        memcpy(d, &hc, 4); d += 4;
+        for (u32 t = 0; t < 8; t++) if ((job->texUsed >> t) & 1) { memcpy(d, in->t[t], 8); d += 8; }
+    }
+}
+static void vc_unpack(VIn* out, const VJob* job, const u8* d, u32 n) {
+    for (u32 i = 0; i < n; i++, out++) {
+        memcpy(out->p, d, 12); d += 12;
+        if (job->nrmUsed) { memcpy(out->n, d, 12); d += 12; } else out->n[0] = out->n[1] = out->n[2] = 0;
+        memcpy(out->col, d, 8); d += 8;
+        u32 hc;
+        memcpy(&hc, d, 4); d += 4;
+        out->hasColor = (u8)hc;
+        for (u32 t = 0; t < 8; t++) if ((job->texUsed >> t) & 1) { memcpy(out->t[t], d, 8); d += 8; }
+    }
+}
+
 static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const u32 key[2], u32 made) {
-    u32 len = cnt * (u32)sizeof(VIn);
+    u32 len = cnt * vc_rec(job);
     if (len > vc->size / 4) return;
     VCEnt e;
     memset(&e, 0, sizeof e);
@@ -681,26 +712,23 @@ static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const
     if (!ok) { vc->st.uncacheable++; return; }
     u32 pos = (u32)(vc->total % vc->size);
     if (pos + len > vc->size) { vc->total += vc->size - pos; pos = 0; }
-    memcpy(vc->ring + pos, job->in + from, len);
+    vc_pack(vc->ring + pos, job, job->in + from, cnt);
     e.at = vc->total;
     vc->total += len;
-    *vc_slot(vc, pa, cnt, key) = e;
+    // The slot of the pair that holds the same segment, else a free or written-over one, else the older one.
+    VCEnt* s = vc_pair(vc, pa, cnt, key);
+    VCEnt* d = vc_match(&s[1], job, pa, cnt, key) ? &s[1] : vc_match(&s[0], job, pa, cnt, key) ? &s[0]
+             : s[0].pa == VC_NO_PA || !vc_ring_ok(vc, &s[0]) ? &s[0] : s[1].pa == VC_NO_PA || !vc_ring_ok(vc, &s[1]) ? &s[1]
+             : s[0].at < s[1].at ? &s[0] : &s[1];
+    if (d->pa != VC_NO_PA && !vc_match(d, job, pa, cnt, key) && vc_ring_ok(vc, d)) vc->st.evicted++;
+    *d = e;
     vc->st.inserts++;
-}
-
-// What the cache holds of a vertex: position, normal, texture coordinates, colours (not c0, pn, tm).
-static void vc_copy(VIn* dst, const VIn* src, u32 n) {
-    for (u32 i = 0; i < n; i++) {
-        memcpy(&dst[i], &src[i], offsetof(VIn, c0));
-        memcpy(dst[i].col, src[i].col, sizeof src[i].col);
-        dst[i].hasColor = src[i].hasColor;
-    }
 }
 
 static bool vc_same(const VJob* job, const VIn* a, const VIn* b, u32 n) {
     for (u32 i = 0; i < n; i++) {
         if (memcmp(a[i].p, b[i].p, sizeof a[i].p) || memcmp(a[i].col, b[i].col, sizeof a[i].col) || a[i].hasColor != b[i].hasColor) return false;
-        if (job->nrmUsed && memcmp(a[i].n, b[i].n, sizeof a[i].n)) return false;
+        if (memcmp(a[i].n, b[i].n, sizeof a[i].n)) return false;
         for (u32 t = 0; t < 8; t++) if (((job->texUsed >> t) & 1) && memcmp(a[i].t[t], b[i].t[t], sizeof a[i].t[t])) return false;
     }
     return true;
@@ -717,11 +745,11 @@ static void gather_cached(VJob* job, bool indices) {
     for (u32 k = 0; k < job->srcN && at < job->count; k++) {
         u32 cnt = job->srcSeg[k] & 0xFFFF, pa = job->srcPa[k];
         if (at + cnt > job->count) cnt = job->count - at;
-        VCEnt* e = pa == VC_NO_PA ? NULL : vc_slot(vc, pa, cnt, key);
-        bool match = e && e->pa == pa && e->count == cnt && e->vsize == job->vsize && e->key[0] == key[0] && e->key[1] == key[1];
-        if (match && vc_valid(vc, e)) {
-            const VIn* src = (const VIn*)(vc->ring + (u32)(e->at % vc->size));
-            vc_copy(job->in + at, src, cnt);
+        VCEnt* s = pa == VC_NO_PA ? NULL : vc_pair(vc, pa, cnt, key);
+        VCEnt* e = !s ? NULL : vc_match(&s[0], job, pa, cnt, key) ? &s[0] : vc_match(&s[1], job, pa, cnt, key) ? &s[1] : NULL;
+        bool ringOk = e && vc_ring_ok(vc, e), match = e != NULL;
+        if (ringOk && vc_fresh(e)) {
+            vc_unpack(job->in + at, job, vc->ring + (u32)(e->at % vc->size), cnt);
             vc->st.hits++;
             vc->st.hitVerts += cnt;
             if (g_vcacheCheck) {  // the checker: gather again and compare
@@ -739,7 +767,7 @@ static void gather_cached(VJob* job, bool indices) {
             vc->st.uncacheable++;
             gather_range(job, false, at, at + cnt);
         } else {
-            if (match) vc->st.stale++; else vc->st.misses++;
+            if (!match) vc->st.misses++; else if (!ringOk) vc->st.staleRing++; else vc->st.stale++;
             gather_range(job, false, at, at + cnt);
             vc_put(vc, job, pa, at, cnt, key, job->made);  // as old as the job's stream: a deferred job copied it earlier
         }

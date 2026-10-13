@@ -49,7 +49,8 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize);
 // valid until vfast_finish. vfast_job_set_cache: the cache a vfast_finish on another thread uses instead.
 #define VC_NO_PA 0xFFFFFFFFu
 typedef struct VCache VCache;
-typedef struct { u64 hits, hitVerts, misses, stale, inserts, uncacheable; } VCacheStats;
+// stale: a page it covers was stamped since; staleRing: the ring wrote over its data; evicted: a live entry replaced
+typedef struct { u64 hits, hitVerts, misses, stale, staleRing, inserts, uncacheable, evicted; } VCacheStats;
 VCache* vcache_create(u32 bytes, u32 entries);
 void vcache_reset(VCache* vc);
 const VCacheStats* vcache_stats(const VCache* vc);

@@ -471,6 +471,7 @@ static void perf_shot(double realS, double emuS) {
 //   stop                      end the run
 static bool g_stopReq;
 static bool g_relayRun;  // a relay job is running
+static u32 g_dlOnSecs;   // seconds with the display-list cache on since the last # dlcache report (A/B)
 static void apply_cmd(const char* cmd, double realS, double emuS) {
     char name[24] = "", val[24] = "";
     bool ok = true;
@@ -773,6 +774,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%lu,%llu", g_jit ? (unsigned long)jit_opt(g_jit) : 0UL, g_jit ? (unsigned long long)jit_stats(g_jit)->deopts : 0ULL);
                 fprintf(g_perf, ",%d", pica_vw_trim() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_vcacheOn ? 1 : 0);
+                if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
                 fputc('\n', g_perf);
@@ -889,16 +891,20 @@ static const char* run(const char* path) {
                             static VCacheStats lastC[2];
                             const VCacheStats* c = pica_vcache_stats(w);
                             if (!c) continue;
-                            double look = (double)(c->hits - lastC[w].hits + c->misses - lastC[w].misses + c->stale - lastC[w].stale);
-                            fprintf(g_perf, "# dlcache 10s (%s): %.0f hits/s (%.0f vertices/s), %.0f misses/s, %.0f stale/s, %.1f%% of "
-                                    "lookups hit; %.0f inserts/s, %.0f uncacheable segments/s; cache %s\n", w ? "worker" : "gx thread",
+                            double look = (double)(c->hits - lastC[w].hits + c->misses - lastC[w].misses + c->stale - lastC[w].stale +
+                                                   c->staleRing - lastC[w].staleRing);
+                            fprintf(g_perf, "# dlcache 10s (%s): %.0f hits/s (%.0f vertices/s), %.0f misses/s, %.0f stale/s (page "
+                                    "stamped), %.0f written over/s, %.1f%% of lookups hit; %.0f inserts/s, %.0f evictions/s, %.0f "
+                                    "uncacheable segments/s; cache on %u of the 10 s\n", w ? "worker" : "gx thread",
                                     (double)(c->hits - lastC[w].hits) / 10.0, (double)(c->hitVerts - lastC[w].hitVerts) / 10.0,
                                     (double)(c->misses - lastC[w].misses) / 10.0, (double)(c->stale - lastC[w].stale) / 10.0,
+                                    (double)(c->staleRing - lastC[w].staleRing) / 10.0,
                                     look > 0 ? 100.0 * (double)(c->hits - lastC[w].hits) / look : 0.0,
-                                    (double)(c->inserts - lastC[w].inserts) / 10.0, (double)(c->uncacheable - lastC[w].uncacheable) / 10.0,
-                                    g_vcacheOn ? "on" : "off");
+                                    (double)(c->inserts - lastC[w].inserts) / 10.0, (double)(c->evicted - lastC[w].evicted) / 10.0,
+                                    (double)(c->uncacheable - lastC[w].uncacheable) / 10.0, (unsigned)g_dlOnSecs);
                             lastC[w] = *c;
                         }
+                        g_dlOnSecs = 0;
                         lastPal = g_picaStats.palUploads;
                         lastSub = g_picaStats.subDraws;
                         memcpy(lastP, p, sizeof p);
