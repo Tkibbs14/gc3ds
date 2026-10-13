@@ -329,7 +329,7 @@ typedef struct {
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
     bool sched;          // --sched on|off (on): code scheduled against interlocks (jit_set_sched SCHED_ALL)
     bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
-    bool opt;            // --opt on|off (off): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
+    bool opt;            // --opt on|off (on): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
     bool abOpt;          // --ab opt: on and off (opt and deopts columns; each switch drops all compiled code)
     bool abVtrim;        // --ab vtrim: the vertex worker's job trim on and off (vtrim column)
     bool dlcache;        // --dlcache on|off (off): the display-list vertex cache (vfast.c, docs/DL_CACHE_PLAN.md)
@@ -352,6 +352,7 @@ static void opts_default(RunOpts* o) {
     o->link = true;
     o->merge = true;
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
+    o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
@@ -625,7 +626,7 @@ static const char* run(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
-        jit_set_opt(g_jit, g_opt.opt ? OPT_ALL : 0);  // --ab opt starts off
+        jit_set_opt(g_jit, g_opt.opt && !g_opt.abOpt ? OPT_ALL : 0);  // --ab opt starts off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
