@@ -338,7 +338,7 @@ static void opts_default(RunOpts* o) {
     o->traceSide = TRACE_SIDE_ALL;
     o->link = true;
     o->merge = true;
-    o->vwmemKb = 256;
+    o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
 static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {

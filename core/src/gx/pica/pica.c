@@ -912,8 +912,8 @@ static void tex_key(const GXCore* gx, u32* k, u32* n) {
 // the ring's size is a run option (pica_set_job_ring, up to VW_MEM).
 #define VW_SLOTS 1024
 #define VW_MEM (1024u << 10)
-static u32 g_vwLimit = 256u << 10;              // the ring's size in use (1 MB gained nothing on the 2DS: 9388639)
-static volatile u32 g_vwLimitWant = 256u << 10;  // pica_set_job_ring: applied when the ring is empty
+static u32 g_vwLimit = 128u << 10;              // the ring's size in use: shallow keeps syncs short (2DS, relay 76-80)
+static volatile u32 g_vwLimitWant = 128u << 10;  // pica_set_job_ring: applied when the ring is empty
 typedef struct {
     VJob* job;
     PVert* pv;         // the draw's vertices (colours from vfast_prepare)

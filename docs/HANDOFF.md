@@ -772,3 +772,22 @@ words (qemu, TP from tp_arm_850, 30 fields: `bc` 11.8 words each, `b` 10.1, `bcl
   `config/GZ2E01/symbols.txt` kept outside the repo in WSL `/root/tp_symbols/`): the 200 hottest blocks are 13.5% (title)
   and 6.2% (cutscene) of core 0, no game function above ~0.5% except the DVD driver's `Read` while loading. Native
   stand-ins for single functions cannot give big steps on these scenes; the per-instruction cost of compiled code can.
+
+## 2026-10-13 early: memory checks, the job ring's size, attribute prefetch
+
+- **One-compare memory checks (bf169a0):** the MEM1 check is `SUB r1,r0,#0x80000000; MOV r12,r1,ROR #log2(size); CMP
+  r12,#(0x01800000>>sh)` (alignment and range in one compare; the uncached mirror 0xC0000000 now takes the slow path, which
+  TP never does). 2DS: cutscene 21.01 -> 21.19%; title 20.62% on fewer heavy rows (not comparable). The chain fuzzer's
+  crash while building it was `in_lc` overflowing for addresses near 4 GB (`sys/system.c`, fixed: compare offsets, not
+  ends).
+- **The vertex worker's job ring is 128 KB now (was 256 KB).** Deep rings lose: the GX thread waits much longer on the worker
+  (inferred cause: every sync with the worker waits for the whole queue). `--ab vwmem` title, relay 76-77:
+  1 MB 18.9% vs 256 KB 20.8-20.9% in the same runs, GX-thread wait 19% vs 3-7%. Cutscene, separate runs (relay 78-80):
+  96 KB 21.48%, 128 KB 21.41%, 256 KB 21.18% (+-0.18-0.19 each). 96 and 128 tie, so 128 was chosen; the worker's own
+  wait grows as the ring shrinks (vwait 19.7 -> 22.1 -> 23.9%), so smaller than 96 KB is not worth trying. `--vwmem KB`
+  sets it.
+- **Indexed-attribute prefetch (e30b707, `--ab pld`):** the gather prefetches the array elements of indexed attributes 4
+  vertices ahead (`vfast.c`, `prefetch_table`). In-run A/B (relay 81-82): cutscene 21.00% off / 20.91% on (+-0.15 /
+  0.26), title 21.21 / 21.47% (+-0.15 / 0.16): no measurable change in speed, the worker's busy share 62.2 -> 60.5%. Kept
+  on: the worker is not the limit now (core 0 is: 98% busy, 93% of it compiled code; the GX thread 78%). A press of X
+  on the 2DS turns the time breakdown off (job 82 from 12 s): those columns read 0 then.
