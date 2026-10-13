@@ -78,7 +78,7 @@ re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full
 | # | Question | Decides | How |
 |---|---|---|---|
 | D1 | Share of TP's draws inside display lists; how often (list, arrays) repeat | lever 1 | counters in fifo.c/pica.c, live job |
-| D2 | Share of core 0 in paired-single / single float code | levers 2-3 | JIT_REGSTAT by opcode class (qemu), pmu on device |
+| D2 | **Answered (qemu model, 40 TP fields):** float loads/stores 27.6%, float/paired-single maths 15.3% (43% float), integer loads/stores 29.1%, integer other 17.0%, branches 10.3% of modelled core-0 cycles | levers 2-3: single precision also removes the double<->single conversions in every float load and store | tools/arm11_sched.py --cycles over JIT_SCHEDDUMP, classified by opcode |
 | D3 | Share of core 0 in J3D matrix functions | lever 5 | `--profile on` + hot_funcs.py with TP symbols |
 | G1 | Vertex-shader cycles per instruction (unpublished: 3dbrew "not stated") | GPU texgen / dequantize in the shader | MEASURE_PLAN G1 |
 | G3 | Uniform upload cost per draw (unpublished) | palette size | MEASURE_PLAN G3 |
