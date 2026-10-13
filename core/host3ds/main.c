@@ -877,9 +877,10 @@ static const char* run(const char* path) {
                                     jobs > 0 ? (double)(v[2] - lastV[2]) / jobs / 1024.0 : 0.0, waits / 10.0,
                                     waits > 0 ? (double)(v[4] - lastV[4]) / waits : 0.0);
                             memcpy(lastV, v, sizeof v);
-                            static u64 lastPh[4], lastVc[3];
+                            static u64 lastPh[4], lastVc[8];
                             u64 ph[4] = { g_vfPhase[0], g_vfPhase[1], g_vfPhase[2], g_vwPhaseAll };
-                            u64 vcp[3] = { g_vcPhase[0], g_vcPhase[1], g_vcPhase[2] };
+                            u64 vcp[8];
+                            memcpy(vcp, g_vcPhase, sizeof vcp);
                             double all = (double)(ph[3] - lastPh[3]);
                             if (all > 0) {
                                 double a = (double)(ph[0] - lastPh[0]), b = (double)(ph[1] - lastPh[1]), c = (double)(ph[2] - lastPh[2]);
@@ -890,6 +891,13 @@ static const char* run(const char* path) {
                                 if (h + m + i > 0)
                                     fprintf(g_perf, "# vworker cache phases 10s: hits (lookups, copies) %.1f%%, missed runs gathered %.1f%%, "
                                             "inserts %.1f%% of the worker's time\n", 100 * h / all, 100 * m / all, 100 * i / all);
+                                double lk = (double)(vcp[3] - lastVc[3]), cp = (double)(vcp[4] - lastVc[4]);
+                                double reads = (double)(vcp[5] - lastVc[5]), calls = (double)(vcp[7] - lastVc[7]);
+                                double per = calls > 0 ? (double)(vcp[6] - lastVc[6]) / (64.0 * calls) : 0.0;
+                                if (h > 0)
+                                    fprintf(g_perf, "# vworker cache hit parts 10s: lookup passes %.1f%%, record copies %.1f%% of the worker's "
+                                            "time; %.0f clock reads in timed sections at %.0f ticks each: %.1f%% of the worker's time\n",
+                                            100 * lk / all, 100 * cp / all, reads, per, 100 * reads * per / all);
                             }
                             memcpy(lastPh, ph, sizeof ph);
                             memcpy(lastVc, vcp, sizeof vcp);

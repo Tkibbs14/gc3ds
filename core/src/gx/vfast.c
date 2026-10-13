@@ -571,8 +571,10 @@ u64 g_vfPhase[3];
 bool g_vfPhaseTimed;
 static inline u64 vf_clock(void) { return g_vfPhaseTimed && g_profClock ? g_profClock() : 0; }
 // The display-list cache's share of the gather on marked calls: [0] lookups and copies of hits, [1] gathers of missed
-// runs, [2] inserts (2DS job 113: 84% of lookups hit and the gather phase did not shrink).
-u64 g_vcPhase[3];
+// runs, [2] inserts (2DS job 113: 84% of lookups hit and the gather phase did not shrink). Within [0]: [3] the lookup
+// passes, [4] the record copies. [5] clock reads inside the timed sections, [6] ticks of 64 back-to-back reads made once
+// per timed call, [7] timed calls: one read costs [6] / (64 [7]) ticks, to take out of the others.
+u64 g_vcPhase[8];
 
 #define VC_RANGES 8
 typedef struct {
@@ -779,6 +781,12 @@ static void gather_cached(VJob* job, bool indices) {
     // the worker's (job 114 mixed clock readings with zeros there).
     bool timed = !indices && g_vfPhaseTimed && g_profClock;
     #define VC_CLOCK() (timed ? g_profClock() : 0)
+    if (timed) {  // the clock's own cost
+        u64 c0 = g_profClock();
+        for (int i = 0; i < 63; i++) (void)g_profClock();
+        g_vcPhase[6] += g_profClock() - c0;
+        g_vcPhase[7]++;
+    }
     u64 tl = VC_CLOCK(), tLook = 0, tGather = 0, tPut = 0;
     for (u32 k = 0; k <= job->srcN; k++) {
         bool end = k == job->srcN || at >= job->count;
@@ -798,6 +806,7 @@ static void gather_cached(VJob* job, bool indices) {
                 }
                 a2 += c;
             }
+            u64 tp = VC_CLOCK();
             for (u32 j = k, a2 = at; j < last; j++) {
                 hitE[j - k] = NULL;
                 if (a2 >= job->count) continue;
@@ -817,6 +826,7 @@ static void gather_cached(VJob* job, bool indices) {
             }
             chunkBase = k;
             chunkEnd = last;
+            if (timed) { g_vcPhase[3] += VC_CLOCK() - tp; g_vcPhase[5] += 2; }
         }
         if (!end) {
             cnt = seg_count(job, k, at);
@@ -826,7 +836,9 @@ static void gather_cached(VJob* job, bool indices) {
             if (e && (!vc_match(e, job, pa, cnt, key) || !vc_ring_ok(vc, e))) { e = NULL; vc->st.misses++; }
             hit = e != NULL;
             if (hit) {
+                u64 tu = VC_CLOCK();
                 vc_unpack(job->in + at, job, vc->ring + e->off, cnt);
+                if (timed) { g_vcPhase[4] += VC_CLOCK() - tu; g_vcPhase[5] += 2; }
                 vc->st.hits++;
                 vc->st.hitVerts += cnt;
                 if (g_vcacheCheck) {  // the checker: gather again and compare
@@ -864,6 +876,7 @@ static void gather_cached(VJob* job, bool indices) {
             }
             tl = VC_CLOCK();
             tPut += tl - t1;
+            if (timed) g_vcPhase[5] += 3;
             inRun = false;
         }
         if (end) break;

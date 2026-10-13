@@ -60,7 +60,7 @@ extern bool g_vcacheOn;     // off: every draw gathers (A/B)
 extern bool g_vcacheCheck;  // PC checker: hits are gathered again and compared
 extern bool g_vcachePlant;  // the checker's self-test: page stamps ignored
 extern u64 g_vcacheCheckFails, g_vcacheChecked;
-extern u64 g_vcPhase[3];  // of g_vfPhase[0], the display-list cache: hits (lookups, copies), missed runs gathered, inserts
+extern u64 g_vcPhase[8];  // of g_vfPhase[0], the display-list cache: hits (lookups, copies), missed runs gathered, inserts
 extern u64 g_vfPhase[3];  // vfast_finish's time by phase on marked calls (vfast.c)
 extern bool g_vfPhaseTimed;
 u32 vfast_job_used(const VJob* job);  // bytes from the job's start to the end of what it uses, once prepared
