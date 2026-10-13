@@ -915,3 +915,27 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   that contains it). The relay server rate-limits bursts (429): relay.sh frames retries.
 - **Order of work:** (1) display-list vertex cache (GX side, the cap today); (2) single-precision floats in the JIT
   (PERF_LEVERS lever 2); (3) measure check hoisting at length and make it default if it holds; (4) native THP decode.
+
+## 2026-10-13 late: display-list vertex cache built and measured; relay restarts by itself
+
+- **Relay:** new builds now restart by themselves (job 114: "restarted into this build 11.1 s after the download").
+  hb:ldr is a named port of Luma's loader: `svcConnectToPort`, as hbmenu does; `srvGetServiceHandle` never answered.
+  A job resumed after a restart numbers its log chunks from 100000 (the relay upserts by seq; job 111 lost its header).
+  `relay.sh queue` refuses to queue when the build upload failed (job 110 ran the old build after an HTTP 500).
+- **Display-list vertex cache** (`--dlcache on`, `--ab dlcache`, live `set dlcache 0|1`; off by default). Exact: PC
+  `VCACHE_CHECK=1` gathered 12.36M hits again, 0 differences (TP to field 2000); no entry was ever invalidated by the
+  game's flushes in the cutscene (stale 0/s), so TP replays unchanged vertex data.
+- **Measured on the 2DS (tp850 cutscene, `--ab dlcache`):**
+
+  | job | change | worker hit rate | speed off | speed on |
+  |---|---|---|---|---|
+  | 111 | 116-byte records, 2.5 MB ring | 0% (ring wrote over every match) | 18.77% | 14.74% |
+  | 112 | compact records, 6 MB, 2-way | 60-70% | 20.36% | 18.74% |
+  | 113 | missed segments gathered in runs | 84% | 20.47% | 19.30% |
+  | 116 | matrix indices split from VIn (VIx) | 85% | 21.34% | 20.13% |
+
+  Hits took 32-36% of the worker (~7 us per hit segment): the ring is larger than the L2 and every record line waited
+  for RAM. 118 prefetches slots and hit records a chunk ahead. If hits stay expensive, the next idea is to skip VIn for
+  hits (compute positions straight from the record), or to cache smaller (positions as the stream's own format).
+- **JIT fuzzer:** compares the pages compiled dcbf/dcbst/dcbz stamp with the interpreter's (planted bug 9); window edges
+  randomized and compared; float sequences store sanitized values; unmapped-alias cases skipped like DSI ones.
