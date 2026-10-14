@@ -664,6 +664,21 @@ class Translator:
         if xo == 146:
             return ['if (aot_mtmsr(g, %s)) { %s }' % (R(rd), self.exit_after(hx(pc + 4)))]
         if xo in (278, 246, 854, 598): return []  # dcbt, dcbtst, eieio, sync: no-ops in the interpreter
+        if xo in (54, 86, 470, 1014):
+            # dcbst dcbf dcbi dcbz on MEM1 through the standard mappings, as the JIT: no data cache is modelled, so only
+            # dcbz's zeroes and the display-list cache's page stamp (dcbst, dcbf, dcbz) remain; other addresses, and
+            # dcbi in user mode (a program exception), run in the interpreter. Cache-maintenance loops were 96% of
+            # all fallbacks (DCInvalidateRange, DCFlushRange).
+            kind = self.cur_kind
+            fb = self.fallback(pc, i)
+            self.cur_kind = kind  # the fast path keeps every register: liveness as an ordinary instruction
+            cond = '!(g->msr & 0x4000u) && ' if xo == 470 else ''
+            if xo == 1014: native = 'for (u32 z_ = 0; z_ < 32u; z_ += 4u) STU32((ea_ & ~31u) + z_, 0u); AOT_MEMDIRTY(pa_);'
+            elif xo == 470: native = ''
+            else: native = 'AOT_MEMDIRTY(pa_);'
+            return ['{ u32 ea_ = (%s) & ~0x40000000u, pa_ = ea_ - 0x80000000u;' % self.ea_x(d),
+                    'if (__builtin_expect(%spa_ < 0x01800000u, 1)) { %s } else { %s } }' % (cond, native, fb[0]),
+                    fb[1]]
         loads = {23: (4, 0, 0), 55: (4, 1, 0), 87: (1, 0, 0), 119: (1, 1, 0), 279: (2, 0, 0), 311: (2, 1, 0),
                  343: (2, 0, 1), 375: (2, 1, 1)}
         if xo in loads:

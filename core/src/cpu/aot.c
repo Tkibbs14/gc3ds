@@ -7,6 +7,7 @@
 #endif
 #include "aot.h"
 #include "aot_rt.h"
+#include "../gx/gx.h"
 #define mb_ aot_base  // the runtime reads guest memory through the global (aot_rt.h)
 
 // The generated code (core/src/aotgen, from ppc2c.py); absent in the repository, so referenced weakly.
@@ -45,6 +46,7 @@ static void (*g_gatherPut)(void* ctx, u32 v, u32 size);
 static void* g_gatherCtx;
 static u32 g_gatherEa = 1;
 u8* aot_gbufc;
+volatile u32* aot_stamps = (volatile u32*)&g_memStamps;
 // AOT_NOPIPEC=1 (comparison runs): constant pipe stores take the slow helper as other stores do.
 static void gbufc_update(void) { aot_gbufc = g_gatherEa == AOT_PIPE_EA && !getenv("AOT_NOPIPEC") ? aot_gbuf : NULL; }
 
@@ -389,10 +391,37 @@ static bool fb_check_safe(u32 inst) {
     return false;
 }
 
+#ifndef __3DS__
+// AOT_FBHIST=1: fallbacks counted by guest address, the most frequent printed at exit (what to translate next).
+static bool g_fbHist;
+static u32 g_fbPc[8192], g_fbInst[8192], g_fbN[8192];
+static void fb_hist_add(u32 pc, u32 inst) {
+    for (u32 h = (pc >> 2) * 2654435761u >> 19, k = 0; k < 8192; k++, h = (h + 1) & 8191) {
+        if (g_fbPc[h] == pc) { g_fbN[h]++; return; }
+        if (!g_fbPc[h]) { g_fbPc[h] = pc; g_fbInst[h] = inst; g_fbN[h] = 1; return; }
+    }
+}
+static void fb_hist_print(void) {
+    u64 tot = 0;
+    for (u32 i = 0; i < 8192; i++) tot += g_fbN[i];
+    fprintf(stderr, "aot fallbacks by address (%llu in all):\n", (unsigned long long)tot);
+    for (int r = 0; r < 40; r++) {
+        u32 best = 0;
+        for (u32 i = 1; i < 8192; i++) if (g_fbN[i] > g_fbN[best]) best = i;
+        if (!g_fbN[best]) break;
+        char dis[64];
+        gekko_disasm(g_fbPc[best], g_fbInst[best], dis, sizeof dis);
+        fprintf(stderr, "  %8u %08x %s\n", g_fbN[best], g_fbPc[best], dis);
+        g_fbN[best] = 0;
+    }
+}
+#endif
+
 u32 aot_interp(Gekko* g, u32 pc, u32 inst, u64 t) {
     if ((g_checking && !fb_check_safe(inst)) || g_noFb) { g->pc = pc; return 3; }
     aot_stats.fallbacks++;
 #ifndef __3DS__
+    if (g_fbHist) fb_hist_add(pc, inst);
     if (g_slowLog && aot_stats.fallbacks < 40) {
         char dis[64];
         gekko_disasm(pc, inst, dis, sizeof dis);
@@ -591,6 +620,9 @@ u32 aot_run(Gekko* g, s32 budget) {
         g_noSlow = getenv("AOT_NOSLOW") != NULL;
         g_noFb = getenv("AOT_NOFB") != NULL;
         g_slowLog = getenv("AOT_SLOWLOG") != NULL;
+#ifndef __3DS__
+        if (!g_fbHist && getenv("AOT_FBHIST")) { g_fbHist = true; atexit(fb_hist_print); }
+#endif
         if (getenv("AOT_CALL")) aot_depth_max = (u32)atoi(getenv("AOT_CALL"));  // direct-call depth (0: none)
     }
 #endif

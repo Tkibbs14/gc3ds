@@ -182,6 +182,9 @@ static inline void aot_gappend(u32 v, u32 size) {
 // A store the compiler can see goes to the pipe (its address a constant 0xCC008000, as GX code forms it with lis):
 // appended right at the site. aot_gbufc is aot_gbuf while the pipe is at that address, else NULL.
 extern u8* aot_gbufc;
+// gx.h's MemStamps ({ now, page[] }, the display-list cache's page stamps): dcbf / dcbst / dcbz stamp their page.
+extern volatile u32* aot_stamps;
+#define AOT_MEMDIRTY(pa) do { volatile u32* s_ = aot_stamps; u32 t_ = s_[0] + 1u; s_[0] = t_; s_[1u + ((pa) >> 12)] = t_; } while (0)
 #define AOT_PIPE_EA 0xCC008000u
 #define PIPE_CONST(ea) (__builtin_constant_p(ea) && (ea) == AOT_PIPE_EA)
 static inline bool aot_gfits(u32 size) { return aot_gbufc && *aot_glen + size < 32u; }

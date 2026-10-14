@@ -70,22 +70,41 @@ make -C core && bash core/host3ds/build.sh -j8
 On the 3DS: `--aot on`, `--ab aot`, the live command `set aot 0|1`, the perf.csv column `aot`, and the
 `# aot 10s` line (share translated, calls, runs, fallbacks and slow accesses per second).
 
-## Next steps, in order
+## Status and next steps (2026-10-14)
 
-1. **2DS A/B** (`--ab aot`, tp850, 600 s): core 0 speed in the cutscene and in the later core-0-bound stretch.
-   Watch I-cache misses: the translated code is ~21 MB of the .3dsx.
-2. **Direct calls** (N64Recomp, Wind Waker recomp): a `bl` to a translated function becomes a C call, and the caller
-   continues when the callee returns to the expected address (otherwise everything unwinds to `aot_run`). This
-   removes the store, lookup and reload at every call and return. A depth limit is needed for the 3DS stack.
-3. **The write-gather pipe inline**, as the JIT does it (append to the 32-byte burst buffer). The hottest functions
-   (`J3DGDSetLight*`, `J3DGDSetTexCoordGen`) write GX commands.
-4. **No symbol map needed:** discover functions from `bl` targets and prologues, as gcrecomp does for Ikaruga
-   (5,138 functions, symbol-free). That makes C12 work for any game the user owns, not only decompiled ones.
-5. **REL modules:** N64Recomp's relocation markers (`RELOC_HI16` / `RELOC_LO16` resolved at load), or hashing
-   modules after they are relocated at their (usually fixed) load addresses.
-6. **Code size:** `-Os` for cold functions, and a hot-first order so hot code packs into fewer cache lines and pages.
-7. **GX side** (the cutscene's ~20% cap): build each material's combiner plan once, as the Mario Kart 64 3DS port
-   does (EstebanPdN/mario-kart-64-3ds, Fast3D on citro3d).
+Done, each gated by the PC check (only the known `atan2` stack-store difference), the identical PC frame and the ARM
+check under qemu:
+
+1. **Direct calls** with per-site liveness: a call flushes only dirty registers and reloads only the volatile ones read
+   after it. Every written register has a dirty bit, so flushes store only what changed.
+2. **The write-gather pipe:** a store whose address the compiler sees is `0xCC008000` appends to the burst buffer at
+   the site; other pipe stores append inside the slow helper.
+3. **No symbol map needed:** functions are found from `bl` targets and prologues (13,704 in TP's DOL).
+4. **Register pressure:** slow paths call their helper through `aot_vcall`, which keeps r1-r3 and d0-d7, so hot paths
+   keep guest values in all sixteen VFP registers; psq_l's two paths meet as floats.
+5. **Per-entry loads:** each entry loads only what is live into it.
+6. **Cache instructions inline:** `dcbst` / `dcbf` / `dcbi` / `dcbz` on MEM1 as the JIT does them (only the page stamp
+   and dcbz's zeroes remain). Fallbacks over 120 fields: 1,008,067 -> 28,397.
+
+Measured under qemu (TP 850-870, ARM instructions per guest instruction inside translated functions, with the AOT_PROF
+counters): 10.26 at the start of the day, 9.37 after items 4-5. The JIT is 8.04 inside its buffer, but that leaves out
+its dispatcher and helpers, so the 2DS A/B (`--ab aot`) is the measure that counts.
+
+Open, in order:
+
+1. **2DS A/B** of the current build (job 140 or later).
+2. **Code size** (the .3dsx is 16 MB with 625 functions; a 28 MB build left too little heap): `-Os` for cold
+   functions, smaller slow-path sites, then more coverage.
+3. **REL modules:** N64Recomp's relocation markers, or hashing modules after they are relocated at their (usually fixed)
+   load addresses.
+4. **Translation from the user's own disc** (James, 2026-10-14). Open design question: a PC tool that builds a module
+   gc3ds loads from the SD card, or translation on the 2DS itself (no C compiler there: the JIT's back end run ahead of
+   time over whole functions, cached on the card).
+5. **Code quality:** the matrix functions (PSMTXConcat 15 ARM per guest instruction) are bound by double-precision
+   multiply-adds and register pressure; paired-single register saves in prologues convert both lanes by bits; CR fields
+   are materialized at every exit.
+6. **GX side:** the combiner plan is built once per material (in the build); geometry-shader quads and persistent
+   vertex buffers next.
 
 ## Prior art read (Haiku research, 2026-10-14; READMEs only, not the code)
 
