@@ -136,6 +136,8 @@ static void build(void) {
     }
 }
 
+bool aot_reserve(void) { build(); return g_funcs != NULL; }
+
 void aot_set_enabled(bool on) {
     g_on = on && aot_available();
     if (g_on) build();

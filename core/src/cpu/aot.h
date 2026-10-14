@@ -7,6 +7,9 @@
 #include "gekko.h"
 
 void aot_set_enabled(bool on);
+// Builds the lookup tables now (a few hundred KB of malloc): the 3DS calls it at startup, before MEM1, ARAM and the JIT
+// leave malloc ~0.4 MB, where turning translated code on later failed quietly (job 142 ran with it off throughout).
+bool aot_reserve(void);  // false: no translated code, or the tables did not fit
 bool aot_enabled(void);
 bool aot_available(void);  // generated code is linked in
 void aot_set_memory(u8* mem1);

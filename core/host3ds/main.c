@@ -436,6 +436,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
     }
     return true;
 }
+static bool g_aotTables;  // aot_reserve at startup
 static bool g_pipeFast = true;  // compiled code appends pipe stores itself (jit_set_gather_buffer)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
 static bool g_gpuPosFixed = true; // the transform a run starts with
@@ -669,8 +670,8 @@ static const char* run(const char* path) {
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
-        if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build, %s\n", aot_available() ? "present" : "absent",
-                            aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
+        if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build (lookup tables %s), %s\n", aot_available() ? "present" : "absent",
+                            g_aotTables ? "built" : "did not fit", aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
@@ -1396,6 +1397,7 @@ int main(int argc, char** argv) {
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
     relay_reserve();  // before MEM1, ARAM and the JIT's code take the heap
+    g_aotTables = aot_reserve();  // the translated code's lookup tables, likewise
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
     crashlog_set_info(CRASH_INFO_MEM1, (u32)g_sys.mem1);
     // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it
