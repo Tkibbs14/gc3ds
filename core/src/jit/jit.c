@@ -31,7 +31,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_N, ST_WORDS = 8192 };  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_N, ST_WORDS = 8192 };  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -565,11 +565,114 @@ static void hc_inst(u32 inst) {
     g_hcChk &= ~w;
     g_hcChk2 &= ~(mem && (op & 1) ? w & ~(1u << ra) : w);
 }
+// CR-field fate model (candidate 1, CR dead stores): for every compiled instruction that writes one whole CR field, is the
+// field overwritten on every path through the guest code that follows before anything reads it? A bc right after it on
+// that field, which the JIT fuses into a branch on the ARM flags, does not count as a read. CF_DEAD: dead with no load,
+// store or call on the way; CF_DEADX: dead, but a path passes a load / store (which could fault) or relies on a call or
+// return clobbering a volatile field (cr0, cr1, cr5-7, by the ABI); CF_LIVE: a path reads it; CF_UNKNOWN: the scan
+// stopped (indirect branch, unanalysable instruction, its length limit). +CF_FUSED when the next instruction is that bc.
+enum { CF_DEAD, CF_DEADX, CF_LIVE, CF_UNKNOWN, CF_FUSED = 4, CF_N = 8 };
+static u8 (*g_cf)[CF_N];
+static u64 g_cfTot[CF_N];
+// The CR fields an instruction reads (*rd) and writes whole (*wr), as masks over fields 0-7 (bit f = field f). false: not
+// analysable (the scan stops).
+static bool crf_use(u32 inst, u32* rd, u32* wr) {
+    u64 r = 0, w = 0;
+    if (!gekko_regs(inst, &r, &w)) return false;
+    *rd = *wr = 0;
+    if (!((r | w) & (1ull << GR_CR))) return true;
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, crfD = (inst >> 23) & 7, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (op == 10 || op == 11 || (op == 31 && (xo == 0 || xo == 32 || xo == 512)) || (op == 63 && (xo == 0 || xo == 32 || xo == 64)) ||
+        (op == 4 && (xo == 0 || xo == 32 || xo == 64 || xo == 96))) { *wr = 1u << crfD; return true; }  // compares, mcrxr, mcrfs
+    if (op == 16 || (op == 19 && (xo == 16 || xo == 528))) { if (!(bo & 16)) *rd = 1u << (bi >> 2); return true; }
+    if (op == 19 && xo == 0) { *rd = 1u << ((inst >> 18) & 7); *wr = 1u << crfD; return true; }  // mcrf
+    if (op == 19) { *rd = 1u << (((inst >> 21) & 31) >> 2) | 1u << (((inst >> 16) & 31) >> 2) | 1u << (((inst >> 11) & 31) >> 2); return true; }  // cr logic: crbD's field is partly kept
+    if (op == 31 && xo == 144) { for (u32 k = 0; k < 8; k++) if ((inst >> 12) & (0x80u >> k)) *wr |= 1u << k; return true; }  // mtcrf: FXM's high bit is field 0
+    if ((op == 31 && xo == 150) || op == 13 || op == 28 || op == 29) { *wr = 1; return true; }  // stwcx., addic., andi., andis.
+    if (inst & 1) { *wr = (op == 4 || op == 59 || op == 63) ? 2 : 1; return true; }  // record forms: CR1 for floats, else CR0
+    *rd = 0xFF;  // anything else that touches CR (mfcr): reads every field
+    return true;
+}
+static bool crf_mem(u32 inst) {  // may raise a DSI (or leave compiled code) between the write and the overwrite
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
+    if ((op >= 32 && op <= 57) || op == 60 || op == 61) return true;
+    if (op == 4) { u32 x6 = xo & 0x3F; return x6 == 6 || x6 == 7 || x6 == 38 || x6 == 39 || xo == 1014; }
+    static const u16 kMem31[] = { 20, 23, 87, 279, 343, 534, 790, 55, 119, 311, 375, 151, 215, 407, 662, 918, 183, 247, 439,
+                                  150, 54, 86, 470, 1014, 535, 599, 663, 727, 983, 567, 631, 695, 759 };
+    if (op == 31) for (u32 k = 0; k < sizeof kMem31 / sizeof kMem31[0]; k++) if (xo == kMem31[k]) return true;
+    return false;
+}
+static int crf_scan(Jit* j, u32 pc, u32 f, bool fused) {
+    u32 stack[16], nStack = 0, seen[48], nSeen = 0, budget = 96;
+    bool extra = false, volatileF = f <= 1 || f >= 5;
+    stack[nStack++] = pc;
+    while (nStack) {
+        u32 p = stack[--nStack];
+        for (;;) {
+            bool dup = false;
+            for (u32 k = 0; k < nSeen; k++) if (seen[k] == p) dup = true;
+            if (dup) break;  // explored from there already
+            if (nSeen == sizeof seen / sizeof seen[0] || !budget--) return CF_UNKNOWN;
+            seen[nSeen++] = p;
+            u32 pa;
+            if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return CF_UNKNOWN;
+            u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+            u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, rd, wr;
+            if (!crf_use(inst, &rd, &wr)) return CF_UNKNOWN;
+            if (fused && p == pc) rd = 0;  // the fused bc reads the ARM flags, not the stored field
+            if (rd & (1u << f)) return CF_LIVE;
+            if (wr & (1u << f)) break;  // this path: dead
+            if (crf_mem(inst)) extra = true;
+            if (op == 18 || op == 16) {
+                s32 off = op == 18 ? ((s32)(inst << 6)) >> 6 & ~3 : (s32)(s16)(inst & 0xFFFC);
+                u32 target = (inst & 2) ? (u32)off : p + (u32)off;
+                bool always = op == 18 || (((inst >> 21) & 20) == 20);
+                if (inst & 1) {  // bl / bcl: a call clobbers the volatile fields (the ABI); the callee may still mfcr them
+                    if (!volatileF) return CF_UNKNOWN;
+                    extra = true;
+                    if (always) break;
+                    p += 4;
+                    continue;
+                }
+                if (!always) { if (nStack == sizeof stack / sizeof stack[0]) return CF_UNKNOWN; stack[nStack++] = target; p += 4; continue; }
+                p = target;
+                continue;
+            }
+            if (op == 19 && (xo == 16 || xo == 528)) {  // blr / bctr: a return clobbers the volatile fields; bctr is unknown
+                if (xo == 528 || !volatileF) return CF_UNKNOWN;
+                extra = true;
+                if ((((inst >> 21) & 20) == 20)) break;
+                p += 4;
+                continue;
+            }
+            if (op == 19 && (xo == 50 || xo == 150)) return CF_UNKNOWN;  // rfi, isync
+            if (op == 17) return CF_UNKNOWN;                              // sc
+            p += 4;
+        }
+    }
+    return extra ? CF_DEADX : CF_DEAD;
+}
+// Classifies the CR-field write of the instruction at pc (compile time).
+static void cf_note(Jit* j, u32 pc, u32 inst) {
+    u32 rd, wr;
+    if (!g_regStat || !crf_use(inst, &rd, &wr) || !wr || (wr & (wr - 1))) return;
+    u32 f = (u32)__builtin_ctz(wr), pa, next = 0;
+    if (gk_translate(j->g, pc + 4, false, false, &pa, false) && pa + 4 <= j->ramSize)
+        next = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+    u32 nbo = (next >> 21) & 31, nbi = (next >> 16) & 31;
+    bool fused = (next >> 26) == 16 && (nbo & 4) && !(nbo & 16) && (nbi >> 2) == f && (nbi & 3) != 3 && !(next & 1) &&
+                 ((inst >> 26) != 63 && (inst >> 26) != 59 && (inst >> 26) != 4);  // integer flags only
+    int k = crf_scan(j, pc + 4, f, fused) + (fused ? CF_FUSED : 0);
+    if (g_cf[g_rsCur][k] < 255) g_cf[g_rsCur][k]++;
+}
+static u32 g_ctrWords;  // hot words of these counters in the instruction being compiled (left out of the per-opcode words)
 static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled code (r12, lr; flags kept)
+    u32 n0 = e->n;
     load_const(e, R12, (u32)(uintptr_t)counter);
     ldr_imm(e, LR, R12, 0);
     dp_imm(e, ADD, 0, LR, LR, 1);
     str_imm(e, LR, R12, 0);
+    g_ctrWords += e->n - n0;
 }
 static void rx_add(Cg* c, int kind, u32 target, u32 from);
 
@@ -776,6 +879,8 @@ static void rs_fold(Jit* j, u32 nEntries) {
         g_fsLd[b] = g_fsHit[b] = g_fsSt[b] = g_fsDead[b] = 0;
         for (int k = 0; k < HC_N; k++) g_hcTot[k] += n * g_hc[b][k];
         memset(g_hc[b], 0, HC_N);
+        for (int k = 0; k < CF_N; k++) g_cfTot[k] += n * g_cf[b][k];
+        memset(g_cf[b], 0, CF_N);
         g_rsExec[b] = 0;
         memset(g_rsLd[b], 0, RS_IDS);
         memset(g_rsSt[b], 0, RS_IDS);
@@ -1496,7 +1601,9 @@ static void emit_fallback(Cg* c, u32 inst) {
 
 // ---- branches (end the block) ----
 // Taken: to `target` (constant) or, when `indirect`, to the address in r2. Not taken: pc + 4. Uses r0, r3.
-static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
+// indStub (OPT_RETSTUB): an indirect branch whose taken side is a plain branch to ST_INDLR / ST_INDCTR (which read the
+// target themselves); -1: the target is in r2 already.
+static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, int indStub) {
     Emit* e = &c->e;
     u32 notTaken[2];
     int nNot = 0;
@@ -1532,7 +1639,22 @@ static void emit_branch_cond(Cg* c, u32 bo, u32 bi, bool indirect, u32 target) {
         exit_const(c, c->pc + 4);
         return;
     }
-    if (indirect) exit_indirect(c); else exit_const(c, target);
+    bool stubSite = nNot == 1 && indStub >= 0;
+#ifndef __3DS__
+    if (g_regStat) stubSite = false;
+#endif
+    if (stubSite) {  // one condition: the branch itself goes to the stub when taken (its condition inverted)
+        e->buf[notTaken[0]] ^= 1u << 28;
+        patch_to(e->buf + notTaken[0], stub(c, indStub));
+        exit_const(c, c->pc + 4);
+        return;
+    }
+    if (indStub >= 0) {
+#ifndef __3DS__
+        rx_add(c, RX_IND, 0, c->pc);
+#endif
+        branch_abs(e, C_AL, false, stub(c, indStub));
+    } else if (indirect) exit_indirect(c); else exit_const(c, target);
     if (!nNot) return;
     for (int i = 0; i < nNot; i++) patch_branch(e, notTaken[i], e->n);
     exit_const(c, c->pc + 4);
@@ -1580,7 +1702,7 @@ static bool compile_branch(Cg* c, u32 inst) {
         s32 bd = (s32)(s16)(inst & 0xFFFC);
         u32 target = (inst & 2) ? (u32)bd : c->pc + (u32)bd;
         u32 lit = lk ? lr_set(c) : 0;
-        emit_branch_cond(c, bo, bi, false, target);
+        emit_branch_cond(c, bo, bi, false, target, -1);
         if (lk) lr_literal(c, lit);
         return true;
     }
@@ -1588,10 +1710,17 @@ static bool compile_branch(Cg* c, u32 inst) {
         u32 xo = (inst >> 1) & 0x3FF, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
         if (xo == 16 || xo == 528) {  // bclr / bcctr
             if (xo == 528 && !(bo & 4)) return false;  // invalid form: let the interpreter handle it
+            if ((c->j->opt & OPT_RETSTUB) && !c->noLink && !(xo == 16 && lk)) {
+                // The stub reads LR / CTR when the branch is taken: bcctrl may write LR first, bclrl may not (old path).
+                u32 lit = lk ? lr_set(c) : 0;
+                emit_branch_cond(c, bo, bi, true, 0, xo == 16 ? ST_INDLR : ST_INDCTR);
+                if (lk) lr_literal(c, lit);
+                return true;
+            }
             ldr_imm(e, R2, RG, xo == 16 ? OFF_LR : OFF_CTR);   // read before LK overwrites LR
             dp_imm(e, BIC, 0, R2, R2, 3);
             u32 lit = lk ? lr_set(c) : 0;
-            emit_branch_cond(c, bo, bi, true, 0);
+            emit_branch_cond(c, bo, bi, true, 0, -1);
             if (lk) lr_literal(c, lit);
             return true;
         }
@@ -3382,8 +3511,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         t.nextPc = c->pc + 4;  // a followed branch changes these
         t.nextPa = ipa + 4;
 #ifndef __3DS__
-        if (i > 0) { op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot); }
-        prevInst = inst; prevHot = e->n; prevCold = c->alt.n;
+        if (i > 0) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
+        prevInst = inst; prevHot = e->n; prevCold = c->alt.n; g_ctrWords = 0;
 #endif
         // The ARM flags the previous instruction left: every path through an instruction's code reaches its end, so
         // flags its last emitted instruction set are there on all of them.
@@ -3400,7 +3529,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         c->tailN = 0;
         c->tailFpr = -1;
 #ifndef __3DS__
-        if (g_regStat) hc_inst(inst);
+        if (g_regStat) { hc_inst(inst); cf_note(j, c->pc, inst); }
 #endif
         {   // check hoisting: GPRs the previous instruction wrote lose their check; this one's writes are applied after it
             u64 rd = 0, wr = 0;
@@ -3428,7 +3557,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
     }
 #ifndef __3DS__
-    if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot); }
+    if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
 #endif
     if (!ended) {  // ran out of instructions (or a page end)
 #ifndef __3DS__
@@ -4115,6 +4244,15 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, ADD, 0, R1, R1, 4);
     str_reg_shift(e, R3, R1, R2, 2);
     bx_reg_c(e, C_AL, LR);
+    // ST_INDCTR / ST_INDLR (OPT_RETSTUB): bctr / blr, entered with a plain branch: the target from CTR / LR, then as
+    // ST_INDIRECT, which writes g->pc only when the lookup misses (its other callers have written it already).
+    j->stub[ST_INDCTR] = e->n;
+    ldr_imm(e, R2, RG, OFF_CTR);
+    u32 indCtr = branch_c(e, C_AL, 0);
+    j->stub[ST_INDLR] = e->n;
+    ldr_imm(e, R2, RG, OFF_LR);
+    patch_branch(e, indCtr, e->n);
+    dp_imm(e, BIC, 0, R2, R2, 3);
     j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
     mov_shift(e, 0, R1, R2, LSL, 30 - FAST_BITS);  // fast_index: (pc >> 2) & (FAST_SIZE - 1)
     mov_shift(e, 0, R1, R1, LSR, 32 - FAST_BITS);
@@ -4123,6 +4261,7 @@ static void emit_stubs(Jit* j) {
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     bx_reg_c(e, C_EQ, R1);
+    str_imm(e, R2, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 1);  // 1: a miss in the table (the dispatcher counts it)
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     // ST_INTERP: reached with "bl" followed by three literals: guest pc, instruction, and the block's instructions before it.
@@ -4532,6 +4671,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_rwSt = calloc(MAX_ENTRIES, RW_N);
         g_rsE = calloc(MAX_ENTRIES, sizeof(RsEntry));
         g_hc = calloc(MAX_ENTRIES, HC_N);
+        g_cf = calloc(MAX_ENTRIES, CF_N);
         g_rx = calloc(RX_POOL, sizeof(RsExit));
         g_rxCount = calloc(RX_POOL, sizeof(u32));
         if (getenv("JIT_SCHEDDUMP")) {
@@ -4541,7 +4681,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
             if (!g_hotLen || !g_proLen) { if (g_schedOut) fclose(g_schedOut); g_schedOut = NULL; }
         }
         g_regStat = g_rsLd && g_rsSt && g_rsExec && g_dopPool && g_dopStart && g_dopLen && g_fsLd && g_fsHit && g_fsSt && g_fsDead &&
-                    g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount && g_hc;
+                    g_rwLd && g_rwSt && g_rsE && g_rx && g_rxCount && g_hc && g_cf;
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
@@ -5002,6 +5142,18 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
                      (unsigned long long)ft, ft ? 100.0 * (double)g_hcTot[HC_FLT_FIRST] / (double)ft : 0.0,
                      ft ? 100.0 * (double)g_hcTot[HC_FLT_HOIST] / (double)ft : 0.0, ft ? 100.0 * (double)g_hcTot[HC_FLT_UPD] / (double)ft : 0.0,
                      (unsigned long long)g_hcTot[HC_ABS]);
+            print(line);
+        }
+        {
+            u64 t = 0;
+            for (int k = 0; k < CF_N; k++) t += g_cfTot[k];
+            double d = t ? (double)t : 1.0;
+            snprintf(line, sizeof line, "  CR-field fate (executed CR-field writes %llu): fused-bc next: dead %.1f%%, dead past ld/st or a call %.1f%%, "
+                     "live %.1f%%, unknown %.1f%%; other: %.1f%% / %.1f%% / %.1f%% / %.1f%%", (unsigned long long)t,
+                     100.0 * (double)g_cfTot[CF_FUSED + CF_DEAD] / d, 100.0 * (double)g_cfTot[CF_FUSED + CF_DEADX] / d,
+                     100.0 * (double)g_cfTot[CF_FUSED + CF_LIVE] / d, 100.0 * (double)g_cfTot[CF_FUSED + CF_UNKNOWN] / d,
+                     100.0 * (double)g_cfTot[CF_DEAD] / d, 100.0 * (double)g_cfTot[CF_DEADX] / d,
+                     100.0 * (double)g_cfTot[CF_LIVE] / d, 100.0 * (double)g_cfTot[CF_UNKNOWN] / d);
             print(line);
         }
         snprintf(line, sizeof line, "  memory instructions executed by address form: r1+d %u, r2+d %u, r13+d %u, other rA+d %u, 0+d %u, rA+rB %u",

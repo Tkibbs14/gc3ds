@@ -473,7 +473,11 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
     // page stamps grew the program's data.) The interpreter made more unmapped accesses than the JIT's slow paths.
     bool unmapped = g_faultMode && B.unknownMmioCount - g_unkB > A.unknownMmioCount - g_unkA;
     if (unmapped || (g_faultMode && b->spr[SPR_DAR] != a->spr[SPR_DAR] && alias_unchecked(b->spr[SPR_DAR]))) {
-        // Not compared; what outlives the case (the write-gather pipe) is taken from the interpreter.
+        // Not compared; what outlives the case (the write-gather pipe, and the memory later cases compare: the JIT's
+        // access went through to the alias, so these may differ) is taken from the interpreter.
+        memcpy(A.mem1 + MEM1_SIZE - TOP_SIZE, B.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
+        for (int k = 0; k < 2; k++) memcpy(A.mem1 + kEdgePa[k], B.mem1 + kEdgePa[k], EDGE_SIZE);
+        memcpy(A.mem1 + WIN_PA, B.mem1 + WIN_PA, WIN_SIZE);
         memcpy(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp);
         A.gx.wgpLen = B.gx.wgpLen;
         A.gx.bytesReceived = B.gx.bytesReceived;
@@ -650,6 +654,10 @@ static u32 chain_case(St* st, u32* prog) {
     for (u32 k = 0; k < nseg; k++) len[k] = 1 + rnd() % 6;
     for (u32 k = 0; k < nseg; k++) { start[k] = at; at += len[k] + 1; }
     start[nseg] = at;
+    // Half the cases: CTR holds a segment's address, and the bdnz slot becomes bctr / bctrl / a conditional bcctr or bclr
+    // (the indirect stubs, OPT_RETSTUB).
+    bool ctrMode = rnd() & 1;
+    u32 ctrTo = start[1 + rnd() % (nseg - 1)];
     for (u32 k = 0; k < nseg; k++) {
         for (u32 i = 0; i < len[k]; i++) {
             u32 in = gen(st);
@@ -664,13 +672,18 @@ static u32 chain_case(St* st, u32* prog) {
             int f = crf_set(prog[here - 1]);
             u32 bi = f >= 0 && rnd() % 2 ? (u32)f * 4 + rnd() % 3 : rbits(5);
             prog[here] = (16u << 26) | ((rnd() & 1 ? 4u : 12u) << 21) | (bi << 16) | (delta & 0xFFFC);
+        } else if (kind == 5 && ctrMode) {                                                        // bctr / bctrl / bcctr or bclr on a CR bit
+            int f = crf_set(prog[here - 1]);
+            u32 bi = f >= 0 && rnd() % 2 ? (u32)f * 4 + rnd() % 3 : rbits(5), form = rnd() % 4;
+            u32 bo = form <= 1 ? 20u : (rnd() & 1 ? 4u : 12u);
+            prog[here] = (19u << 26) | (bo << 21) | (bi << 16) | ((form == 3 ? 16u : 528u) << 1) | (form == 1 ? 1u : 0u);
         } else if (kind == 5) prog[here] = (16u << 26) | (16u << 21) | (delta & 0xFFFC);           // bdnz
         else if (kind == 6) prog[here] = (18u << 26) | delta | 1;                                  // bl
         else if (kind == 7) prog[here] = 0x4E800020u;                                              // blr
         else prog[here] = (24u << 26);                                                             // nop: fall through
     }
     st->lr = CODE_EA;
-    st->ctr = rnd() % 24;
+    st->ctr = ctrMode ? CODE_EA + 4 * ctrTo + rnd() % 4 : rnd() % 24;  // (bcctr ignores the low two bits)
     st->irq = false;
     st->user = false;
     return at;

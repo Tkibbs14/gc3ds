@@ -98,7 +98,9 @@ u32 jit_sched(const Jit* j);
 // OPT_FCACHE: exact-single FPR lanes live in VFP registers as singles within a block (jit.c "float lanes").
 // OPT_CALLS: traces follow bl into the callee (LR written as usual) and a blr while LR still holds that return address
 // back to it, so small functions (TP's PSVEC*, J3DFifoLoad*) cost no block exit and no indirect-table lookup.
-enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_ALL = 15 };
+// OPT_RETSTUB: blr / bctr (and bctrl, conditional forms too) branch to shared stubs that read LR / CTR and look the target up,
+// one hot word per site instead of four; g->pc is written only when the lookup misses.
+enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_ALL = 31 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.
