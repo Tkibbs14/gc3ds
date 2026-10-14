@@ -72,6 +72,23 @@ On the 3DS: `--aot on`, `--ab aot`, the live command `set aot 0|1`, the perf.csv
 
 ## Status and next steps (2026-10-14)
 
+**Verdict on the 2DS (2026-10-14 evening): translated code is slower than the JIT.** Job 144 (tp850, , 90%
+coverage): cutscene 20.2% JIT vs 14.4% translated, the later stretch 12.8% vs 8.6%, though qemu counted only ~17% more
+ARM instructions per guest instruction. Core 0 is bound by instruction fetch (IPC 0.31, 44% of cycles stalled on it,
+HANDOFF 2026-10-12), and 6 MB of translated code with its slow paths inline fetches worse than the JIT's compact hot
+blocks. Translation stays off ( is the default). What carries over: the qemu instruction counter
+(), function discovery without symbols, and the check mode against the interpreter.
+
+Measured the same evening (all tp850, 600 s, 20 s A/B phases):
+- Shadow-scan stand-in (, jobs 145-146): Link / Epona stretch 10.6-10.7% -> 11.9-12.4%, cutscene within
+  noise. **On by default now.** Its tight visited-triangle loop (051987d) changed nothing measurable: the stand-in is
+  ~5 cycles per guest instruction it stands in for, bound by the collision mesh's memory.
+- Following calls in traces (OPT_CALLS, , job 147): cutscene
+  20.4 -> 19.9%, later 11.0 -> 11.4%, both within the ~5% run-to-run noise. Off.
+- Device profile (): outside the shadow scene no compiled block holds more than 0.3% of samples, so
+  single-function stand-ins have no target there. The lever left is the JIT's code size (HANDOFF candidates: CR-field
+  dead stores, , float loads and stores, register pinning).
+
 **Memory: translate 90% coverage on the 3DS.** At  the translated code was 8.4 MB of 9.9 MB of text, and
 malloc's largest block fell from 6.6 MB (job 134) to 0.4 MB (job 142): textures went missing (jobs 135-143) and the
 lookup tables did not fit.  is 312 functions and 5.9 MB of text, and still runs 94% of the guest
