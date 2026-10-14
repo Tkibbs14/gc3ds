@@ -153,15 +153,43 @@ class Translator:
         self.inl = {}         # start -> Fn of small leaf functions inlined at their call sites
         self.deps = []        # (start, size) of inlined callees: the translation is valid only while they match too
         self.ninl = 0
+        self.gidx = 0         # this function's index (aot_valid, the profile)
         self.attr = ''
         self.abi = True       # direct calls trust the EABI's callee-saved registers (--abi 0: reload everything)
         self.fidx = {}        # start -> index of every translated function (direct calls)
         self.dcalls = []      # direct call sites: their resume labels
+        # Register liveness (two passes, see main): pass 1 records what each instruction reads and writes; pass 2 loads
+        # at entry only what is read before it is written (E), and keeps a "written" bit per other register (U) so that
+        # exits store only what this function actually wrote.
+        self.rec_root = self  # where reads / writes are recorded (an inlined callee records into its call site)
+        self.cur_r, self.cur_w, self.cur_wmay, self.cur_kind = set(), set(), set(), None
+        self.rw = {}          # pass 1: k -> (reads, writes, kind)
+        self.wids = set()     # every id written
+        self.ids = set()      # every id used
+        self.E = None         # pass 2: ids loaded at entry (None in pass 1)
+        self.all_w = set()    # pass 2: every id this function writes (pass 1's wids): the dirty bits
+        self.all_ids = set()  # pass 2: every id this function uses (pass 1's ids)
+        self.live_after = {}  # pass 2: call site k -> ids read after the call before written (reloaded there)
+        self.ubit = {}        # pass 2: U id -> bit in the dm words
 
     # -- helpers -------------------------------------------------------------------------------------------
+    def _rec(self, ident, w):
+        self.ids.add(ident)
+        if w:
+            self.cur_w.add(ident)
+            self.wids.add(ident)
+        else:
+            self.cur_r.add(ident)
+        root = self.rec_root
+        if root is not self:
+            root.ids.add(ident)
+            if w: root.cur_wmay.add(ident)
+            else: root.cur_r.add(ident)
+
     def R(self, r, write=False):
         self.gpr.add(r)
         if write: self.wgpr.add(r)
+        self._rec(('r', r), write)
         return 'r%d' % r
 
     def RA0(self, r):
@@ -170,26 +198,36 @@ class Translator:
     def F(self, r, lane=0, write=False):
         self.fpr.add(r)
         if write: self.wfpr.add(r)
+        self._rec(('f' if lane == 0 else 'p', r), write)
         return ('f%d' if lane == 0 else 'p%d') % r
 
     def CR(self, f, write=False):
         self.crf.add(f)
         if write: self.wcrf.add(f)
+        self._rec(('c', f), write)
         return 'c%d' % f
+
+    def Q(self, i):
+        """GQR i, read-only here (mtspr to a GQR runs in the interpreter, which reloads every register after)."""
+        self._rec(('q', i), False)
+        return 'q%d' % i
 
     def LR(self, write=False):
         self.use_lr = True
         if write: self.w_lr = True
+        self._rec(('lr',), write)
         return 'lr'
 
     def CTR(self, write=False):
         self.use_ctr = True
         if write: self.w_ctr = True
+        self._rec(('ctr',), write)
         return 'ctr'
 
     def XER(self, write=False):
         self.use_xer = True
         if write: self.w_xer = True
+        self._rec(('xer',), write)
         return 'xer'
 
     def crbit(self, b):
@@ -197,6 +235,7 @@ class Translator:
 
     def set_crbit(self, b, expr):
         f = b >> 2; sh = 3 - (b & 3)
+        self.CR(f)  # read as well: the other bits stay
         c = self.CR(f, True)
         return '%s = (%s & ~%du) | ((%s) << %d);' % (c, c, 1 << sh, expr, sh)
 
@@ -260,6 +299,7 @@ class Translator:
         for s in ent: state_in[s] = frozenset()
         state_in[0] = frozenset()
         succ = {}
+        self.succ = succ
         for s, e in self.blocks:
             last = e - 1
             i = f.words[last]
@@ -355,12 +395,15 @@ class Translator:
         self.fb_sites = []  # (label id) for fallback resumption
         for s, e in self.blocks:
             body.append('%sL%d:' % (self.lp, s))
-            body.append('    n += %d;' % (e - s))
+            body.append('    n += %d; AOT_PROF_ADD(%d, %d);' % (e - s, self.gidx, e - s))
             for k in range(s, e):
                 self.k = k; self.bs, self.be = s, e
                 self.known = self.known_at[k]
                 pc = f.start + 4 * k
+                self.cur_r, self.cur_w, self.cur_wmay, self.cur_kind = set(), set(), set(), None
                 code = self.insn(pc, f.words[k])
+                self.rw[k] = (frozenset(self.cur_r), frozenset(self.cur_w), self.cur_kind)
+                code = code + self.dm_or(self.cur_w)
                 for c in code:
                     body.append('    ' + c)
             last = f.words[e - 1]
@@ -373,7 +416,9 @@ class Translator:
     def exit_after(self, npc_expr):
         """Leave after the current instruction completed (it counted)."""
         adj = self.be - 1 - self.k
-        return 'npc = %s;%s goto out;' % (npc_expr, (' n -= %d;' % adj) if adj else '')
+        # what this instruction wrote before leaving (LR of a bl, CTR of a bdnz) is dirty before the exit's flush
+        dirty = ' '.join(self.dm_or(self.cur_w))
+        return '%snpc = %s;%s goto out;' % (dirty + ' ' if dirty else '', npc_expr, (' n -= %d;' % adj) if adj else '')
 
     def exit_before(self, pc):
         adj = self.be - self.k
@@ -388,6 +433,7 @@ class Translator:
         key = fields(i)
         self.st['fb'][(key['op'], key['xo'] if key['op'] in (4, 19, 31, 59, 63) else 0)] = \
             self.st['fb'].get((key['op'], key['xo'] if key['op'] in (4, 19, 31, 59, 63) else 0), 0) + 1
+        self.cur_kind = 'sync'
         return ['fb_k = %d; fb_pc = %s; fb_inst = %s; fb_adj = %d; goto fallback;' % (k, hx(pc), hx(i), self.adj_after()),
                 'FB%d:;' % k]
 
@@ -490,15 +536,15 @@ class Translator:
             return self.store(size, R(rd), self.ea_d(d), pc)
         if op == 46:  # lmw
             if ra >= rd and ra != 0: return None
-            out = ['{ u32 mb_ = %s;' % self.ea_d(d)]
+            out = ['{ u32 lm_ = %s;' % self.ea_d(d)]
             for r in range(rd, 32):
-                out += self.load(4, R(r, 1), 'mb_ + %du' % (4 * (r - rd)), pc, i)
+                out += self.load(4, R(r, 1), 'lm_ + %du' % (4 * (r - rd)), pc, i)
             out.append('}')
             return out
         if op == 47:  # stmw
-            out = ['{ u32 mb_ = %s;' % self.ea_d(d)]
+            out = ['{ u32 lm_ = %s;' % self.ea_d(d)]
             for r in range(rd, 32):
-                out += self.store(4, R(r), 'mb_ + %du' % (4 * (r - rd)), pc)
+                out += self.store(4, R(r), 'lm_ + %du' % (4 * (r - rd)), pc)
             out.append('}')
             return out
         if op == 31: return self.op31(pc, i, d)
@@ -605,7 +651,7 @@ class Translator:
             if spr == 8: return ['%s = %s;' % (R(rd, 1), self.LR())]
             if spr == 9: return ['%s = %s;' % (R(rd, 1), self.CTR())]
             if spr == 1: return ['%s = %s;' % (R(rd, 1), self.XER())]
-            if 912 <= spr <= 919: return ['%s = g->spr[%d];' % (R(rd, 1), spr)]
+            if 912 <= spr <= 919: return ['%s = %s;' % (R(rd, 1), self.Q(spr - 912))]
             return None
         if xo == 467:
             spr = ((i >> 16) & 31) | ((i >> 6) & 0x3E0)
@@ -648,6 +694,7 @@ class Translator:
         parts = []
         pre = []
         if not (bo & 4):
+            self.CTR()
             pre.append('%s--;' % self.CTR(1))
             parts.append('(%s %s 0u)' % (self.CTR(), '==' if bo & 2 else '!='))
         if not (bo & 0x10):
@@ -676,6 +723,8 @@ class Translator:
         sub.gpr, sub.fpr, sub.crf = self.gpr, self.fpr, self.crf
         sub.wgpr, sub.wfpr, sub.wcrf = self.wgpr, self.wfpr, self.wcrf
         sub.fallbacks = self.fallbacks
+        sub.rec_root = self.rec_root
+        sub.wids, sub.ubit, sub.E = self.wids, self.ubit, self.E
         sub.lp = 'I%d_' % self.ninl
         sub.ret_label = 'I%d_ret' % self.ninl
         sub.use_lr = True
@@ -692,8 +741,33 @@ class Translator:
         k = len(self.dcalls)
         self.dcalls.append(k)
         self.st['dcalls'] = self.st.get('dcalls', 0) + 1
-        return ['dc_k = %d; dc_pc = %s; dc_rp = %s; dc_fn = %s; dc_v = %d; goto dcall;' % (k, target, hx(pc + 4), fn, gidx),
-                'DC%d:;' % k]
+        self.cur_kind = 'dcall'
+        if self.E is None: return ['/* call */']  # pass 1: only the bookkeeping
+        # The flush stores what was written since the last sync (dirty bits, constant along straight code, so most of
+        # these tests fold away); after the call every local is clean again: the reloaded ones equal g, and the ones not
+        # reloaded are not read again before they are written (liveness), so they must not be stored either.
+        site = self.k
+        live = self.live_after.get(site, set())
+        o = ['{ u32 ei_ = 0; AotFn fn_ = %s;' % fn]
+        o += self.dm_or(self.cur_w)  # LR, written just before
+        o += self.flush_lines()
+        o.append('%s' % ('dm0 = 0;' if self.ubit else ''))
+        o += ['dm%d = 0;' % w for w in range(1, (len(self.ubit) + 31) // 32)]
+        if fn == '0': o.append('fn_ = aot_lookup(%s, &ei_);' % target)
+        else: o.append('if (aot_valid[%d] != 1 && !aot_check_idx(%d)) fn_ = 0;' % (gidx, gidx))
+        o.append('if (!fn_ || aot_depth >= aot_depth_max || aot_stop) { g->pc = %s; return n; }' % target)
+        o.append('g->cycles = t0 + n; aot_depth++;')
+        o.append('u32 m_ = fn_(g, ei_, budget - (s32)n);')
+        o.append('aot_depth--; g->cycles = t0;')
+        o.append('if (!m_) { g->pc = %s; return n; }' % target)
+        o.append('n += m_;')
+        o.append('if (g->pc != %s || aot_stop) return n;' % hx(pc + 4))
+        # every id of the function (pass 1's set: self.ids still lacks those first used after this site)
+        for i in sorted(self.all_ids, key=self.idkey):
+            if self.volatile(i) and i in live: o.append('%s = %s;' % (self.cname(i), self.gload(i)))
+        o.append('}')
+        self.cur_w = set()  # the dirty bits were set above (and cleared by the flush)
+        return o
 
     def branch(self, pc, i, d, op):
         if op == 19:
@@ -705,7 +779,7 @@ class Translator:
                 out = ['{ u32 t_ = %s;' % tgt]
                 pre, c = self.cond(bo, bi) if xo == 16 else ([], self.cond(bo | 4, bi)[1])
                 if xo == 528 and not (bo & 4): return None
-                out += pre
+                out += pre + self.dm_or(self.cur_w)  # CTR of a bdnz is dirty before the branch
                 if lk: out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
                 if xo == 528 and lk and c == '1' and not self.ret_label and not pre and self.fidx:
                     out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
@@ -743,21 +817,21 @@ class Translator:
         if lk:
             out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
             if kind == 'b' and t in self.inl and not self.ret_label and self.ninl < 64:
-                return out + self.inline_leaf(self.inl[t])
+                return out + self.dm_or(self.cur_w) + self.inline_leaf(self.inl[t])
             if kind == 'b' and t in self.fidx and not self.ret_label:
                 return out + self.dcall(hx(t), pc, 'F_%08X' % t, self.fidx[t])
             if kind == 'b':
                 out.append(self.exit_after(hx(t)))
                 return out
             pre, c = self.cond(bo, bi)
-            out += pre
+            out += pre + self.dm_or(self.cur_w)  # CTR of a bdnz is dirty before the branch
             out.append('if (%s) { %s }' % (c, self.exit_after(hx(t))))
             return out
         if kind == 'b':
             out.append(self.goto(pc, t))
             return out
         pre, c = self.cond(bo, bi)
-        out += pre
+        out += pre + self.dm_or(self.cur_w)  # CTR of a bdnz is dirty before the branch
         if c == '1': out.append(self.goto(pc, t))
         else: out.append('if (%s) { %s }' % (c, self.goto(pc, t)))
         return out
@@ -811,7 +885,7 @@ class Translator:
     def psq(self, pc, load, rd, ra, ea, w, q, upd):
         F, R = self.F, self.R
         adj, bef = self.adj_after(), self.be - self.k
-        out = ['{ u32 ea_ = %s, q_ = g->spr[%d];' % (ea, 912 + q)]
+        out = ['{ u32 ea_ = %s, q_ = %s;' % (ea, self.Q(q))]
         size = 4 if w else 8
         if load:
             fast = ('%s = S2D(LDU32(ea_)); %s = 1.0;' % (F(rd, 0, 1), F(rd, 1, 1)) if w else
@@ -880,6 +954,8 @@ class Translator:
 
     def fcmp(self, crf, a, b, ordered, pc):
         self.use_fpscr = self.w_fpscr = True
+        self._rec(('fpscr',), False)
+        self._rec(('fpscr',), True)
         out = ['{ u32 c_ = FCMP(%s, %s);' % (a, b)]
         if ordered:
             # fcmpo with a NaN operand sets VXVC (and maybe more): the interpreter does it exactly
@@ -935,6 +1011,88 @@ class Translator:
                     % (F(rb, 0), F(rb, 1), F(rd, 0, 1), F(rd, 1, 1))]
         return None
 
+    # -- liveness --------------------------------------------------------------------------------------------------
+    @staticmethod
+    def volatile(ident):
+        """What the EABI lets a callee change (what a direct call reloads with aot_abi)."""
+        k = ident[0]
+        if k == 'r': return ident[1] == 0 or 3 <= ident[1] <= 12
+        if k == 'f': return ident[1] <= 13
+        if k == 'p': return True
+        if k == 'c': return ident[1] not in (2, 3, 4)
+        return True
+
+    def liveness(self):
+        """Pass 1's result: the ids read before they are written from some entry (loaded at entry)."""
+        allids = set(self.ids)
+        def defs_uses(k):
+            r, w, kind = self.rw.get(k, (frozenset(), frozenset(), None))
+            if kind == 'sync': return allids, r
+            if kind == 'dcall': return set(w) | {x for x in allids if self.volatile(x)}, r
+            return w, r
+        live_in = {s: set() for s, e in self.blocks}
+        changed = True
+        while changed:
+            changed = False
+            for s, e in reversed(self.blocks):
+                live = set()
+                for t in self.succ.get(s, []):
+                    live |= live_in.get(t, set())
+                for k in range(e - 1, s - 1, -1):
+                    d, u = defs_uses(k)
+                    live = (live - set(d)) | set(u)
+                if live != live_in[s]:
+                    live_in[s] = live
+                    changed = True
+        self.live_after = {}
+        for k, (r, w, kind) in self.rw.items():
+            if kind == 'dcall': self.live_after[k] = set(live_in.get(k + 1, set()))
+        E = set()
+        for k in self.entries:
+            E |= live_in.get(k, set())
+        E |= {x for x in allids if x[0] in ('lr', 'ctr', 'fpscr')}  # written right before exits, or read-modify-written
+        return E
+
+    def dm_or(self, ws):
+        if self.E is None: return []
+        words = {}
+        for i in ws:
+            b = self.ubit.get(i)
+            if b is not None: words[b // 32] = words.get(b // 32, 0) | (1 << (b % 32))
+        return ['dm%d |= %s;' % (w, hx(m)) for w, m in sorted(words.items())]
+
+    @staticmethod
+    def cname(ident):
+        k = ident[0]
+        if k in ('r', 'f', 'p', 'c', 'q'): return '%s%d' % (k, ident[1])
+        return k
+
+    @staticmethod
+    def gload(ident):
+        k = ident[0]
+        if k == 'r': return 'g->gpr[%d]' % ident[1]
+        if k == 'f': return 'g->fpr[%d].ps0' % ident[1]
+        if k == 'p': return 'g->fpr[%d].ps1' % ident[1]
+        if k == 'c': return '((g->cr >> %d) & 15u)' % (28 - 4 * ident[1])
+        if k == 'q': return 'g->spr[%d]' % (912 + ident[1])
+        return 'g->%s' % k
+
+    def gstore(self, ident):
+        k = ident[0]
+        v = self.cname(ident)
+        if k == 'r': return 'g->gpr[%d] = %s;' % (ident[1], v)
+        if k == 'f': return 'g->fpr[%d].ps0 = %s;' % (ident[1], v)
+        if k == 'p': return 'g->fpr[%d].ps1 = %s;' % (ident[1], v)
+        if k == 'c':
+            sh = 28 - 4 * ident[1]
+            return 'g->cr = (g->cr & %s) | (%s << %d);' % (hx(~(0xF << sh)), v, sh)
+        return 'g->%s = %s;' % (k, v)
+
+    @staticmethod
+    def idkey(ident):
+        order = {'r': 0, 'f': 1, 'p': 2, 'c': 3, 'lr': 4, 'ctr': 5, 'xer': 6, 'fpscr': 7, 'q': 8}
+        return (order[ident[0]], ident[1] if len(ident) > 1 else 0)
+
     # -- the C function --------------------------------------------------------------------------------------------
     def c_function(self):
         f = self.f
@@ -942,18 +1100,18 @@ class Translator:
         name = 'F_%08X' % f.start
         o = ['// %s (%08x, %d instructions)' % (f.name[:100].replace('*/', ''), f.start, len(f.words)),
              '%su32 %s(Gekko* g, u32 entry, s32 budget) {' % (self.attr, name),
-             '    u32 n = 0, npc = 0; u64 t0 = g->cycles; (void)t0;',
+             '    u32 n = 0, npc = 0; u64 t0 = g->cycles; (void)t0; const uintptr_t mb_ = aot_base;',
              '    u32 fb_k = 0, fb_pc = 0, fb_inst = 0, fb_adj = 0; (void)fb_k; (void)fb_pc; (void)fb_inst; (void)fb_adj;',
              '    u32 dc_k = 0, dc_pc = 0, dc_rp = 0, dc_v = 0; AotFn dc_fn = 0; (void)dc_k; (void)dc_pc; (void)dc_rp; (void)dc_v; (void)dc_fn;',
              '    u32 lk_pc = 0, lk_adj = 0, lk_bef = 0; (void)lk_pc; (void)lk_adj; (void)lk_bef;']
         decl = []
-        for r in sorted(self.gpr): decl.append('u32 r%d = g->gpr[%d];' % (r, r))
-        for r in sorted(self.fpr): decl.append('double f%d = g->fpr[%d].ps0, p%d = g->fpr[%d].ps1;' % (r, r, r, r))
-        if self.crf: decl.append('u32 ' + ', '.join('c%d = (g->cr >> %d) & 15u' % (c, 28 - 4 * c) for c in sorted(self.crf)) + ';')
-        if self.use_lr: decl.append('u32 lr = g->lr;')
-        if self.use_ctr: decl.append('u32 ctr = g->ctr;')
-        if self.use_xer: decl.append('u32 xer = g->xer;')
-        if self.use_fpscr: decl.append('u32 fpscr = g->fpscr;')
+        E = self.E if self.E is not None else set(self.ids)
+        for i in sorted(self.ids, key=self.idkey):
+            ty = 'double' if i[0] in ('f', 'p') else 'u32'
+            if i in E: decl.append('%s %s = %s;' % (ty, self.cname(i), self.gload(i)))
+            else: decl.append('%s %s = 0;  // written before it is read' % (ty, self.cname(i)))
+        nw = (len(self.ubit) + 31) // 32
+        if nw: decl.append('u32 ' + ', '.join('dm%d = 0' % w for w in range(nw)) + ';')
         o += ['    ' + x for x in decl]
         o.append('    switch (entry) {')
         for idx, k in enumerate(self.entries):
@@ -973,7 +1131,7 @@ class Translator:
                 o.append('    case %d: goto FB%d;' % (k, k))
             o.append('    }')
         o.append('    return n;')
-        if self.dcalls:
+        if False:
             o.append('dcall:')
             o += ['    ' + x for x in flush]
             o.append('    { u32 ei_ = 0; AotFn fn_ = dc_fn;')
@@ -1009,21 +1167,27 @@ class Translator:
         return name, o
 
     def flush_lines(self):
+        """Every register written since the last sync (its dirty bit set)."""
         o = []
-        for r in sorted(self.wgpr): o.append('g->gpr[%d] = r%d;' % (r, r))
-        for r in sorted(self.wfpr): o.append('g->fpr[%d].ps0 = f%d; g->fpr[%d].ps1 = p%d;' % (r, r, r, r))
-        if self.wcrf:
-            keep = 0
-            for c in range(8):
-                if c not in self.wcrf: keep |= 0xF << (28 - 4 * c)
-            o.append('g->cr = (g->cr & %s) | %s;' % (hx(keep), ' | '.join('(c%d << %d)' % (c, 28 - 4 * c) for c in sorted(self.wcrf))))
-        if self.w_lr: o.append('g->lr = lr;')
-        if self.w_ctr: o.append('g->ctr = ctr;')
-        if self.w_xer: o.append('g->xer = xer;')
-        if self.w_fpscr: o.append('g->fpscr = fpscr;')
+        for i in sorted(self.all_w or self.wids, key=self.idkey):
+            b = self.ubit.get(i)
+            if b is None: o.append(self.gstore(i))
+            else: o.append('if (dm%d & %s) %s' % (b // 32, hx(1 << (b % 32)), self.gstore(i)))
         return o
 
+    def dm_all(self):
+        out = []
+        n = len(self.ubit)
+        for w in range((n + 31) // 32):
+            bits = min(32, n - 32 * w)
+            out.append('dm%d = %s;' % (w, hx((1 << bits) - 1)))
+        return out
+
     def reload_abi_lines(self):
+        o = [ '%s = %s;' % (self.cname(i), self.gload(i)) for i in sorted(self.ids, key=self.idkey) if self.volatile(i)]
+        return o + self.dm_or([i for i in self.ids if self.volatile(i)])
+
+    def reload_abi_lines_old(self):
         """After a call that returned normally: only what the PowerPC EABI lets a callee change (r0, r3-r12, f0-f13,
         cr0, cr1, cr5-cr7, LR, CTR, XER, FPSCR); r1, r2, r13, r14-r31, f14-f31 and cr2-cr4 come back as they were.
         AOT_CHECK compares every call chain with the interpreter, so code that breaks the convention shows up there."""
@@ -1044,6 +1208,10 @@ class Translator:
         return o
 
     def reload_lines(self):
+        return (['%s = %s;' % (self.cname(i), self.gload(i)) for i in sorted(self.ids, key=self.idkey)] +
+                ['dm%d = 0;' % w for w in range((len(self.ubit) + 31) // 32)])
+
+    def reload_lines_old(self):
         o = []
         for r in sorted(self.gpr): o.append('r%d = g->gpr[%d];' % (r, r))
         for r in sorted(self.fpr): o.append('f%d = g->fpr[%d].ps0; p%d = g->fpr[%d].ps1;' % (r, r, r, r))
@@ -1145,6 +1313,7 @@ def main():
     ap.add_argument('--inline', type=int, default=32, help='inline leaf functions up to this many instructions (0: none)')
     ap.add_argument('--dcalls', type=int, default=1, help='calls between translated functions stay in C (0: they leave)')
     ap.add_argument('--abi', type=int, default=1, help='after a direct call reload only what the EABI lets a callee change')
+    ap.add_argument('--live', type=int, default=1, help='load at entry only registers read before written (0: all)')
     a = ap.parse_args()
     secs = load_dol(a.dol)
     mem = Mem(secs)
@@ -1213,11 +1382,26 @@ def main():
     for idx, (c, start, size, name) in enumerate(fns):
         fn = Fn(start, size, name, mem)
         if not fn.ok: continue
-        t = Translator(fn, stats, None, [c for c in calls if start < c < start + size])
-        t.inl = {k: v for k, v in leaves.items() if k != start}
-        if a.dcalls: t.fidx = fidx
-        t.abi = bool(a.abi)
-        t.attr = '__attribute__((hot)) ' if start in hot else '__attribute__((cold)) '
+        def make(st):
+            t = Translator(fn, st, None, [c for c in calls if start < c < start + size])
+            t.gidx = fidx[start]
+            t.inl = {k: v for k, v in leaves.items() if k != start}
+            if a.dcalls: t.fidx = fidx
+            t.abi = bool(a.abi)
+            t.attr = '__attribute__((hot)) ' if start in hot else '__attribute__((cold)) '
+            return t
+        t1 = make({'native': 0, 'fb': {}})
+        t1.emit()
+        if os.environ.get("AOT_DEBUG_LIVE") and int(os.environ["AOT_DEBUG_LIVE"], 16) == start:
+            E_ = t1.liveness(); print("E", sorted(E_, key=Translator.idkey)); [print("call", hex(start + 4 * k), sorted(v, key=Translator.idkey)) for k, v in sorted(t1.live_after.items())]
+        E = t1.liveness() if a.live else set(t1.ids)
+
+        t = make(stats)
+        t.E = E
+        t.all_w = set(t1.wids)
+        t.all_ids = set(t1.ids)
+        t.live_after = t1.live_after
+        t.ubit = {i: b for b, i in enumerate(sorted(t1.wids, key=Translator.idkey))}
         cname, lines = t.c_function()
         data = b''.join(struct.pack('>I', w) for w in fn.words)
         ddata = b''.join(b''.join(struct.pack('>I', w) for w in leaves[ds].words) for ds, dz in t.deps)

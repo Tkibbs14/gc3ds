@@ -27,6 +27,13 @@ extern u32 aot_depth;
 extern u32 aot_depth_max, aot_abi;
 AotFn aot_lookup(u32 pc, u32* entry);  // the translated function with an entry at pc (checked), or NULL
 bool aot_check_idx(u32 gidx);          // checks function gidx's bytes now; true when it may run
+#ifdef AOT_PROF
+// Test builds: guest instructions run per translated function (by its index), printed at exit (aot.c).
+extern u64 aot_prof[];
+#define AOT_PROF_ADD(i, k) (aot_prof[i] += (k))
+#else
+#define AOT_PROF_ADD(i, k) ((void)0)
+#endif
 #ifdef AOT_LOG
 // Check mode (PC): every store through the fast path is logged first (aot.c compares with the interpreter).
 extern u32 aot_logging;
@@ -52,40 +59,60 @@ double aot_frsqrte(double x);
 double aot_fctiw(Gekko* g, double x, u32 xo);
 double aot_s2d_slow(u32 w);
 
-#define M_(ea) ((u8*)(aot_base + (uintptr_t)(u32)(ea)))
+// Guest memory through a base the caller holds in a local (`mb_`: each translated function copies aot_base once, so
+// that GCC does not reload the global after every guest store, which may alias anything).
+#define MB_(b, ea) ((u8*)((b) + (uintptr_t)(u32)(ea)))
+#define M_(ea) MB_(mb_, ea)
 #define INMEM(ea, size) ((u32)((ea) - 0x80000000u) <= 0x01800000u - (size))
-#define OKN(ea, size) (INMEM(ea, size) && !((ea) & 3u))
+// In MEM1 and aligned, in one compare: rotating the offset right by log2(size) moves misaligned low bits to the top.
+#define ROR32(v, k) (((v) >> (k)) | ((v) << (32 - (k))))
+#define OK32(ea) (ROR32((u32)((ea) - 0x80000000u), 2) < 0x00600000u)
+#define OK16(ea) (ROR32((u32)((ea) - 0x80000000u), 1) < 0x00C00000u)
+#define OK8(ea) ((u32)((ea) - 0x80000000u) < 0x01800000u)
+#define OKN(ea, size) ((size) == 4 ? OK32(ea) : (INMEM(ea, size) && !((ea) & 3u)))
 #define BSWAP16(v) __builtin_bswap16(v)
 #define BSWAP32(v) __builtin_bswap32(v)
 
-static inline u32 LDU32(u32 ea) { u32 v; memcpy(&v, M_(ea), 4); return BSWAP32(v); }
-static inline void STU32(u32 ea, u32 v) { AOT_LOGST(ea, 4); v = BSWAP32(v); memcpy(M_(ea), &v, 4); }
-static inline bool LD32(u32 ea, u32* v) { if (!OKN(ea, 4)) return false; *v = LDU32(ea); return true; }
-static inline bool LD32R(u32 ea, u32* v) { if (!OKN(ea, 4)) return false; memcpy(v, M_(ea), 4); return true; }
-static inline bool LD16(u32 ea, u32* v) {
-    if (!INMEM(ea, 2) || (ea & 1)) return false;
-    u16 h; memcpy(&h, M_(ea), 2); *v = BSWAP16(h); return true;
+static inline u32 LDU32b(uintptr_t b, u32 ea) { u32 v; memcpy(&v, MB_(b, ea), 4); return BSWAP32(v); }
+static inline void STU32b(uintptr_t b, u32 ea, u32 v) { AOT_LOGST(ea, 4); v = BSWAP32(v); memcpy(MB_(b, ea), &v, 4); }
+static inline bool LD32b(uintptr_t b, u32 ea, u32* v) { if (!OKN(ea, 4)) return false; *v = LDU32b(b, ea); return true; }
+static inline bool LD32Rb(uintptr_t b, u32 ea, u32* v) { if (!OKN(ea, 4)) return false; memcpy(v, MB_(b, ea), 4); return true; }
+static inline bool LD16b(uintptr_t b, u32 ea, u32* v) {
+    if (!OK16(ea)) return false;
+    u16 h; memcpy(&h, MB_(b, ea), 2); *v = BSWAP16(h); return true;
 }
-static inline bool LD16R(u32 ea, u32* v) { if (!INMEM(ea, 2) || (ea & 1)) return false; u16 h; memcpy(&h, M_(ea), 2); *v = h; return true; }
-static inline bool LD8(u32 ea, u32* v) { if (!INMEM(ea, 1)) return false; *v = *M_(ea); return true; }
-static inline bool ST32(u32 ea, u32 v) { if (!OKN(ea, 4)) return false; STU32(ea, v); return true; }
-static inline bool ST32R(u32 ea, u32 v) { if (!OKN(ea, 4)) return false; AOT_LOGST(ea, 4); memcpy(M_(ea), &v, 4); return true; }
-static inline bool ST16(u32 ea, u32 v) {
-    if (!INMEM(ea, 2) || (ea & 1)) return false;
-    AOT_LOGST(ea, 2); u16 h = BSWAP16((u16)v); memcpy(M_(ea), &h, 2); return true;
+static inline bool LD16Rb(uintptr_t b, u32 ea, u32* v) { if (!OK16(ea)) return false; u16 h; memcpy(&h, MB_(b, ea), 2); *v = h; return true; }
+static inline bool LD8b(uintptr_t b, u32 ea, u32* v) { if (!OK8(ea)) return false; *v = *MB_(b, ea); return true; }
+static inline bool ST32b(uintptr_t b, u32 ea, u32 v) { if (!OKN(ea, 4)) return false; STU32b(b, ea, v); return true; }
+static inline bool ST32Rb(uintptr_t b, u32 ea, u32 v) { if (!OKN(ea, 4)) return false; AOT_LOGST(ea, 4); memcpy(MB_(b, ea), &v, 4); return true; }
+static inline bool ST16b(uintptr_t b, u32 ea, u32 v) {
+    if (!OK16(ea)) return false;
+    AOT_LOGST(ea, 2); u16 h = BSWAP16((u16)v); memcpy(MB_(b, ea), &h, 2); return true;
 }
-static inline bool ST16R(u32 ea, u32 v) { if (!INMEM(ea, 2) || (ea & 1)) return false; AOT_LOGST(ea, 2); u16 h = (u16)v; memcpy(M_(ea), &h, 2); return true; }
-static inline bool ST8(u32 ea, u32 v) { if (!INMEM(ea, 1)) return false; AOT_LOGST(ea, 1); *M_(ea) = (u8)v; return true; }
-static inline bool LD64(u32 ea, u64* v) { if (!OKN(ea, 8)) return false; *v = ((u64)LDU32(ea) << 32) | LDU32(ea + 4); return true; }
-static inline bool ST64(u32 ea, u64 v) { if (!OKN(ea, 8)) return false; STU32(ea, (u32)(v >> 32)); STU32(ea + 4, (u32)v); return true; }
+static inline bool ST16Rb(uintptr_t b, u32 ea, u32 v) { if (!OK16(ea)) return false; AOT_LOGST(ea, 2); u16 h = (u16)v; memcpy(MB_(b, ea), &h, 2); return true; }
+static inline bool ST8b(uintptr_t b, u32 ea, u32 v) { if (!OK8(ea)) return false; AOT_LOGST(ea, 1); *MB_(b, ea) = (u8)v; return true; }
+static inline bool LD64b(uintptr_t b, u32 ea, u64* v) { if (!OKN(ea, 8)) return false; *v = ((u64)LDU32b(b, ea) << 32) | LDU32b(b, ea + 4); return true; }
+static inline bool ST64b(uintptr_t b, u32 ea, u64 v) { if (!OKN(ea, 8)) return false; STU32b(b, ea, (u32)(v >> 32)); STU32b(b, ea + 4, (u32)v); return true; }
+#define LDU32(ea) LDU32b(mb_, ea)
+#define STU32(ea, v) STU32b(mb_, ea, v)
+#define LD32(ea, pv) LD32b(mb_, ea, pv)
+#define LD32R(ea, pv) LD32Rb(mb_, ea, pv)
+#define LD16(ea, pv) LD16b(mb_, ea, pv)
+#define LD16R(ea, pv) LD16Rb(mb_, ea, pv)
+#define LD8(ea, pv) LD8b(mb_, ea, pv)
+#define ST32(ea, v) ST32b(mb_, ea, v)
+#define ST32R(ea, v) ST32Rb(mb_, ea, v)
+#define ST16(ea, v) ST16b(mb_, ea, v)
+#define ST16R(ea, v) ST16Rb(mb_, ea, v)
+#define ST8(ea, v) ST8b(mb_, ea, v)
+#define LD64(ea, pv) LD64b(mb_, ea, pv)
+#define ST64(ea, v) ST64b(mb_, ea, v)
 
 static inline double U2D(u64 v) { double d; memcpy(&d, &v, 8); return d; }
 static inline u64 D2U(double d) { u64 v; memcpy(&v, &d, 8); return v; }
 // lfs: exact (normal singles and zeros by the hardware conversion; denormals, infinities and NaNs by bits).
-static inline double S2D(u32 w) {
-    if (__builtin_expect(((w >> 23) & 0xFFu) - 1u < 254u || !(w << 1), 1)) { float f; memcpy(&f, &w, 4); return (double)f; }
-    return aot_s2d_slow(w);
-}
+// The JIT's fast-float model: the hardware conversion, so single denormals flush to zero and NaN payloads are not kept.
+static inline double S2D(u32 w) { float f; memcpy(&f, &w, 4); return (double)f; }
 // stfs (PEM D.7, as the interpreter): bits extracted above the single denormal range.
 static inline u32 D2S(double d) {
     u64 x = D2U(d);
@@ -105,12 +132,9 @@ static inline u32 K2S(double d) { float f = (float)d; u32 w; memcpy(&w, &f, 4); 
 // Round to single precision (the result stays a double).
 #define RS(x) ((double)(float)(x))
 // Gekko's single-precision multiplier sees frC with a 25-bit significand (sf_round25); exact singles are unchanged.
-static inline double C25(double c) {
-    u64 x = D2U(c);
-    u32 e = (u32)((x >> 52) & 0x7FF);
-    if (__builtin_expect(e - 1u < 0x7FEu, 1)) return U2D((x + 0x08000000ull) & ~0x0FFFFFFFull);
-    return U2D(sf_round25(x));
-}
+// Branchless: for every finite normal value this is sf_round25's rounding; zeros and infinities come out unchanged;
+// NaN payloads may change (the fast-float model) and denormals are flushed by the host anyway.
+static inline double C25(double c) { return U2D((D2U(c) + 0x08000000ull) & ~0x0FFFFFFFull); }
 static inline double NEGNN(double x) { return x == x ? -x : x; }
 // fcmpu: 8 LT, 4 GT, 2 EQ, 1 unordered.
 static inline u32 FCMP(double a, double b) { return a < b ? 8u : a > b ? 4u : a == b ? 2u : 1u; }

@@ -4493,6 +4493,10 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->ram = ram;
     j->ramSize = ramSize;
     j->code = jit_host_alloc_exec(codeBytes);
+#ifndef __3DS__
+    // JIT_RANGES=1: where compiled code lives (core/tools/qemu-plugins/rangecount.c counts instructions there)
+    if (getenv("JIT_RANGES")) fprintf(stderr, "range jit %08x-%08x\n", (u32)(uintptr_t)j->code, (u32)(uintptr_t)j->code + codeBytes);
+#endif
     j->codeWords = codeBytes / 4;
     j->coldStart = j->codeWords / 8 * 3;  // hot code: ~35% of TP's code since the block stubs and float stubs moved out (5.0 hot vs 9.3 cold words per instruction)
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));

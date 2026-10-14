@@ -7,6 +7,7 @@
 #endif
 #include "aot.h"
 #include "aot_rt.h"
+#define mb_ aot_base  // the runtime reads guest memory through the global (aot_rt.h)
 
 // The generated code (core/src/aotgen, from ppc2c.py); absent in the repository, so referenced weakly.
 extern const AotPart aot_parts[] __attribute__((weak));
@@ -96,12 +97,18 @@ static void build(void) {
     memset(aot_valid, 0xFF, aot_nvalid);
 #ifndef __3DS__
     if (getenv("AOT_RANGE")) {  // debugging: only functions starting in [lo, hi) (hex lo-hi)
-        u32 lo = 0, hi = 0;
-        sscanf(getenv("AOT_RANGE"), "%x-%x", &lo, &hi);
+        u32 lo[16], hi[16], nr = 0;  // a comma-separated list of lo-hi
+        for (const char* p = getenv("AOT_RANGE"); p && nr < 16 && sscanf(p, "%x-%x", &lo[nr], &hi[nr]) == 2; nr++) {
+            p = strchr(p, ',');
+            if (p) p++;
+        }
         u32 m = 0;
-        for (u32 i = 0; i < g_nfuncs; i++)
-            if (g_funcs[i].f->start >= lo && g_funcs[i].f->start < hi) g_funcs[m++] = g_funcs[i];
+        for (u32 i = 0; i < g_nfuncs; i++) {
+            bool in = false;
+            for (u32 r = 0; r < nr; r++) in = in || (g_funcs[i].f->start >= lo[r] && g_funcs[i].f->start < hi[r]);
+            if (in) g_funcs[m++] = g_funcs[i];
             else aot_valid[g_funcs[i].f->gidx] = 0;  // direct calls must not reach it either
+        }
         g_nfuncs = m;
     }
 #endif
@@ -128,6 +135,18 @@ void aot_set_enabled(bool on) {
     g_on = on && aot_available();
     if (g_on) build();
     if (!g_funcs) g_on = false;
+#ifndef __3DS__
+    if (g_on && getenv("JIT_RANGES")) {  // the translated functions' span (rangecount.c), and emulator code for comparison
+        uintptr_t lo = ~(uintptr_t)0, hi = 0;
+        for (u32 i = 0; i < g_nfuncs; i++) {
+            uintptr_t a = (uintptr_t)g_funcs[i].f->fn;
+            if (a < lo) lo = a;
+            if (a > hi) hi = a;
+        }
+        fprintf(stderr, "range aot %08x-%08x (aot_run at %08x, gekko_run at %08x)\n", (u32)lo, (u32)hi + 0x10000u,
+                (u32)(uintptr_t)aot_run, (u32)(uintptr_t)gekko_run);
+    }
+#endif
 #if defined(__x86_64__) || defined(__i386__)
     // The 3DS runs translated code with flush-to-zero (jit_host_fpscr_init); do the same on the PC.
     if (g_on) _mm_setcsr(_mm_getcsr() | 0x8040);
@@ -344,9 +363,31 @@ static u32 key_of(const Gekko* g) {
     return (g->msr & (MSR_IR | MSR_DR | MSR_PR | MSR_FP)) | (g->fpscr & FPSCR_RN) | (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE));
 }
 
+// Fallbacks check mode may run itself (replaying them in the interpreter is harmless): cache maintenance and register
+// moves with no effect outside the CPU. Running them keeps the code around them under the comparison (a bdnz whose
+// CTR was not flushed before a dcbi loop's fallback hung Twilight Princess while check mode passed).
+static bool fb_check_safe(u32 inst) {
+    u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, spr = ((inst >> 16) & 31) | ((inst >> 6) & 0x3E0);
+    if (op == 31) {
+        if (xo == 86 || xo == 54 || xo == 470) return true;           // dcbf, dcbst, dcbi
+        if (xo == 339) return spr != 22 && spr != 268 && spr != 269;  // mfspr, not DEC / TB
+        if (xo == 467) return spr >= 912 && spr <= 919;               // mtspr GQR
+        if (xo == 595 || xo == 83) return true;                       // mfsr, mfmsr
+    }
+    if (op == 63 && (xo == 583 || xo == 711 || xo == 70 || xo == 38 || xo == 134)) return true;  // FPSCR moves
+    return false;
+}
+
 u32 aot_interp(Gekko* g, u32 pc, u32 inst, u64 t) {
-    if (g_checking || g_noFb) { g->pc = pc; return 3; }
+    if ((g_checking && !fb_check_safe(inst)) || g_noFb) { g->pc = pc; return 3; }
     aot_stats.fallbacks++;
+#ifndef __3DS__
+    if (g_slowLog && aot_stats.fallbacks < 40) {
+        char dis[64];
+        gekko_disasm(pc, inst, dis, sizeof dis);
+        fprintf(stderr, "aot fallback %08x %s\n", pc, dis);
+    }
+#endif
     u32 key = key_of(g);
     u64 s = time_set(g, t);
     bool stop;
@@ -499,13 +540,32 @@ static u32 checked_call(Gekko* g, const Func* F, u32 ei, s32 budget) {
                 gA.lr, g->lr, gA.ctr, g->ctr, memSame ? "" : " MEMORY");
         for (int r = 0; r < 32; r++)
             if (g->gpr[r] != gA.gpr[r]) fprintf(stderr, "  r%d aot %08x interp %08x\n", r, gA.gpr[r], g->gpr[r]);
+        for (int r = 0; r < 32; r++) {
+            u64 a0 = D2U(gA.fpr[r].ps0), i0 = D2U(g->fpr[r].ps0), a1 = D2U(gA.fpr[r].ps1), i1 = D2U(g->fpr[r].ps1);
+            if (a0 != i0 || a1 != i1)
+                fprintf(stderr, "  f%d aot %016llx %016llx interp %016llx %016llx\n", r, (unsigned long long)a0,
+                        (unsigned long long)a1, (unsigned long long)i0, (unsigned long long)i1);
+        }
+        if (g->msr != gA.msr) fprintf(stderr, "  msr aot %08x interp %08x\n", gA.msr, g->msr);
         if (!memSame) fprintf(stderr, "  memory differs at %08x\n", badEa);
     }
     return steps;
 }
 #endif
 
+#ifdef AOT_PROF
+u64 aot_prof[1u << 16];
+static void prof_report(void) {
+    for (u32 i = 0; i < g_nfuncs; i++)
+        if (aot_prof[g_funcs[i].f->gidx]) fprintf(stderr, "aotprof %08x %llu\n", g_funcs[i].f->start, (unsigned long long)aot_prof[g_funcs[i].f->gidx]);
+}
+#endif
+
 u32 aot_run(Gekko* g, s32 budget) {
+#ifdef AOT_PROF
+    static bool once;
+    if (!once) { once = true; atexit(prof_report); }
+#endif
     if (!g_on) return 0;
     u32 total = 0;
     u64 t = g->cycles;
@@ -520,6 +580,7 @@ u32 aot_run(Gekko* g, s32 budget) {
         g_noSlow = getenv("AOT_NOSLOW") != NULL;
         g_noFb = getenv("AOT_NOFB") != NULL;
         g_slowLog = getenv("AOT_SLOWLOG") != NULL;
+        if (getenv("AOT_CALL")) aot_depth_max = (u32)atoi(getenv("AOT_CALL"));  // direct-call depth (0: none)
     }
 #endif
     while ((s32)total < budget) {
