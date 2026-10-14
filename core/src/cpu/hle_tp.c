@@ -66,21 +66,24 @@ bool hle_is_hook(Gekko* g, u32 pc) {
 static inline bool rd32(u32 a, u32* v) {
     u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
     if ((top != 0x8 && top != 0xC) || (a & 3) || pa + 4 > g_memSize) return false;
-    const u8* p = g_mem + pa;
-    *v = ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+    u32 w;
+    memcpy(&w, g_mem + pa, 4);
+    *v = __builtin_bswap32(w);
     return true;
 }
 static inline bool rd16(u32 a, u32* v) {
     u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
     if ((top != 0x8 && top != 0xC) || (a & 1) || pa + 2 > g_memSize) return false;
-    *v = ((u32)g_mem[pa] << 8) | g_mem[pa + 1];
+    u16 h;
+    memcpy(&h, g_mem + pa, 2);
+    *v = __builtin_bswap16(h);
     return true;
 }
 static inline bool wr32(u32 a, u32 v) {
     u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
     if ((top != 0x8 && top != 0xC) || (a & 3) || pa + 4 > g_memSize) return false;
-    u8* p = g_mem + pa;
-    p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v;
+    v = __builtin_bswap32(v);
+    memcpy(g_mem + pa, &v, 4);
     return true;
 }
 static inline u32 shr(u32 v, u32 s) { return (s & 0x20) ? 0 : v >> (s & 31); }  // srw
@@ -211,6 +214,30 @@ L_fc84:
     n++;                                             // b 0x8007feb0
     goto L_feb0;
 L_fea4:
+    {
+        // Triangles the visited bitset already holds, in a tight loop: each is 13 guest instructions (lhzu, cmpli, bc,
+        // then 0x8007fcb0..0x8007fcd0 back here) that leave only r16 and the count changed and r0 / r3 / r4 / r5 / CR0 /
+        // XER[CA] as the last one set them, which is rebuilt below. The list's end, an unvisited triangle and any address
+        // the loop cannot read go through the instruction-by-instruction code from where it stopped.
+        u32 p = r[16], skipped = 0, lastT = 0, lastW = 0, vis = r[1] + 156;
+        for (;;) {
+            u32 a = p + 2, tt, wa, w;
+            if (!rd16(a, &tt) || !tt) break;
+            wa = vis + ((tt >> 5) << 2);
+            if (!rd32(wa, &w) || !(w & (1u << (tt & 31)))) break;
+            skipped++; lastT = tt; lastW = w; p = a;
+        }
+        if (skipped) {
+            r[16] = p;
+            n += 13 * skipped;
+            r[3] = lastW;
+            r[4] = (lastT >> 5) << 2;
+            r[5] = 1u << (lastT & 31);
+            r[0] = r[3] & r[5];
+            CR(cmps(r[0], 0));
+            caClear = true;
+        }
+    }
     RD16(r[0], r[16] + 2, 0x8007FEA4u);              // lhzu r0,2(r16)
     r[16] += 2; n++;
     CR(cmpu(r[0], 0)); n++;                          // cmpli cr0,0,r0,0
