@@ -63,7 +63,7 @@ functions and to find what is still interpreted.
 ```bash
 bash core/tools/tp_run.sh ...    # with PCHIST=/root/aot/hist.bin, over a representative stretch
 python3 core/tools/aot/ppc2c.py --dol <extracted>/sys/main.dol --symbols <zeldaret/tp config/GZ2E01/symbols.txt> \
-    --hist /root/aot/hist.bin --out core/src/aotgen --files 16
+    --hist /root/aot/hist.bin --out core/src/aotgen --files 16 --cover 0.90   # --symbols is optional
 make -C core && bash core/host3ds/build.sh -j8
 ```
 
@@ -71,6 +71,11 @@ On the 3DS: `--aot on`, `--ab aot`, the live command `set aot 0|1`, the perf.csv
 `# aot 10s` line (share translated, calls, runs, fallbacks and slow accesses per second).
 
 ## Status and next steps (2026-10-14)
+
+**Memory: translate 90% coverage on the 3DS.** At  the translated code was 8.4 MB of 9.9 MB of text, and
+malloc's largest block fell from 6.6 MB (job 134) to 0.4 MB (job 142): textures went missing (jobs 135-143) and the
+lookup tables did not fit.  is 312 functions and 5.9 MB of text, and still runs 94% of the guest
+instructions 0.97 ran (PC, TP 900-1020). The startup line  is the number to watch.
 
 Done, each gated by the PC check (only the known `atan2` stack-store difference), the identical PC frame and the ARM
 check under qemu:
