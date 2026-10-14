@@ -44,6 +44,8 @@ static bool g_ni;  // FPSCR[NI] when the run started (estimates)
 static void (*g_gatherPut)(void* ctx, u32 v, u32 size);
 static void* g_gatherCtx;
 static u32 g_gatherEa = 1;
+u8* aot_gbufc;
+static void gbufc_update(void) { aot_gbufc = g_gatherEa == AOT_PIPE_EA ? aot_gbuf : NULL; }
 
 typedef struct { const AotFunc* f; const u32* ents; } Func;
 #define VALID(F) aot_valid[(F)->f->gidx]  // -1 not checked, 0 other code, 1 ok
@@ -165,6 +167,7 @@ void aot_set_gather_buffer(u8* buf, u32* len) {
     g_glenSet = len;
     aot_gbuf = g_pipeOn ? buf : NULL;
     aot_glen = len;
+    gbufc_update();
 }
 
 void aot_set_switches(u32 depthMax, bool abi, bool pipe) {
@@ -173,6 +176,7 @@ void aot_set_switches(u32 depthMax, bool abi, bool pipe) {
     g_pipeOn = pipe;
     aot_gbuf = pipe ? g_gbufSet : NULL;
     aot_glen = g_glenSet;
+    gbufc_update();
 }
 void aot_get_switches(u32* depthMax, bool* abi, bool* pipe) { *depthMax = aot_depth_max; *abi = aot_abi != 0; *pipe = g_pipeOn; }
 
@@ -180,6 +184,7 @@ void aot_set_gather(void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) 
     g_gatherPut = put;
     g_gatherCtx = ctx;
     g_gatherEa = ea;
+    gbufc_update();
 }
 
 bool aot_state_ok(const Gekko* g) {
@@ -336,28 +341,33 @@ u32 aot_psq_st(Gekko* g, u32 ea, u32 w, u32 q, double a, double b, u32 pc, u64 t
 }
 
 // The forms the generated code calls (aot_rt.h): one call per site, the status in aot_ls.
-u32 aot_ldx(Gekko* g, u32 ea, u32 nb, u32 pcs) {
+u32 aot_lds(AotSlow* s) {
     u32 v = 0;
-    aot_ls = aot_ld(g, ea, 1u << (pcs & 3), &v, pcs & ~3u, g->cycles + nb);
+    aot_ls = aot_ld(s->g, s->e, 1u << (s->pc & 3), &v, s->pc & ~3u, s->g->cycles + s->nb);
     return v;
 }
-u32 aot_stx(Gekko* g, u32 ea, u32 v, u32 nb, u32 pcs) {
-    u32 size = 1u << (pcs & 3);
-    if (ea == g_gatherEa && aot_gbuf && *aot_glen + size < 32u) { aot_gappend(v, size); return aot_ls = 0; }
-    return aot_ls = aot_st(g, ea, size, v, pcs & ~3u, g->cycles + nb);
+u32 aot_sts(AotSlow* s) {
+    u32 size = 1u << (s->pc & 3);
+    if (s->e == g_gatherEa && aot_gbuf && *aot_glen + size < 32u) { aot_gappend(s->x, size); return aot_ls = 0; }
+    return aot_ls = aot_st(s->g, s->e, size, s->x, s->pc & ~3u, s->g->cycles + s->nb);
 }
-u64 aot_ld64x(Gekko* g, u32 ea, u32 nb, u32 pc) {
-    u64 v = 0;
-    aot_ls = aot_ld64(g, ea, &v, pc, g->cycles + nb);
-    return v;
+u32 aot_ld64s(AotSlow* s) { s->d = 0; return aot_ls = aot_ld64(s->g, s->e, &s->d, s->pc, s->g->cycles + s->nb); }
+u32 aot_st64s(AotSlow* s) { return aot_ls = aot_st64(s->g, s->e, s->d, s->pc, s->g->cycles + s->nb); }
+u32 aot_psq_ls(AotSlow* s) {
+    return aot_ls = aot_psq_l(s->g, s->e, s->x >> 3, s->x & 7, &s->fa, &s->fb, s->pc, s->g->cycles + s->nb);
 }
-u32 aot_st64x(Gekko* g, u32 ea, u64 v, u32 nb, u32 pc) { return aot_ls = aot_st64(g, ea, v, pc, g->cycles + nb); }
-u32 aot_psq_lx(Gekko* g, u32 ea, u32 wq, double* a, double* b, u32 nb, u32 pc) {
-    return aot_ls = aot_psq_l(g, ea, wq >> 3, wq & 7, a, b, pc, g->cycles + nb);
+u32 aot_psq_sts(AotSlow* s) {
+    return aot_ls = aot_psq_st(s->g, s->e, s->x >> 3, s->x & 7, s->fa, s->fb, s->pc, s->g->cycles + s->nb);
 }
-u32 aot_psq_stx(Gekko* g, u32 ea, u32 wq, double a, double b, u32 nb, u32 pc) {
-    return aot_ls = aot_psq_st(g, ea, wq >> 3, wq & 7, a, b, pc, g->cycles + nb);
-}
+u32 aot_d2s_slow(u32 lo, u32 hi) { return sf_double_to_single(((u64)hi << 32) | lo, false); }
+
+#if defined(__arm__) && !defined(AOT_PLAINCALL)
+// The register-keeping call (aot_rt.h aot_vc): fn in r12, its arguments in r0 / r1; r1-r3 and d0-d7 come back as they
+// were, so translated code loses only r0, r12 and lr to a slow path. Eight-byte aligned (four words, then 64 bytes).
+__asm__(".text; .arm; .balign 4; .global aot_vcall; .type aot_vcall, %function; aot_vcall:;"
+        "push {r1, r2, r3, lr}; vpush {d0-d7}; blx r12; vpop {d0-d7}; pop {r1, r2, r3, pc};"
+        ".size aot_vcall, .-aot_vcall");
+#endif
 
 static u32 key_of(const Gekko* g) {
     return (g->msr & (MSR_IR | MSR_DR | MSR_PR | MSR_FP)) | (g->fpscr & FPSCR_RN) | (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE));

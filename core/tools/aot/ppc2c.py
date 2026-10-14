@@ -167,6 +167,7 @@ class Translator:
         self.wids = set()     # every id written
         self.ids = set()      # every id used
         self.E = None         # pass 2: ids loaded at entry (None in pass 1)
+        self.entry_live = None  # pass 2: entry instruction -> the ids it loads (None: all of E, at the top)
         self.all_w = set()    # pass 2: every id this function writes (pass 1's wids): the dirty bits
         self.all_ids = set()  # pass 2: every id this function uses (pass 1's ids)
         self.live_after = {}  # pass 2: call site k -> ids read after the call before written (reloaded there)
@@ -888,18 +889,22 @@ class Translator:
         out = ['{ u32 ea_ = %s, q_ = %s;' % (ea, self.Q(q))]
         size = 4 if w else 8
         if load:
-            fast = ('%s = S2D(LDU32(ea_)); %s = 1.0;' % (F(rd, 0, 1), F(rd, 1, 1)) if w else
-                    '%s = S2D(LDU32(ea_)); %s = S2D(LDU32(ea_ + 4u));' % (F(rd, 0, 1), F(rd, 1, 1)))
-            out.append('if (__builtin_expect(!(q_ & 0x00070000u) && OKN(ea_, %d), 1)) { %s } '
-                       'else { double a_, b_; PSQ_SLOW_L(ea_, %d, %d, &a_, &b_, %s, %d, %d); %s = a_; %s = b_; }'
-                       % (size, fast, w, q, hx(pc), adj, bef, F(rd, 0, 1), F(rd, 1, 1)))
+            # The two paths meet as floats (psq_l gives singles): widened after the join, the compiler still sees
+            # (double)float and can do the following single-rounded arithmetic in single precision, in s registers.
+            fast = 'x_ = U2F(LDU32(ea_)); y_ = 1.0f;' if w else 'x_ = U2F(LDU32(ea_)); y_ = U2F(LDU32(ea_ + 4u));'
+            out.append('float x_, y_; if (__builtin_expect(!(q_ & 0x00070000u) && OKN(ea_, %d), 1)) { %s } '
+                       'else { double a_, b_; PSQ_SLOW_L(ea_, %d, %d, &a_, &b_, %s, %d, %d); x_ = (float)a_; y_ = (float)b_; }'
+                       % (size, fast, w, q, hx(pc), adj, bef))
+            out.append('%s = x_; %s = y_;' % (F(rd, 0, 1), F(rd, 1, 1)))
         else:
             c0 = ('K2S(%s)' if self.single(rd, 0) else 'D2SF(%s)') % F(rd, 0)
             c1 = ('K2S(%s)' if self.single(rd, 1) else 'D2SF(%s)') % F(rd, 1)
             fast = 'STU32(ea_, %s);' % c0 if w else 'STU32(ea_, %s); STU32(ea_ + 4u, %s);' % (c0, c1)
+            pipe = 'aot_gappend(%s, 4);' % c0 if w else 'aot_gappend(%s, 4); aot_gappend(%s, 4);' % (c0, c1)
             out.append('if (__builtin_expect(!(q_ & 7u) && OKN(ea_, %d), 1)) { %s } '
+                       'else if (PIPE_CONST(ea_) && !(q_ & 7u) && aot_gfits(%d)) { %s } '
                        'else { PSQ_SLOW_S(ea_, %d, %d, %s, %s, %s, %d, %d); }'
-                       % (size, fast, w, q, F(rd, 0), F(rd, 1), hx(pc), adj, bef))
+                       % (size, fast, size, pipe, w, q, F(rd, 0), F(rd, 1), hx(pc), adj, bef))
         if upd: out.append('%s = ea_;' % R(ra, 1))
         out.append('}')
         return out
@@ -1047,10 +1052,11 @@ class Translator:
         self.live_after = {}
         for k, (r, w, kind) in self.rw.items():
             if kind == 'dcall': self.live_after[k] = set(live_in.get(k + 1, set()))
+        always = {x for x in allids if x[0] in ('lr', 'ctr', 'fpscr')}  # written right before exits, or read-modify-written
+        self.entry_live = {k: live_in.get(k, set()) | always for k in self.entries}
         E = set()
         for k in self.entries:
-            E |= live_in.get(k, set())
-        E |= {x for x in allids if x[0] in ('lr', 'ctr', 'fpscr')}  # written right before exits, or read-modify-written
+            E |= self.entry_live[k]
         return E
 
     def dm_or(self, ws):
@@ -1106,16 +1112,21 @@ class Translator:
              '    u32 lk_pc = 0, lk_adj = 0, lk_bef = 0; (void)lk_pc; (void)lk_adj; (void)lk_bef;']
         decl = []
         E = self.E if self.E is not None else set(self.ids)
+        per = self.entry_live is not None
         for i in sorted(self.ids, key=self.idkey):
             ty = 'double' if i[0] in ('f', 'p') else 'u32'
-            if i in E: decl.append('%s %s = %s;' % (ty, self.cname(i), self.gload(i)))
-            else: decl.append('%s %s = 0;  // written before it is read' % (ty, self.cname(i)))
+            if i in E and not per: decl.append('%s %s = %s;' % (ty, self.cname(i), self.gload(i)))
+            else: decl.append('%s %s = 0;' % (ty, self.cname(i)))
         nw = (len(self.ubit) + 31) // 32
         if nw: decl.append('u32 ' + ', '.join('dm%d = 0' % w for w in range(nw)) + ';')
         o += ['    ' + x for x in decl]
         o.append('    switch (entry) {')
         for idx, k in enumerate(self.entries):
-            o.append('    case %d: goto L%d;' % (idx, k))
+            # Each entry loads only what is read from it before being written (a call into the top of a function with
+            # many return points no longer loads what only the code after some call reads).
+            loads = ''.join(' %s = %s;' % (self.cname(i), self.gload(i))
+                            for i in sorted(self.entry_live.get(k, set()), key=self.idkey) if i in self.ids) if per else ''
+            o.append('    case %d:%s goto L%d;' % (idx, loads, k))
         o.append('    default: return 0;')
         o.append('    }')
         o += body
@@ -1398,6 +1409,7 @@ def main():
 
         t = make(stats)
         t.E = E
+        if a.live: t.entry_live = t1.entry_live
         t.all_w = set(t1.wids)
         t.all_ids = set(t1.ids)
         t.live_after = t1.live_after

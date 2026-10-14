@@ -110,15 +110,34 @@ static inline bool ST64b(uintptr_t b, u32 ea, u64 v) { if (!OKN(ea, 8)) return f
 
 static inline double U2D(u64 v) { double d; memcpy(&d, &v, 8); return d; }
 static inline u64 D2U(double d) { u64 v; memcpy(&v, &d, 8); return v; }
+u32 aot_d2s_slow(u32 lo, u32 hi);
+#if defined(__arm__) && !defined(AOT_PLAINCALL)
+// fn(a0, a1) through aot_vcall (aot.c), which keeps r1-r3 and d0-d7 itself: to the compiler a slow path costs only r0,
+// r12 and lr, so the hot path keeps guest values in all sixteen VFP registers instead of the eight callee-saved ones
+// (and the stack) that an ordinary call would leave it.
+static inline u32 aot_vc(u32 (*fn)(), u32 a0, u32 a1) {
+    register u32 r0 __asm__("r0") = a0;
+    register u32 r1 __asm__("r1") = a1;
+    register u32 (*ip)() __asm__("r12") = fn;
+    __asm__ volatile("bl aot_vcall" : "+r"(r0), "+r"(ip) : "r"(r1) : "lr", "cc", "memory");
+    return r0;
+}
+#define AOT_SC(fn, s) aot_vc((u32 (*)())(fn), (u32)(uintptr_t)(s), 0)
+#define AOT_D2S_SLOW(x) aot_vc((u32 (*)())aot_d2s_slow, (u32)(x), (u32)((x) >> 32))
+#else
+#define AOT_SC(fn, s) fn(s)
+#define AOT_D2S_SLOW(x) aot_d2s_slow((u32)(x), (u32)((x) >> 32))
+#endif
 // lfs: exact (normal singles and zeros by the hardware conversion; denormals, infinities and NaNs by bits).
 // The JIT's fast-float model: the hardware conversion, so single denormals flush to zero and NaN payloads are not kept.
 static inline double S2D(u32 w) { float f; memcpy(&f, &w, 4); return (double)f; }
+static inline float U2F(u32 w) { float f; memcpy(&f, &w, 4); return f; }
 // stfs (PEM D.7, as the interpreter): bits extracted above the single denormal range.
 static inline u32 D2S(double d) {
     u64 x = D2U(d);
     u32 e = (u32)((x >> 52) & 0x7FF);
     if (__builtin_expect(e > 896 || !(x << 1), 1)) return (u32)(((x >> 32) & 0xC0000000u) | ((x >> 29) & 0x3FFFFFFFu));
-    return sf_double_to_single(x, false);
+    return AOT_D2S_SLOW(x);
 }
 // psq_st with a float GQR: the single denormal range stores as a signed zero.
 static inline u32 D2SF(double d) {
@@ -160,6 +179,12 @@ static inline void aot_gappend(u32 v, u32 size) {
     else aot_gbuf[l] = (u8)v;
     *aot_glen = l + size;
 }
+// A store the compiler can see goes to the pipe (its address a constant 0xCC008000, as GX code forms it with lis):
+// appended right at the site. aot_gbufc is aot_gbuf while the pipe is at that address, else NULL.
+extern u8* aot_gbufc;
+#define AOT_PIPE_EA 0xCC008000u
+#define PIPE_CONST(ea) (__builtin_constant_p(ea) && (ea) == AOT_PIPE_EA)
+static inline bool aot_gfits(u32 size) { return aot_gbufc && *aot_glen + size < 32u; }
 
 // Slow paths as the generated code calls them (inside a translated function: g, n, npc, lk_pc, lk_adj, lk_bef and the
 // labels leave and out exist). Each site is one call to a shared helper; when it reports that guest code must leave
@@ -168,17 +193,20 @@ static inline void aot_gappend(u32 v, u32 size) {
 // The helpers take the guest time as instructions run in this function (g->cycles is the function's start meanwhile)
 // and the PC with log2(size) in its two low bits.
 extern u32 aot_ls;
-u32 aot_ldx(Gekko* g, u32 ea, u32 nb, u32 pcs);
-u32 aot_stx(Gekko* g, u32 ea, u32 v, u32 nb, u32 pcs);
-u64 aot_ld64x(Gekko* g, u32 ea, u32 nb, u32 pc);
-u32 aot_st64x(Gekko* g, u32 ea, u64 v, u32 nb, u32 pc);
-u32 aot_psq_lx(Gekko* g, u32 ea, u32 wq, double* a, double* b, u32 nb, u32 pc);
-u32 aot_psq_stx(Gekko* g, u32 ea, u32 wq, double a, double b, u32 nb, u32 pc);
+// A slow access's arguments and results (one pointer, so every helper fits the register-keeping call below).
+typedef struct { Gekko* g; u32 e, nb, pc, x; u64 d; double fa, fb; } AotSlow;
+u32 aot_lds(AotSlow* s);     // the value (the status in aot_ls)
+u32 aot_sts(AotSlow* s);     // the status
+u32 aot_ld64s(AotSlow* s);   // the status, the value in d
+u32 aot_st64s(AotSlow* s);
+u32 aot_psq_ls(AotSlow* s);  // the status, the lanes in fa / fb
+u32 aot_psq_sts(AotSlow* s);
 #define SZ_LOG(size) ((size) == 4 ? 2u : (size) == 2 ? 1u : 0u)
 #define SLOW_GO(PC_, ADJ_, BEF_) do { lk_pc = (PC_); lk_adj = (ADJ_); lk_bef = (BEF_); goto leave; } while (0)
-#define SLOW_LD(size, ea, pv, PC_, ADJ_, BEF_) do { *(pv) = aot_ldx(g, ea, n - (BEF_), (PC_) | SZ_LOG(size)); if (__builtin_expect(aot_ls != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
-#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_stx(g, ea, v, n - (BEF_), (PC_) | SZ_LOG(size)) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
-#define SLOW_LD64(ea, pv, PC_, ADJ_, BEF_) do { *(pv) = aot_ld64x(g, ea, n - (BEF_), PC_); if (__builtin_expect(aot_ls != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
-#define SLOW_ST64(ea, v, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_st64x(g, ea, v, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
-#define PSQ_SLOW_L(ea, w, q, pa, pb, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_psq_lx(g, ea, ((w) << 3) | (q), pa, pb, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
-#define PSQ_SLOW_S(ea, w, q, a, b, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_psq_stx(g, ea, ((w) << 3) | (q), a, b, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_ARGS(EA_, BEF_, PC_) AotSlow sl_; sl_.g = g; sl_.e = (EA_); sl_.nb = n - (BEF_); sl_.pc = (PC_)
+#define SLOW_LD(size, ea, pv, PC_, ADJ_, BEF_) do { SLOW_ARGS(ea, BEF_, (PC_) | SZ_LOG(size)); *(pv) = AOT_SC(aot_lds, &sl_); if (__builtin_expect(aot_ls != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { if (PIPE_CONST(ea) && aot_gfits(size)) { aot_gappend(v, size); break; } SLOW_ARGS(ea, BEF_, (PC_) | SZ_LOG(size)); sl_.x = (v); if (__builtin_expect(AOT_SC(aot_sts, &sl_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_LD64(ea, pv, PC_, ADJ_, BEF_) do { SLOW_ARGS(ea, BEF_, PC_); if (__builtin_expect(AOT_SC(aot_ld64s, &sl_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); *(pv) = sl_.d; } while (0)
+#define SLOW_ST64(ea, v, PC_, ADJ_, BEF_) do { SLOW_ARGS(ea, BEF_, PC_); sl_.d = (v); if (__builtin_expect(AOT_SC(aot_st64s, &sl_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define PSQ_SLOW_L(ea, w, q, pa, pb, PC_, ADJ_, BEF_) do { SLOW_ARGS(ea, BEF_, PC_); sl_.x = ((w) << 3) | (q); if (__builtin_expect(AOT_SC(aot_psq_ls, &sl_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); *(pa) = sl_.fa; *(pb) = sl_.fb; } while (0)
+#define PSQ_SLOW_S(ea, w, q, a, b, PC_, ADJ_, BEF_) do { SLOW_ARGS(ea, BEF_, PC_); sl_.x = ((w) << 3) | (q); sl_.fa = (a); sl_.fb = (b); if (__builtin_expect(AOT_SC(aot_psq_sts, &sl_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
