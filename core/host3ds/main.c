@@ -21,6 +21,9 @@
 #include "pmu.h"
 #include "jitsample.h"
 #include "crashlog.h"
+
+// Main-thread stack: translated code (aot.h) nests C calls for guest calls, up to AOT_DEPTH deep.
+u32 __stacksize__ = 1024 * 1024;
 #include "asyncfile.h"
 #include "relay.h"
 

@@ -4681,6 +4681,7 @@ void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, 
 void jit_set_gather_buffer(Jit* j, u8* buf, u32* len) {
     j->gatherBuf = buf;
     j->gatherLen = len;
+    aot_set_gather_buffer(buf, len);
     jit_fill_fns(j);
     jit_invalidate_all(j);
 }

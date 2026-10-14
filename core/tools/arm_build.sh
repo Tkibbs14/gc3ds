@@ -5,7 +5,7 @@
 #   bash core/tools/arm_build.sh run prog.dol ...   build, then run with the given gcemu arguments
 set -euo pipefail
 cd "$(dirname "$0")/.."
-make -s CC=arm-linux-gnueabihf-gcc \
+make -s -j"$(nproc)" CC=arm-linux-gnueabihf-gcc \
     CFLAGS="-std=c11 -O2 -g -Wall -Wextra -Wno-unused-parameter -march=armv6k -mfpu=vfp -mfloat-abi=hard -marm -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
     LDFLAGS=-static BUILD=build-arm build-arm/gcemu
 if [ "${1:-}" = run ]; then

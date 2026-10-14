@@ -11,38 +11,49 @@
 // The generated code (core/src/aotgen, from ppc2c.py); absent in the repository, so referenced weakly.
 extern const AotPart aot_parts[] __attribute__((weak));
 extern const u32 aot_nparts __attribute__((weak));
+extern s8 aot_valid[] __attribute__((weak));
+extern const u32 aot_nvalid __attribute__((weak));
 
 uintptr_t aot_base;
 u32 aot_stop;
+u32 aot_depth;
+u8* aot_gbuf;
+u32* aot_glen;
 AotStats aot_stats;
 static bool g_on;
 static bool g_checking;  // check mode (PC): slow paths and fallbacks leave before their instruction
-static int g_noSlow = -1, g_noFb = -1;
+// PC debugging (read once in aot_run): AOT_NOSLOW / AOT_NOFB make slow paths / fallbacks leave before their
+// instruction, AOT_SLOWLOG prints the first slow accesses.
+static bool g_noSlow, g_noFb, g_slowLog;
 #ifndef __3DS__
 // Check mode: a slow path reached with an aligned MEM1 address is a translation bug (the fast path takes those).
 static void chk_slow(u32 ea, u32 size, u32 pc) {
     static u32 n;
-    if (g_checking && INMEM(ea, size) && !(ea & (size - 1)) && n++ < 20) fprintf(stderr, "AOT_CHECK slow path for MEM1 address %08x (size %u) at %08x\n", ea, size, pc);
+    if (g_checking && INMEM(ea, size) && !(ea & (size - 1)) && n++ < 20)
+        fprintf(stderr, "AOT_CHECK slow path for MEM1 address %08x (size %u) at %08x\n", ea, size, pc);
 }
 #else
 #define chk_slow(ea, size, pc) ((void)0)
-#endif  // AOT_NOSLOW / AOT_NOFB (PC): slow paths / fallbacks leave before their instruction
-static bool g_ni;        // FPSCR[NI] when the run started (estimates)
+#endif
+static bool g_ni;  // FPSCR[NI] when the run started (estimates)
 static void (*g_gatherPut)(void* ctx, u32 v, u32 size);
 static void* g_gatherCtx;
 static u32 g_gatherEa = 1;
 
-typedef struct { const AotFunc* f; const u32* ents; s8 valid; } Func;  // valid: -1 not checked, 0 other code, 1 ok
+typedef struct { const AotFunc* f; const u32* ents; } Func;
+#define VALID(F) aot_valid[(F)->f->gidx]  // -1 not checked, 0 other code, 1 ok
 typedef struct { u32 pc; u32 fi; u32 ei; } Slot;
 static Func* g_funcs;
 static u32 g_nfuncs;
+static Func** g_byIdx;  // by AotFunc.gidx
 static Slot* g_slots;
 static u32 g_slotMask;
 static u32 g_depLo = 0xFFFFFFFFu, g_depHi;  // the span of every inlined callee (aot_invalidate)
 
 bool aot_available(void) {
     const volatile void* parts = aot_parts;  // weak: NULL without generated code
-    return parts != NULL && &aot_nparts != NULL && aot_nparts > 0;
+    const volatile void* valid = aot_valid;
+    return parts != NULL && valid != NULL && &aot_nparts != NULL && aot_nparts > 0;
 }
 
 static u32 slot_hash(u32 pc) { return (pc >> 2) * 2654435761u; }
@@ -60,19 +71,25 @@ static void build(void) {
         for (u32 k = 0; k < *aot_parts[p].n; k++) ne += aot_parts[p].funcs[k].nent;
     }
     g_funcs = calloc(nf ? nf : 1, sizeof *g_funcs);
+    g_byIdx = calloc(aot_nvalid ? aot_nvalid : 1, sizeof *g_byIdx);
     u32 size = 1024;
     while (size < 2 * ne) size *= 2;
     g_slots = calloc(size, sizeof *g_slots);
-    if (!g_funcs || !g_slots) { free(g_funcs); free(g_slots); g_funcs = NULL; g_slots = NULL; return; }
+    if (!g_funcs || !g_slots || !g_byIdx) {
+        free(g_funcs); free(g_slots); free(g_byIdx);
+        g_funcs = NULL; g_slots = NULL; g_byIdx = NULL;
+        return;
+    }
     g_slotMask = size - 1;
     for (u32 p = 0; p < aot_nparts; p++) {
         const u32* e = aot_parts[p].entries;
         for (u32 k = 0; k < *aot_parts[p].n; k++) {
             const AotFunc* f = &aot_parts[p].funcs[k];
-            g_funcs[g_nfuncs++] = (Func){ f, e, -1 };
+            g_funcs[g_nfuncs++] = (Func){ f, e };
             e += f->nent;
         }
     }
+    memset(aot_valid, 0xFF, aot_nvalid);
 #ifndef __3DS__
     if (getenv("AOT_RANGE")) {  // debugging: only functions starting in [lo, hi) (hex lo-hi)
         u32 lo = 0, hi = 0;
@@ -80,15 +97,18 @@ static void build(void) {
         u32 m = 0;
         for (u32 i = 0; i < g_nfuncs; i++)
             if (g_funcs[i].f->start >= lo && g_funcs[i].f->start < hi) g_funcs[m++] = g_funcs[i];
+            else aot_valid[g_funcs[i].f->gidx] = 0;  // direct calls must not reach it either
         g_nfuncs = m;
     }
 #endif
     qsort(g_funcs, g_nfuncs, sizeof *g_funcs, by_start);
-    for (u32 i = 0; i < g_nfuncs; i++)
+    for (u32 i = 0; i < g_nfuncs; i++) {
+        g_byIdx[g_funcs[i].f->gidx] = &g_funcs[i];
         for (const u32* d = g_funcs[i].f->deps; d && *d; d += 2) {
             if (d[0] < g_depLo) g_depLo = d[0];
             if (d[0] + d[1] > g_depHi) g_depHi = d[0] + d[1];
         }
+    }
     for (u32 fi = 0; fi < g_nfuncs; fi++) {
         const Func* F = &g_funcs[fi];
         for (u32 ei = 0; ei < F->f->nent; ei++) {
@@ -112,6 +132,8 @@ void aot_set_enabled(bool on) {
 bool aot_enabled(void) { return g_on; }
 
 void aot_set_memory(u8* mem1) { aot_base = (uintptr_t)mem1 - 0x80000000u; aot_invalidate_all(); }
+
+void aot_set_gather_buffer(u8* buf, u32* len) { aot_gbuf = buf; aot_glen = len; }
 
 void aot_set_gather(void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) {
     g_gatherPut = put;
@@ -142,23 +164,38 @@ static u64 fnv(const u8* p, u32 n) {
 
 static bool check_func(Func* F) {
     u32 a = F->f->start, n = F->f->size;
-    if (!aot_base || !INMEM(a, n)) { F->valid = 0; return false; }
-    F->valid = fnv(M_(a), n) == F->f->hash;
-    if (F->valid && F->f->deps) {  // the inlined callees' bytes, hashed one after the other
+    bool ok = aot_base && INMEM(a, n) && fnv(M_(a), n) == F->f->hash;
+    if (ok && F->f->deps) {  // the inlined callees' bytes, hashed one after the other
         u64 h = 0xCBF29CE484222325ull;
         for (const u32* d = F->f->deps; *d; d += 2) {
             if (!INMEM(d[0], d[1])) { h = 0; break; }
             const u8* p = M_(d[0]);
             for (u32 i = 0; i < d[1]; i++) { h ^= p[i]; h *= 0x100000001B3ull; }
         }
-        F->valid = h == F->f->dhash;
+        ok = h == F->f->dhash;
     }
-    if (!F->valid) aot_stats.hashFail++;
-    return F->valid;
+    if (!ok) aot_stats.hashFail++;
+    VALID(F) = ok ? 1 : 0;
+    return ok;
+}
+
+bool aot_check_idx(u32 gidx) {
+    Func* F = g_byIdx && gidx < aot_nvalid ? g_byIdx[gidx] : NULL;
+    if (!F || VALID(F) == 0) return false;
+    return VALID(F) == 1 || check_func(F);
+}
+
+AotFn aot_lookup(u32 pc, u32* entry) {
+    const Slot* s = find(pc);
+    if (!s) return NULL;
+    Func* F = &g_funcs[s->fi];
+    if (VALID(F) != 1 && (VALID(F) == 0 || !check_func(F))) return NULL;
+    *entry = s->ei;
+    return F->f->fn;
 }
 
 void aot_invalidate_all(void) {
-    for (u32 i = 0; i < g_nfuncs; i++) g_funcs[i].valid = -1;
+    if (g_funcs) memset(aot_valid, 0xFF, aot_nvalid);
 }
 
 void aot_invalidate(u32 pa) {
@@ -168,110 +205,92 @@ void aot_invalidate(u32 pa) {
     u32 a = 0, b = g_nfuncs;
     while (a < b) { u32 m = (a + b) / 2; if (g_funcs[m].f->start + g_funcs[m].f->size <= lo) a = m + 1; else b = m; }
     for (u32 i = a > 0 ? a - 1 : 0; i < g_nfuncs && g_funcs[i].f->start < hi; i++)
-        if (g_funcs[i].f->start + g_funcs[i].f->size > lo) g_funcs[i].valid = -1;
-    if (lo + 0x1000u <= g_depLo || lo >= g_depHi) return;
+        if (g_funcs[i].f->start + g_funcs[i].f->size > lo) VALID(&g_funcs[i]) = -1;
+    if (hi <= g_depLo || lo >= g_depHi) return;
     for (u32 i = 0; i < g_nfuncs; i++)  // functions with an inlined callee in the page
         for (const u32* d = g_funcs[i].f->deps; d && *d; d += 2)
-            if (d[0] < hi && d[0] + d[1] > lo) { g_funcs[i].valid = -1; break; }
+            if (d[0] < hi && d[0] + d[1] > lo) { VALID(&g_funcs[i]) = -1; break; }
 }
 
 // ---- slow paths ----
 static inline u64 time_set(Gekko* g, u64 t) { u64 s = g->cycles; g->cycles = t; return s; }
 
-u32 aot_ld(Gekko* g, u32 ea, u32 size, u32* v, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) { chk_slow(ea, size, pc); return 3; }
-    if (getenv("AOT_NOSLOWLD")) return 3;
-    aot_stats.slow++;
-#ifndef __3DS__
-    if (getenv("AOT_SLOWLOG") && aot_stats.slow < 40) fprintf(stderr, "aot slow load %u at %08x from %08x\n", size, ea, pc);
-#endif
+// The end of every slow path: 1 when the access raised an exception (g->pc = its handler), else 0; an interrupt or a
+// stop request it caused makes guest code leave soon (aot_stop).
+static u32 slow_done(Gekko* g, bool ok) {
     GkPriv* p = GKP(g);
-    p->curPc = pc;
-    p->npc = pc + 4;
-    u64 s = time_set(g, t);
-    bool ok = size == 1 ? gk_rd8(g, ea, v) : size == 2 ? gk_rd16(g, ea, v) : gk_rd32(g, ea, v);
-    g->cycles = s;
     if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
     if (p->brk || p->stopReq) aot_stop = 1;
     return 0;
 }
-
-u32 aot_st(Gekko* g, u32 ea, u32 size, u32 v, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) { chk_slow(ea, size, pc); return 3; }
-    if (getenv("AOT_NOSLOWST")) return 3;
-    aot_stats.slow++;
-#ifndef __3DS__
-    if (getenv("AOT_SLOWLOG") && aot_stats.slow < 40) fprintf(stderr, "aot slow store %u %08x at %08x from %08x\n", size, v, ea, pc);
-#endif
+static void slow_begin(Gekko* g, u32 pc) {
     GkPriv* p = GKP(g);
     p->curPc = pc;
     p->npc = pc + 4;
+    aot_stats.slow++;
+}
+
+u32 aot_ld(Gekko* g, u32 ea, u32 size, u32* v, u32 pc, u64 t) {
+    if (g_checking || g_noSlow) { chk_slow(ea, size, pc); return 3; }
+#ifndef __3DS__
+    if (g_slowLog && aot_stats.slow < 40) fprintf(stderr, "aot slow load %u at %08x from %08x\n", size, ea, pc);
+#endif
+    slow_begin(g, pc);
+    u64 s = time_set(g, t);
+    bool ok = size == 1 ? gk_rd8(g, ea, v) : size == 2 ? gk_rd16(g, ea, v) : gk_rd32(g, ea, v);
+    g->cycles = s;
+    return slow_done(g, ok);
+}
+
+u32 aot_st(Gekko* g, u32 ea, u32 size, u32 v, u32 pc, u64 t) {
+    if (g_checking || g_noSlow) { chk_slow(ea, size, pc); return 3; }
+#ifndef __3DS__
+    if (g_slowLog && aot_stats.slow < 40) fprintf(stderr, "aot slow store %u %08x at %08x from %08x\n", size, v, ea, pc);
+#endif
+    slow_begin(g, pc);
     u64 s = time_set(g, t);
     bool ok = true;
     if (ea == g_gatherEa && g_gatherPut) g_gatherPut(g_gatherCtx, v, size);
     else ok = size == 1 ? gk_wr8(g, ea, v) : size == 2 ? gk_wr16(g, ea, v) : gk_wr32(g, ea, v);
     g->cycles = s;
-    if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
-    if (p->brk || p->stopReq) aot_stop = 1;
-    return 0;
+    return slow_done(g, ok);
 }
 
 u32 aot_ld64(Gekko* g, u32 ea, u64* v, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) { chk_slow(ea, 4, pc); return 3; }
-    aot_stats.slow++;
-    GkPriv* p = GKP(g);
-    p->curPc = pc;
-    p->npc = pc + 4;
+    if (g_checking || g_noSlow) { chk_slow(ea, 4, pc); return 3; }
+    slow_begin(g, pc);
     u64 s = time_set(g, t);
     bool ok = gk_rd64(g, ea, v);
     g->cycles = s;
-    if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
-    if (p->brk || p->stopReq) aot_stop = 1;
-    return 0;
+    return slow_done(g, ok);
 }
 
 u32 aot_st64(Gekko* g, u32 ea, u64 v, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) { chk_slow(ea, 4, pc); return 3; }
-    aot_stats.slow++;
-    GkPriv* p = GKP(g);
-    p->curPc = pc;
-    p->npc = pc + 4;
+    if (g_checking || g_noSlow) { chk_slow(ea, 4, pc); return 3; }
+    slow_begin(g, pc);
     u64 s = time_set(g, t);
     bool ok = gk_wr64(g, ea, v);
     g->cycles = s;
-    if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
-    if (p->brk || p->stopReq) aot_stop = 1;
-    return 0;
+    return slow_done(g, ok);
 }
 
 u32 aot_psq_l(Gekko* g, u32 ea, u32 w, u32 q, double* a, double* b, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) return 3;
-    aot_stats.slow++;
-    GkPriv* p = GKP(g);
-    p->curPc = pc;
-    p->npc = pc + 4;
+    if (g_checking || g_noSlow) return 3;
+    slow_begin(g, pc);
     u64 s = time_set(g, t), x0, x1;
     bool ok = gk_psq_load(g, ea, w, q, &x0, &x1);
     g->cycles = s;
-    if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
-    *a = U2D(x0);
-    *b = U2D(x1);
-    if (p->brk || p->stopReq) aot_stop = 1;
-    return 0;
+    if (ok) { *a = U2D(x0); *b = U2D(x1); }
+    return slow_done(g, ok);
 }
 
 u32 aot_psq_st(Gekko* g, u32 ea, u32 w, u32 q, double a, double b, u32 pc, u64 t) {
-    if (g_checking || g_noSlow == 1) return 3;
-    aot_stats.slow++;
-    GkPriv* p = GKP(g);
-    p->curPc = pc;
-    p->npc = pc + 4;
+    if (g_checking || g_noSlow) return 3;
+    slow_begin(g, pc);
     u64 s = time_set(g, t);
     bool ok = gk_psq_store(g, ea, w, q, D2U(a), D2U(b));
     g->cycles = s;
-    if (!ok) { g->pc = p->npc; aot_stop = 1; return 1; }
-    if (p->brk || p->stopReq) aot_stop = 1;
-    return 0;
+    return slow_done(g, ok);
 }
 
 static u32 key_of(const Gekko* g) {
@@ -279,7 +298,7 @@ static u32 key_of(const Gekko* g) {
 }
 
 u32 aot_interp(Gekko* g, u32 pc, u32 inst, u64 t) {
-    if (g_checking || g_noFb == 1) { g->pc = pc; return 3; }
+    if (g_checking || g_noFb) { g->pc = pc; return 3; }
     aot_stats.fallbacks++;
     u32 key = key_of(g);
     u64 s = time_set(g, t);
@@ -338,6 +357,8 @@ static void chk_report(void) {
             (unsigned long long)g_chk.bad, (unsigned long long)g_chk.fbad, (unsigned long long)g_chk.skipped);
 }
 
+// Runs one call (with the direct calls it makes) natively, undoes it, runs the same number of instructions in the
+// interpreter from the same state and compares; the interpreter's result stands.
 static u32 checked_call(Gekko* g, const Func* F, u32 ei, s32 budget) {
     static Gekko g0, gA;
     static u8* aNew;  // AOT's final bytes, per log entry
@@ -434,17 +455,23 @@ u32 aot_run(Gekko* g, s32 budget) {
     u32 total = 0;
     u64 t = g->cycles;
     aot_stop = 0;
+    aot_depth = 0;
     g_ni = (g->fpscr & FPSCR_NI) != 0;
     aot_stats.runs++;
 #ifndef __3DS__
     static int chk = -1;
-    if (chk < 0) { chk = getenv("AOT_CHECK") != NULL; g_noSlow = getenv("AOT_NOSLOW") != NULL; g_noFb = getenv("AOT_NOFB") != NULL; }
+    if (chk < 0) {
+        chk = getenv("AOT_CHECK") != NULL;
+        g_noSlow = getenv("AOT_NOSLOW") != NULL;
+        g_noFb = getenv("AOT_NOFB") != NULL;
+        g_slowLog = getenv("AOT_SLOWLOG") != NULL;
+    }
 #endif
     while ((s32)total < budget) {
         const Slot* s = find(g->pc);
         if (!s) break;
         Func* F = &g_funcs[s->fi];
-        if (F->valid != 1 && (F->valid == 0 || !check_func(F))) break;
+        if (VALID(F) != 1 && (VALID(F) == 0 || !check_func(F))) break;
         g->cycles = t + total;
         u32 n;
 #ifndef __3DS__

@@ -153,6 +153,8 @@ class Translator:
         self.inl = {}         # start -> Fn of small leaf functions inlined at their call sites
         self.deps = []        # (start, size) of inlined callees: the translation is valid only while they match too
         self.ninl = 0
+        self.fidx = {}        # start -> index of every translated function (direct calls)
+        self.dcalls = []      # direct call sites: their resume labels
 
     # -- helpers -------------------------------------------------------------------------------------------
     def R(self, r, write=False):
@@ -680,6 +682,15 @@ class Translator:
         self.st['inlined'] = self.st.get('inlined', 0) + 1
         return ['{'] + body + ['%s:;' % sub.ret_label, '}']
 
+    def dcall(self, target, pc, fn, gidx):
+        """A call that stays in C: the shared dcall block stores the registers, calls the callee (fn, or the one
+        looked up at `target`), and comes back here when it returned to pc + 4."""
+        k = len(self.dcalls)
+        self.dcalls.append(k)
+        self.st['dcalls'] = self.st.get('dcalls', 0) + 1
+        return ['dc_k = %d; dc_pc = %s; dc_rp = %s; dc_fn = %s; dc_v = %d; goto dcall;' % (k, target, hx(pc + 4), fn, gidx),
+                'DC%d:;' % k]
+
     def branch(self, pc, i, d, op):
         if op == 19:
             xo = d['xo']
@@ -692,6 +703,11 @@ class Translator:
                 if xo == 528 and not (bo & 4): return None
                 out += pre
                 if lk: out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
+                if xo == 528 and lk and c == '1' and not self.ret_label and not pre and self.fidx:
+                    out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
+                    out += self.dcall('t_', pc, '0', 0)
+                    out.append('}')
+                    return out
                 if xo == 16 and self.ret_label and not lk:
                     if c == '1': out.append('goto %s;' % self.ret_label)
                     else: out.append('if (%s) goto %s;' % (c, self.ret_label))
@@ -724,6 +740,8 @@ class Translator:
             out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
             if kind == 'b' and t in self.inl and not self.ret_label and self.ninl < 64:
                 return out + self.inline_leaf(self.inl[t])
+            if kind == 'b' and t in self.fidx and not self.ret_label:
+                return out + self.dcall(hx(t), pc, 'F_%08X' % t, self.fidx[t])
             if kind == 'b':
                 out.append(self.exit_after(hx(t)))
                 return out
@@ -919,9 +937,10 @@ class Translator:
         body = self.emit()
         name = 'F_%08X' % f.start
         o = ['// %s (%08x, %d instructions)' % (f.name[:100].replace('*/', ''), f.start, len(f.words)),
-             'static u32 %s(Gekko* g, u32 entry, s32 budget) {' % name,
+             'u32 %s(Gekko* g, u32 entry, s32 budget) {' % name,
              '    u32 n = 0, npc = 0; u64 t0 = g->cycles; (void)t0;',
-             '    u32 fb_k = 0, fb_pc = 0, fb_inst = 0, fb_adj = 0; (void)fb_k; (void)fb_pc; (void)fb_inst; (void)fb_adj;']
+             '    u32 fb_k = 0, fb_pc = 0, fb_inst = 0, fb_adj = 0; (void)fb_k; (void)fb_pc; (void)fb_inst; (void)fb_adj;',
+             '    u32 dc_k = 0, dc_pc = 0, dc_rp = 0, dc_v = 0; AotFn dc_fn = 0; (void)dc_k; (void)dc_pc; (void)dc_rp; (void)dc_v; (void)dc_fn;']
         decl = []
         for r in sorted(self.gpr): decl.append('u32 r%d = g->gpr[%d];' % (r, r))
         for r in sorted(self.fpr): decl.append('double f%d = g->fpr[%d].ps0, p%d = g->fpr[%d].ps1;' % (r, r, r, r))
@@ -949,6 +968,25 @@ class Translator:
                 o.append('    case %d: goto FB%d;' % (k, k))
             o.append('    }')
         o.append('    return n;')
+        if self.dcalls:
+            o.append('dcall:')
+            o += ['    ' + x for x in flush]
+            o.append('    { u32 ei_ = 0; AotFn fn_ = dc_fn;')
+            o.append('      if (!fn_) fn_ = aot_lookup(dc_pc, &ei_);')
+            o.append('      else if (aot_valid[dc_v] != 1 && !aot_check_idx(dc_v)) fn_ = 0;')
+            o.append('      if (!fn_ || aot_depth >= AOT_DEPTH || aot_stop) { g->pc = dc_pc; return n; }')
+            o.append('      g->cycles = t0 + n; aot_depth++;')
+            o.append('      u32 m_ = fn_(g, ei_, budget - (s32)n);')
+            o.append('      aot_depth--; g->cycles = t0;')
+            o.append('      if (!m_) { g->pc = dc_pc; return n; }')
+            o.append('      n += m_;')
+            o.append('      if (g->pc != dc_rp || aot_stop) return n; }')
+            o += ['    ' + x for x in reload_]
+            o.append('    switch (dc_k) {')
+            for k in self.dcalls:
+                o.append('    case %d: goto DC%d;' % (k, k))
+            o.append('    }')
+            o.append('    return n;')
         o.append('out:')
         o += ['    ' + x for x in flush]
         o.append('    g->pc = npc;')
@@ -1000,6 +1038,52 @@ def is_leaf(fn):
     return w == 0x4E800020 or branch_info(fn.end - 4, w) is not None
 
 
+def discover(secs, mem):
+    """Functions without a symbol map: starts are the DOL's entry, every bl target, every word in a data section that
+    points at code which begins like a function (vtables, callback tables), and code right after a blr or b that begins
+    like one (a stack frame, mflr, or a leaf's first instruction after alignment padding). A function runs to the next
+    start. Names are their addresses."""
+    starts = set()
+    text = [(b, z, d) for b, z, d, t in secs if t]
+    def word(a):
+        return mem.word(a)
+    def looks_like_start(a):
+        w = word(a)
+        if w is None or w == 0: return False
+        op = w >> 26
+        if op == 37 and ((w >> 16) & 31) == 1 and ((w >> 21) & 31) == 1: return True  # stwu r1, -x(r1)
+        if w == 0x7C0802A6: return True  # mflr r0
+        return False
+    for base, size, data in text:
+        prev = None
+        for o in range(0, size, 4):
+            w = struct.unpack('>I', data[o:o + 4])[0]
+            a = base + o
+            if (w >> 26) == 18 and (w & 3) == 1:
+                starts.add((a + (((w & 0x03FFFFFC) ^ 0x02000000) - 0x02000000)) & MASK)
+            if prev is not None and (prev == 0x4E800020 or ((prev >> 26) == 18 and (prev & 3) == 0)):
+                if looks_like_start(a): starts.add(a)
+            prev = w
+    for base, size, data, t in secs:
+        if t: continue
+        for o in range(0, size - 3, 4):
+            w = struct.unpack('>I', data[o:o + 4])[0]
+            if w & 3 or not mem.in_text(w): continue
+            if looks_like_start(w): starts.add(w)
+    starts = sorted(x for x in starts if mem.in_text(x))
+    out = []
+    ends = {}
+    for base, size, data in text:
+        ends[base] = base + size
+    for k, a in enumerate(starts):
+        sec_end = next(b + z for b, z, d in text if b <= a < b + z)
+        e = starts[k + 1] if k + 1 < len(starts) else sec_end
+        e = min(e, sec_end)
+        out.append((a, e - a, 'fn_%08x' % a))
+    print('discovered %d functions' % len(out))
+    return out
+
+
 def rlw_mask(mb, me):
     m = (MASK >> mb) ^ (0 if me >= 31 else (MASK >> (me + 1)))
     return (~m & MASK) if me < mb else m
@@ -1017,17 +1101,18 @@ def fnv64(data):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dol', required=True)
-    ap.add_argument('--symbols', required=True)
+    ap.add_argument('--symbols', help='a decomp symbol map; without one, functions are found in the code itself')
     ap.add_argument('--hist', help='executed-instruction histogram (pc_main PCHIST): only functions that ran')
     ap.add_argument('--top', type=int, default=0, help='only the N most executed functions')
     ap.add_argument('--out', required=True)
     ap.add_argument('--files', type=int, default=16)
     ap.add_argument('--only', help='comma-separated function addresses (hex)')
     ap.add_argument('--inline', type=int, default=32, help='inline leaf functions up to this many instructions (0: none)')
+    ap.add_argument('--dcalls', type=int, default=1, help='calls between translated functions stay in C (0: they leave)')
     a = ap.parse_args()
     secs = load_dol(a.dol)
     mem = Mem(secs)
-    syms = load_symbols(a.symbols)
+    syms = load_symbols(a.symbols) if a.symbols else discover(secs, mem)
     counts = None
     if a.hist:
         h = array.array('I'); h.frombytes(open(a.hist, 'rb').read())
@@ -1069,11 +1154,18 @@ def main():
     chunks = [[] for _ in range(nf)]
     table = []
     total_insns = 0
+    fns = [x for x in fns if Fn(x[1], x[2], x[3], mem).ok]
+    fidx = {x[1]: k for k, x in enumerate(fns)}
+    with open(os.path.join(a.out, 'aot_gen.h'), 'w') as fo:
+        fo.write('#pragma once\n#include "../cpu/aot_rt.h"\n')
+        for x in fns:
+            fo.write('u32 F_%08X(Gekko* g, u32 entry, s32 budget);\n' % x[1])
     for idx, (c, start, size, name) in enumerate(fns):
         fn = Fn(start, size, name, mem)
         if not fn.ok: continue
         t = Translator(fn, stats, None, [c for c in calls if start < c < start + size])
         t.inl = {k: v for k, v in leaves.items() if k != start}
+        if a.dcalls: t.fidx = fidx
         cname, lines = t.c_function()
         data = b''.join(struct.pack('>I', w) for w in fn.words)
         ddata = b''.join(b''.join(struct.pack('>I', w) for w in leaves[ds].words) for ds, dz in t.deps)
@@ -1084,7 +1176,7 @@ def main():
         chunks[idx % nf].append('\n'.join(lines))
         total_insns += len(fn.words)
     head = ('// Generated by core/tools/aot/ppc2c.py from the user\'s own disc: not to be committed or distributed.\n'
-            '#include "../cpu/aot_rt.h"\n'
+            '#include "aot_gen.h"\n'
             '#pragma GCC diagnostic ignored "-Wunused-label"\n'
             '#pragma GCC diagnostic ignored "-Wunused-variable"\n'
             '#pragma GCC diagnostic ignored "-Wunused-but-set-variable"\n'
@@ -1100,7 +1192,7 @@ def main():
             fo.write('\n\n'.join(chunks[k]))
             fo.write('\n\nconst AotFunc aot_funcs_%02d[] = {\n' % k)
             for start, size, hsh, cname, ents, _, dname, dh in mine:
-                fo.write('    { %s, %du, 0x%016XULL, %s, %du, %s, 0x%016XULL },\n' % (hx(start), size, hsh, cname, len(ents), dname, dh))
+                fo.write('    { %s, %du, 0x%016XULL, %s, %du, %s, 0x%016XULL, %du },\n' % (hx(start), size, hsh, cname, len(ents), dname, dh, fidx[start]))
             fo.write('};\nconst u32 aot_nfuncs_%02d = %d;\n' % (k, len(mine)))
             fo.write('const u32 aot_entries_%02d[] = {\n' % k)
             for start, size, hsh, cname, ents, *_ in mine:
@@ -1114,10 +1206,12 @@ def main():
         for k in range(nf):
             fo.write('    { aot_funcs_%02d, &aot_nfuncs_%02d, aot_entries_%02d },\n' % (k, k, k))
         fo.write('};\nconst u32 aot_nparts = %d;\n' % nf)
+        fo.write('s8 aot_valid[%d];\nconst u32 aot_nvalid = %d;\n' % (len(fns), len(fns)))
     fb = stats['fb']
     tot_fb = sum(fb.values())
     print('functions %d, guest instructions %d, translated %d, interpreter fallbacks %d, leaves %d, call sites inlined %d'
           % (len(table), total_insns, stats['native'], tot_fb, len(leaves), stats.get('inlined', 0)))
+    print('direct call sites %d' % stats.get('dcalls', 0))
     for (op, xo), n in sorted(fb.items(), key=lambda x: -x[1])[:25]:
         print('  fallback op %d xo %d: %d' % (op, xo, n))
 

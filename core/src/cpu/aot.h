@@ -12,6 +12,8 @@ bool aot_available(void);  // generated code is linked in
 void aot_set_memory(u8* mem1);
 // The write-gather pipe (stores to `ea` go to put), as jit_set_gather.
 void aot_set_gather(void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
+// ... and its partial burst, which stores append to inline (as jit_set_gather_buffer).
+void aot_set_gather_buffer(u8* buf, u32* len);
 // Whether the machine state lets translated code run: standard address translation, FP and paired singles on,
 // round to nearest (the state the translation assumes, as the JIT's block key).
 bool aot_state_ok(const Gekko* g);

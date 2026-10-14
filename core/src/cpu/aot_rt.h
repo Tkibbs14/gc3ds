@@ -7,7 +7,8 @@
 
 typedef u32 (*AotFn)(Gekko* g, u32 entry, s32 budget);
 // deps: start, size pairs (0-terminated) of the functions inlined into this one, whose bytes hash to dhash.
-typedef struct { u32 start, size; u64 hash; AotFn fn; u32 nent; const u32* deps; u64 dhash; } AotFunc;
+// gidx: the function's index in aot_valid (direct calls check the callee there).
+typedef struct { u32 start, size; u64 hash; AotFn fn; u32 nent; const u32* deps; u64 dhash; u32 gidx; } AotFunc;
 typedef struct { const AotFunc* funcs; const u32* n; const u32* entries; } AotPart;
 
 // MEM1's host address minus 0x80000000: guest ea in [0x80000000, 0x81800000) is the byte at aot_base + ea.
@@ -15,6 +16,14 @@ extern uintptr_t aot_base;
 // Set by a slow path when guest code must leave soon (an interrupt became due, a stop was asked for): loops stop at
 // their next back edge, and aot_run returns to the dispatcher.
 extern u32 aot_stop;
+// Per translated function: 1 its bytes (and its inlined callees') match, 0 they do not, -1 not checked yet. In the
+// generated code (aot_gen_index.c).
+extern s8 aot_valid[];
+// Direct calls between translated functions nest C calls: at most AOT_DEPTH deep (the rest leave to aot_run).
+#define AOT_DEPTH 40
+extern u32 aot_depth;
+AotFn aot_lookup(u32 pc, u32* entry);  // the translated function with an entry at pc (checked), or NULL
+bool aot_check_idx(u32 gidx);          // checks function gidx's bytes now; true when it may run
 #ifdef AOT_LOG
 // Check mode (PC): every store through the fast path is logged first (aot.c compares with the interpreter).
 extern u32 aot_logging;
@@ -113,11 +122,23 @@ static inline u32 DIVW(u32 a, u32 b) {
     return (u32)((s32)a / (s32)b);
 }
 
+// The write-gather pipe's partial 32-byte burst (aot_set_gather_buffer, as the JIT's): a store that does not complete
+// the burst is appended here inline; the one that completes it goes through the slow path to the pipe.
+extern u8* aot_gbuf;
+extern u32* aot_glen;
+static inline void aot_gappend(u32 v, u32 size) {
+    u32 l = *aot_glen;
+    if (size == 4) { u32 be = BSWAP32(v); memcpy(aot_gbuf + l, &be, 4); }
+    else if (size == 2) { u16 be = BSWAP16((u16)v); memcpy(aot_gbuf + l, &be, 2); }
+    else aot_gbuf[l] = (u8)v;
+    *aot_glen = l + size;
+}
+
 // Slow paths as the generated code calls them (inside a translated function: g, n, npc, t0 and label out exist).
 // adj: instructions of the block after this one; bef: this one and those after it.
 #define SLOW_LEAVE(st_, PC_, ADJ_, BEF_) do { if ((st_) == 3u) { npc = (PC_); n -= (BEF_); } else { npc = g->pc; n -= (ADJ_); } goto out; } while (0)
 #define SLOW_LD(size, ea, pv, PC_, ADJ_, BEF_) do { u32 st_ = aot_ld(g, ea, size, pv, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { u32 st_ = aot_st(g, ea, size, v, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
+#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { if ((ea) == 0xCC008000u && aot_gbuf && *aot_glen + (size) < 32u) { aot_gappend(v, size); break; } u32 st_ = aot_st(g, ea, size, v, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
 #define SLOW_LD64(ea, pv, PC_, ADJ_, BEF_) do { u32 st_ = aot_ld64(g, ea, pv, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
 #define SLOW_ST64(ea, v, PC_, ADJ_, BEF_) do { u32 st_ = aot_st64(g, ea, v, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
 #define PSQ_SLOW_L(ea, w, q, pa, pb, PC_, ADJ_, BEF_) do { u32 st_ = aot_psq_l(g, ea, w, q, pa, pb, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
