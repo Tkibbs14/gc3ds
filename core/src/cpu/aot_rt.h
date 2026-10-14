@@ -6,7 +6,8 @@
 #include "gekko_softfp.h"
 
 typedef u32 (*AotFn)(Gekko* g, u32 entry, s32 budget);
-typedef struct { u32 start, size; u64 hash; AotFn fn; u32 nent; } AotFunc;
+// deps: start, size pairs (0-terminated) of the functions inlined into this one, whose bytes hash to dhash.
+typedef struct { u32 start, size; u64 hash; AotFn fn; u32 nent; const u32* deps; u64 dhash; } AotFunc;
 typedef struct { const AotFunc* funcs; const u32* n; const u32* entries; } AotPart;
 
 // MEM1's host address minus 0x80000000: guest ea in [0x80000000, 0x81800000) is the byte at aot_base + ea.

@@ -148,6 +148,11 @@ class Translator:
         self.w_lr = self.w_ctr = self.w_xer = self.w_fpscr = False
         self.fallbacks = []  # (k, pc, inst) interpreter fallbacks
         self.lines = []
+        self.lp = ''          # label prefix (an inlined callee's labels are its call site's)
+        self.ret_label = None  # inlined leaf: where its blr goes
+        self.inl = {}         # start -> Fn of small leaf functions inlined at their call sites
+        self.deps = []        # (start, size) of inlined callees: the translation is valid only while they match too
+        self.ninl = 0
 
     # -- helpers -------------------------------------------------------------------------------------------
     def R(self, r, write=False):
@@ -345,7 +350,7 @@ class Translator:
         n = len(f.words)
         self.fb_sites = []  # (label id) for fallback resumption
         for s, e in self.blocks:
-            body.append('L%d:' % s)
+            body.append('%sL%d:' % (self.lp, s))
             body.append('    n += %d;' % (e - s))
             for k in range(s, e):
                 self.k = k; self.bs, self.be = s, e
@@ -653,9 +658,27 @@ class Translator:
             if f.words[tk] == 0x48000000 and tk == self.k:
                 return self.exit_after(hx(t))
             if tk <= self.k:
-                return 'if ((s32)n >= budget || aot_stop) { %s } goto L%d;' % (self.exit_after(hx(t)), tk)
-            return 'goto L%d;' % tk
+                return 'if ((s32)n >= budget || aot_stop) { %s } goto %sL%d;' % (self.exit_after(hx(t)), self.lp, tk)
+            return 'goto %sL%d;' % (self.lp, tk)
         return self.exit_after(hx(t))
+
+    def inline_leaf(self, fn):
+        """The body of a small leaf function at its call site, sharing this function's locals: its blr continues after
+        the call (LR holds the return address, which a leaf never changes). Exits inside it leave with its own PCs."""
+        self.ninl += 1
+        sub = Translator(fn, self.st, None)
+        sub.gpr, sub.fpr, sub.crf = self.gpr, self.fpr, self.crf
+        sub.wgpr, sub.wfpr, sub.wcrf = self.wgpr, self.wfpr, self.wcrf
+        sub.fallbacks = self.fallbacks
+        sub.lp = 'I%d_' % self.ninl
+        sub.ret_label = 'I%d_ret' % self.ninl
+        sub.use_lr = True
+        body = sub.emit()
+        for a in ('use_lr', 'use_ctr', 'use_xer', 'use_fpscr', 'w_lr', 'w_ctr', 'w_xer', 'w_fpscr'):
+            if getattr(sub, a): setattr(self, a, True)
+        if (fn.start, fn.size) not in self.deps: self.deps.append((fn.start, fn.size))
+        self.st['inlined'] = self.st.get('inlined', 0) + 1
+        return ['{'] + body + ['%s:;' % sub.ret_label, '}']
 
     def branch(self, pc, i, d, op):
         if op == 19:
@@ -669,13 +692,16 @@ class Translator:
                 if xo == 528 and not (bo & 4): return None
                 out += pre
                 if lk: out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
-                if xo == 528 and not lk and c == '1':
+                if xo == 16 and self.ret_label and not lk:
+                    if c == '1': out.append('goto %s;' % self.ret_label)
+                    else: out.append('if (%s) goto %s;' % (c, self.ret_label))
+                elif xo == 528 and not lk and c == '1':
                     # bctr: a switch statement's jump table lands on a label of this function, else leave
                     f = self.f
                     out.append('if ((s32)n >= budget || aot_stop) { %s }' % self.exit_after('t_'))
                     out.append('switch (t_) {')
                     for k in self.leaders:
-                        out.append('case %s: goto L%d;' % (hx(f.start + 4 * k), k))
+                        out.append('case %s: goto %sL%d;' % (hx(f.start + 4 * k), self.lp, k))
                     out.append('default: %s' % self.exit_after('t_'))
                     out.append('}')
                 elif c == '1': out.append(self.exit_after('t_'))
@@ -696,6 +722,8 @@ class Translator:
         out = []
         if lk:
             out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
+            if kind == 'b' and t in self.inl and not self.ret_label and self.ninl < 64:
+                return out + self.inline_leaf(self.inl[t])
             if kind == 'b':
                 out.append(self.exit_after(hx(t)))
                 return out
@@ -955,6 +983,23 @@ class Translator:
         return o
 
 
+def is_leaf(fn):
+    """A function that calls nothing, never leaves except by blr, and leaves LR alone: inlinable at a bl."""
+    for k, i in enumerate(fn.words):
+        pc = fn.start + 4 * k
+        op = i >> 26
+        if op == 17: return False
+        if op == 19 and ((i >> 1) & 0x3FF) == 50: return False
+        if op == 31 and ((i >> 1) & 0x3FF) == 467 and (((i >> 16) & 31) | ((i >> 6) & 0x3E0)) == 8: return False
+        bi = branch_info(pc, i)
+        if not bi: continue
+        kind, t, lk, bo, b = bi
+        if lk or kind == 'bcctr': return False
+        if kind in ('b', 'bc') and not (fn.start <= t < fn.end): return False
+    w = fn.words[-1]
+    return w == 0x4E800020 or branch_info(fn.end - 4, w) is not None
+
+
 def rlw_mask(mb, me):
     m = (MASK >> mb) ^ (0 if me >= 31 else (MASK >> (me + 1)))
     return (~m & MASK) if me < mb else m
@@ -978,6 +1023,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--files', type=int, default=16)
     ap.add_argument('--only', help='comma-separated function addresses (hex)')
+    ap.add_argument('--inline', type=int, default=32, help='inline leaf functions up to this many instructions (0: none)')
     a = ap.parse_args()
     secs = load_dol(a.dol)
     mem = Mem(secs)
@@ -1010,6 +1056,12 @@ def main():
             if (w >> 26) == 18 and (w & 3) == 1:
                 calls.add((base + o + (((w & 0x03FFFFFC) ^ 0x02000000) - 0x02000000)) & MASK)
     stats = {'native': 0, 'fb': {}}
+    leaves = {}
+    if a.inline:
+        for start, size, name in syms:
+            if size < 4 or size // 4 > a.inline or not mem.in_text(start) or not mem.in_text(start + size - 4): continue
+            fn = Fn(start, size, name, mem)
+            if fn.ok and is_leaf(fn): leaves[start] = fn
     os.makedirs(a.out, exist_ok=True)
     for old in os.listdir(a.out):
         if old.startswith('aot_gen') and old.endswith('.c'): os.remove(os.path.join(a.out, old))
@@ -1021,9 +1073,14 @@ def main():
         fn = Fn(start, size, name, mem)
         if not fn.ok: continue
         t = Translator(fn, stats, None, [c for c in calls if start < c < start + size])
+        t.inl = {k: v for k, v in leaves.items() if k != start}
         cname, lines = t.c_function()
         data = b''.join(struct.pack('>I', w) for w in fn.words)
-        table.append((start, size, fnv64(data), cname, [start + 4 * k for k in t.entries], idx % nf))
+        ddata = b''.join(b''.join(struct.pack('>I', w) for w in leaves[ds].words) for ds, dz in t.deps)
+        if t.deps:
+            lines.append('static const u32 D_%08X[] = { %s, 0 };' % (start, ', '.join('%s, %du' % (hx(ds), dz) for ds, dz in t.deps)))
+        table.append((start, size, fnv64(data), cname, [start + 4 * k for k in t.entries], idx % nf,
+                      ('D_%08X' % start) if t.deps else 'NULL', fnv64(ddata) if t.deps else 0))
         chunks[idx % nf].append('\n'.join(lines))
         total_insns += len(fn.words)
     head = ('// Generated by core/tools/aot/ppc2c.py from the user\'s own disc: not to be committed or distributed.\n'
@@ -1042,11 +1099,11 @@ def main():
             fo.write(head)
             fo.write('\n\n'.join(chunks[k]))
             fo.write('\n\nconst AotFunc aot_funcs_%02d[] = {\n' % k)
-            for start, size, hsh, cname, ents, _ in mine:
-                fo.write('    { %s, %du, 0x%016XULL, %s, %du },\n' % (hx(start), size, hsh, cname, len(ents)))
+            for start, size, hsh, cname, ents, _, dname, dh in mine:
+                fo.write('    { %s, %du, 0x%016XULL, %s, %du, %s, 0x%016XULL },\n' % (hx(start), size, hsh, cname, len(ents), dname, dh))
             fo.write('};\nconst u32 aot_nfuncs_%02d = %d;\n' % (k, len(mine)))
             fo.write('const u32 aot_entries_%02d[] = {\n' % k)
-            for start, size, hsh, cname, ents, _ in mine:
+            for start, size, hsh, cname, ents, *_ in mine:
                 fo.write('    ' + ', '.join(hx(e) for e in ents) + ',\n')
             fo.write('    0 };\n')
     with open(os.path.join(a.out, 'aot_gen_index.c'), 'w') as fo:
@@ -1059,7 +1116,8 @@ def main():
         fo.write('};\nconst u32 aot_nparts = %d;\n' % nf)
     fb = stats['fb']
     tot_fb = sum(fb.values())
-    print('functions %d, guest instructions %d, translated %d, interpreter fallbacks %d' % (len(table), total_insns, stats['native'], tot_fb))
+    print('functions %d, guest instructions %d, translated %d, interpreter fallbacks %d, leaves %d, call sites inlined %d'
+          % (len(table), total_insns, stats['native'], tot_fb, len(leaves), stats.get('inlined', 0)))
     for (op, xo), n in sorted(fb.items(), key=lambda x: -x[1])[:25]:
         print('  fallback op %d xo %d: %d' % (op, xo, n))
 

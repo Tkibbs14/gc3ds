@@ -38,6 +38,7 @@ static Func* g_funcs;
 static u32 g_nfuncs;
 static Slot* g_slots;
 static u32 g_slotMask;
+static u32 g_depLo = 0xFFFFFFFFu, g_depHi;  // the span of every inlined callee (aot_invalidate)
 
 bool aot_available(void) {
     const volatile void* parts = aot_parts;  // weak: NULL without generated code
@@ -83,6 +84,11 @@ static void build(void) {
     }
 #endif
     qsort(g_funcs, g_nfuncs, sizeof *g_funcs, by_start);
+    for (u32 i = 0; i < g_nfuncs; i++)
+        for (const u32* d = g_funcs[i].f->deps; d && *d; d += 2) {
+            if (d[0] < g_depLo) g_depLo = d[0];
+            if (d[0] + d[1] > g_depHi) g_depHi = d[0] + d[1];
+        }
     for (u32 fi = 0; fi < g_nfuncs; fi++) {
         const Func* F = &g_funcs[fi];
         for (u32 ei = 0; ei < F->f->nent; ei++) {
@@ -138,6 +144,15 @@ static bool check_func(Func* F) {
     u32 a = F->f->start, n = F->f->size;
     if (!aot_base || !INMEM(a, n)) { F->valid = 0; return false; }
     F->valid = fnv(M_(a), n) == F->f->hash;
+    if (F->valid && F->f->deps) {  // the inlined callees' bytes, hashed one after the other
+        u64 h = 0xCBF29CE484222325ull;
+        for (const u32* d = F->f->deps; *d; d += 2) {
+            if (!INMEM(d[0], d[1])) { h = 0; break; }
+            const u8* p = M_(d[0]);
+            for (u32 i = 0; i < d[1]; i++) { h ^= p[i]; h *= 0x100000001B3ull; }
+        }
+        F->valid = h == F->f->dhash;
+    }
     if (!F->valid) aot_stats.hashFail++;
     return F->valid;
 }
@@ -154,6 +169,10 @@ void aot_invalidate(u32 pa) {
     while (a < b) { u32 m = (a + b) / 2; if (g_funcs[m].f->start + g_funcs[m].f->size <= lo) a = m + 1; else b = m; }
     for (u32 i = a > 0 ? a - 1 : 0; i < g_nfuncs && g_funcs[i].f->start < hi; i++)
         if (g_funcs[i].f->start + g_funcs[i].f->size > lo) g_funcs[i].valid = -1;
+    if (lo + 0x1000u <= g_depLo || lo >= g_depHi) return;
+    for (u32 i = 0; i < g_nfuncs; i++)  // functions with an inlined callee in the page
+        for (const u32* d = g_funcs[i].f->deps; d && *d; d += 2)
+            if (d[0] < hi && d[0] + d[1] > lo) { g_funcs[i].valid = -1; break; }
 }
 
 // ---- slow paths ----
