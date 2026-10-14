@@ -154,3 +154,32 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   values seldom live long in lanes. **Judge JIT changes by hot words per guest instruction as well as by the model.**
 - **Re-evaluate when:** blocks get longer (region compilation or traces that pay), or code size per guest instruction
   drops elsewhere so the lanes' extra words matter less.
+
+## C12. Static recompilation: translate the game's PowerPC code to ARM ahead of time
+
+- **Status:** parked, 2026-10-14. Raised while scoping a Wind Waker port.
+- **What:** instead of compiling 1–30-instruction blocks at run time, translate a game's whole DOL and RELs
+  into C (or straight to ARM) on the PC once. GCC then optimizes each guest *function* as a unit, with registers
+  allocated across the function, no block exits and no dispatch. gc3ds keeps the GameCube memory image, GX, DSP and
+  timing; only core 0's code changes. Instructions the translator can't handle fall back to the interpreter.
+- **Evidence for:**
+  - Wind-Waker-Recomp (GPL-3, PC/Mac/iOS) does exactly this for all of Wind Waker's DOL and its 415 modules, with
+    a Dolphin-derived runtime.
+  - Core 0 is the wall at ~33 cycles per guest instruction (HANDOFF). ~10 of those are instruction-fetch stalls on
+    short JIT blocks and ~13 are executed instructions, which a whole-function compiler is better placed to cut.
+  - It also covers code a decompilation hasn't reached yet: Wind Waker is 79.6% decompiled (decomp.dev, 4d78c99).
+- **Evidence against / unknowns:**
+  - The output must still do big-endian accesses (SETEND as now, or `rev`) and match Gekko's float and paired-single
+    semantics, so part of the 33 cycles stays.
+  - Code size: a whole game translated may exceed the I-cache worse than the JIT's hot set does. Unmeasured.
+  - The output is per game, so this is a per-game build step, not a general emulator.
+  - The gain on the ARM11 is unmeasured.
+- **Cost:** large.
+  - A PowerPC-to-C translator: function discovery, jump tables, indirect calls through a lookup, and REL relocation
+    at load time.
+  - A build pipeline that reads the user's own disc, so no game code is ever distributed.
+- **Cheapest test:** translate one hot TP function set (the cutscene's top blocks from JIT_REGSTAT) by hand or with a
+  small translator. Link it into gc3ds behind an `--ab` switch that routes those guest addresses to the native
+  versions, and measure core 0 on the 2DS.
+- **Re-evaluate when:** now. This is the only candidate that attacks the 33-cycle wall as a whole, and the test runs on
+  TP, which is already on the card.
