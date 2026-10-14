@@ -3,6 +3,7 @@
 //         [--trace N [--trace-at CYCLES]] [--profile] [--disc-info] [--press BUTTON@from-to,...]
 //         [--disc game.iso (with a DOL)] [--rtc SECONDS_SINCE_2000] [--from FIELD (for --every/--log)]
 //         [--dump-efb FIELD] [--save-state FIELD:PATH] [--load-state PATH]
+#include "../cpu/aot.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -281,8 +282,16 @@ int main(int argc, char** argv) {
         fprintf(stderr, "loaded state %s at field %u, cycle %llu\n", loadPath, fe.fields, (unsigned long long)sys.cpu.cycles);
     }
 
+    // AOT=1: ahead-of-time translated code (aot.h) where it was generated; AOT_CHECK=1 also compares every call with the interpreter.
+    if (getenv("AOT")) {
+        aot_set_enabled(true);
+        fprintf(stderr, "aot: %s\n", aot_enabled() ? "on" : "no translated code in this build");
+    }
     // OPMIX=1: dynamic instruction mix of the interpreter, printed at exit (which instructions a JIT must cover).
     if (getenv("OPMIX")) g_gekkoOpMix = calloc(65536, sizeof(u64));
+    // PCHIST=file: executed instructions by address (0x80000000-0x81FFFFFF), written at exit as raw u32 counts.
+    const char* pcHistPath = getenv("PCHIST");
+    if (pcHistPath) g_gekkoPcHist = calloc(1u << 23, sizeof(u32));
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     u64 startCycles = sys.cpu.cycles, end = startCycles + (u64)(seconds * GEKKO_HZ);
@@ -309,6 +318,15 @@ int main(int argc, char** argv) {
 
     save_frame(&sys, &fe, "last");
     host_jit_report();
+    if (aot_enabled())
+        fprintf(stderr, "aot: %llu runs, %llu calls, %llu guest instructions (%.1f%% of %llu), %llu fallbacks, %llu slow accesses, %llu hash failures\n",
+                (unsigned long long)aot_stats.runs, (unsigned long long)aot_stats.calls, (unsigned long long)aot_stats.insns,
+                100.0 * (double)aot_stats.insns / (double)(sys.cpu.cycles - startCycles + 1), (unsigned long long)(sys.cpu.cycles - startCycles),
+                (unsigned long long)aot_stats.fallbacks, (unsigned long long)aot_stats.slow, (unsigned long long)aot_stats.hashFail);
+    if (g_gekkoPcHist) {
+        FILE* f = fopen(pcHistPath, "wb");
+        if (f) { fwrite(g_gekkoPcHist, sizeof(u32), 1u << 23, f); fclose(f); }
+    }
     if (g_gekkoOpMix) {
         u64 total = 0;
         for (u32 k = 0; k < 65536; k++) total += g_gekkoOpMix[k];

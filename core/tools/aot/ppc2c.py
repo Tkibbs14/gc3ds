@@ -1,0 +1,1068 @@
+#!/usr/bin/env python3
+"""Ahead-of-time translation of a game's PowerPC code into C (redesign candidate C12, docs/research/AOT_PLAN.md).
+
+    python3 core/tools/aot/ppc2c.py --dol main.dol --symbols symbols.txt --hist hist.bin --out core/src/aotgen [--files 16]
+
+Every selected guest function becomes one C function, `u32 F_xxxxxxxx(Gekko* g, u32 entry, s32 budget)`, that runs the
+function from one of its entries (its start, the instruction after each call, the head of each loop) until it leaves:
+a call, a return, a branch out of the function, the budget used up at a loop's back edge, or something only the
+interpreter may do. It returns the guest instructions it ran and leaves g->pc where guest code goes on (core/src/cpu/aot.c
+runs the next function from there, or hands back to the JIT).
+
+Guest registers live in C locals inside a function (loaded at entry, stored at every exit), so the host compiler
+allocates them across the whole function. Instructions that are not translated run in the interpreter, one at a time,
+with every register stored before and reloaded after, so the translation is exact wherever it does not translate.
+Floating point follows the JIT's "fast float" model (jit.c): results equal the interpreter's for normal operands, the
+multiply-add forms round the product first, and FPSCR keeps only what fcmpu / fcmpo set.
+
+The output is derived from the user's own disc: it is never committed (core/src/aotgen is ignored).
+"""
+import argparse, array, os, re, struct, sys, zlib
+
+MASK = 0xFFFFFFFF
+
+
+def s16(v):
+    v &= 0xFFFF
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def hx(v):
+    return '0x%08Xu' % (v & MASK)
+
+
+# ---------------------------------------------------------------------------------------------------- input
+def load_dol(path):
+    d = open(path, 'rb').read()
+    off = struct.unpack('>18I', d[0:72]); addr = struct.unpack('>18I', d[72:144]); size = struct.unpack('>18I', d[144:216])
+    secs = []
+    for i in range(18):
+        if size[i]:
+            secs.append((addr[i], size[i], d[off[i]:off[i] + size[i]], i < 7))
+    return secs
+
+
+class Mem:
+    def __init__(self, secs):
+        self.secs = secs
+
+    def word(self, a):
+        for base, size, data, text in self.secs:
+            if base <= a < base + size and text:
+                o = a - base
+                return struct.unpack('>I', data[o:o + 4])[0]
+        return None
+
+    def in_text(self, a):
+        return any(base <= a < base + size and text for base, size, data, text in self.secs)
+
+
+def load_symbols(path):
+    out = []
+    pat = re.compile(r'^(\S+) = \.text:0x([0-9A-Fa-f]+); // type:function size:0x([0-9A-Fa-f]+)')
+    for line in open(path, encoding='utf-8', errors='replace'):
+        m = pat.match(line)
+        if m:
+            out.append((int(m.group(2), 16), int(m.group(3), 16), m.group(1)))
+    out.sort()
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------- decoding
+def fields(i):
+    return dict(op=i >> 26, rd=(i >> 21) & 31, ra=(i >> 16) & 31, rb=(i >> 11) & 31, rc=(i >> 6) & 31,
+                xo=(i >> 1) & 0x3FF, xo5=(i >> 1) & 31, rcb=i & 1, oe=(i >> 10) & 1, simm=s16(i), uimm=i & 0xFFFF)
+
+
+def branch_info(pc, i):
+    """('b'|'bc'|'bclr'|'bcctr', target or None, lk, bo, bi) for branches, else None."""
+    op = i >> 26
+    if op == 18:
+        li = ((i & 0x03FFFFFC) ^ 0x02000000) - 0x02000000
+        t = li if i & 2 else pc + li
+        return ('b', t & MASK, i & 1, 20, 0)
+    if op == 16:
+        bd = s16(i & 0xFFFC)
+        t = bd if i & 2 else pc + bd
+        return ('bc', t & MASK, i & 1, (i >> 21) & 31, (i >> 16) & 31)
+    if op == 19:
+        xo = (i >> 1) & 0x3FF
+        if xo == 16:
+            return ('bclr', None, i & 1, (i >> 21) & 31, (i >> 16) & 31)
+        if xo == 528:
+            return ('bcctr', None, i & 1, (i >> 21) & 31, (i >> 16) & 31)
+    return None
+
+
+def is_poll_load(op):
+    return op in (32, 34, 40, 42)
+
+
+def poll_loop(words, start_idx, n):
+    """gekko_poll_loop_len over the loop words[start_idx:start_idx+n] + the closing branch (cpu/gekko.c)."""
+    allw = 0
+    rw = []
+    for k in range(n):
+        i = words[start_idx + k]
+        o, rd, ra, rb = i >> 26, (i >> 21) & 31, (i >> 16) & 31, (i >> 11) & 31
+        r = w = 0
+        if is_poll_load(o):
+            r = (1 << ra) if ra else 0; w = 1 << rd
+        elif o in (10, 11):
+            r = 1 << ra
+        elif o == 31 and ((i >> 1) & 0x3FF) in (0, 32):
+            r = (1 << ra) | (1 << rb)
+        elif o in (28, 21, 24):
+            r = 1 << rd; w = 1 << ra
+        else:
+            return False
+        rw.append((r, w)); allw |= w
+    seen = 0
+    for r, w in rw:
+        if r & allw & ~seen:
+            return False
+        seen |= w
+    return True
+
+
+# ---------------------------------------------------------------------------------------------------- translation
+class Fn:
+    def __init__(self, start, size, name, mem):
+        self.start, self.size, self.name = start, size, name
+        self.end = start + size
+        self.words = [mem.word(a) for a in range(start, self.end, 4)]
+        self.ok = all(w is not None for w in self.words)
+
+
+class Translator:
+    """One function to C."""
+
+    def __init__(self, fn, stats, fnset, calltargets=()):
+        self.calltargets = calltargets  # addresses inside this function that code anywhere calls (bl): entries
+        self.f = fn
+        self.st = stats
+        self.fnset = fnset  # starts of every translated function (for nothing yet: calls always leave)
+        self.gpr = set(); self.fpr = set(); self.crf = set()
+        self.use_lr = self.use_ctr = self.use_xer = self.use_fpscr = False
+        self.wgpr = set(); self.wfpr = set(); self.wcrf = set()
+        self.w_lr = self.w_ctr = self.w_xer = self.w_fpscr = False
+        self.fallbacks = []  # (k, pc, inst) interpreter fallbacks
+        self.lines = []
+
+    # -- helpers -------------------------------------------------------------------------------------------
+    def R(self, r, write=False):
+        self.gpr.add(r)
+        if write: self.wgpr.add(r)
+        return 'r%d' % r
+
+    def RA0(self, r):
+        return '0u' if r == 0 else self.R(r)
+
+    def F(self, r, lane=0, write=False):
+        self.fpr.add(r)
+        if write: self.wfpr.add(r)
+        return ('f%d' if lane == 0 else 'p%d') % r
+
+    def CR(self, f, write=False):
+        self.crf.add(f)
+        if write: self.wcrf.add(f)
+        return 'c%d' % f
+
+    def LR(self, write=False):
+        self.use_lr = True
+        if write: self.w_lr = True
+        return 'lr'
+
+    def CTR(self, write=False):
+        self.use_ctr = True
+        if write: self.w_ctr = True
+        return 'ctr'
+
+    def XER(self, write=False):
+        self.use_xer = True
+        if write: self.w_xer = True
+        return 'xer'
+
+    def crbit(self, b):
+        return '((%s >> %d) & 1u)' % (self.CR(b >> 2), 3 - (b & 3))
+
+    def set_crbit(self, b, expr):
+        f = b >> 2; sh = 3 - (b & 3)
+        c = self.CR(f, True)
+        return '%s = (%s & ~%du) | ((%s) << %d);' % (c, c, 1 << sh, expr, sh)
+
+    def cr0(self, d):
+        return '%s = CR_OF(%s, %s);' % (self.CR(0, True), d, self.XER())
+
+    def single(self, r, lane):
+        return (r, lane) in self.known
+
+    # -- analysis ------------------------------------------------------------------------------------------
+    def analyse(self):
+        f = self.f
+        n = len(f.words)
+        leaders = {0}
+        self.post_call = set()
+        self.backedge = {}  # branch index -> target index (backward, inside)
+        self.poll_heads = set()
+        self.bctr_switch = set()
+        for k, i in enumerate(f.words):
+            pc = f.start + 4 * k
+            bi = branch_info(pc, i)
+            if bi:
+                kind, t, lk, bo, b = bi
+                if k + 1 < n: leaders.add(k + 1)
+                if lk and k + 1 < n: self.post_call.add(k + 1)
+                if t is not None and f.start <= t < f.end and not lk:
+                    tk = (t - f.start) // 4
+                    leaders.add(tk)
+                    if tk <= k:
+                        self.backedge[k] = tk
+                        if (bo & 4) and not (i & 3) and 0 < k - tk < 8 and poll_loop(f.words, tk, k - tk):
+                            self.poll_heads.add(tk)
+            elif i in (0x4C00012C, 0x4C000064) or (i >> 26) == 17:  # isync is a no-op; rfi / sc leave anyway
+                if k + 1 < n: leaders.add(k + 1)
+        for t in self.calltargets:
+            if f.start < t < f.end: leaders.add((t - f.start) // 4)
+        self.leaders = sorted(leaders)
+        # Entries: the start, after each call, and loop heads (not polling loops: the JIT dispatcher skips those).
+        ent = {0} | self.post_call | set(self.backedge.values()) | {(t - f.start) // 4 for t in self.calltargets if f.start < t < f.end}
+        ent -= self.poll_heads
+        ent -= {k for k in range(n) if f.words[k] == 0x48000000}
+        if 0 in self.poll_heads: ent.discard(0)
+        self.entries = sorted(e for e in ent if e < n)
+        # Basic blocks: from each leader to the next leader (or the end).
+        self.blocks = []
+        for idx, s in enumerate(self.leaders):
+            e = self.leaders[idx + 1] if idx + 1 < len(self.leaders) else n
+            self.blocks.append((s, e))
+        self.block_of = {}
+        for s, e in self.blocks:
+            for k in range(s, e): self.block_of[k] = (s, e)
+        self.single_analysis()
+
+    def single_analysis(self):
+        """Lanes (fpr, lane) known to hold an exact single at each instruction (forward, meet = intersection)."""
+        f = self.f
+        n = len(f.words)
+        ALL = None  # top
+        state_in = {s: ALL for s, e in self.blocks}
+        ent = set(self.entries)
+        for s in ent: state_in[s] = frozenset()
+        state_in[0] = frozenset()
+        succ = {}
+        for s, e in self.blocks:
+            last = e - 1
+            i = f.words[last]
+            pc = f.start + 4 * last
+            bi = branch_info(pc, i)
+            out = []
+            if bi:
+                kind, t, lk, bo, b = bi
+                if kind in ('b', 'bc') and t is not None and f.start <= t < f.end and not lk:
+                    out.append((t - f.start) // 4)
+                cond = not (kind == 'b' or (bo & 0x14) == 0x14)
+                if (cond or lk) and e < n: out.append(e)
+                if kind == 'bcctr' and not lk:
+                    out.extend(x for x, y in self.blocks)  # a jump table may go anywhere in the function
+            elif e < n:
+                out.append(e)
+            succ[s] = out
+        changed = True
+        self.known_at = {}
+        while changed:
+            changed = False
+            for s, e in self.blocks:
+                st = state_in[s]
+                if st is ALL: continue
+                cur = set(st)
+                for k in range(s, e):
+                    self.known_at[k] = frozenset(cur)
+                    cur = self.single_step(f.words[k], cur)
+                for t in succ[s]:
+                    old = state_in[t]
+                    new = frozenset(cur) if old is ALL else old & frozenset(cur)
+                    if t in ent: new = frozenset()
+                    if new != old:
+                        state_in[t] = new; changed = True
+        for k in range(n):
+            self.known_at.setdefault(k, frozenset())
+
+    @staticmethod
+    def single_step(i, cur):
+        op = i >> 26; rd = (i >> 21) & 31; ra = (i >> 16) & 31; rb = (i >> 11) & 31; rc = (i >> 6) & 31
+        xo = (i >> 1) & 0x3FF; xo5 = (i >> 1) & 31
+        def both(r): cur.add((r, 0)); cur.add((r, 1))
+        def kill0(r): cur.discard((r, 0))
+        def kill(r): cur.discard((r, 0)); cur.discard((r, 1))
+        def cp(d, s, ls=0, ld=0):
+            if (s, ls) in cur: cur.add((d, ld))
+            else: cur.discard((d, ld))
+        if op in (48, 49): both(rd)
+        elif op == 31 and xo in (535, 567): both(rd)
+        elif op in (50, 51) or (op == 31 and xo in (599, 631)): kill0(rd)
+        elif op in (56, 57) or (op == 4 and (i >> 1) & 63 in (6, 38)): both(rd)
+        elif op == 59: both(rd)
+        elif op == 63:
+            if xo in (0, 32, 38, 70, 64, 134, 711): pass
+            elif xo == 12: both(rd)
+            elif xo in (72, 40, 264, 136): cp(rd, rb)
+            elif xo5 == 23:
+                if (rb, 0) in cur and (rc, 0) in cur: cur.add((rd, 0))
+                else: kill0(rd)
+            else: kill0(rd)
+        elif op == 4:
+            x6 = (i >> 1) & 63
+            if xo in (0, 32, 64, 96) or x6 in (7, 39) or xo == 1014: pass
+            elif xo in (72, 40, 264, 136):
+                a0, a1 = (rb, 0) in cur, (rb, 1) in cur
+                kill(rd)
+                if a0: cur.add((rd, 0))
+                if a1: cur.add((rd, 1))
+            elif xo in (528, 560, 592, 624):
+                l0 = (ra, 0 if xo in (528, 560) else 1) in cur
+                l1 = (rb, 0 if xo in (528, 592) else 1) in cur
+                kill(rd)
+                if l0: cur.add((rd, 0))
+                if l1: cur.add((rd, 1))
+            elif xo5 == 23:
+                s0 = (rb, 0) in cur and (rc, 0) in cur; s1 = (rb, 1) in cur and (rc, 1) in cur
+                kill(rd)
+                if s0: cur.add((rd, 0))
+                if s1: cur.add((rd, 1))
+            else: both(rd)
+        elif op in (52, 53, 54, 55, 60, 61) or op < 48:
+            pass
+        else:
+            cur.clear()
+        return cur
+
+    # -- emission ------------------------------------------------------------------------------------------
+    def emit(self):
+        f = self.f
+        self.analyse()
+        body = []
+        n = len(f.words)
+        self.fb_sites = []  # (label id) for fallback resumption
+        for s, e in self.blocks:
+            body.append('L%d:' % s)
+            body.append('    n += %d;' % (e - s))
+            for k in range(s, e):
+                self.k = k; self.bs, self.be = s, e
+                self.known = self.known_at[k]
+                pc = f.start + 4 * k
+                code = self.insn(pc, f.words[k])
+                for c in code:
+                    body.append('    ' + c)
+            last = f.words[e - 1]
+            bi = branch_info(f.start + 4 * (e - 1), last)
+            falls = not bi or not (bi[0] == 'b' or (bi[0] != 'b' and (bi[3] & 0x14) == 0x14 and not bi[2]))
+            if falls and e >= n:
+                body.append('    npc = %s; goto out;' % hx(f.start + 4 * n))
+        return body
+
+    def exit_after(self, npc_expr):
+        """Leave after the current instruction completed (it counted)."""
+        adj = self.be - 1 - self.k
+        return 'npc = %s;%s goto out;' % (npc_expr, (' n -= %d;' % adj) if adj else '')
+
+    def exit_before(self, pc):
+        adj = self.be - self.k
+        return 'npc = %s; n -= %d; goto out;' % (hx(pc), adj)
+
+    def adj_after(self):
+        return self.be - 1 - self.k
+
+    def fallback(self, pc, i):
+        k = len(self.fallbacks)
+        self.fallbacks.append((k, pc, i))
+        key = fields(i)
+        self.st['fb'][(key['op'], key['xo'] if key['op'] in (4, 19, 31, 59, 63) else 0)] = \
+            self.st['fb'].get((key['op'], key['xo'] if key['op'] in (4, 19, 31, 59, 63) else 0), 0) + 1
+        return ['fb_k = %d; fb_pc = %s; fb_inst = %s; fb_adj = %d; goto fallback;' % (k, hx(pc), hx(i), self.adj_after()),
+                'FB%d:;' % k]
+
+    # memory --------------------------------------------------------------------------------------------------
+    def load(self, size, dst, ea, pc, i, sign=False, rev=False):
+        fn = {1: 'LD8', 2: 'LD16', 4: 'LD32'}[size]
+        conv = ''
+        if size == 2 and sign: conv = '(u32)(s32)(s16)'
+        if rev: fn = {2: 'LD16R', 4: 'LD32R'}[size]
+        fix = {(2, True): ' v_ = BSWAP16((u16)v_);', (4, True): ' v_ = BSWAP32(v_);'}.get((size, rev), '')
+        return ['{ u32 ea_ = %s, v_; if (__builtin_expect(!%s(ea_, &v_), 0)) { SLOW_LD(%d, ea_, &v_, %s, %d, %d);%s } %s = %s v_; }'
+                % (ea, fn, size, hx(pc), self.adj_after(), self.be - self.k, fix, dst, conv)]
+
+    def store(self, size, val, ea, pc, rev=False):
+        fn = {1: 'ST8', 2: 'ST16', 4: 'ST32'}[size]
+        if rev: fn = {2: 'ST16R', 4: 'ST32R'}[size]
+        sv = {(2, True): '(u32)BSWAP16((u16)v_)', (4, True): 'BSWAP32(v_)'}.get((size, rev), 'v_')
+        return ['{ u32 ea_ = %s, v_ = %s; if (__builtin_expect(!%s(ea_, v_), 0)) { SLOW_ST(%d, ea_, %s, %s, %d, %d); } }'
+                % (ea, val, fn, size, sv, hx(pc), self.adj_after(), self.be - self.k)]
+
+    def ea_d(self, d):
+        return '%s + %du' % (self.RA0(d['ra']), d['simm'] & MASK) if d['simm'] else self.RA0(d['ra'])
+
+    def ea_du(self, d):
+        return '%s + %du' % (self.R(d['ra']), d['simm'] & MASK) if d['simm'] else self.R(d['ra'])
+
+    def ea_x(self, d):
+        return '%s + %s' % (self.RA0(d['ra']), self.R(d['rb']))
+
+    def ea_xu(self, d):
+        return '%s + %s' % (self.R(d['ra']), self.R(d['rb']))
+
+    # instructions ---------------------------------------------------------------------------------------------
+    def insn(self, pc, i):
+        d = fields(i)
+        op = d['op']
+        try:
+            r = self.insn_(pc, i, d, op)
+        except NotImplementedError:
+            r = None
+        if r is None:
+            return self.fallback(pc, i)
+        self.st['native'] += 1
+        return r
+
+    def insn_(self, pc, i, d, op):
+        rd, ra, rb, rc = d['rd'], d['ra'], d['rb'], d['rc']
+        R = self.R
+        if op == 14: return ['%s = %s;' % (R(rd, 1), '%s + %du' % (self.RA0(ra), d['simm'] & MASK) if ra else hx(d['simm']))]
+        if op == 15: return ['%s = %s;' % (R(rd, 1), '%s + %s' % (self.RA0(ra), hx(d['uimm'] << 16)) if ra else hx(d['uimm'] << 16))]
+        if op == 24: return ['%s = %s | %du;' % (R(ra, 1), R(rd), d['uimm'])]
+        if op == 25: return ['%s = %s | %s;' % (R(ra, 1), R(rd), hx(d['uimm'] << 16))]
+        if op == 26: return ['%s = %s ^ %du;' % (R(ra, 1), R(rd), d['uimm'])]
+        if op == 27: return ['%s = %s ^ %s;' % (R(ra, 1), R(rd), hx(d['uimm'] << 16))]
+        if op == 28: return ['%s = %s & %du;' % (R(ra, 1), R(rd), d['uimm']), self.cr0(R(ra))]
+        if op == 29: return ['%s = %s & %s;' % (R(ra, 1), R(rd), hx(d['uimm'] << 16)), self.cr0(R(ra))]
+        if op == 7: return ['%s = (u32)((s32)%s * %d);' % (R(rd, 1), R(ra), d['simm'])]
+        if op in (12, 13):
+            out = ['{ u64 s_ = (u64)%s + %s; %s = (%s & ~XER_CA) | ((u32)(s_ >> 32) << 29); %s = (u32)s_; }'
+                   % (R(ra), hx(d['simm']), self.XER(1), self.XER(), R(rd, 1))]
+            if op == 13: out.append(self.cr0(R(rd)))
+            return out
+        if op == 8:
+            return ['{ u64 s_ = (u64)(u32)~%s + %s + 1u; %s = (%s & ~XER_CA) | ((u32)(s_ >> 32) << 29); %s = (u32)s_; }'
+                    % (R(ra), hx(d['simm']), self.XER(1), self.XER(), R(rd, 1))]
+        if op == 10:
+            return ['%s = CMPU(%s, %du, %s);' % (self.CR(rd >> 2, 1), R(ra), d['uimm'], self.XER())]
+        if op == 11:
+            return ['%s = CMPS(%s, %d, %s);' % (self.CR(rd >> 2, 1), R(ra), d['simm'], self.XER())]
+        if op in (20, 21, 23):
+            mb, me, sh = (i >> 6) & 31, (i >> 1) & 31, rb
+            m = rlw_mask(mb, me)
+            if op == 23: rot = 'ROTL(%s, %s & 31u)' % (R(rd), R(rb))
+            elif sh: rot = 'ROTL(%s, %d)' % (R(rd), sh)
+            else: rot = R(rd)
+            if op == 20:
+                out = ['%s = (%s & %s) | (%s & %s);' % (R(ra, 1), rot, hx(m), R(ra), hx(~m))]
+            else:
+                out = ['%s = %s & %s;' % (R(ra, 1), rot, hx(m))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if op in (16, 18, 19):
+            return self.branch(pc, i, d, op)
+        if op in (32, 33, 34, 35, 40, 41, 42, 43):
+            size = {32: 4, 33: 4, 34: 1, 35: 1, 40: 2, 41: 2, 42: 2, 43: 2}[op]
+            upd = op & 1
+            if upd and (ra == 0 or ra == rd): return None
+            ea = self.ea_du(d) if upd else self.ea_d(d)
+            out = self.load(size, R(rd, 1), ea, pc, i, sign=op in (42, 43))
+            if upd: out = ['{ u32 ua_ = %s;' % ea] + self.load(size, R(rd, 1), 'ua_', pc, i, sign=op in (42, 43)) + ['%s = ua_; }' % R(ra, 1)]
+            return out
+        if op in (36, 37, 38, 39, 44, 45):
+            size = {36: 4, 37: 4, 38: 1, 39: 1, 44: 2, 45: 2}[op]
+            upd = op & 1
+            if upd and ra == 0: return None
+            if upd:
+                return ['{ u32 ua_ = %s;' % self.ea_du(d)] + self.store(size, R(rd), 'ua_', pc) + ['%s = ua_; }' % R(ra, 1)]
+            return self.store(size, R(rd), self.ea_d(d), pc)
+        if op == 46:  # lmw
+            if ra >= rd and ra != 0: return None
+            out = ['{ u32 mb_ = %s;' % self.ea_d(d)]
+            for r in range(rd, 32):
+                out += self.load(4, R(r, 1), 'mb_ + %du' % (4 * (r - rd)), pc, i)
+            out.append('}')
+            return out
+        if op == 47:  # stmw
+            out = ['{ u32 mb_ = %s;' % self.ea_d(d)]
+            for r in range(rd, 32):
+                out += self.store(4, R(r), 'mb_ + %du' % (4 * (r - rd)), pc)
+            out.append('}')
+            return out
+        if op == 31: return self.op31(pc, i, d)
+        if op in (48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61): return self.fmem(pc, i, d, op)
+        if op == 59: return self.op59(pc, i, d)
+        if op == 63: return self.op63(pc, i, d)
+        if op == 4: return self.op4(pc, i, d)
+        return None
+
+    def arith(self, d, x, y, cin, setca):
+        R = self.R
+        out = ['{ u64 s_ = (u64)(%s) + (u64)(%s) + (u64)(%s);' % (x, y, cin)]
+        if setca: out.append('%s = (%s & ~XER_CA) | ((u32)(s_ >> 32) << 29);' % (self.XER(1), self.XER()))
+        out.append('%s = (u32)s_; }' % R(d['rd'], 1))
+        if d['rcb']: out.append(self.cr0(R(d['rd'])))
+        return out
+
+    def op31(self, pc, i, d):
+        R = self.R
+        xo, rd, ra, rb = d['xo'], d['rd'], d['ra'], d['rb']
+        cain = '((%s >> 29) & 1u)' % self.XER() if xo & 0x1FF in (136, 138, 200, 202, 232, 234) else '0'
+        if xo & 0x200 and (xo & 0x1FF) in (8, 10, 40, 104, 136, 138, 200, 202, 232, 234, 235, 266, 459, 491):
+            return None  # OE = 1: overflow forms run in the interpreter
+        a, b = (R(ra) if ra or True else '0'), R(rb)
+        if xo == 266: return self.arith(d, R(ra), R(rb), '0u', 0)
+        if xo == 10: return self.arith(d, R(ra), R(rb), '0u', 1)
+        if xo == 138: return self.arith(d, R(ra), R(rb), cain, 1)
+        if xo == 202: return self.arith(d, R(ra), '0u', cain, 1)
+        if xo == 234: return self.arith(d, R(ra), '0xFFFFFFFFu', cain, 1)
+        if xo == 40: return self.arith(d, '(u32)~%s' % R(ra), R(rb), '1u', 0)
+        if xo == 8: return self.arith(d, '(u32)~%s' % R(ra), R(rb), '1u', 1)
+        if xo == 136: return self.arith(d, '(u32)~%s' % R(ra), R(rb), cain, 1)
+        if xo == 200: return self.arith(d, '(u32)~%s' % R(ra), '0u', cain, 1)
+        if xo == 232: return self.arith(d, '(u32)~%s' % R(ra), '0xFFFFFFFFu', cain, 1)
+        if xo == 104: return self.arith(d, '(u32)~%s' % R(ra), '0u', '1u', 0)
+        if xo == 235:
+            out = ['%s = (u32)((s32)%s * (s32)%s);' % (R(rd, 1), R(ra), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(rd)))
+            return out
+        if xo == 75:
+            out = ['%s = (u32)((u64)((s64)(s32)%s * (s64)(s32)%s) >> 32);' % (R(rd, 1), R(ra), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(rd)))
+            return out
+        if xo == 11:
+            out = ['%s = (u32)(((u64)%s * (u64)%s) >> 32);' % (R(rd, 1), R(ra), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(rd)))
+            return out
+        if xo == 491:
+            out = ['%s = DIVW(%s, %s);' % (R(rd, 1), R(ra), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(rd)))
+            return out
+        if xo == 459:
+            out = ['%s = %s ? %s / %s : 0u;' % (R(rd, 1), R(rb), R(ra), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(rd)))
+            return out
+        if xo == 0: return ['%s = CMPS(%s, (s32)%s, %s);' % (self.CR(rd >> 2, 1), R(ra), R(rb), self.XER())]
+        if xo == 32: return ['%s = CMPU(%s, %s, %s);' % (self.CR(rd >> 2, 1), R(ra), R(rb), self.XER())]
+        logic = {28: '%s & %s', 60: '%s & ~%s', 444: '%s | %s', 412: '%s | ~%s', 316: '%s ^ %s', 476: '~(%s & %s)',
+                 124: '~(%s | %s)', 284: '~(%s ^ %s)'}
+        if xo in logic:
+            out = ['%s = %s;' % (R(ra, 1), logic[xo] % (R(rd), R(rb)))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        un = {954: '(u32)(s32)(s8)%s', 922: '(u32)(s32)(s16)%s', 26: 'CLZ(%s)'}
+        if xo in un:
+            out = ['%s = %s;' % (R(ra, 1), un[xo] % R(rd))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if xo == 24:
+            out = ['%s = (%s & 0x20u) ? 0u : %s << (%s & 31u);' % (R(ra, 1), R(rb), R(rd), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if xo == 536:
+            out = ['%s = (%s & 0x20u) ? 0u : %s >> (%s & 31u);' % (R(ra, 1), R(rb), R(rd), R(rb))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if xo == 824:
+            sh = rb
+            if sh == 0:
+                out = ['%s = %s; %s &= ~XER_CA;' % (R(ra, 1), R(rd), self.XER(1))]
+            else:
+                out = ['{ s32 s_ = (s32)%s; %s = (%s & ~XER_CA) | ((s_ < 0 && ((u32)s_ << %d)) ? XER_CA : 0u); %s = (u32)(s_ >> %d); }'
+                       % (R(rd), self.XER(1), self.XER(), 32 - sh, R(ra, 1), sh)]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if xo == 792:
+            out = ['{ s32 s_ = (s32)%s; u32 n_ = %s & 0x3Fu, d_, ca_; if (n_ & 0x20u) { d_ = s_ < 0 ? 0xFFFFFFFFu : 0u; ca_ = s_ < 0; } '
+                   'else { d_ = (u32)(s_ >> n_); ca_ = s_ < 0 && n_ && ((u32)s_ << (32u - n_)) != 0u; } '
+                   '%s = (%s & ~XER_CA) | (ca_ ? XER_CA : 0u); %s = d_; }' % (R(rd), R(rb), self.XER(1), self.XER(), R(ra, 1))]
+            if d['rcb']: out.append(self.cr0(R(ra)))
+            return out
+        if xo == 19: return ['%s = %s;' % (R(rd, 1), self.cr_word())]
+        if xo == 144:
+            fxm = (i >> 12) & 0xFF
+            out = []
+            for f in range(8):
+                if fxm & (0x80 >> f):
+                    out.append('%s = (%s >> %d) & 15u;' % (self.CR(f, 1), R(rd), 28 - 4 * f))
+            return out
+        if xo == 512:
+            return ['%s = %s >> 28; %s &= 0x0FFFFFFFu;' % (self.CR(rd >> 2, 1), self.XER(), self.XER(1))]
+        if xo == 339:
+            spr = ((i >> 16) & 31) | ((i >> 6) & 0x3E0)
+            if spr == 8: return ['%s = %s;' % (R(rd, 1), self.LR())]
+            if spr == 9: return ['%s = %s;' % (R(rd, 1), self.CTR())]
+            if spr == 1: return ['%s = %s;' % (R(rd, 1), self.XER())]
+            if 912 <= spr <= 919: return ['%s = g->spr[%d];' % (R(rd, 1), spr)]
+            return None
+        if xo == 467:
+            spr = ((i >> 16) & 31) | ((i >> 6) & 0x3E0)
+            if spr == 8: return ['%s = %s;' % (self.LR(1), R(rd))]
+            if spr == 9: return ['%s = %s;' % (self.CTR(1), R(rd))]
+            if spr == 1: return ['%s = %s & XER_MASK;' % (self.XER(1), R(rd))]
+            return None
+        if xo == 83: return ['%s = g->msr;' % R(rd, 1)]
+        if xo == 146:
+            return ['if (aot_mtmsr(g, %s)) { %s }' % (R(rd), self.exit_after(hx(pc + 4)))]
+        if xo in (278, 246, 854, 598): return []  # dcbt, dcbtst, eieio, sync: no-ops in the interpreter
+        loads = {23: (4, 0, 0), 55: (4, 1, 0), 87: (1, 0, 0), 119: (1, 1, 0), 279: (2, 0, 0), 311: (2, 1, 0),
+                 343: (2, 0, 1), 375: (2, 1, 1)}
+        if xo in loads:
+            size, upd, sign = loads[xo]
+            if upd:
+                if ra == 0 or ra == rd: return None
+                return ['{ u32 ua_ = %s;' % self.ea_xu(d)] + self.load(size, R(rd, 1), 'ua_', pc, i, sign=sign) + ['%s = ua_; }' % R(ra, 1)]
+            return self.load(size, R(rd, 1), self.ea_x(d), pc, i, sign=sign)
+        if xo in (534, 790):
+            return self.load(4 if xo == 534 else 2, R(rd, 1), self.ea_x(d), pc, i, rev=True)
+        stores = {151: (4, 0), 183: (4, 1), 215: (1, 0), 247: (1, 1), 407: (2, 0), 439: (2, 1)}
+        if xo in stores:
+            size, upd = stores[xo]
+            if upd:
+                if ra == 0: return None
+                return ['{ u32 ua_ = %s;' % self.ea_xu(d)] + self.store(size, R(rd), 'ua_', pc) + ['%s = ua_; }' % R(ra, 1)]
+            return self.store(size, R(rd), self.ea_x(d), pc)
+        if xo in (662, 918):
+            return self.store(4 if xo == 662 else 2, R(rd), self.ea_x(d), pc, rev=True)
+        if xo in (535, 567, 599, 631, 663, 695, 727, 759, 983):
+            return self.fmem(pc, i, d, xo)
+        return None
+
+    def cr_word(self):
+        return '(' + ' | '.join('(%s << %d)' % (self.CR(f), 28 - 4 * f) for f in range(8)) + ')'
+
+    # branches --------------------------------------------------------------------------------------------------
+    def cond(self, bo, bi):
+        parts = []
+        pre = []
+        if not (bo & 4):
+            pre.append('%s--;' % self.CTR(1))
+            parts.append('(%s %s 0u)' % (self.CTR(), '==' if bo & 2 else '!='))
+        if not (bo & 0x10):
+            parts.append('(%s == %du)' % (self.crbit(bi), (bo >> 3) & 1))
+        return pre, (' && '.join(parts) if parts else '1')
+
+    def goto(self, pc, t):
+        """Branch to guest address t: inside the function a goto (back edges check the budget), else leave."""
+        f = self.f
+        if f.start <= t < f.end:
+            tk = (t - f.start) // 4
+            if tk in self.poll_heads and tk <= self.k:
+                return self.exit_after(hx(t))
+            if f.words[tk] == 0x48000000 and tk == self.k:
+                return self.exit_after(hx(t))
+            if tk <= self.k:
+                return 'if ((s32)n >= budget || aot_stop) { %s } goto L%d;' % (self.exit_after(hx(t)), tk)
+            return 'goto L%d;' % tk
+        return self.exit_after(hx(t))
+
+    def branch(self, pc, i, d, op):
+        if op == 19:
+            xo = d['xo']
+            if xo in (16, 528):
+                bo, bi = d['rd'], d['ra']
+                lk = i & 1
+                tgt = '(%s & ~3u)' % (self.LR() if xo == 16 else self.CTR())
+                out = ['{ u32 t_ = %s;' % tgt]
+                pre, c = self.cond(bo, bi) if xo == 16 else ([], self.cond(bo | 4, bi)[1])
+                if xo == 528 and not (bo & 4): return None
+                out += pre
+                if lk: out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
+                if xo == 528 and not lk and c == '1':
+                    # bctr: a switch statement's jump table lands on a label of this function, else leave
+                    f = self.f
+                    out.append('if ((s32)n >= budget || aot_stop) { %s }' % self.exit_after('t_'))
+                    out.append('switch (t_) {')
+                    for k in self.leaders:
+                        out.append('case %s: goto L%d;' % (hx(f.start + 4 * k), k))
+                    out.append('default: %s' % self.exit_after('t_'))
+                    out.append('}')
+                elif c == '1': out.append(self.exit_after('t_'))
+                else: out.append('if (%s) { %s }' % (c, self.exit_after('t_')))
+                out.append('}')
+                return out
+            if xo in (257, 129, 289, 225, 33, 449, 417, 193):
+                ops = {257: 'a_ & b_', 129: 'a_ & ~b_', 289: '~(a_ ^ b_)', 225: '~(a_ & b_)', 33: '~(a_ | b_)',
+                       449: 'a_ | b_', 417: 'a_ | ~b_', 193: 'a_ ^ b_'}
+                return ['{ u32 a_ = %s, b_ = %s; %s }' % (self.crbit(d['ra']), self.crbit(d['rb']),
+                                                         self.set_crbit(d['rd'], '(%s) & 1u' % ops[xo]))]
+            if xo == 0:
+                return ['%s = %s;' % (self.CR(d['rd'] >> 2, 1), self.CR(d['ra'] >> 2))]
+            if xo == 150: return []
+            return None
+        bk = branch_info(pc, i)
+        kind, t, lk, bo, bi = bk
+        out = []
+        if lk:
+            out.append('%s = %s;' % (self.LR(1), hx(pc + 4)))
+            if kind == 'b':
+                out.append(self.exit_after(hx(t)))
+                return out
+            pre, c = self.cond(bo, bi)
+            out += pre
+            out.append('if (%s) { %s }' % (c, self.exit_after(hx(t))))
+            return out
+        if kind == 'b':
+            out.append(self.goto(pc, t))
+            return out
+        pre, c = self.cond(bo, bi)
+        out += pre
+        if c == '1': out.append(self.goto(pc, t))
+        else: out.append('if (%s) { %s }' % (c, self.goto(pc, t)))
+        return out
+
+    # floating point --------------------------------------------------------------------------------------------
+    def fp_ok(self):
+        return True
+
+    def fmem(self, pc, i, d, op):
+        R, F = self.R, self.F
+        rd, ra = d['rd'], d['ra']
+        adj, bef = self.adj_after(), self.be - self.k
+        if op in (48, 49, 535, 567):  # lfs
+            upd = op in (49, 567)
+            if upd and ra == 0: return None
+            ea = {48: self.ea_d, 49: self.ea_du, 535: self.ea_x, 567: self.ea_xu}[op](d)
+            return ['{ u32 ea_ = %s, w_; if (__builtin_expect(!LD32(ea_, &w_), 0)) { SLOW_LD(4, ea_, &w_, %s, %d, %d); } '
+                    '%s = %s = S2D(w_);%s }' % (ea, hx(pc), adj, bef, F(rd, 0, 1), F(rd, 1, 1), (' %s = ea_;' % R(ra, 1)) if upd else '')]
+        if op in (50, 51, 599, 631):  # lfd
+            upd = op in (51, 631)
+            if upd and ra == 0: return None
+            ea = {50: self.ea_d, 51: self.ea_du, 599: self.ea_x, 631: self.ea_xu}[op](d)
+            return ['{ u32 ea_ = %s; u64 w_; if (__builtin_expect(!LD64(ea_, &w_), 0)) { SLOW_LD64(ea_, &w_, %s, %d, %d); } '
+                    '%s = U2D(w_);%s }' % (ea, hx(pc), adj, bef, F(rd, 0, 1), (' %s = ea_;' % R(ra, 1)) if upd else '')]
+        if op in (52, 53, 663, 695):  # stfs
+            upd = op in (53, 695)
+            if upd and ra == 0: return None
+            ea = {52: self.ea_d, 53: self.ea_du, 663: self.ea_x, 695: self.ea_xu}[op](d)
+            conv = 'K2S(%s)' if self.single(rd, 0) else 'D2S(%s)'
+            return ['{ u32 ea_ = %s, v_ = %s; if (__builtin_expect(!ST32(ea_, v_), 0)) { SLOW_ST(4, ea_, v_, %s, %d, %d); }%s }'
+                    % (ea, conv % F(rd), hx(pc), adj, bef, (' %s = ea_;' % R(ra, 1)) if upd else '')]
+        if op in (54, 55, 727, 759):  # stfd
+            upd = op in (55, 759)
+            if upd and ra == 0: return None
+            ea = {54: self.ea_d, 55: self.ea_du, 727: self.ea_x, 759: self.ea_xu}[op](d)
+            return ['{ u32 ea_ = %s; u64 v_ = D2U(%s); if (__builtin_expect(!ST64(ea_, v_), 0)) { SLOW_ST64(ea_, v_, %s, %d, %d); }%s }'
+                    % (ea, F(rd), hx(pc), adj, bef, (' %s = ea_;' % R(ra, 1)) if upd else '')]
+        if op == 983:  # stfiwx
+            return ['{ u32 ea_ = %s, v_ = (u32)D2U(%s); if (__builtin_expect(!ST32(ea_, v_), 0)) { SLOW_ST(4, ea_, v_, %s, %d, %d); } }'
+                    % (self.ea_x(d), F(rd), hx(pc), adj, bef)]
+        if op in (56, 57, 60, 61):  # psq_l / psq_lu / psq_st / psq_stu
+            upd = op in (57, 61)
+            if upd and ra == 0: return None
+            disp = ((i & 0xFFF) ^ 0x800) - 0x800
+            base = self.R(ra) if upd else self.RA0(ra)
+            ea = '%s + %du' % (base, disp & MASK) if disp else base
+            w, q = (i >> 15) & 1, (i >> 12) & 7
+            return self.psq(pc, op in (56, 57), rd, ra, ea, w, q, upd)
+        return None
+
+    def psq(self, pc, load, rd, ra, ea, w, q, upd):
+        F, R = self.F, self.R
+        adj, bef = self.adj_after(), self.be - self.k
+        out = ['{ u32 ea_ = %s, q_ = g->spr[%d];' % (ea, 912 + q)]
+        size = 4 if w else 8
+        if load:
+            fast = ('%s = S2D(LDU32(ea_)); %s = 1.0;' % (F(rd, 0, 1), F(rd, 1, 1)) if w else
+                    '%s = S2D(LDU32(ea_)); %s = S2D(LDU32(ea_ + 4u));' % (F(rd, 0, 1), F(rd, 1, 1)))
+            out.append('if (__builtin_expect(!(q_ & 0x00070000u) && OKN(ea_, %d), 1)) { %s } '
+                       'else { double a_, b_; PSQ_SLOW_L(ea_, %d, %d, &a_, &b_, %s, %d, %d); %s = a_; %s = b_; }'
+                       % (size, fast, w, q, hx(pc), adj, bef, F(rd, 0, 1), F(rd, 1, 1)))
+        else:
+            c0 = ('K2S(%s)' if self.single(rd, 0) else 'D2SF(%s)') % F(rd, 0)
+            c1 = ('K2S(%s)' if self.single(rd, 1) else 'D2SF(%s)') % F(rd, 1)
+            fast = 'STU32(ea_, %s);' % c0 if w else 'STU32(ea_, %s); STU32(ea_ + 4u, %s);' % (c0, c1)
+            out.append('if (__builtin_expect(!(q_ & 7u) && OKN(ea_, %d), 1)) { %s } '
+                       'else { PSQ_SLOW_S(ea_, %d, %d, %s, %s, %s, %d, %d); }'
+                       % (size, fast, w, q, F(rd, 0), F(rd, 1), hx(pc), adj, bef))
+        if upd: out.append('%s = ea_;' % R(ra, 1))
+        out.append('}')
+        return out
+
+    def c25(self, r, lane):
+        return self.F(r, lane) if self.single(r, lane) else 'C25(%s)' % self.F(r, lane)
+
+    def op59(self, pc, i, d):
+        if d['rcb']: return None
+        F = self.F
+        rd, ra, rb, rc, x = d['rd'], d['ra'], d['rb'], d['rc'], d['xo5']
+        a, b = F(ra), F(rb)
+        if x == 21: e = '%s + %s' % (a, b)
+        elif x == 20: e = '%s - %s' % (a, b)
+        elif x == 25: e = '%s * %s' % (a, self.c25(rc, 0))
+        elif x == 18: e = '%s / %s' % (a, b)
+        elif x in (28, 29, 30, 31):
+            e = self.madd(x, a, self.c25(rc, 0), b)
+        elif x == 24:
+            return ['%s = %s = aot_fres(%s);' % (F(rd, 0, 1), F(rd, 1, 1), b)]
+        else:
+            return None
+        return ['{ double r_ = RS(%s); %s = r_; %s = r_; }' % (e, F(rd, 0, 1), F(rd, 1, 1))]
+
+    @staticmethod
+    def madd(x, a, c, b):
+        # 29 fmadd: a*c + b; 28 fmsub: a*c - b; 31 fnmadd: -(a*c + b); 30 fnmsub: -(a*c - b). A NaN result keeps its sign.
+        core = '(%s * %s) %s %s' % (a, c, '+' if x in (29, 31) else '-', b)
+        if x in (30, 31): return 'NEGNN(%s)' % core
+        return core
+
+    def op63(self, pc, i, d):
+        if d['rcb']: return None
+        F = self.F
+        rd, ra, rb, rc, x, xo = d['rd'], d['ra'], d['rb'], d['rc'], d['xo5'], d['xo']
+        if xo in (0, 32):
+            return self.fcmp(rd >> 2, F(ra), F(rb), xo == 32, pc)
+        if xo == 72: return ['%s = %s;' % (F(rd, 0, 1), F(rb))]
+        if xo == 40: return ['%s = -%s;' % (F(rd, 0, 1), F(rb))]
+        if xo == 264: return ['%s = __builtin_fabs(%s);' % (F(rd, 0, 1), F(rb))]
+        if xo == 136: return ['%s = -__builtin_fabs(%s);' % (F(rd, 0, 1), F(rb))]
+        if xo == 12: return ['{ double r_ = RS(%s); %s = r_; %s = r_; }' % (F(rb), F(rd, 0, 1), F(rd, 1, 1))]
+        if xo in (14, 15): return ['%s = aot_fctiw(g, %s, %d);' % (F(rd, 0, 1), F(rb), xo)]
+        if x == 23: return ['%s = %s >= 0.0 ? %s : %s;' % (F(rd, 0, 1), F(ra), F(rc), F(rb))]
+        if x == 21: return ['%s = %s + %s;' % (F(rd, 0, 1), F(ra), F(rb))]
+        if x == 20: return ['%s = %s - %s;' % (F(rd, 0, 1), F(ra), F(rb))]
+        if x == 25: return ['%s = %s * %s;' % (F(rd, 0, 1), F(ra), F(rc))]
+        if x == 18: return ['%s = %s / %s;' % (F(rd, 0, 1), F(ra), F(rb))]
+        if x in (28, 29, 30, 31): return ['%s = %s;' % (F(rd, 0, 1), self.madd(x, F(ra), F(rc), F(rb)))]
+        if x == 26: return ['%s = aot_frsqrte(%s);' % (F(rd, 0, 1), F(rb))]
+        return None
+
+    def fcmp(self, crf, a, b, ordered, pc):
+        self.use_fpscr = self.w_fpscr = True
+        out = ['{ u32 c_ = FCMP(%s, %s);' % (a, b)]
+        if ordered:
+            # fcmpo with a NaN operand sets VXVC (and maybe more): the interpreter does it exactly
+            pass
+        out.append('fpscr = (fpscr & ~0xF000u) | (c_ << 12); %s = c_; }' % self.CR(crf, 1))
+        return out
+
+    def op4(self, pc, i, d):
+        F = self.F
+        rd, ra, rb, rc, xo, x = d['rd'], d['ra'], d['rb'], d['rc'], d['xo'], d['xo5']
+        x6 = (i >> 1) & 63
+        if x6 in (6, 7, 38, 39):  # psq_lx / psq_stx / psq_lux / psq_stux
+            upd = x6 >= 38
+            if upd and ra == 0: return None
+            w, q = (i >> 10) & 1, (i >> 7) & 7
+            ea = self.ea_xu(d) if upd else self.ea_x(d)
+            return self.psq(pc, x6 in (6, 38), rd, ra, ea, w, q, upd)
+        if d['rcb']: return None
+        if xo in (0, 32, 64, 96):
+            l = 1 if xo >= 64 else 0
+            return self.fcmp(rd >> 2, F(ra, l), F(rb, l), xo in (32, 96), pc)
+        moves = {72: ('%s', '%s'), 40: ('-%s', '-%s'), 264: ('__builtin_fabs(%s)', '__builtin_fabs(%s)'),
+                 136: ('-__builtin_fabs(%s)', '-__builtin_fabs(%s)')}
+        if xo in moves:
+            m0, m1 = moves[xo]
+            return ['{ double a_ = %s, b_ = %s; %s = a_; %s = b_; }' % (m0 % F(rb, 0), m1 % F(rb, 1), F(rd, 0, 1), F(rd, 1, 1))]
+        merges = {528: (0, 0), 560: (0, 1), 592: (1, 0), 624: (1, 1)}
+        if xo in merges:
+            la, lb = merges[xo]
+            return ['{ double a_ = %s, b_ = %s; %s = a_; %s = b_; }' % (F(ra, la), F(rb, lb), F(rd, 0, 1), F(rd, 1, 1))]
+        if xo == 1014: return None  # dcbz_l
+        def lanes(e0, e1):
+            return ['{ double a_ = RS(%s), b_ = RS(%s); %s = a_; %s = b_; }' % (e0, e1, F(rd, 0, 1), F(rd, 1, 1))]
+        if x == 21: return lanes('%s + %s' % (F(ra, 0), F(rb, 0)), '%s + %s' % (F(ra, 1), F(rb, 1)))
+        if x == 20: return lanes('%s - %s' % (F(ra, 0), F(rb, 0)), '%s - %s' % (F(ra, 1), F(rb, 1)))
+        if x == 18: return lanes('%s / %s' % (F(ra, 0), F(rb, 0)), '%s / %s' % (F(ra, 1), F(rb, 1)))
+        if x == 25: return lanes('%s * %s' % (F(ra, 0), self.c25(rc, 0)), '%s * %s' % (F(ra, 1), self.c25(rc, 1)))
+        if x == 12: return lanes('%s * %s' % (F(ra, 0), self.c25(rc, 0)), '%s * %s' % (F(ra, 1), self.c25(rc, 0)))
+        if x == 13: return lanes('%s * %s' % (F(ra, 0), self.c25(rc, 1)), '%s * %s' % (F(ra, 1), self.c25(rc, 1)))
+        if x in (28, 29, 30, 31):
+            return lanes(self.madd(x, F(ra, 0), self.c25(rc, 0), F(rb, 0)), self.madd(x, F(ra, 1), self.c25(rc, 1), F(rb, 1)))
+        if x == 14: return lanes(self.madd(29, F(ra, 0), self.c25(rc, 0), F(rb, 0)), self.madd(29, F(ra, 1), self.c25(rc, 0), F(rb, 1)))
+        if x == 15: return lanes(self.madd(29, F(ra, 0), self.c25(rc, 1), F(rb, 0)), self.madd(29, F(ra, 1), self.c25(rc, 1), F(rb, 1)))
+        if x == 10: return lanes('%s + %s' % (F(ra, 0), F(rb, 1)), F(rc, 1))
+        if x == 11: return lanes(F(rc, 0), '%s + %s' % (F(ra, 0), F(rb, 1)))
+        if x == 23:
+            return ['{ double a_ = %s >= 0.0 ? %s : %s, b_ = %s >= 0.0 ? %s : %s; %s = a_; %s = b_; }'
+                    % (F(ra, 0), F(rc, 0), F(rb, 0), F(ra, 1), F(rc, 1), F(rb, 1), F(rd, 0, 1), F(rd, 1, 1))]
+        if x == 24:
+            return ['{ double a_ = aot_fres(%s), b_ = aot_fres(%s); %s = a_; %s = b_; }' % (F(rb, 0), F(rb, 1), F(rd, 0, 1), F(rd, 1, 1))]
+        if x == 26:
+            return ['{ double a_ = RS(aot_frsqrte(%s)), b_ = RS(aot_frsqrte(%s)); %s = a_; %s = b_; }'
+                    % (F(rb, 0), F(rb, 1), F(rd, 0, 1), F(rd, 1, 1))]
+        return None
+
+    # -- the C function --------------------------------------------------------------------------------------------
+    def c_function(self):
+        f = self.f
+        body = self.emit()
+        name = 'F_%08X' % f.start
+        o = ['// %s (%08x, %d instructions)' % (f.name[:100].replace('*/', ''), f.start, len(f.words)),
+             'static u32 %s(Gekko* g, u32 entry, s32 budget) {' % name,
+             '    u32 n = 0, npc = 0; u64 t0 = g->cycles; (void)t0;',
+             '    u32 fb_k = 0, fb_pc = 0, fb_inst = 0, fb_adj = 0; (void)fb_k; (void)fb_pc; (void)fb_inst; (void)fb_adj;']
+        decl = []
+        for r in sorted(self.gpr): decl.append('u32 r%d = g->gpr[%d];' % (r, r))
+        for r in sorted(self.fpr): decl.append('double f%d = g->fpr[%d].ps0, p%d = g->fpr[%d].ps1;' % (r, r, r, r))
+        if self.crf: decl.append('u32 ' + ', '.join('c%d = (g->cr >> %d) & 15u' % (c, 28 - 4 * c) for c in sorted(self.crf)) + ';')
+        if self.use_lr: decl.append('u32 lr = g->lr;')
+        if self.use_ctr: decl.append('u32 ctr = g->ctr;')
+        if self.use_xer: decl.append('u32 xer = g->xer;')
+        if self.use_fpscr: decl.append('u32 fpscr = g->fpscr;')
+        o += ['    ' + x for x in decl]
+        o.append('    switch (entry) {')
+        for idx, k in enumerate(self.entries):
+            o.append('    case %d: goto L%d;' % (idx, k))
+        o.append('    default: return 0;')
+        o.append('    }')
+        o += body
+        flush = self.flush_lines()
+        reload_ = self.reload_lines()
+        o.append('fallback:')
+        if self.fallbacks:
+            o += ['    ' + x for x in flush]
+            o.append('    { u32 s_ = aot_interp(g, fb_pc, fb_inst, t0 + n - fb_adj - 1u); if (s_) { n -= fb_adj + (s_ == 3u); return n; } }')
+            o += ['    ' + x for x in reload_]
+            o.append('    switch (fb_k) {')
+            for k, pc, i in self.fallbacks:
+                o.append('    case %d: goto FB%d;' % (k, k))
+            o.append('    }')
+        o.append('    return n;')
+        o.append('out:')
+        o += ['    ' + x for x in flush]
+        o.append('    g->pc = npc;')
+        o.append('    return n;')
+        o.append('}')
+        return name, o
+
+    def flush_lines(self):
+        o = []
+        for r in sorted(self.wgpr): o.append('g->gpr[%d] = r%d;' % (r, r))
+        for r in sorted(self.wfpr): o.append('g->fpr[%d].ps0 = f%d; g->fpr[%d].ps1 = p%d;' % (r, r, r, r))
+        if self.wcrf:
+            keep = 0
+            for c in range(8):
+                if c not in self.wcrf: keep |= 0xF << (28 - 4 * c)
+            o.append('g->cr = (g->cr & %s) | %s;' % (hx(keep), ' | '.join('(c%d << %d)' % (c, 28 - 4 * c) for c in sorted(self.wcrf))))
+        if self.w_lr: o.append('g->lr = lr;')
+        if self.w_ctr: o.append('g->ctr = ctr;')
+        if self.w_xer: o.append('g->xer = xer;')
+        if self.w_fpscr: o.append('g->fpscr = fpscr;')
+        return o
+
+    def reload_lines(self):
+        o = []
+        for r in sorted(self.gpr): o.append('r%d = g->gpr[%d];' % (r, r))
+        for r in sorted(self.fpr): o.append('f%d = g->fpr[%d].ps0; p%d = g->fpr[%d].ps1;' % (r, r, r, r))
+        for c in sorted(self.crf): o.append('c%d = (g->cr >> %d) & 15u;' % (c, 28 - 4 * c))
+        if self.use_lr: o.append('lr = g->lr;')
+        if self.use_ctr: o.append('ctr = g->ctr;')
+        if self.use_xer: o.append('xer = g->xer;')
+        if self.use_fpscr: o.append('fpscr = g->fpscr;')
+        return o
+
+
+def rlw_mask(mb, me):
+    m = (MASK >> mb) ^ (0 if me >= 31 else (MASK >> (me + 1)))
+    return (~m & MASK) if me < mb else m
+
+
+# ---------------------------------------------------------------------------------------------------- driver
+def fnv64(data):
+    h = 0xCBF29CE484222325
+    for b in data:
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--dol', required=True)
+    ap.add_argument('--symbols', required=True)
+    ap.add_argument('--hist', help='executed-instruction histogram (pc_main PCHIST): only functions that ran')
+    ap.add_argument('--top', type=int, default=0, help='only the N most executed functions')
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--files', type=int, default=16)
+    ap.add_argument('--only', help='comma-separated function addresses (hex)')
+    a = ap.parse_args()
+    secs = load_dol(a.dol)
+    mem = Mem(secs)
+    syms = load_symbols(a.symbols)
+    counts = None
+    if a.hist:
+        h = array.array('I'); h.frombytes(open(a.hist, 'rb').read())
+        counts = h
+    fns = []
+    for start, size, name in syms:
+        if size < 4 or not mem.in_text(start) or not mem.in_text(start + size - 4): continue
+        c = 0
+        if counts is not None:
+            i0 = (start & 0x01FFFFFF) >> 2
+            c = sum(counts[i0:i0 + size // 4])
+            if not c: continue
+        fns.append((c, start, size, name))
+    fns.sort(key=lambda x: -x[0])
+    if a.top: fns = fns[:a.top]
+    if a.only:
+        want = {int(x, 16) for x in a.only.split(',')}
+        fns = [x for x in fns if x[1] in want]
+    fns.sort(key=lambda x: x[1])
+    # Every bl target in the DOL's code: a callee entered part way in (__save_gpr / __restore_gpr) gets an entry there.
+    calls = set()
+    for base, size, data, text in secs:
+        if not text: continue
+        for o in range(0, size, 4):
+            w = struct.unpack('>I', data[o:o + 4])[0]
+            if (w >> 26) == 18 and (w & 3) == 1:
+                calls.add((base + o + (((w & 0x03FFFFFC) ^ 0x02000000) - 0x02000000)) & MASK)
+    stats = {'native': 0, 'fb': {}}
+    os.makedirs(a.out, exist_ok=True)
+    for old in os.listdir(a.out):
+        if old.startswith('aot_gen') and old.endswith('.c'): os.remove(os.path.join(a.out, old))
+    nf = max(1, min(a.files, len(fns)))
+    chunks = [[] for _ in range(nf)]
+    table = []
+    total_insns = 0
+    for idx, (c, start, size, name) in enumerate(fns):
+        fn = Fn(start, size, name, mem)
+        if not fn.ok: continue
+        t = Translator(fn, stats, None, [c for c in calls if start < c < start + size])
+        cname, lines = t.c_function()
+        data = b''.join(struct.pack('>I', w) for w in fn.words)
+        table.append((start, size, fnv64(data), cname, [start + 4 * k for k in t.entries], idx % nf))
+        chunks[idx % nf].append('\n'.join(lines))
+        total_insns += len(fn.words)
+    head = ('// Generated by core/tools/aot/ppc2c.py from the user\'s own disc: not to be committed or distributed.\n'
+            '#include "../cpu/aot_rt.h"\n'
+            '#pragma GCC diagnostic ignored "-Wunused-label"\n'
+            '#pragma GCC diagnostic ignored "-Wunused-variable"\n'
+            '#pragma GCC diagnostic ignored "-Wunused-but-set-variable"\n'
+            '#pragma GCC diagnostic ignored "-Wunused-parameter"\n'
+            '#pragma GCC diagnostic ignored "-Wtype-limits"\n'
+            '#pragma GCC diagnostic error "-Wshadow"\n'
+            '#pragma GCC diagnostic error "-Winit-self"\n'
+            '#pragma GCC diagnostic error "-Wuninitialized"\n')
+    for k in range(nf):
+        mine = [t for t in table if t[5] == k]
+        with open(os.path.join(a.out, 'aot_gen%02d.c' % k), 'w') as fo:
+            fo.write(head)
+            fo.write('\n\n'.join(chunks[k]))
+            fo.write('\n\nconst AotFunc aot_funcs_%02d[] = {\n' % k)
+            for start, size, hsh, cname, ents, _ in mine:
+                fo.write('    { %s, %du, 0x%016XULL, %s, %du },\n' % (hx(start), size, hsh, cname, len(ents)))
+            fo.write('};\nconst u32 aot_nfuncs_%02d = %d;\n' % (k, len(mine)))
+            fo.write('const u32 aot_entries_%02d[] = {\n' % k)
+            for start, size, hsh, cname, ents, _ in mine:
+                fo.write('    ' + ', '.join(hx(e) for e in ents) + ',\n')
+            fo.write('    0 };\n')
+    with open(os.path.join(a.out, 'aot_gen_index.c'), 'w') as fo:
+        fo.write(head)
+        for k in range(nf):
+            fo.write('extern const AotFunc aot_funcs_%02d[]; extern const u32 aot_nfuncs_%02d; extern const u32 aot_entries_%02d[];\n' % (k, k, k))
+        fo.write('const AotPart aot_parts[] = {\n')
+        for k in range(nf):
+            fo.write('    { aot_funcs_%02d, &aot_nfuncs_%02d, aot_entries_%02d },\n' % (k, k, k))
+        fo.write('};\nconst u32 aot_nparts = %d;\n' % nf)
+    fb = stats['fb']
+    tot_fb = sum(fb.values())
+    print('functions %d, guest instructions %d, translated %d, interpreter fallbacks %d' % (len(table), total_insns, stats['native'], tot_fb))
+    for (op, xo), n in sorted(fb.items(), key=lambda x: -x[1])[:25]:
+        print('  fallback op %d xo %d: %d' % (op, xo, n))
+
+
+if __name__ == '__main__':
+    main()

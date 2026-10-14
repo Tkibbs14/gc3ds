@@ -1,5 +1,6 @@
 #include "system.h"
 #include "../cpu/hle.h"
+#include "../cpu/aot.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -184,6 +185,7 @@ static void bus_cache_op(void* ctx, int op, u32 pa) {
     if (op == CACHE_DCBF || op == CACHE_DCBST) mem_dirty(pa & ~31u, 32);  // the line reaches RAM for the GPU to read
     if (op != CACHE_ICBI) return;
     hle_invalidate(pa);
+    aot_invalidate(pa);
     if (S->icbiHook) S->icbiHook(S->icbiCtx, pa);
 }
 static void bus_lc_dma(void* ctx, bool toRam, u32 ramPa, u32 cachePa, u32 len) {
@@ -300,6 +302,7 @@ bool sys_init(System* s) {
     s->dsp.aram = calloc(1, 16u * 1024 * 1024);
     if (!s->mem1 || !s->lockedCache || !s->dsp.aram) return false;
     hle_set_memory(s->mem1, MEM1_SIZE);
+    aot_set_memory(s->mem1);
     s->bus = (GekkoBus){
         .ctx = s,
         .read8 = bus_read8, .read16 = bus_read16, .read32 = bus_read32, .read64 = bus_read64,

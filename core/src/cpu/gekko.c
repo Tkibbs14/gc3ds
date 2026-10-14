@@ -4,6 +4,7 @@
 // PowerPC Programming Environments Manual for 32-bit implementations (PEM; 6.x exception processing).
 #include "gekko_internal.h"
 #include "hle.h"
+#include "aot.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -339,6 +340,10 @@ void gekko_set_jit(Gekko* g, GekkoJitFn fn, void* ctx) {
 }
 
 u64* g_gekkoOpMix;
+#ifndef __3DS__
+void (*g_gkStoreHook)(u32 ea, u32 size);
+#endif
+u32* g_gekkoPcHist;
 
 u32 gekko_op_key(u32 inst) {
     u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
@@ -387,6 +392,17 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                 }
             }
             u32 pc = g->pc;
+            if (aot_enabled() && aot_state_ok(g) && aot_is_entry(pc)) {  // ahead-of-time translated code (aot.h)
+                s64 left = g->downcount;
+                if ((s64)(limit - g->cycles) < left) left = (s64)(limit - g->cycles);
+                u32 n = aot_run(g, left > 0x3FFFFFFF ? 0x3FFFFFFF : left > 0 ? (s32)left : 1);
+                if (n) {
+                    g->cycles += n;
+                    g->downcount -= n;
+                    if (g->downcount <= 0 || p->brk || p->stopReq || g->cycles >= limit) break;
+                    continue;
+                }
+            }
             if (hle_is_hook(g, pc)) {  // a native stand-in for the guest loop that starts here (hle.h)
                 s64 left = g->downcount;
                 if ((s64)(limit - g->cycles) < left) left = (s64)(limit - g->cycles);
@@ -421,6 +437,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             p->curPc = pc;
             p->npc = pc + 4;
             if (g_gekkoOpMix) g_gekkoOpMix[gekko_op_key(inst)]++;
+            if (g_gekkoPcHist && (pc >> 25) == 0x40u) g_gekkoPcHist[(pc & 0x01FFFFFFu) >> 2]++;
             gk_prim[inst >> 26](g, inst);
             g->pc = p->npc;
             g->cycles++;

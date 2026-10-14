@@ -178,6 +178,8 @@ void gk_set_msr(Gekko* g, u32 msr);               // MSR write with all side eff
 u32 gk_mfspr(Gekko* g, u32 spr);
 void gk_mtspr(Gekko* g, u32 spr, u32 v);
 u64 gk_timebase(const Gekko* g);
+bool gk_psq_load(Gekko* g, u32 ea, u32 w, u32 idx, u64* p0, u64* p1);   // aot.c
+bool gk_psq_store(Gekko* g, u32 ea, u32 w, u32 idx, u64 v0, u64 v1);
 
 // ---- Data memory (gekko_mem.c). Each returns false after raising DSI; the caller must then stop. ----
 bool gk_read_slow(Gekko* g, u32 ea, u32 size, u64* out);
@@ -212,24 +214,34 @@ static inline bool gk_rd64(Gekko* g, u32 ea, u64* v) {
     if (h && o <= GK_BLK_SIZE - 8) { *v = gk_ld64(h + o); return true; }
     return gk_read_slow(g, ea, 8, v);
 }
+#ifndef __3DS__
+extern void (*g_gkStoreHook)(u32 ea, u32 size);  // aot.c's check mode: every store, before it is made
+#define GK_STORE_HOOK(ea, n) do { if (g_gkStoreHook) g_gkStoreHook(ea, n); } while (0)
+#else
+#define GK_STORE_HOOK(ea, n) ((void)0)
+#endif
 static inline bool gk_wr8(Gekko* g, u32 ea, u32 v) {
+    GK_STORE_HOOK(ea, 1);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     if (h) { h[ea & GK_BLK_MASK] = (u8)v; return true; }
     return gk_write_slow(g, ea, 1, v);
 }
 static inline bool gk_wr16(Gekko* g, u32 ea, u32 v) {
+    GK_STORE_HOOK(ea, 2);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 2) { gk_st16(h + o, (u16)v); return true; }
     return gk_write_slow(g, ea, 2, v);
 }
 static inline bool gk_wr32(Gekko* g, u32 ea, u32 v) {
+    GK_STORE_HOOK(ea, 4);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 4) { gk_st32(h + o, v); return true; }
     return gk_write_slow(g, ea, 4, v);
 }
 static inline bool gk_wr64(Gekko* g, u32 ea, u64 v) {
+    GK_STORE_HOOK(ea, 8);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 8) { gk_st64(h + o, v); return true; }

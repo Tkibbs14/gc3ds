@@ -432,6 +432,30 @@ static void psq_store(Gekko* g, u32 i, u32 ea, u32 w, u32 idx, bool update) {
     if (update) g->gpr[I_RA(i)] = ea;
 }
 
+// For translated code (aot.c): a quantized load or store with GQR idx, as psq_l / psq_st do it (false: an exception
+// was raised, p->npc is its handler).
+bool gk_psq_load(Gekko* g, u32 ea, u32 w, u32 idx, u64* p0, u64* p1) {
+    u32 q = g->spr[SPR_GQR0 + idx];
+    u32 type = (q >> 16) & 7;
+    int scale = qscale((q >> 24) & 0x3F);
+    *p1 = SF_ONE;
+    if (!qload(g, ea, type, scale, p0)) return false;
+    if (!w && !qload(g, ea + qsize(type), type, scale, p1)) return false;
+    return true;
+}
+bool gk_psq_store(Gekko* g, u32 ea, u32 w, u32 idx, u64 v0, u64 v1) {
+    u32 q = g->spr[SPR_GQR0 + idx];
+    u32 type = q & 7;
+    int scale = qscale((q >> 8) & 0x3F);
+    if (!w) {
+        u32 pa;
+        if (!gk_translate(g, ea + qsize(type), true, true, &pa, true)) return false;
+    }
+    if (!qstore(g, ea, type, scale, v0)) return false;
+    if (!w && !qstore(g, ea + qsize(type), type, scale, v1)) return false;
+    return true;
+}
+
 static inline u32 d12(u32 i) { return (u32)((s32)(i << 20) >> 20); }
 static inline bool lsqe(Gekko* g, u32 i) {
     if (!(g->spr[SPR_HID2] & HID2_LSQE)) {

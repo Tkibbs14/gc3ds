@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "../src/cpu/aot.h"
 #include "../src/cpu/hle.h"
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
@@ -342,6 +343,8 @@ typedef struct {
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
+    bool aot;            // --aot on|off (off): ahead-of-time translated game code where the build has it (aot.h, C12)
+    bool abAot;          // --ab aot: translated code on and off (aot column; starts off; each switch drops all compiled code)
 } RunOpts;
 static RunOpts g_opt;
 
@@ -378,7 +381,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -399,6 +402,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--fskip")) o->fskip = !strcmp(v, "on");
         else if (!strcmp(a, "--kstore")) o->kstore = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
+        else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -447,7 +451,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -501,6 +505,7 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "dlcache")) g_vcacheOn = v != 0;
         else if (!strcmp(name, "vw2") && g_pica) pica_set_worker2(v != 0);
         else if (!strcmp(name, "fskip") && g_pica) pica_set_fskip(v != 0);
+        else if (!strcmp(name, "aot") && g_jit) { aot_set_enabled(v != 0); jit_invalidate_all(g_jit); }
         else if (!strcmp(name, "pld")) vfast_set_prefetch(v != 0);
         else if (!strcmp(name, "splitopen") && g_pica) pica_set_split_open(v != 0);
         else if (!strcmp(name, "vwmem") && g_pica) pica_set_job_ring(v << 10);
@@ -646,6 +651,9 @@ static const char* run(const char* path) {
         jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0) |
                            (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
+        aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
+        if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build, %s\n", aot_available() ? "present" : "absent",
+                            aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
         g_pipeFast = true;
@@ -795,6 +803,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_vcacheOn ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_worker2() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_fskip() ? 1 : 0);
+                fprintf(g_perf, ",%d", aot_enabled() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -834,6 +843,7 @@ static const char* run(const char* path) {
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());
                 if (g_opt.abFskip && g_pica && perfRows % AB_SECS == 0) pica_set_fskip(!pica_fskip());
+                if (g_opt.abAot && g_jit && perfRows % AB_SECS == 0) { aot_set_enabled(!aot_enabled()); jit_invalidate_all(g_jit); }
                 if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
@@ -918,6 +928,19 @@ static const char* run(const char* path) {
                                     (double)(g_fskipFrames - lastFsF) / 10.0, (double)(g_fskipDraws - lastFsD) / 10.0,
                                     g_pica && pica_fskip() ? "on" : "off");
                             lastFsD = g_fskipDraws; lastFsF = g_fskipFrames;
+                            {  // C12: ahead-of-time translated code
+                                static AotStats lastA;
+                                static u64 lastCyc;
+                                AotStats a = aot_stats;
+                                double gi = (double)(g_sys.cpu.cycles - lastCyc);
+                                fprintf(g_perf, "# aot 10s: %.1f%% of guest instructions translated, %.0f calls/s, %.0f runs/s, %.0f fallbacks/s, "
+                                        "%.0f slow accesses/s, %llu hash failures (%s)\n", gi > 0 ? 100.0 * (double)(a.insns - lastA.insns) / gi : 0.0,
+                                        (double)(a.calls - lastA.calls) / 10.0, (double)(a.runs - lastA.runs) / 10.0,
+                                        (double)(a.fallbacks - lastA.fallbacks) / 10.0, (double)(a.slow - lastA.slow) / 10.0,
+                                        (unsigned long long)a.hashFail, aot_enabled() ? "on" : "off");
+                                lastA = a;
+                                lastCyc = g_sys.cpu.cycles;
+                            }
                             static u64 lastW2;
                             fprintf(g_perf, "# vworker 2 10s: %.0f jobs/s on core 1 (%s)\n", (double)(g_vw2Jobs - lastW2) / 10.0,
                                     g_pica && pica_worker2() ? "on" : "off");

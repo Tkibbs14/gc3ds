@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "../cpu/gekko_internal.h"
 #include "../cpu/hle.h"
+#include "../cpu/aot.h"
 #include "arm_emit.h"
 #include "jit.h"
 
@@ -4402,6 +4403,22 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     while ((s64)total < budget) {
         if (!j->soExact && (g->xer & XER_SO)) { j->soExact = true; jit_invalidate_all(j); }  // see jit_set_so_exact
         u32 pc = g->pc, key = block_key(g);
+        if (aot_enabled() && j->fastmem && aot_state_ok(g) && aot_is_entry(pc)) {
+            // Ahead-of-time translated code (aot.h) from here: it runs at the current guest time and returns to this loop.
+            s64 room = budget - (s64)total;
+            u64 c0 = g->cycles;
+            g->cycles = c0 + total;
+            u32 n = aot_run(g, room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room);
+            g->cycles = c0;
+            if (n) {
+                total += n;
+                site = NULL;
+                lastMiss = false;
+                GkPriv* p = GKP(g);
+                if (p->brk || p->stopReq) break;
+                continue;
+            }
+        }
         u32 compiledBefore = j->nEntries;
         Entry* en = lookup(j, pc, key);
         if (en && lastMiss) {  // what the indirect-table miss that brought us here jumped to
@@ -4656,6 +4673,7 @@ void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, 
     j->gatherPut = put;
     j->gatherCtx = ctx;
     j->gatherEa = ea;
+    aot_set_gather(put, ctx, ea);
     jit_fill_fns(j);  // the pipe stub reads its address there (the fuzzer runs code without jit_entry, which refills it)
     jit_invalidate_all(j);
 }
@@ -4698,6 +4716,7 @@ u32 jit_run_one_block(Jit* j) {
 u32 jit_run(Jit* j, s64 budget) { return jit_entry(j->g, budget, j); }
 
 void jit_invalidate_all(Jit* j) {
+    aot_invalidate_all();
 #ifndef __3DS__
     rs_fold(j, j->nEntries);
 #endif
@@ -4716,6 +4735,7 @@ void jit_invalidate_all(Jit* j) {
 void jit_invalidate(Jit* j, u32 pa) {
     // Level 1 keeps no per-page block lists: any icbi that touches a page holding compiled code drops everything.
     j->stats.icbis++;
+    aot_invalidate(pa);
     if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) { j->stats.icbiFlushes++; jit_invalidate_all(j); }
 }
 

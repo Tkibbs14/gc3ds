@@ -157,7 +157,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C12. Static recompilation: translate the game's PowerPC code to ARM ahead of time
 
-- **Status:** parked, 2026-10-14. Raised while scoping a Wind Waker port.
+- **Status:** built 2026-10-14 (docs/research/AOT_PLAN.md): exact on the PC (10.7 M calls compared with the interpreter, 0
+  differences; last frame byte-identical), 96.7% of TP's executed guest instructions translated. 2DS A/B pending.
+  Raised while scoping a Wind Waker port.
 - **What:** instead of compiling 1–30-instruction blocks at run time, translate a game's whole DOL and RELs
   into C (or straight to ARM) on the PC once. GCC then optimizes each guest *function* as a unit, with registers
   allocated across the function, no block exits and no dispatch. gc3ds keeps the GameCube memory image, GX, DSP and

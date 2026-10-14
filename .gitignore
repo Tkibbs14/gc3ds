@@ -36,3 +36,6 @@ core/tools/__pycache__/
 
 # Reference relay server state (tools/relay-server)
 relay-data/
+
+# Ahead-of-time translated game code (core/tools/aot/ppc2c.py): derived from the user's own disc, never committed
+core/src/aotgen/

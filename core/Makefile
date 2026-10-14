@@ -7,11 +7,15 @@ LDLIBS  := -lm
 BUILD   ?= build
 
 SRC := $(wildcard src/cpu/*.c) $(wildcard src/sys/*.c) $(wildcard src/hw/*.c) $(wildcard src/gx/*.c) $(wildcard src/boot/*.c) \
-       $(wildcard src/host/*.c) $(wildcard src/disc/*.c) $(wildcard src/jit/*.c)
+       $(wildcard src/host/*.c) $(wildcard src/disc/*.c) $(wildcard src/jit/*.c) $(wildcard src/aotgen/*.c)
 OBJ := $(patsubst src/%.c,$(BUILD)/obj/%.o,$(SRC))
 
 $(BUILD)/gcemu: $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# Ahead-of-time translated code (src/aotgen, generated from the user's own disc, never committed): check-mode store log
+# on, and no contracted multiply-adds (the 3DS's VFP has none).
+$(BUILD)/obj/aotgen/%.o: CFLAGS += -DAOT_LOG -ffp-contract=off
 
 $(BUILD)/obj/%.o: src/%.c
 	@mkdir -p $(dir $@)
