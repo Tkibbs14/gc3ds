@@ -815,6 +815,20 @@ static bool tev_linear(const GXCore* gx, PicaTev* out) {
     return true;
 }
 
+u32 tev_pica_key(const GXCore* gx, u32* k) {
+    u32 n = 0, fmts = 0;
+    k[n++] = gx->bp[0x00];
+    for (u32 r = 0x28; r <= 0x2F; r++) k[n++] = gx->bp[r];
+    for (u32 r = 0xC0; r <= 0xDF; r++) k[n++] = gx->bp[r];
+    for (u32 r = 0xF6; r <= 0xFD; r++) k[n++] = gx->bp[r];
+    for (u32 i = 0; i < 4; i++) { k[n++] = gx->tevLo[i]; k[n++] = gx->tevHi[i]; k[n++] = gx->kLo[i]; k[n++] = gx->kHi[i]; }
+    // tex_channel reads each map's format (intensity formats take one channel): a plan cached for an RGB texture and
+    // reused for an I8 one drew flat colours, and the THP movie (I8 Y, U, V) white, on the 2DS (jobs 136, 141).
+    for (u8 map = 0; map < 8; map++) fmts |= ((gx->bp[0x88 + (map & 3) + (map >= 4 ? 0x20 : 0)] >> 20) & 15u) << (4 * map);
+    k[n++] = fmts;
+    return n;
+}
+
 void tev_pica_compile(const GXCore* gx, PicaTev* out) {
     Ctx c;
     memset(&c, 0, sizeof c);

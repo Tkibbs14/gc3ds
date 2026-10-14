@@ -890,8 +890,10 @@ static const char* run(const char* path) {
                         lastHleRuns = g_hleRuns;
                         lastHleInsns = g_hleInsns;
                         static u64 lastTevC, lastTevK;
-                        fprintf(g_perf, "# tev 10s: %.0f program changes/s, %.0f compiled/s (the rest from the combiner-plan cache)\n",
-                                (double)(g_picaStats.tevChanges - lastTevC) / 10.0, (double)(g_picaStats.tevCompiles - lastTevK) / 10.0);
+                        fprintf(g_perf, "# tev 10s: %.0f program changes/s, %.0f compiled/s (the rest from the combiner-plan cache); "
+                                "%llu textures not decoded for want of memory so far\n",
+                                (double)(g_picaStats.tevChanges - lastTevC) / 10.0, (double)(g_picaStats.tevCompiles - lastTevK) / 10.0,
+                                (unsigned long long)g_picaStats.texFails);
                         lastTevC = g_picaStats.tevChanges;
                         lastTevK = g_picaStats.tevCompiles;
                         static u64 lastPal, lastSub;

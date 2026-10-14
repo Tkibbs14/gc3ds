@@ -51,3 +51,6 @@ enum { TEVA_STAGES = 1u << 0,    // more PICA stages needed than exist; trailing
 // Compiles the current TEV state (BP 0x00 stage count, 0x28-0x2F TREF, 0xC0-0xDF stages, 0xE0-0xE7 registers and
 // konst, 0xF6-0xFD konst selects and swap tables) into PICA combiner state.
 void tev_pica_compile(const GXCore* gx, PicaTev* out);
+// Everything tev_pica_compile reads (66 words), for caching its result: the TEV registers and the texture formats.
+#define TEV_PICA_KEY_MAX 72
+u32 tev_pica_key(const GXCore* gx, u32* k);

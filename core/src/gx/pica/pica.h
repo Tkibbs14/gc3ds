@@ -33,7 +33,8 @@ bool pica_gpu_transform(void);
 // tevChanges: draws whose TEV registers differ from the previous draw's; tevCompiles: of those, compiled anew (the
 // rest came from the combiner-plan cache).
 typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears, palUploads, subDraws,
-                 tevChanges, tevCompiles; } PicaStats;
+                 tevChanges, tevCompiles,
+                 texFails; } PicaStats;  // texFails: textures not decoded for want of memory (drawn untextured)
 extern PicaStats g_picaStats;
 // The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work
 // runs there; off does it all on the GX thread (comparison).

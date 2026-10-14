@@ -136,6 +136,24 @@ static PVert* g_pv;
 static u32 g_vcap;
 static u32* g_scratch;
 static u32 g_scratchCap;
+static bool g_scratchLinear;
+
+// The decode scratch (RGBA8, up to 1024 x 1024: 4 MB): from malloc, else from linear memory. A build with translated
+// code (C12) left malloc ~2 MB, and a failed realloc here skipped the texture: the THP movie drew white and large
+// textures as flat colours on the 2DS (jobs 135-141), whether or not the translated code ran.
+static bool scratch_reserve(u32 n) {
+    if (n <= g_scratchCap) return true;
+    u32* p = g_scratchLinear ? NULL : realloc(g_scratch, n * 4);
+    if (!p) {
+        p = linearAlloc(n * 4);
+        if (!p) return false;
+        if (g_scratchLinear) linearFree(g_scratch); else free(g_scratch);
+        g_scratchLinear = true;
+    }
+    g_scratch = p;
+    g_scratchCap = n;
+    return true;
+}
 
 // The vertex worker's queue (below): jobs queued / done. Each counter written by one core has a 32-byte cache line of
 // its own: side by side, the GX thread's head and the worker's tail moved one line between cores 2 and 3 on every job
@@ -422,14 +440,12 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     g_picaStats.texDecodeBytes += bytes;
     evict_unused(bytes);
     C3D_Tex nt;
-    if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) return false;
-    u32 n = e->w * e->h;
-    if (n > g_scratchCap) {
-        u32* p = realloc(g_scratch, n * 4);
-        if (!p) { C3D_TexDelete(&nt); return false; }
-        g_scratch = p;
-        g_scratchCap = n;
+    if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) {
+        evict_unused(TEX_BUDGET);  // linear memory short of the budget: every texture this frame does not use goes
+        if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) { g_picaStats.texFails++; return false; }
     }
+    u32 n = e->w * e->h;
+    if (!scratch_reserve(n)) { C3D_TexDelete(&nt); g_picaStats.texFails++; return false; }
     gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
     upload(&nt, g_scratch, e->w, e->h);
     if (e->live) { retire(&e->tex, e->lastUse == g.frameNo); g.texBytes -= e->bytes; }
@@ -550,16 +566,7 @@ static void apply_tev(const PicaTev* t) {
     C3D_TexEnvBufColor(t->bufColor);
 }
 
-// The registers the TEV program depends on (65 words).
-static u32 tev_key(const GXCore* gx, u32* k) {
-    u32 n = 0;
-    k[n++] = gx->bp[0x00];
-    for (u32 r = 0x28; r <= 0x2F; r++) k[n++] = gx->bp[r];
-    for (u32 r = 0xC0; r <= 0xDF; r++) k[n++] = gx->bp[r];
-    for (u32 r = 0xF6; r <= 0xFD; r++) k[n++] = gx->bp[r];
-    for (u32 i = 0; i < 4; i++) { k[n++] = gx->tevLo[i]; k[n++] = gx->tevHi[i]; k[n++] = gx->kLo[i]; k[n++] = gx->kHi[i]; }
-    return n;
-}
+#define tev_key tev_pica_key
 
 // Combiner plans per material: a TEV program is compiled once and found again by its registers (a direct-mapped cache),
 // as decomp ports build each material's combiner setup once (Mario Kart 64 on 3DS). Games alternate between materials
@@ -673,12 +680,7 @@ static bool ztex_value(System* s, const GXCore* gx, u32* opOut, float* zOut) {
     if (memcmp(key, g_ztexKey, sizeof key)) {
         memcpy(g_ztexKey, key, sizeof key);
         u32 n = w * h, bytes = gx_texture_size(fmt, w, h);
-        if (n > g_scratchCap) {
-            u32* p = realloc(g_scratch, n * 4);
-            if (!p) return false;
-            g_scratch = p;
-            g_scratchCap = n;
-        }
+        if (!scratch_reserve(n)) { g_picaStats.texFails++; return false; }
         if (!bytes || addr + bytes > PA_MEM1_END) return false;
         u32 tlutAddr = (tlut & 0x3FF) << 9;
         gx_decode_texture(s->mem1 + addr, fmt, w, h, gx->tmem + (tlutAddr & 0xFFFFF), (tlut >> 10) & 3, g_scratch);

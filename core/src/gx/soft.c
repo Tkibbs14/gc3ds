@@ -18,6 +18,8 @@
 static bool g_picaTev, g_usePica;  // g_usePica: this draw takes the PICA path
 static float g_picaDiff;           // largest |PICA - reference| over this draw's pixels
 static PicaTev g_picaProg;
+static u64 g_tccHits, g_tccBad;
+static void tcc_report(void) { fprintf(stderr, "tev cache check: %llu of %llu hits differ from a fresh compile\n", (unsigned long long)g_tccBad, (unsigned long long)g_tccHits); }
 void gx_soft_set_pica_tev(bool on) { g_picaTev = on; }
 
 static float xf_f(const GXCore* gx, u32 a) { float f; memcpy(&f, &gx->xf[a], 4); return f; }
@@ -1051,6 +1053,29 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     if (allowSet < 0) { const char* e = getenv("PICA_TEV_FLAGS"); allowSet = e != NULL; allow = e ? (u32)strtoul(e, NULL, 16) : 0; }
     bool usePica = false;
     if (g_picaTev) { tev_pica_compile(gx, &g_picaProg); usePica = !allowSet || !(g_picaProg.approx & ~allow); }
+    // TEV_CACHE_CHECK=1 (with --pica-tev): the 3DS backend's plan cache (pica.c update_tev) run beside a fresh compile
+    // of every draw; a hit that differs means tev_pica_key misses something the compiler reads. =old: the key without
+    // the texture formats (the 2DS's bug).
+    static int tcc = -1;
+    static struct { u32 n, key[TEV_PICA_KEY_MAX]; PicaTev tev; }* tcache;
+    static u64 tccHits, tccBad;
+    if (tcc < 0) { const char* e = getenv("TEV_CACHE_CHECK"); tcc = !e ? 0 : !strcmp(e, "old") ? 2 : 1; if (tcc) tcache = calloc(512, sizeof *tcache); }
+    if (tcc && g_picaTev && tcache) {
+        u32 k[TEV_PICA_KEY_MAX], n = tev_pica_key(gx, k);
+        if (tcc == 2) n--;
+        u32 h = 2166136261u;
+        for (u32 i = 0; i < n; i++) h = (h ^ k[i]) * 16777619u;
+        __typeof__(&tcache[0]) sl = &tcache[(h ^ (h >> 15)) & 511u];
+        if (sl->n == n && !memcmp(sl->key, k, n * 4)) {
+            tccHits++;
+            if (memcmp(&sl->tev, &g_picaProg, sizeof g_picaProg) && tccBad++ < 5)
+                fprintf(stderr, "tev cache: a hit differs from a fresh compile (draw with formats %08x)\n", k[n - (tcc == 2 ? 0 : 1)]);
+            if (tccBad && !(tccBad & 1023)) fprintf(stderr, "tev cache: %llu of %llu hits differ\n", (unsigned long long)tccBad, (unsigned long long)tccHits);
+        } else { sl->n = n; memcpy(sl->key, k, n * 4); sl->tev = g_picaProg; }
+        static int reg;
+        if (!reg) { reg = 1; atexit(tcc_report); }
+        g_tccHits = tccHits; g_tccBad = tccBad;
+    }
     g_usePica = usePica;
     // ZTEX_LOG: one line per draw that uses a Z texture (BP 0xF5 op != 0), for the PICA backend's design.
     if (((gx->bp[0xF5] >> 2) & 3) && getenv("ZTEX_LOG")) {
