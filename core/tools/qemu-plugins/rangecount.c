@@ -18,6 +18,9 @@ typedef struct { uint64_t lo, hi; int r; uint64_t insns; } Span;
 static Span* g_spans;
 static size_t g_nspans, g_capspans;
 static uint64_t g_insns[MAX_RANGES], g_tbs[MAX_RANGES], g_other;
+#define MAX_VCPUS 64
+static uint64_t g_vcpu[MAX_VCPUS];  // every instruction by thread (qemu-user: one vCPU per guest thread), so the
+                                     // emulation thread's total stands for core 0's work on the 2DS
 static int g_nranges;
 
 typedef struct { int r; uint32_t n; Span* sp; } TbInfo;
@@ -42,8 +45,8 @@ static Span* find(uint64_t pc) {  // the last span starting at or below pc
 }
 
 static void on_exec(unsigned int vcpu, void* udata) {
-    (void)vcpu;
     TbInfo* t = udata;
+    if (vcpu < MAX_VCPUS) g_vcpu[vcpu] += t->n;
     if (t->r >= 0) { g_insns[t->r] += t->n; g_tbs[t->r]++; t->sp->insns += t->n; }
     else g_other += t->n;
 }
@@ -63,6 +66,8 @@ static void at_exit(qemu_plugin_id_t id, void* p) {
     for (int i = 0; i < g_nranges; i++)
         g_string_append_printf(s, " range%d insns %" PRIu64 " blocks %" PRIu64 ";", i, g_insns[i], g_tbs[i]);
     g_string_append_printf(s, " other insns %" PRIu64 "\n", g_other);
+    for (int i = 0; i < MAX_VCPUS; i++)
+        if (g_vcpu[i]) g_string_append_printf(s, "vcpu %d insns %" PRIu64 "\n", i, g_vcpu[i]);
     for (size_t i = 0; i < g_nspans; i++)  // every span that ran, for per-function costs
         if (g_spans[i].insns) g_string_append_printf(s, "span %" PRIx64 " %d %" PRIu64 "\n", g_spans[i].lo, g_spans[i].r, g_spans[i].insns);
     qemu_plugin_outs(s->str);

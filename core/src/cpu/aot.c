@@ -45,7 +45,8 @@ static void (*g_gatherPut)(void* ctx, u32 v, u32 size);
 static void* g_gatherCtx;
 static u32 g_gatherEa = 1;
 u8* aot_gbufc;
-static void gbufc_update(void) { aot_gbufc = g_gatherEa == AOT_PIPE_EA ? aot_gbuf : NULL; }
+// AOT_NOPIPEC=1 (comparison runs): constant pipe stores take the slow helper as other stores do.
+static void gbufc_update(void) { aot_gbufc = g_gatherEa == AOT_PIPE_EA && !getenv("AOT_NOPIPEC") ? aot_gbuf : NULL; }
 
 typedef struct { const AotFunc* f; const u32* ents; } Func;
 #define VALID(F) aot_valid[(F)->f->gidx]  // -1 not checked, 0 other code, 1 ok

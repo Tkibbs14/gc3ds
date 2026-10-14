@@ -4741,7 +4741,15 @@ void jit_invalidate(Jit* j, u32 pa) {
     // Level 1 keeps no per-page block lists: any icbi that touches a page holding compiled code drops everything.
     j->stats.icbis++;
     aot_invalidate(pa);
-    if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) { j->stats.icbiFlushes++; jit_invalidate_all(j); }
+    if ((pa >> 12) < sizeof j->codePages && j->codePages[pa >> 12]) {
+#ifndef __3DS__
+        static int logIcbi = -1;
+        if (logIcbi < 0) logIcbi = getenv("JIT_ICBILOG") != NULL;
+        if (logIcbi) fprintf(stderr, "icbi-flush pa %08x lr %08x pc %08x\n", pa, j->g->lr, j->g->pc);
+#endif
+        j->stats.icbiFlushes++;
+        jit_invalidate_all(j);
+    }
 }
 
 volatile u32 jit_in_run;
