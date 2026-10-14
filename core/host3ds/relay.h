@@ -13,6 +13,7 @@ typedef struct {
 bool relay_configured(void);  // sdmc:/gc3ds/relay.txt exists and names a url and token
 bool relay_auto(void);        // relay.txt has "auto 1": remote mode starts by itself
 bool relay_start(char* err, size_t n);
+void relay_reserve(void);  // takes the sockets buffer now (call before the large allocations)
 // sha256 prefix of our own .3dsx (the id the relay gives builds), computed once.
 const char* relay_self_id(const char* selfPath);
 int relay_next(RelayJob* j, char* err, size_t n);  // 1: a job, 0: none queued, -1: error

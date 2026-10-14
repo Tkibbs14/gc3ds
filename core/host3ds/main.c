@@ -1393,6 +1393,7 @@ int main(int argc, char** argv) {
     scan_dir("romfs:/dols");
     scan_dir("sdmc:/gc3ds");
     scan_dir("sdmc:/gc3ds/games");
+    relay_reserve();  // before MEM1, ARAM and the JIT's code take the heap
     if (!sys_init(&g_sys)) { printf("out of memory\n"); svcSleepThread(3000000000LL); gfxExit(); return 1; }
     crashlog_set_info(CRASH_INFO_MEM1, (u32)g_sys.mem1);
     // 16 MB of code: Twilight Princess's title scene did not fit in 4 MB, and a full cache is dropped whole, so it

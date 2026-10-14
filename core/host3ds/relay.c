@@ -215,10 +215,16 @@ static void log_thread(void* arg) {
 }
 
 // ---- public ----
+// The sockets buffer, taken at startup before the emulator's large allocations (MEM1, ARAM, the JIT's code): a 28 MB
+// build left too little heap afterwards and the relay failed with "socInit failed" (2DS, 2026-10-14).
+void relay_reserve(void) {
+    if (relay_configured() && !g_socBuf) g_socBuf = memalign(0x1000, SOC_BUF_SIZE);
+}
+
 bool relay_start(char* err, size_t n) {
     if (g_started) return true;
     if (!relay_configured()) { snprintf(err, n, "no url/token in sdmc:/gc3ds/relay.txt"); return false; }
-    g_socBuf = memalign(0x1000, SOC_BUF_SIZE);
+    if (!g_socBuf) g_socBuf = memalign(0x1000, SOC_BUF_SIZE);
     if (!g_socBuf || R_FAILED(socInit(g_socBuf, SOC_BUF_SIZE))) { snprintf(err, n, "socInit failed"); return false; }
     g_sslc = R_SUCCEEDED(sslcInit(0));  // mbedTLS's entropy source (sslcGenerateRandomData)
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || !(g_curl = curl_easy_init())) { snprintf(err, n, "curl init failed"); return false; }
