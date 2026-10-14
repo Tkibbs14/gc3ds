@@ -348,6 +348,7 @@ typedef struct {
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
     bool aot;            // --aot on|off (off): ahead-of-time translated game code where the build has it (aot.h, C12)
     bool abAot;          // --ab aot: translated code on and off (aot column; starts off; each switch drops all compiled code)
+    int aotCall, aotAbi, aotPipe;  // --aotcall N, --aotabi 0|1, --aotpipe 0|1 (-1: default); live: set aotcall / aotabi / aotpipe
 } RunOpts;
 static RunOpts g_opt;
 
@@ -368,6 +369,7 @@ static void opts_default(RunOpts* o) {
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
+    o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
@@ -406,6 +408,9 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--kstore")) o->kstore = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
+        else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
+        else if (!strcmp(a, "--aotabi")) o->aotAbi = atoi(v);
+        else if (!strcmp(a, "--aotpipe")) o->aotPipe = atoi(v);
         else if (!strcmp(a, "--press")) {
             static const struct { const char* name; u16 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
@@ -509,6 +514,14 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "vw2") && g_pica) pica_set_worker2(v != 0);
         else if (!strcmp(name, "fskip") && g_pica) pica_set_fskip(v != 0);
         else if (!strcmp(name, "aot") && g_jit) { aot_set_enabled(v != 0); jit_invalidate_all(g_jit); }
+        else if (!strcmp(name, "aotcall") || !strcmp(name, "aotabi") || !strcmp(name, "aotpipe")) {
+            u32 d; bool abi, pipe;
+            aot_get_switches(&d, &abi, &pipe);
+            if (!strcmp(name, "aotcall")) d = v;
+            else if (!strcmp(name, "aotabi")) abi = v != 0;
+            else pipe = v != 0;
+            aot_set_switches(d, abi, pipe);
+        }
         else if (!strcmp(name, "pld")) vfast_set_prefetch(v != 0);
         else if (!strcmp(name, "splitopen") && g_pica) pica_set_split_open(v != 0);
         else if (!strcmp(name, "vwmem") && g_pica) pica_set_job_ring(v << 10);
@@ -655,6 +668,7 @@ static const char* run(const char* path) {
                            (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
+        aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
         if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build, %s\n", aot_available() ? "present" : "absent",
                             aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
         if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
@@ -875,6 +889,11 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns));
                         lastHleRuns = g_hleRuns;
                         lastHleInsns = g_hleInsns;
+                        static u64 lastTevC, lastTevK;
+                        fprintf(g_perf, "# tev 10s: %.0f program changes/s, %.0f compiled/s (the rest from the combiner-plan cache)\n",
+                                (double)(g_picaStats.tevChanges - lastTevC) / 10.0, (double)(g_picaStats.tevCompiles - lastTevK) / 10.0);
+                        lastTevC = g_picaStats.tevChanges;
+                        lastTevK = g_picaStats.tevCompiles;
                         static u64 lastPal, lastSub;
                         fprintf(g_perf, "# gpu transform 10s: palette uploads %llu, draw calls for palette or projection "
                                 "changes %llu, draws over the palette (CPU) %llu\n",

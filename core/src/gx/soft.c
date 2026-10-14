@@ -1037,6 +1037,9 @@ static void vcache_check_draw(System* s, GXCore* gx, u32 vat, const u8* raw, u32
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
+    static int nodraw = -1;  // GC3DS_NODRAW: no rasterising (fast CPU-side runs; frames are not meaningful)
+    if (nodraw < 0) nodraw = getenv("GC3DS_NODRAW") && strcmp(getenv("GC3DS_NODRAW"), "0") != 0;
+    if (nodraw) return;
     if (g_mrg.on) merge_draw(s, prim, vat, raw, count, vsize);
     static int vcc = -1;
     if (vcc < 0) vcc = getenv("VCACHE_CHECK") != NULL;

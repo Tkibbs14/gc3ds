@@ -153,6 +153,8 @@ class Translator:
         self.inl = {}         # start -> Fn of small leaf functions inlined at their call sites
         self.deps = []        # (start, size) of inlined callees: the translation is valid only while they match too
         self.ninl = 0
+        self.attr = ''
+        self.abi = True       # direct calls trust the EABI's callee-saved registers (--abi 0: reload everything)
         self.fidx = {}        # start -> index of every translated function (direct calls)
         self.dcalls = []      # direct call sites: their resume labels
 
@@ -442,7 +444,9 @@ class Translator:
         if op == 27: return ['%s = %s ^ %s;' % (R(ra, 1), R(rd), hx(d['uimm'] << 16))]
         if op == 28: return ['%s = %s & %du;' % (R(ra, 1), R(rd), d['uimm']), self.cr0(R(ra))]
         if op == 29: return ['%s = %s & %s;' % (R(ra, 1), R(rd), hx(d['uimm'] << 16)), self.cr0(R(ra))]
-        if op == 7: return ['%s = (u32)((s32)%s * %d);' % (R(rd, 1), R(ra), d['simm'])]
+        # multiplies in unsigned arithmetic: the same low 32 bits, and no signed-overflow undefined behaviour (which GCC
+        # for ARM optimised differently from GCC for x86 in the audio mixer's fixed-point code)
+        if op == 7: return ['%s = %s * %s;' % (R(rd, 1), R(ra), hx(d['simm']))]
         if op in (12, 13):
             out = ['{ u64 s_ = (u64)%s + %s; %s = (%s & ~XER_CA) | ((u32)(s_ >> 32) << 29); %s = (u32)s_; }'
                    % (R(ra), hx(d['simm']), self.XER(1), self.XER(), R(rd, 1))]
@@ -531,7 +535,7 @@ class Translator:
         if xo == 232: return self.arith(d, '(u32)~%s' % R(ra), '0xFFFFFFFFu', cain, 1)
         if xo == 104: return self.arith(d, '(u32)~%s' % R(ra), '0u', '1u', 0)
         if xo == 235:
-            out = ['%s = (u32)((s32)%s * (s32)%s);' % (R(rd, 1), R(ra), R(rb))]
+            out = ['%s = %s * %s;' % (R(rd, 1), R(ra), R(rb))]
             if d['rcb']: out.append(self.cr0(R(rd)))
             return out
         if xo == 75:
@@ -937,10 +941,11 @@ class Translator:
         body = self.emit()
         name = 'F_%08X' % f.start
         o = ['// %s (%08x, %d instructions)' % (f.name[:100].replace('*/', ''), f.start, len(f.words)),
-             'u32 %s(Gekko* g, u32 entry, s32 budget) {' % name,
+             '%su32 %s(Gekko* g, u32 entry, s32 budget) {' % (self.attr, name),
              '    u32 n = 0, npc = 0; u64 t0 = g->cycles; (void)t0;',
              '    u32 fb_k = 0, fb_pc = 0, fb_inst = 0, fb_adj = 0; (void)fb_k; (void)fb_pc; (void)fb_inst; (void)fb_adj;',
-             '    u32 dc_k = 0, dc_pc = 0, dc_rp = 0, dc_v = 0; AotFn dc_fn = 0; (void)dc_k; (void)dc_pc; (void)dc_rp; (void)dc_v; (void)dc_fn;']
+             '    u32 dc_k = 0, dc_pc = 0, dc_rp = 0, dc_v = 0; AotFn dc_fn = 0; (void)dc_k; (void)dc_pc; (void)dc_rp; (void)dc_v; (void)dc_fn;',
+             '    u32 lk_pc = 0, lk_adj = 0, lk_bef = 0; (void)lk_pc; (void)lk_adj; (void)lk_bef;']
         decl = []
         for r in sorted(self.gpr): decl.append('u32 r%d = g->gpr[%d];' % (r, r))
         for r in sorted(self.fpr): decl.append('double f%d = g->fpr[%d].ps0, p%d = g->fpr[%d].ps1;' % (r, r, r, r))
@@ -974,19 +979,28 @@ class Translator:
             o.append('    { u32 ei_ = 0; AotFn fn_ = dc_fn;')
             o.append('      if (!fn_) fn_ = aot_lookup(dc_pc, &ei_);')
             o.append('      else if (aot_valid[dc_v] != 1 && !aot_check_idx(dc_v)) fn_ = 0;')
-            o.append('      if (!fn_ || aot_depth >= AOT_DEPTH || aot_stop) { g->pc = dc_pc; return n; }')
+            o.append('      if (!fn_ || aot_depth >= aot_depth_max || aot_stop) { g->pc = dc_pc; return n; }')
             o.append('      g->cycles = t0 + n; aot_depth++;')
             o.append('      u32 m_ = fn_(g, ei_, budget - (s32)n);')
             o.append('      aot_depth--; g->cycles = t0;')
             o.append('      if (!m_) { g->pc = dc_pc; return n; }')
             o.append('      n += m_;')
             o.append('      if (g->pc != dc_rp || aot_stop) return n; }')
-            o += ['    ' + x for x in reload_]
+            if self.abi:
+                o.append('    if (aot_abi) {')
+                o += ['        ' + x for x in self.reload_abi_lines()]
+                o.append('    } else {')
+                o += ['        ' + x for x in reload_]
+                o.append('    }')
+            else:
+                o += ['    ' + x for x in reload_]
             o.append('    switch (dc_k) {')
             for k in self.dcalls:
                 o.append('    case %d: goto DC%d;' % (k, k))
             o.append('    }')
             o.append('    return n;')
+        o.append('leave:')
+        o.append('    if (aot_ls == 3u) { npc = lk_pc; n -= lk_bef; } else { npc = g->pc; n -= lk_adj; }')
         o.append('out:')
         o += ['    ' + x for x in flush]
         o.append('    g->pc = npc;')
@@ -1007,6 +1021,26 @@ class Translator:
         if self.w_ctr: o.append('g->ctr = ctr;')
         if self.w_xer: o.append('g->xer = xer;')
         if self.w_fpscr: o.append('g->fpscr = fpscr;')
+        return o
+
+    def reload_abi_lines(self):
+        """After a call that returned normally: only what the PowerPC EABI lets a callee change (r0, r3-r12, f0-f13,
+        cr0, cr1, cr5-cr7, LR, CTR, XER, FPSCR); r1, r2, r13, r14-r31, f14-f31 and cr2-cr4 come back as they were.
+        AOT_CHECK compares every call chain with the interpreter, so code that breaks the convention shows up there."""
+        o = []
+        for r in sorted(self.gpr):
+            if r == 0 or 3 <= r <= 12: o.append('r%d = g->gpr[%d];' % (r, r))
+        for r in sorted(self.fpr):
+            # f14-f31: the EABI saves and restores only ps0 (stfd / lfd), so a callee's lfs or paired-single code can
+            # leave ps1 changed (TP: f31's ps1 after a call, found by AOT_CHECK on ARM)
+            if r <= 13: o.append('f%d = g->fpr[%d].ps0; p%d = g->fpr[%d].ps1;' % (r, r, r, r))
+            else: o.append('p%d = g->fpr[%d].ps1;' % (r, r))
+        for c in sorted(self.crf):
+            if c not in (2, 3, 4): o.append('c%d = (g->cr >> %d) & 15u;' % (c, 28 - 4 * c))
+        if self.use_lr: o.append('lr = g->lr;')
+        if self.use_ctr: o.append('ctr = g->ctr;')
+        if self.use_xer: o.append('xer = g->xer;')
+        if self.use_fpscr: o.append('fpscr = g->fpscr;')
         return o
 
     def reload_lines(self):
@@ -1104,11 +1138,13 @@ def main():
     ap.add_argument('--symbols', help='a decomp symbol map; without one, functions are found in the code itself')
     ap.add_argument('--hist', help='executed-instruction histogram (pc_main PCHIST): only functions that ran')
     ap.add_argument('--top', type=int, default=0, help='only the N most executed functions')
+    ap.add_argument('--cover', type=float, default=0, help='only the hottest functions covering this share of execution (e.g. 0.99)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--files', type=int, default=16)
     ap.add_argument('--only', help='comma-separated function addresses (hex)')
     ap.add_argument('--inline', type=int, default=32, help='inline leaf functions up to this many instructions (0: none)')
     ap.add_argument('--dcalls', type=int, default=1, help='calls between translated functions stay in C (0: they leave)')
+    ap.add_argument('--abi', type=int, default=1, help='after a direct call reload only what the EABI lets a callee change')
     a = ap.parse_args()
     secs = load_dol(a.dol)
     mem = Mem(secs)
@@ -1128,10 +1164,24 @@ def main():
         fns.append((c, start, size, name))
     fns.sort(key=lambda x: -x[0])
     if a.top: fns = fns[:a.top]
+    if a.cover and counts is not None:  # only the hottest functions that together run this share of the instructions
+        fns.sort(key=lambda x: -x[0])
+        tot, acc, keep = sum(x[0] for x in fns) or 1, 0, []
+        for x in fns:
+            if acc >= a.cover * tot: break
+            keep.append(x); acc += x[0]
+        fns = keep
     if a.only:
         want = {int(x, 16) for x in a.only.split(',')}
         fns = [x for x in fns if x[1] in want]
-    fns.sort(key=lambda x: x[1])
+    fns.sort(key=lambda x: (-x[0], x[1]))  # hottest first (counts from --hist; ties by address)
+    tot_c = sum(x[0] for x in fns) or 1
+    hot = set()
+    acc = 0
+    for c, st, sz, nm in fns:
+        if acc < 0.97 * tot_c or not counts:
+            hot.add(st)
+        acc += c
     # Every bl target in the DOL's code: a callee entered part way in (__save_gpr / __restore_gpr) gets an entry there.
     calls = set()
     for base, size, data, text in secs:
@@ -1166,14 +1216,17 @@ def main():
         t = Translator(fn, stats, None, [c for c in calls if start < c < start + size])
         t.inl = {k: v for k, v in leaves.items() if k != start}
         if a.dcalls: t.fidx = fidx
+        t.abi = bool(a.abi)
+        t.attr = '__attribute__((hot)) ' if start in hot else '__attribute__((cold)) '
         cname, lines = t.c_function()
         data = b''.join(struct.pack('>I', w) for w in fn.words)
         ddata = b''.join(b''.join(struct.pack('>I', w) for w in leaves[ds].words) for ds, dz in t.deps)
         if t.deps:
             lines.append('static const u32 D_%08X[] = { %s, 0 };' % (start, ', '.join('%s, %du' % (hx(ds), dz) for ds, dz in t.deps)))
-        table.append((start, size, fnv64(data), cname, [start + 4 * k for k in t.entries], idx % nf,
+        part = min(nf - 1, idx * nf // max(1, len(fns)))
+        table.append((start, size, fnv64(data), cname, [start + 4 * k for k in t.entries], part,
                       ('D_%08X' % start) if t.deps else 'NULL', fnv64(ddata) if t.deps else 0))
-        chunks[idx % nf].append('\n'.join(lines))
+        chunks[part].append('\n'.join(lines))
         total_insns += len(fn.words)
     head = ('// Generated by core/tools/aot/ppc2c.py from the user\'s own disc: not to be committed or distributed.\n'
             '#include "aot_gen.h"\n'

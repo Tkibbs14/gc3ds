@@ -285,6 +285,10 @@ int main(int argc, char** argv) {
     // AOT=1: ahead-of-time translated code (aot.h) where it was generated; AOT_CHECK=1 also compares every call with the interpreter.
     if (getenv("AOT")) {
         aot_set_enabled(true);
+        if (getenv("AOT_PIPE")) {  // the write-gather pipe's direct path, as the 3DS has it through the JIT
+            aot_set_gather(gp_wgp_put, &sys, GP_WGP_EA);
+            aot_set_gather_buffer(sys.gx.wgp, &sys.gx.wgpLen);
+        }
         fprintf(stderr, "aot: %s\n", aot_enabled() ? "on" : "no translated code in this build");
     }
     // OPMIX=1: dynamic instruction mix of the interpreter, printed at exit (which instructions a JIT must cover).
@@ -317,6 +321,13 @@ int main(int argc, char** argv) {
     double wall = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
 
     save_frame(&sys, &fe, "last");
+    {  // the machine state as a hash (compare runs without frames, e.g. GC3DS_NODRAW)
+        u64 h = 0xCBF29CE484222325ull;
+        for (u32 i = 0; i < MEM1_SIZE; i++) { h ^= sys.mem1[i]; h *= 0x100000001B3ull; }
+        for (u32 i = 0; i < 32; i++) { h ^= sys.cpu.gpr[i]; h *= 0x100000001B3ull; }
+        h ^= sys.cpu.pc; h *= 0x100000001B3ull;
+        fprintf(stderr, "state hash %016llx at cycle %llu\n", (unsigned long long)h, (unsigned long long)sys.cpu.cycles);
+    }
     host_jit_report();
     if (aot_enabled())
         fprintf(stderr, "aot: %llu runs, %llu calls, %llu guest instructions (%.1f%% of %llu), %llu fallbacks, %llu slow accesses, %llu hash failures\n",

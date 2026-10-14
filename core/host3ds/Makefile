@@ -72,6 +72,8 @@ else
 $(OUTPUT).3dsx: $(OUTPUT).elf $(OUTPUT).smdh
 $(OUTPUT).elf: $(OFILES)
 $(OFILES_SOURCES): $(HFILES)
+# Ahead-of-time translated code (src/aotgen): large and never stepped through, so no debug info.
+aot_gen%.o: CFLAGS += -g0 -fwrapv
 
 %.shbin.o %_shbin.h : %.v.pica
 	@echo $(notdir $<)

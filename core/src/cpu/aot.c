@@ -17,6 +17,10 @@ extern const u32 aot_nvalid __attribute__((weak));
 uintptr_t aot_base;
 u32 aot_stop;
 u32 aot_depth;
+u32 aot_depth_max = AOT_DEPTH, aot_abi = 1;
+static u8* g_gbufSet;
+static u32* g_glenSet;
+static bool g_pipeOn = true;
 u8* aot_gbuf;
 u32* aot_glen;
 AotStats aot_stats;
@@ -127,13 +131,31 @@ void aot_set_enabled(bool on) {
 #if defined(__x86_64__) || defined(__i386__)
     // The 3DS runs translated code with flush-to-zero (jit_host_fpscr_init); do the same on the PC.
     if (g_on) _mm_setcsr(_mm_getcsr() | 0x8040);
+#elif defined(__arm__)
+    // The same FPSCR as compiled code (jit.h jit_host_fpscr_init: round to nearest, flush-to-zero, default NaN), also
+    // when no JIT set it (ARM Linux runs without --jit).
+    if (g_on) __asm__ volatile("vmsr fpscr, %0" : : "r"(0x03000000u));
 #endif
 }
 bool aot_enabled(void) { return g_on; }
 
 void aot_set_memory(u8* mem1) { aot_base = (uintptr_t)mem1 - 0x80000000u; aot_invalidate_all(); }
 
-void aot_set_gather_buffer(u8* buf, u32* len) { aot_gbuf = buf; aot_glen = len; }
+void aot_set_gather_buffer(u8* buf, u32* len) {
+    g_gbufSet = buf;
+    g_glenSet = len;
+    aot_gbuf = g_pipeOn ? buf : NULL;
+    aot_glen = len;
+}
+
+void aot_set_switches(u32 depthMax, bool abi, bool pipe) {
+    aot_depth_max = depthMax > AOT_DEPTH ? AOT_DEPTH : depthMax;
+    aot_abi = abi;
+    g_pipeOn = pipe;
+    aot_gbuf = pipe ? g_gbufSet : NULL;
+    aot_glen = g_glenSet;
+}
+void aot_get_switches(u32* depthMax, bool* abi, bool* pipe) { *depthMax = aot_depth_max; *abi = aot_abi != 0; *pipe = g_pipeOn; }
 
 void aot_set_gather(void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) {
     g_gatherPut = put;
@@ -213,6 +235,7 @@ void aot_invalidate(u32 pa) {
 }
 
 // ---- slow paths ----
+u32 aot_ls;
 static inline u64 time_set(Gekko* g, u64 t) { u64 s = g->cycles; g->cycles = t; return s; }
 
 // The end of every slow path: 1 when the access raised an exception (g->pc = its handler), else 0; an interrupt or a
@@ -291,6 +314,30 @@ u32 aot_psq_st(Gekko* g, u32 ea, u32 w, u32 q, double a, double b, u32 pc, u64 t
     bool ok = gk_psq_store(g, ea, w, q, D2U(a), D2U(b));
     g->cycles = s;
     return slow_done(g, ok);
+}
+
+// The forms the generated code calls (aot_rt.h): one call per site, the status in aot_ls.
+u32 aot_ldx(Gekko* g, u32 ea, u32 nb, u32 pcs) {
+    u32 v = 0;
+    aot_ls = aot_ld(g, ea, 1u << (pcs & 3), &v, pcs & ~3u, g->cycles + nb);
+    return v;
+}
+u32 aot_stx(Gekko* g, u32 ea, u32 v, u32 nb, u32 pcs) {
+    u32 size = 1u << (pcs & 3);
+    if (ea == g_gatherEa && aot_gbuf && *aot_glen + size < 32u) { aot_gappend(v, size); return aot_ls = 0; }
+    return aot_ls = aot_st(g, ea, size, v, pcs & ~3u, g->cycles + nb);
+}
+u64 aot_ld64x(Gekko* g, u32 ea, u32 nb, u32 pc) {
+    u64 v = 0;
+    aot_ls = aot_ld64(g, ea, &v, pc, g->cycles + nb);
+    return v;
+}
+u32 aot_st64x(Gekko* g, u32 ea, u64 v, u32 nb, u32 pc) { return aot_ls = aot_st64(g, ea, v, pc, g->cycles + nb); }
+u32 aot_psq_lx(Gekko* g, u32 ea, u32 wq, double* a, double* b, u32 nb, u32 pc) {
+    return aot_ls = aot_psq_l(g, ea, wq >> 3, wq & 7, a, b, pc, g->cycles + nb);
+}
+u32 aot_psq_stx(Gekko* g, u32 ea, u32 wq, double a, double b, u32 nb, u32 pc) {
+    return aot_ls = aot_psq_st(g, ea, wq >> 3, wq & 7, a, b, pc, g->cycles + nb);
 }
 
 static u32 key_of(const Gekko* g) {
@@ -424,6 +471,14 @@ static u32 checked_call(Gekko* g, const Func* F, u32 ei, s32 budget) {
         }
     bool fsame = !memcmp(g->fpr, gA.fpr, sizeof g->fpr);
     if (same && memSame && fsame) return steps;
+    // FPR lanes that differ by more than a few ulps are not the fast-float model's rounding: a real difference
+    for (int r = 0; r < 32 && same; r++)
+        for (int l = 0; l < 2; l++) {
+            u64 a = D2U(l ? gA.fpr[r].ps1 : gA.fpr[r].ps0), b = D2U(l ? g->fpr[r].ps1 : g->fpr[r].ps0);
+            if (a == b) continue;
+            u64 d = a > b ? a - b : b - a;
+            if ((a >> 63) != (b >> 63) || d > 4) same = false;
+        }
     if (same && memSame) {
         g_chk.fbad++;
         if (g_chk.fbad <= 10) {

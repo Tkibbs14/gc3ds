@@ -30,7 +30,10 @@ bool pica_gpu_transform(void);
 // submits (C3D_FrameEnd) and splits, textures decoded from RAM and their size in VRAM/FCRAM, EFB -> texture and
 // EFB -> XFB copies, EFB clears; palette matrices uploaded and draw calls made to change palette slots or the
 // projection inside a batch (GPU-transformed batches).
-typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears, palUploads, subDraws; } PicaStats;
+// tevChanges: draws whose TEV registers differ from the previous draw's; tevCompiles: of those, compiled anew (the
+// rest came from the combiner-plan cache).
+typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efbCopies, xfbCopies, clears, palUploads, subDraws,
+                 tevChanges, tevCompiles; } PicaStats;
 extern PicaStats g_picaStats;
 // The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work
 // runs there; off does it all on the GX thread (comparison).

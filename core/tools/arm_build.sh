@@ -7,9 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 make -s -j"$(nproc)" CC=arm-linux-gnueabihf-gcc \
     CFLAGS="-std=c11 -O2 -g -Wall -Wextra -Wno-unused-parameter -march=armv6k -mfpu=vfp -mfloat-abi=hard -marm -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
-    LDFLAGS=-static BUILD=build-arm build-arm/gcemu
+    BUILD=build-arm build-arm/gcemu
+# Linked dynamically (qemu-arm -L /usr/arm-linux-gnueabihf): static glibc's IFUNC table lost the Thumb bit once the
+# program's text passed ~16 MB (ahead-of-time translated code), and it died at startup with an illegal instruction.
 if [ "${1:-}" = run ]; then
     shift
     # cortex-a7 runs everything ARMv6K code can do; glibc itself is built for ARMv7.
-    exec qemu-arm -cpu cortex-a7 build-arm/gcemu "$@"
+    exec qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7 build-arm/gcemu "$@"
 fi

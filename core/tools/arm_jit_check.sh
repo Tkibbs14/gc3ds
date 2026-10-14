@@ -10,8 +10,8 @@ bash tools/arm_build.sh >/dev/null || exit 2
 for n in "${names[@]}"; do
     dol="../gc-tests/examples-dol/$n.dol"
     mkdir -p "out/jitcheck/$n/interp" "out/jitcheck/$n/jit"
-    qemu-arm -cpu cortex-a7 build-arm/gcemu "$dol" --seconds "$secs" --out "out/jitcheck/$n/interp" > "out/jitcheck/$n/interp.log" 2>&1
-    qemu-arm -cpu cortex-a7 build-arm/gcemu "$dol" --seconds "$secs" --jit --out "out/jitcheck/$n/jit" > "out/jitcheck/$n/jit.log" 2>&1
+    qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7 build-arm/gcemu "$dol" --seconds "$secs" --out "out/jitcheck/$n/interp" > "out/jitcheck/$n/interp.log" 2>&1
+    qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7 build-arm/gcemu "$dol" --seconds "$secs" --jit --out "out/jitcheck/$n/jit" > "out/jitcheck/$n/jit.log" 2>&1
     if cmp -s "out/jitcheck/$n/interp/last.png" "out/jitcheck/$n/jit/last.png"; then same=SAME; else same=DIFFERENT; fi
     native="$(grep -oE '[0-9.]+%\)' "out/jitcheck/$n/jit.log" | head -1)"
     printf '%-32s frames %-9s native %s\n' "$n" "$same" "$native"

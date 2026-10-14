@@ -14,6 +14,11 @@ void aot_set_memory(u8* mem1);
 void aot_set_gather(void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
 // ... and its partial burst, which stores append to inline (as jit_set_gather_buffer).
 void aot_set_gather_buffer(u8* buf, u32* len);
+// Live switches, for finding which part of the translation a problem comes from without a new build: direct calls up
+// to depthMax deep (0: none), the EABI's callee-saved registers trusted after a call (abi), pipe stores appended inline
+// (pipe). Defaults: 40, on, on.
+void aot_set_switches(u32 depthMax, bool abi, bool pipe);
+void aot_get_switches(u32* depthMax, bool* abi, bool* pipe);
 // Whether the machine state lets translated code run: standard address translation, FP and paired singles on,
 // round to nearest (the state the translation assumes, as the JIT's block key).
 bool aot_state_ok(const Gekko* g);

@@ -22,6 +22,9 @@ extern s8 aot_valid[];
 // Direct calls between translated functions nest C calls: at most AOT_DEPTH deep (the rest leave to aot_run).
 #define AOT_DEPTH 40
 extern u32 aot_depth;
+// Live switches (aot.h): the direct-call depth limit (0: every call leaves to aot_run), and whether a direct call that
+// returned reloads only the registers the EABI lets a callee change (1) or every register (0).
+extern u32 aot_depth_max, aot_abi;
 AotFn aot_lookup(u32 pc, u32* entry);  // the translated function with an entry at pc (checked), or NULL
 bool aot_check_idx(u32 gidx);          // checks function gidx's bytes now; true when it may run
 #ifdef AOT_LOG
@@ -134,12 +137,24 @@ static inline void aot_gappend(u32 v, u32 size) {
     *aot_glen = l + size;
 }
 
-// Slow paths as the generated code calls them (inside a translated function: g, n, npc, t0 and label out exist).
-// adj: instructions of the block after this one; bef: this one and those after it.
-#define SLOW_LEAVE(st_, PC_, ADJ_, BEF_) do { if ((st_) == 3u) { npc = (PC_); n -= (BEF_); } else { npc = g->pc; n -= (ADJ_); } goto out; } while (0)
-#define SLOW_LD(size, ea, pv, PC_, ADJ_, BEF_) do { u32 st_ = aot_ld(g, ea, size, pv, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { if ((ea) == 0xCC008000u && aot_gbuf && *aot_glen + (size) < 32u) { aot_gappend(v, size); break; } u32 st_ = aot_st(g, ea, size, v, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define SLOW_LD64(ea, pv, PC_, ADJ_, BEF_) do { u32 st_ = aot_ld64(g, ea, pv, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define SLOW_ST64(ea, v, PC_, ADJ_, BEF_) do { u32 st_ = aot_st64(g, ea, v, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define PSQ_SLOW_L(ea, w, q, pa, pb, PC_, ADJ_, BEF_) do { u32 st_ = aot_psq_l(g, ea, w, q, pa, pb, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
-#define PSQ_SLOW_S(ea, w, q, a, b, PC_, ADJ_, BEF_) do { u32 st_ = aot_psq_st(g, ea, w, q, a, b, PC_, t0 + n - (BEF_)); if (st_) SLOW_LEAVE(st_, PC_, ADJ_, BEF_); } while (0)
+// Slow paths as the generated code calls them (inside a translated function: g, n, npc, lk_pc, lk_adj, lk_bef and the
+// labels leave and out exist). Each site is one call to a shared helper; when it reports that guest code must leave
+// (aot_ls: 1 an exception was taken, 3 not done in check mode), the site records its PC and count adjustments and
+// jumps to the function's one leave block. adj: instructions of the block after this one; bef: this one and after.
+// The helpers take the guest time as instructions run in this function (g->cycles is the function's start meanwhile)
+// and the PC with log2(size) in its two low bits.
+extern u32 aot_ls;
+u32 aot_ldx(Gekko* g, u32 ea, u32 nb, u32 pcs);
+u32 aot_stx(Gekko* g, u32 ea, u32 v, u32 nb, u32 pcs);
+u64 aot_ld64x(Gekko* g, u32 ea, u32 nb, u32 pc);
+u32 aot_st64x(Gekko* g, u32 ea, u64 v, u32 nb, u32 pc);
+u32 aot_psq_lx(Gekko* g, u32 ea, u32 wq, double* a, double* b, u32 nb, u32 pc);
+u32 aot_psq_stx(Gekko* g, u32 ea, u32 wq, double a, double b, u32 nb, u32 pc);
+#define SZ_LOG(size) ((size) == 4 ? 2u : (size) == 2 ? 1u : 0u)
+#define SLOW_GO(PC_, ADJ_, BEF_) do { lk_pc = (PC_); lk_adj = (ADJ_); lk_bef = (BEF_); goto leave; } while (0)
+#define SLOW_LD(size, ea, pv, PC_, ADJ_, BEF_) do { *(pv) = aot_ldx(g, ea, n - (BEF_), (PC_) | SZ_LOG(size)); if (__builtin_expect(aot_ls != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_ST(size, ea, v, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_stx(g, ea, v, n - (BEF_), (PC_) | SZ_LOG(size)) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_LD64(ea, pv, PC_, ADJ_, BEF_) do { *(pv) = aot_ld64x(g, ea, n - (BEF_), PC_); if (__builtin_expect(aot_ls != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define SLOW_ST64(ea, v, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_st64x(g, ea, v, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define PSQ_SLOW_L(ea, w, q, pa, pb, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_psq_lx(g, ea, ((w) << 3) | (q), pa, pb, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)
+#define PSQ_SLOW_S(ea, w, q, a, b, PC_, ADJ_, BEF_) do { if (__builtin_expect(aot_psq_stx(g, ea, ((w) << 3) | (q), a, b, n - (BEF_), PC_) != 0, 0)) SLOW_GO(PC_, ADJ_, BEF_); } while (0)

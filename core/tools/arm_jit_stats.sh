@@ -6,5 +6,5 @@ cd "$(dirname "$0")/.."
 name="$1"; shift
 for s in "$@"; do
     echo "== $name, $s emulated s"
-    qemu-arm -cpu cortex-a7 build-arm/gcemu "../gc-tests/examples-dol/$name.dol" --seconds "$s" --jit --out "out/jitstats/$name" 2>&1 | grep -E '^JIT|^ran '
+    qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7 build-arm/gcemu "../gc-tests/examples-dol/$name.dol" --seconds "$s" --jit --out "out/jitstats/$name" 2>&1 | grep -E '^JIT|^ran '
 done

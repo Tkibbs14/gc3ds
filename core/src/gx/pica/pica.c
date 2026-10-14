@@ -561,13 +561,31 @@ static u32 tev_key(const GXCore* gx, u32* k) {
     return n;
 }
 
-// Recompiles the TEV program only when a register it depends on changed.
+// Combiner plans per material: a TEV program is compiled once and found again by its registers (a direct-mapped cache),
+// as decomp ports build each material's combiner setup once (Mario Kart 64 on 3DS). Games alternate between materials
+// from draw to draw, which the one-entry check alone recompiled every time.
+#define TEVC_BITS 9
+typedef struct { u32 n, key[72]; PicaTev tev; } TevSlot;
+static TevSlot* g_tevCache;
+
+// Recompiles the TEV program only when a register it depends on changed, and only when the cache does not hold it.
 static void update_tev(const GXCore* gx) {
     u32 k[72], n = tev_key(gx, k);
     if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
     memcpy(g.tevKey, k, n * 4);
-    tev_pica_compile(gx, &g.tev);
-    if (g.tev.approx) note_approx(g.tev.approx);
+    g_picaStats.tevChanges++;
+    if (!g_tevCache) g_tevCache = calloc(1u << TEVC_BITS, sizeof *g_tevCache);
+    u32 h = 2166136261u;
+    for (u32 i = 0; i < n; i++) h = (h ^ k[i]) * 16777619u;
+    TevSlot* slot = g_tevCache ? &g_tevCache[(h ^ (h >> 15)) & ((1u << TEVC_BITS) - 1)] : NULL;
+    if (slot && slot->n == n && !memcmp(slot->key, k, n * 4)) {
+        g.tev = slot->tev;
+    } else {
+        tev_pica_compile(gx, &g.tev);
+        g_picaStats.tevCompiles++;
+        if (g.tev.approx) note_approx(g.tev.approx);
+        if (slot) { slot->n = n; memcpy(slot->key, k, n * 4); slot->tev = g.tev; }
+    }
     apply_tev(&g.tev);
     g.sel = (VSel){ g.tev.rasChan, g.tev.numTex, { g.tev.texCoord[0], g.tev.texCoord[1], g.tev.texCoord[2] } };
     g.tevValid = true;

@@ -15,7 +15,7 @@ $(BUILD)/gcemu: $(OBJ)
 
 # Ahead-of-time translated code (src/aotgen, generated from the user's own disc, never committed): check-mode store log
 # on, and no contracted multiply-adds (the 3DS's VFP has none).
-$(BUILD)/obj/aotgen/%.o: CFLAGS += -DAOT_LOG -ffp-contract=off
+$(BUILD)/obj/aotgen/%.o: override CFLAGS += -DAOT_LOG -ffp-contract=off -fwrapv
 
 $(BUILD)/obj/%.o: src/%.c
 	@mkdir -p $(dir $@)

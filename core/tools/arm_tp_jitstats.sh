@@ -11,5 +11,5 @@ iso="${GC3DS_ISO:?set GC3DS_ISO to your own disc image}"
 out=/root/jitdyn
 mkdir -p "$out"
 frames="$1"; shift
-time timeout 3600 qemu-arm -cpu cortex-a7 build-arm/gcemu "$iso" --frames "$frames" --jit --out "$out" "$@" > "$out/out.txt" 2>&1
+time timeout 3600 qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7 build-arm/gcemu "$iso" --frames "$frames" --jit --out "$out" "$@" > "$out/out.txt" 2>&1
 grep -vE '^\[' "$out/out.txt" | tail -60
