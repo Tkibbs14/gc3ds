@@ -343,6 +343,7 @@ typedef struct {
     bool fskip;          // --fskip on|off (off): every other rendered frame draws nothing (pica_set_fskip)
     bool kstore;         // --kstore on|off (on): stfs / psq_st of known exact singles skip the round trip (OPT_KSTORE)
     bool abKstore;       // --ab kstore: OPT_KSTORE on and off (opt column; each switch drops all compiled code)
+    bool calls, abCalls; // --calls on|off, --ab calls: traces follow bl and the callee's blr (OPT_CALLS, opt column)
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
@@ -387,7 +388,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -407,6 +408,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--vw2")) o->vw2 = !strcmp(v, "on");
         else if (!strcmp(a, "--fskip")) o->fskip = !strcmp(v, "on");
         else if (!strcmp(a, "--kstore")) o->kstore = !strcmp(v, "on");
+        else if (!strcmp(a, "--calls")) o->calls = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
@@ -667,7 +669,7 @@ static const char* run(const char* path) {
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
         jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0) |
-                           (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0));  // A/Bs start off
+                           (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.calls && !g_opt.abCalls ? OPT_CALLS : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
@@ -858,6 +860,7 @@ static const char* run(const char* path) {
                 if (g_opt.abOpt && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_HOIST);
                 if (g_opt.abKstore && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_KSTORE);
                 if (g_opt.abFcache && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_FCACHE);
+                if (g_opt.abCalls && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_CALLS);
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());
@@ -1041,7 +1044,7 @@ static const char* run(const char* path) {
                             }
                             fprintf(g_perf, "\n");
                         }
-                        static u64 lastFlush, lastFollow, lastSide;
+                        static u64 lastFlush, lastFollow, lastSide, lastCalls;
                         static u64 lastRep, lastComp;
                         fprintf(g_perf, "# jit repeats 10s: %llu compiles, %llu at a PC already compiled since the flush; keys (all time):",
                                 (unsigned long long)(js->blocksCompiled - lastComp), (unsigned long long)(js->compileRepeats - lastRep));
@@ -1049,12 +1052,13 @@ static const char* run(const char* path) {
                         fprintf(g_perf, "\n");
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
-                                "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu\n", (unsigned long)jit_entries(g_jit),
+                                "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu, calls followed %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],
                                 (unsigned long long)js->compileFails[1], (unsigned long long)js->compileFails[2],
                                 g_opt.traceFollow, (unsigned long)g_opt.traceSide, (unsigned long)g_opt.traceLen, g_opt.link,
-                                (unsigned long long)(js->traceFollowed - lastFollow), (unsigned long long)(js->traceSideExits - lastSide));
-                        lastFlush = js->flushes; lastFollow = js->traceFollowed; lastSide = js->traceSideExits;
+                                (unsigned long long)(js->traceFollowed - lastFollow), (unsigned long long)(js->traceSideExits - lastSide),
+                                (unsigned long long)(js->traceCalls - lastCalls));
+                        lastFlush = js->flushes; lastFollow = js->traceFollowed; lastSide = js->traceSideExits; lastCalls = js->traceCalls;
                         double kept = js->insnsKept ? (double)js->insnsKept : 1.0;
                         fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.1f, exit stubs %.1f, "
                                 "cold %.1f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,

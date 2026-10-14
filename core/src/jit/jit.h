@@ -23,7 +23,7 @@ typedef struct {
     u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
     u64 links;      // exits patched to jump straight to their target block
     u64 fusedBranches, forwards;  // compile time: bc on a compare's ARM flags; GPR reads served by the register cache
-    u64 traceFollowed, traceSideExits;  // compile time: unconditional branches followed, conditional branches compiled as side exits
+    u64 traceFollowed, traceSideExits, traceCalls;  // ...; traceCalls: bl followed into the callee (OPT_CALLS)  // compile time: unconditional branches followed, conditional branches compiled as side exits
     u64 compileFails[3];  // blocks not compiled: hot code or exits overflowed (or a slow path without its tail), cold code overflowed, fix-ups overflowed
     u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
@@ -96,7 +96,9 @@ u32 jit_sched(const Jit* j);
 // Has no effect in fault mode (accesses are unchecked there already).
 // OPT_KSTORE: stfs / psq_st of values the block knows are exact singles convert without the round-trip check.
 // OPT_FCACHE: exact-single FPR lanes live in VFP registers as singles within a block (jit.c "float lanes").
-enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_ALL = 7 };
+// OPT_CALLS: traces follow bl into the callee (LR written as usual) and a blr while LR still holds that return address
+// back to it, so small functions (TP's PSVEC*, J3DFifoLoad*) cost no block exit and no indirect-table lookup.
+enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_ALL = 15 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

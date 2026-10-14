@@ -739,6 +739,7 @@ int main(int argc, char** argv) {
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
     if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
+    if (getenv("JIT_FUZZ_SIDE")) jit_set_trace_parts(jit, true, (u32)strtoul(getenv("JIT_FUZZ_SIDE"), NULL, 0), 0);  // 0: traces only follow b / bl / blr
     if (!getenv("JIT_FUZZ_NOFAULT")) jit_set_fault_mem(jit, true);  // as gcemu and the 2DS: unchecked MEM1 accesses
     g_faultMode = jit_fault_mem(jit);
     jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);

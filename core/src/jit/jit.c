@@ -1616,6 +1616,8 @@ typedef struct {
     u32 visited[24];      // the guest address of every run's first instruction (a trace never loops back into itself)
     u32 nVisited;
     u32 maxInsns;
+    u32 knownLr;          // OPT_CALLS: LR holds this since a followed bl (lrKnown), so a blr goes on there in the trace
+    bool lrKnown;
 } Trace;
 
 // Conditional branch whose taken side leaves the trace: bc (target), bclr / bcctr (indirect through the Gekko word at
@@ -1665,11 +1667,17 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
     Jit* j = t->j;
     Gekko* g = j->g;
     u32 op = inst >> 26, lk = inst & 1;
-    if (lk || !c->trace || c->noLink) return false;
-    if (op == 18) {  // b, ba
+    if (!c->trace || c->noLink) return false;
+    if (lk && !(op == 18 && (j->opt & OPT_CALLS))) return false;  // bl is followed with OPT_CALLS; bcl / bclrl never
+    u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (op == 18 || (op == 19 && ((inst >> 1) & 0x3FF) == 16 && (bo & 20) == 20 && !lk && t->lrKnown)) {
+        // b, ba, bl, bla; or blr while LR still holds a followed bl's return address
         if (!j->traceFollow) return false;
-        s32 li = ((s32)(inst << 6)) >> 6 & ~3;
-        u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li;
+        u32 target;
+        if (op == 18) {
+            s32 li = ((s32)(inst << 6)) >> 6 & ~3;
+            target = (inst & 2) ? (u32)li : c->pc + (u32)li;
+        } else target = t->knownLr;
         if (t->nVisited == sizeof t->visited / sizeof t->visited[0] || c->count + 1 >= t->maxInsns) return false;
         for (u32 k = 0; k < t->nVisited; k++) if (t->visited[k] == target) return false;
         u32 tpa;
@@ -1679,9 +1687,16 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         t->nextPa = tpa + (jit_debug_plant == 5 ? 4 : 0);
         t->segPage = target >> 12;
         j->stats.traceFollowed++;
+        if (op == 19) t->lrKnown = false;
+        if (lk) {  // bl: LR = the return address, as the instruction does; a blr before LR changes comes back here
+            load_const(&c->e, R1, c->pc + 4);
+            str_imm(&c->e, R1, RG, OFF_LR);
+            t->knownLr = c->pc + 4;
+            t->lrKnown = true;
+            j->stats.traceCalls++;
+        }
         return true;
     }
-    u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
     if (op == 16) {  // bc, bca
         if ((bo & 20) == 20) return false;  // branch always (no CTR, no CR test): ends the block like b
         if (!(j->traceSide & (bo & 4 ? TRACE_SIDE_CR : TRACE_SIDE_CTR))) return false;
@@ -3353,7 +3368,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 #ifndef __3DS__
     u32 prevInst = 0, prevHot = 0, prevCold = 0;
 #endif
-    Trace t = { j, pc, startPa, pc >> 12, { pc }, 1, maxInsns };
+    Trace t = { j, pc, startPa, pc >> 12, { pc }, 1, maxInsns, 0, false };
     for (u32 i = 0; i < maxInsns && !ended; i++) {
         c->pc = t.nextPc;
         u32 ipa = t.nextPa;
@@ -3393,6 +3408,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             c->chkClear = gekko_regs(inst, &rd, &wr) ? (u32)wr : 0xFFFFFFFFu;
         }
         j->stats.instrsCompiled++;
+        if ((inst >> 26) == 31 && ((inst >> 1) & 0x3FF) == 467 && (((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)) == 8)
+            t.lrKnown = false;  // mtlr: a blr no longer returns to the followed bl
         if (is_branch(inst)) {
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
             if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
@@ -4859,8 +4876,8 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (double)s->wordsCold / kept, (unsigned long long)s->compileFails[0], (unsigned long long)s->compileFails[1],
              (unsigned long long)s->compileFails[2]);
     print(line);
-    snprintf(line, sizeof line, "JIT: traces %s: %llu unconditional branches followed, %llu conditional branches as side exits", j->traces ? "on" : "off",
-             (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits);
+    snprintf(line, sizeof line, "JIT: traces %s: %llu unconditional branches followed, %llu conditional branches as side exits, %llu calls followed", j->traces ? "on" : "off",
+             (unsigned long long)s->traceFollowed, (unsigned long long)s->traceSideExits, (unsigned long long)s->traceCalls);
     print(line);
     snprintf(line, sizeof line, "JIT: %llu instructions run, %llu interpreted (%.1f%%)", (unsigned long long)s->instrsRun,
              (unsigned long long)s->fallbacksRun, s->instrsRun ? 100.0 * (double)s->fallbacksRun / (double)s->instrsRun : 0.0);
