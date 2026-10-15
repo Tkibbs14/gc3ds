@@ -85,6 +85,12 @@ extern u64 g_fskipDraws, g_fskipFrames;
 void pica_set_worker2(bool on);  // a second vertex worker on core 1 (indexed and fixed-place jobs)
 bool pica_worker2(void);
 extern u64 g_vw2Jobs;
+// While the GX thread would wait for the vertex worker (job ring space, a drain), it runs queued indexed and fixed-place
+// jobs itself (the ones that may finish out of order). The 2DS's GX thread waited ~23% of its time for ring space while
+// the worker was 61% busy (job 163). g_vwStolen: jobs the GX thread ran.
+void pica_set_steal(bool on);
+bool pica_steal(void);
+extern u64 g_vwStolen;
 void pica_describe(u32 draws);
 const char* pica_take_description(void);
 void pica_description_taken(void);

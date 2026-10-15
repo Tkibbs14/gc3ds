@@ -1116,6 +1116,21 @@ static void vw_done(u32 c) {
     }
 }
 
+static volatile bool g_vwSteal;
+u64 g_vwStolen;
+void pica_set_steal(bool on) { g_vwSteal = on; }
+bool pica_steal(void) { return g_vwSteal; }
+// The GX thread, about to wait for the worker: runs the next queued job if it may finish out of order. false: none.
+static bool vw_steal(void) {
+    u32 c;
+    if (!g_vwSteal || !vw_claim(&c, true)) return false;
+    if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, NULL);  // (the worker's cache is its own)
+    vw_do(&g_vw[c % VW_SLOTS]);
+    g_vwStolen++;
+    vw_done(c);
+    return true;
+}
+
 static void vw_main(void* arg) {
     (void)arg;
     crashlog_thread(CRASH_VWORKER);
@@ -1174,7 +1189,7 @@ static bool g_vwFixed;  // fixed-place (GPU-transformed) draws queued since the 
 static void vw_wait(void) {
     if (g_vwTail != g_vwHead) {
         u64 t0 = prof_begin();
-        while (g_vwTail != g_vwHead) {}
+        while (g_vwTail != g_vwHead) vw_steal();
         prof_end(PROF_VWAIT, t0);
     }
     vw_dmb();
@@ -1261,6 +1276,7 @@ static u8* vw_alloc(u32 bytes) {
         bool overlap = os <= he ? (start < he && end > os) || (os == he) : (start < he || end > os);
         if (!full && !overlap) break;
         if (!t0) { t0 = prof_begin(); g_vwStats[3]++; g_vwStats[4] += g_vwHead - t; }
+        vw_steal();
     }
     if (t0) { prof_end(PROF_VWAIT, t0); prof_end(PROF_VALLOC, t0); }
     g_vwMemHead = start + bytes;
