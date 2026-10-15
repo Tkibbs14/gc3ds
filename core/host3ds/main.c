@@ -972,9 +972,13 @@ static const char* run(const char* path) {
                 // code), then a flush in both arms, and in the relayout arm the hot blocks compiled first.
                 if ((g_opt.relayout || g_opt.abRelayout) && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     static u32 hotPcs[8192];
+                    // Each step on the log as it happens: job 188 stopped without a word at the first relayout.
+                    if (g_perf) { fprintf(g_perf, "# relayout: hot list\n"); fflush(g_perf); }
                     u32 nHot = jitsample_hot(g_jit, hotPcs, 8192);
                     g_relayoutOn = g_opt.abRelayout ? !g_relayoutOn : true;
+                    if (g_perf) { fprintf(g_perf, "# relayout: %lu hot; flush\n", (unsigned long)nHot); fflush(g_perf); }
                     jit_invalidate_all(g_jit);
+                    if (g_perf) { fprintf(g_perf, "# relayout: precompile\n"); fflush(g_perf); }
                     u64 tc = svcGetSystemTick();
                     u32 made = g_relayoutOn ? jit_precompile(g_jit, hotPcs, nHot) : 0;
                     if (g_perf) fprintf(g_perf, "# relayout %s at real %.0f s: %lu hot blocks sampled, %lu compiled first in %.1f ms\n",

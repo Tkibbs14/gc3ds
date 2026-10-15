@@ -1151,3 +1151,12 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Next:** the levers by measured size: core 2's GX work (core 0 waits on it), I-cache footprint, data stalls; then
   C18 (byte-swapped RAM, ~3-4% priced). Native mode remains the full-speed path (docs/research/NATIVE_PORT_PLAN.md,
   DECOMP_SURVEY.md).
+- **Compact vertex-worker jobs (`--vin`, c93ac0c), 2DS A/B job 190: neutral, off.** Kept per job 20 -> 11 KB, jobs in
+  flight 3.4 -> 5.6, `valloc` 11.8 -> 10.0%, but waits for ring space stayed ~650-700/s (each job still reserves the
+  full-size maximum, ~22 KB, before it trims) and speed medians were equal (cutscene 21.75 / 21.91, later 12.00 /
+  11.97). Core 0's median GX wait in this run was 1.1-1.4%: job 184's 11% mean comes from a few heavy scenes, so the
+  GX side is not core 0's limit most of the time. Re-evaluate with a reservation sized from the draw's registers if
+  the GX side becomes the limit.
+- **Hot-block relayout (`--relayout`, c93ac0c): the 2DS stopped at the first relayout (job 188, ~20 s, no log).**
+  The same path under qemu (JIT_RELAYOUT_TEST, 3 relayouts of up to 3,861 blocks) ran cleanly: 2DS-specific. Step
+  logging added; the next device attempt waits for James at home (crash-risk rule).

@@ -5118,6 +5118,22 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     // with another build's host addresses.
     jit_fill_fns(j);
     update_fastmem(j);
+#ifndef __3DS__
+    {   // JIT_RELAYOUT_TEST=N (ARM Linux build under qemu): every N entries, the 2DS's relayout (jit_hot_blocks on every
+        // live block as one sample, a flush, jit_precompile) from here, so its path runs where a crash has a backtrace.
+        static long every = -1, calls;
+        if (every < 0) every = getenv("JIT_RELAYOUT_TEST") ? atol(getenv("JIT_RELAYOUT_TEST")) : 0;
+        if (every > 0 && ++calls % every == 0 && j->nEntries) {
+            static u32 addrs[MAX_ENTRIES], pcs[8192];
+            u32 n = j->nEntries;
+            for (u32 i = 0; i < n; i++) addrs[i] = (u32)(uintptr_t)j->table[i].fn + 8;
+            u32 nh = jit_hot_blocks(j, addrs, n, pcs, 8192);
+            jit_invalidate_all(j);
+            u32 made = jit_precompile(j, pcs, nh);
+            fprintf(stderr, "relayout test: %u blocks live, %u hot, %u compiled first\n", n, nh, made);
+        }
+    }
+#endif
     u32* site = NULL;  // the link site the last run left through, patched once its target is known
     bool lastMiss = false;  // the last run left through an indirect-table miss (statistics)
     u32 missKey = 0;
@@ -5236,7 +5252,13 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->code = jit_host_alloc_exec(codeBytes);
 #ifndef __3DS__
     // JIT_RANGES=1: where compiled code lives (core/tools/qemu-plugins/rangecount.c counts instructions there)
-    if (getenv("JIT_RANGES")) fprintf(stderr, "range jit %08x-%08x\n", (u32)(uintptr_t)j->code, (u32)(uintptr_t)j->code + codeBytes);
+    if (getenv("JIT_RANGES")) {
+        fprintf(stderr, "range jit %08x-%08x\n", (u32)(uintptr_t)j->code, (u32)(uintptr_t)j->code + codeBytes);
+        // For core/tools/qemu-plugins/dcache.c's report: guest RAM and the dispatcher's tables.
+        fprintf(stderr, "range mem1 %08x-%08x\n", (u32)(uintptr_t)ram, (u32)(uintptr_t)ram + ramSize);
+        fprintf(stderr, "range jitstate %08x-%08x\n", (u32)(uintptr_t)j, (u32)(uintptr_t)j + (u32)sizeof *j);
+        fprintf(stderr, "range gekko %08x-%08x\n", (u32)(uintptr_t)g, (u32)(uintptr_t)g + (u32)sizeof *g);
+    }
 #endif
     j->codeWords = codeBytes / 4;
     j->coldStart = j->codeWords / 8 * 3;  // hot code: ~35% of TP's code since the block stubs and float stubs moved out (5.0 hot vs 9.3 cold words per instruction)
