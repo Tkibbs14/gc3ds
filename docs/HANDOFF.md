@@ -1160,3 +1160,9 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Hot-block relayout (`--relayout`, c93ac0c): the 2DS stopped at the first relayout (job 188, ~20 s, no log).**
   The same path under qemu (JIT_RELAYOUT_TEST, 3 relayouts of up to 3,861 blocks) ran cleanly: 2DS-specific. Step
   logging added; the next device attempt waits for James at home (crash-risk rule).
+- **Hot-block relayout, 2DS A/B job 195: rejected (off).** With step logging the relayout ran cleanly every 24 s
+  (230-270 hot blocks of the current block key compiled first, ~50 ms); job 188's stop did not recur. Cutscene neutral
+  (21.22 / 21.63), the later stretch **-4.5%** (12.43 -> 11.87) with I-cache misses **+40%** (4.31 -> 6.06 M/s):
+  laying hot blocks out first raised misses, as traces did (job 154). The key filter (blocks of the key at the perf
+  loop's moment only) kept the list short; not worth pursuing given the direction.
+- **Denser indirect table (FAST_BITS=13, --ind2), job 193: neutral** (TIMING_MODEL_PLAN.md).
