@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <string.h>
+#include <stdlib.h>
 #include "crashlog.h"
 
 #define CRASH_MAGIC 0x43524153u  // "CRAS"
@@ -36,6 +37,25 @@ static int put(char* p, int left, const char* fmt, u32 v) { int n = snprintf(p, 
 // then the end of the file: the process name and title ID). Only arm11 was read until 2026-10-13, when a Luma
 // exception screen left no new arm11 dump.
 static char g_luma[3200];
+// One dump as hex words into out (count: how many there are, or -1 when not known).
+static bool luma_dump_print(const char* kind, const char* name, int count, char* out, int outLeft) {
+    char path[128];
+    snprintf(path, sizeof path, "sdmc:/luma/dumps/%s/%s", kind, name);
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    static u32 w[400];
+    size_t n = fread(w, 4, 400, f);
+    fclose(f);
+    char* p = out;
+    int left = outLeft;
+    int k = snprintf(p, (size_t)left, "# luma dump %s/%s (%d dumps, %u bytes read):", kind, name, count, (unsigned)(n * 4));
+    p += k; left -= k;
+    for (size_t i = 0; i < n && i < 40 && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
+    k = snprintf(p, (size_t)left, "\n# luma dump end:"); p += k; left -= k;
+    for (size_t i = n > 12 ? n - 12 : 0; i < n && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
+    if (left > 2) { *p++ = '\n'; *p = 0; }
+    return true;
+}
 static void luma_dump_scan_one(const char* kind, char* out, int outLeft) {
     char dir[48], rep[48];
     snprintf(dir, sizeof dir, "sdmc:/luma/dumps/%s", kind);
@@ -56,23 +76,25 @@ static void luma_dump_scan_one(const char* kind, char* out, int outLeft) {
     FILE* f = fopen(rep, "r");
     if (f) { if (!fgets(last, sizeof last, f)) last[0] = 0; fclose(f); last[strcspn(last, "\r\n")] = 0; }
     if (!strcmp(last, newest)) { snprintf(out, (size_t)outLeft, "# luma %s dumps: %d, newest %s already reported\n", kind, count, newest); return; }
-    char path[128];
-    snprintf(path, sizeof path, "%s/%s", dir, newest);
-    f = fopen(path, "rb");
-    if (!f) return;
-    static u32 w[400];
-    size_t n = fread(w, 4, 400, f);
-    fclose(f);
-    char* p = out;
-    int left = outLeft;
-    int k = snprintf(p, (size_t)left, "# luma dump %s/%s (%d dumps, %u bytes read):", kind, newest, count, (unsigned)(n * 4));
-    p += k; left -= k;
-    for (size_t i = 0; i < n && i < 40 && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
-    k = snprintf(p, (size_t)left, "\n# luma dump end:"); p += k; left -= k;
-    for (size_t i = n > 12 ? n - 12 : 0; i < n && left > 12; i++) { k = put(p, left, " %08lx", w[i]); p += k; left -= k; }
-    if (left > 2) { *p++ = '\n'; *p = 0; }
+    if (!luma_dump_print(kind, newest, count, out, outLeft)) return;
     f = fopen(rep, "w");
     if (f) { fprintf(f, "%s\n", newest); fclose(f); }
+}
+
+// Reports arm11 dumps by number again (--luma-dumps N[,N...]): one whose report went to a run whose log was lost.
+void crashlog_luma_again(FILE* f, const char* list) {
+    static char buf[1600];
+    while (f && *list) {
+        char* end;
+        unsigned long n = strtoul(list, &end, 10);
+        if (end == list) break;
+        char name[40];
+        snprintf(name, sizeof name, "crash_dump_%08lu.dmp", n);
+        buf[0] = 0;
+        if (luma_dump_print("arm11", name, -1, buf, (int)sizeof buf)) fputs(buf, f);
+        else fprintf(f, "# luma dump arm11/%s: cannot read\n", name);
+        list = *end == ',' ? end + 1 : end;
+    }
 }
 static void luma_dump_scan(void) {
     g_luma[0] = 0;

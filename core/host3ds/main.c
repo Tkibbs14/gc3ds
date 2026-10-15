@@ -329,6 +329,7 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
+    char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
     bool sched;          // --sched on|off (on): code scheduled against interlocks (jit_set_sched SCHED_ALL)
@@ -420,6 +421,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
+        else if (!strcmp(a, "--luma-dumps")) snprintf(o->lumaDumps, sizeof o->lumaDumps, "%s", v);
         else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
         else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
         else if (!strcmp(a, "--dlcache")) o->dlcache = !strcmp(v, "on");
@@ -676,6 +678,7 @@ static const char* run(const char* path) {
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
     perf_open(path);
     crashlog_report(g_perf);
+    if (g_opt.lumaDumps[0]) crashlog_luma_again(g_perf, g_opt.lumaDumps);
     if (g_perf) {  // malloc's headroom: the largest block it still gives (osGetMemRegionFree reads 0 once libctru took the heap)
         u32 lo = 0, hi = 64u << 20;
         while (hi - lo > (64u << 10)) { u32 mid = lo + (hi - lo) / 2; void* p = malloc(mid); if (p) { free(p); lo = mid; } else hi = mid; }

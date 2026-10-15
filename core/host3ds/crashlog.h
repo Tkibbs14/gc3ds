@@ -11,3 +11,4 @@ void crashlog_thread(int thread);            // in the thread: installs the reco
 void crashlog_record(ERRF_ExceptionInfo* ex, CpuRegisters* r, int thread);  // for a handler of our own (jit_3ds.c)
 void crashlog_set_info(int k, u32 v);
 void crashlog_report(FILE* f);               // prints the previous record once (perf.csv)
+void crashlog_luma_again(FILE* f, const char* list);  // --luma-dumps N[,N...]: those arm11 dumps reported again
