@@ -90,6 +90,16 @@ Homebrew Launcher by James; logs back with `relay.sh cat sdmc:/gc3ds/native/perf
    busy median 14.8% of the 33.3 ms frame (~4.9 ms), p90 15.3%, p99 16.0%, max 16.3%**; GX ~69 KB a frame. Link stood
    still (no input), nothing drawn, no audio: movement and combat are next (`--press`), then the renderer.
 
+5. **The title screen's in-engine demo** (Link on Epona, Midna; one START press, `relay.sh native 120 START@600-606`),
+   the heaviest scene so far. Job 213: 80-100% busy with ~900 KB of GX a frame, a stretch at 14.8 fps. Job 217 split
+   it: ~388 display lists a frame were **copied** into Aurora's FIFO (680 KB, 4.2 ms) and the stream scanned again
+   (7.3 ms). With display lists **by reference** (job 219: GX_AURORA 0x50 subcommand 0x0060, pointer + size): busy
+   **53-66% at 30 fps**, ~200 KB of GX a frame, consumer 2.6 ms. One stretch stays slow (17.4 fps, 100% busy, every
+   second identical, same display lists as normal frames): most likely the demo waiting on the music it is synced to
+   (audio off), unconfirmed.
+6. **Not yet controllable:** the --stage field spawn never moved Link under scripted input (no event running), though
+   the same presses walk the title to file select: the blank-save spawn is the suspect.
+
 ## Renderer: Aurora's stream into gc3ds's GX pipeline (design, 2026-10-15)
 
 Aurora's GX API writes the GameCube's FIFO format (BP / CP / XF register writes, draws) plus an extension opcode
