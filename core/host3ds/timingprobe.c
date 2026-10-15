@@ -121,6 +121,7 @@ static void k_chase(void* ctx, u32 n) {
         p = (void**)*p; p = (void**)*p; p = (void**)*p; p = (void**)*p;
     }
     *(void***)ctx = p;
+    g_sink = (u32)(uintptr_t)p;  // observable: inlined through a constant function pointer, the chain was dropped as dead
 }
 static u32 g_lcg = 12345;
 static u32 rnd(void) { return g_lcg = g_lcg * 1664525u + 1013904223u; }
@@ -287,9 +288,159 @@ static void xcore(u8* mem, u32 memBytes, u32* order) {
     }
 }
 
-// Runs every benchmark; `code` / `mem` are scratch (the JIT's buffer past its stubs, MEM1). Returns the text to put
-// in perf.csv (valid until the next call).
-const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes) {
+// ---- memory bandwidth from the CPU (memcpy / memset / sequential reads in FCRAM; writes and reads of VRAM) ----
+static double mbps(u64 ticks, u32 bytes) { return (double)bytes / 1048576.0 / ((double)ticks / SYSCLOCK_ARM11); }
+static u64 best_of(int n, void (*fn)(void*), void* ctx) {
+    u64 best = ~0ull;
+    for (int i = 0; i < n; i++) {
+        u64 t = svcGetSystemTick();
+        fn(ctx);
+        t = svcGetSystemTick() - t;
+        if (t < best) best = t;
+    }
+    return best;
+}
+typedef struct { u8* a; u8* b; u32 bytes; } Copy;
+static void f_memcpy(void* c) { Copy* x = c; memcpy(x->b, x->a, x->bytes); }
+static void f_memset(void* c) { Copy* x = c; memset(x->a, (int)g_sink, x->bytes); }
+static void f_read(void* c) {
+    Copy* x = c;
+    u32 s = 0;
+    for (const u32 *p = (const u32*)x->a, *e = (const u32*)(x->a + x->bytes); p < e; p += 8) s += p[0] + p[4];
+    g_sink = s;
+}
+static void bandwidth(u8* mem, u32 memBytes) {
+    const u32 kB = 4u << 20;
+    if (mem && memBytes >= 2 * kB) {
+        Copy c = {mem, mem + kB, kB};
+        out("# timing bw memcpy 4 MB FCRAM: %.0f MB/s\n", mbps(best_of(4, f_memcpy, &c), kB));
+        out("# timing bw memset 4 MB FCRAM: %.0f MB/s\n", mbps(best_of(4, f_memset, &c), kB));
+        out("# timing bw read 4 MB FCRAM (2 words per line): %.0f MB/s\n", mbps(best_of(4, f_read, &c), kB));
+    }
+    u8* vram = vramAlloc(1u << 20);
+    if (vram && mem) {
+        Copy c = {mem, vram, 1u << 20};
+        out("# timing bw memcpy 1 MB FCRAM -> VRAM (CPU): %.0f MB/s\n", mbps(best_of(4, f_memcpy, &c), c.bytes));
+        Copy r = {vram, mem, 1u << 20};
+        out("# timing bw read 1 MB VRAM (CPU): %.0f MB/s\n", mbps(best_of(4, f_read, &r), r.bytes));
+        vramFree(vram);
+    } else
+        out("# timing bw VRAM: no VRAM free\n");
+}
+
+// ---- kernel: thread switches through a LightEvent ping-pong, on the same core and across cores ----
+static LightEvent g_ping, g_pong;
+static volatile u32 g_pongStop;
+static void ponger(void* arg) {
+    (void)arg;
+    for (;;) {
+        LightEvent_Wait(&g_ping);
+        if (g_pongStop) break;
+        LightEvent_Signal(&g_pong);
+    }
+}
+static void kernel_switch(void) {
+    static const struct { int core; const char* name; } kC[] = {{0, "same core (0)"}, {2, "core 0 <-> core 2"}};
+    for (int k = 0; k < 2; k++) {
+        LightEvent_Init(&g_ping, RESET_ONESHOT);
+        LightEvent_Init(&g_pong, RESET_ONESHOT);
+        g_pongStop = 0;
+        s32 prio = 0x30;
+        svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+        Thread t = threadCreate(ponger, NULL, 4096, prio, kC[k].core, false);
+        if (!t) {
+            out("# timing kernel switch %s: no thread\n", kC[k].name);
+            continue;
+        }
+        const int kN = 2000;
+        u64 t0 = svcGetSystemTick();
+        for (int i = 0; i < kN; i++) {
+            LightEvent_Signal(&g_ping);
+            LightEvent_Wait(&g_pong);
+        }
+        u64 dt = svcGetSystemTick() - t0;
+        g_pongStop = 1;
+        LightEvent_Signal(&g_ping);
+        threadJoin(t, U64_MAX);
+        threadFree(t);
+        out("# timing kernel switch %s: %.2f us per round trip (signal, wake, signal back, wake)\n", kC[k].name,
+            (double)dt * 1e6 / SYSCLOCK_ARM11 / kN);
+    }
+    u64 best = ~0ull;
+    for (int i = 0; i < 2000; i++) {
+        u64 t = svcGetSystemTick();
+        svcSleepThread(0);
+        t = svcGetSystemTick() - t;
+        if (t < best) best = t;
+    }
+    out("# timing kernel svcSleepThread(0) (a yield): %.2f us\n", (double)best * 1e6 / SYSCLOCK_ARM11);
+}
+
+// ---- storage: reads of the disc image from the SD card ----
+static void storage(const char* path) {
+    if (!path || !path[0]) return;
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        out("# timing sd: cannot open %s\n", path);
+        return;
+    }
+    setvbuf(f, NULL, _IONBF, 0);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    static u8 buf[64 << 10];
+    if (size > (64 << 20)) {
+        // Sequential: 8 MB in 64 KB reads, from a point not read before in this probe.
+        long at = (size / 2) & ~0xFFFFl;
+        fseek(f, at, SEEK_SET);
+        u64 t = svcGetSystemTick();
+        for (int i = 0; i < 128; i++) fread(buf, 1, sizeof buf, f);
+        t = svcGetSystemTick() - t;
+        out("# timing sd sequential 64 KB reads: %.2f MB/s\n", mbps(t, 128u * sizeof buf));
+        static const struct { u32 bytes; int n; } kR[] = {{32u << 10, 64}, {2u << 10, 256}};
+        for (int k = 0; k < 2; k++) {
+            u64 sum = 0;
+            for (int i = 0; i < kR[k].n; i++) {
+                long off = (long)(((u64)rnd() * (u64)(size - (64 << 10))) >> 32) & ~0x7FFl;
+                fseek(f, off, SEEK_SET);
+                u64 t1 = svcGetSystemTick();
+                fread(buf, 1, kR[k].bytes, f);
+                sum += svcGetSystemTick() - t1;
+            }
+            out("# timing sd random %lu KB reads: %.3f ms each\n", (unsigned long)(kR[k].bytes >> 10),
+                (double)sum * 1000.0 / SYSCLOCK_ARM11 / kR[k].n);
+        }
+    }
+    fclose(f);
+}
+
+// ---- clocks: the same work at 268 MHz (osSetSpeedupEnable(false): on the New 3DS that also turns the L2 off) ----
+static double ns_per_op(Kernel k, void* ctx, u32 n, double ops) {
+    u64 best = ~0ull;
+    for (int i = 0; i < 3; i++) {
+        u64 t = svcGetSystemTick();
+        k(ctx, n);
+        t = svcGetSystemTick() - t;
+        if (t < best) best = t;
+    }
+    return (double)best * 1e9 / SYSCLOCK_ARM11 / (ops * n);
+}
+static void clocks(u8* mem, u32* order) {
+    if (!mem) return;
+    void** start = build_cycle(mem, (1u << 20) / 32, line_addr, order);
+    for (int pass = 0; pass < 2; pass++) {
+        bool fast = pass == 0;
+        osSetSpeedupEnable(fast);
+        svcSleepThread(10000000);  // let the clock change settle
+        double add = ns_per_op(k_add_dep, NULL, 200000, 16), ch = ns_per_op(k_chase, &start, 100000, 8);
+        out("# timing clock %s: add_dep %.3f ns (%.0f MHz), chase 1024K %.1f ns per load\n",
+            fast ? "speedup on (804 MHz, L2 on)" : "speedup off (268 MHz, L2 off)", add, 1e3 / add, ch);
+    }
+    osSetSpeedupEnable(true);
+}
+
+// Runs every benchmark; `code` / `mem` are scratch (the JIT's buffer past its stubs, MEM1); `disc` the image the
+// storage reads use. Returns the text to put in perf.csv (valid until the next call).
+const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc) {
     static char buf[24 << 10];
     g_out = buf;
     g_outLen = 0;
@@ -317,6 +468,10 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes) {
     }
     measure("svc", "GetSystemTick", k_tick, NULL, 1);
     measure("svc", "icache sync (flush + 0x94)", k_sync, NULL, 1);
+    bandwidth(mem, memBytes);
+    kernel_switch();
+    storage(disc);
+    clocks(mem, order);
     out("# timing: probe end after %.1f s\n", (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11);
     return buf;
 }

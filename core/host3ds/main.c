@@ -45,7 +45,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
-const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes);  // timingprobe.c: --timing-probe
+const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
@@ -673,7 +673,7 @@ static const char* run(const char* path) {
         printf("timing probe...\n");
         u32 words = 0;
         u32* code = g_jit ? jit_scratch(g_jit, &words) : NULL;
-        timing = timing_probe(code, words, g_sys.mem1, MEM1_SIZE);
+        timing = timing_probe(code, words, g_sys.mem1, MEM1_SIZE, is_disc(path) ? path : NULL);
         if (g_jit) jit_invalidate_all(g_jit);
         FILE* tf = fopen("sdmc:/gc3ds/timing.txt", "w");  // also on its own, in case the run after it fails
         if (tf) {
