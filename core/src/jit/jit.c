@@ -31,7 +31,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_N, ST_WORDS = 9216 };  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 9216 };  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -120,7 +120,10 @@ struct Jit {
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
     u32 traceSide;              // jit_set_trace_parts: which side exits (TRACE_SIDE_*)
     u32 traceMax;               // jit_set_trace_parts: block length limit (0: MAX_BLOCK_INSNS)
-    FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]
+    FastEntry* fast;            // FAST_TABLES indirect-branch tables, table i for blocks of key fastKeys[i]; 16-byte
+                                // aligned: ST_INDIRECT finds a slot's pair (OPT_IND2) by flipping address bit 3, which
+                                // read the 8 bytes before an 8-aligned table (malloc's header) as an entry
+    void* fastMem;              // the allocation `fast` is in
     u32 fastKeys[FAST_TABLES], fastNext;
     bool fastUsed[FAST_TABLES];
     u32 gen;                    // bumped by every flush: a pending link from before it is dropped
@@ -1232,6 +1235,14 @@ static void tfix_add(Cg* c, bool literal) {
     c->nTfix++;
 }
 
+// OPT_NATIVE2: divw / divwu as the interpreter computes them (gekko_int.c op_divw / op_divwu, the OE = 0 forms).
+static u32 jit_divw(s32 a, s32 b, Gekko* g) {
+    if (b == 0 || ((u32)a == 0x80000000u && b == -1))
+        return (GKP(g)->compat & GK_COMPAT_DIV_QEMU) ? (u32)a : a < 0 ? 0xFFFFFFFFu : 0;
+    return (u32)(a / b);
+}
+static u32 jit_divwu(u32 a, u32 b, Gekko* g) { return b ? a / b : ((GKP(g)->compat & GK_COMPAT_DIV_QEMU) ? a : 0); }
+
 // Call a C helper with up to 4 word arguments already in r0-r3.
 // Helpers compiled code calls, by their index in Gekko.jitFn (filled by jit_create): two words per call instead of
 // a 32-bit constant (MOV + up to three ORRs) and BLX.
@@ -2116,6 +2127,22 @@ static bool compile_int(Cg* c, u32 inst) {
         if (rc) update_cr0(c, d);
         return true;
     }
+    case 46: case 47: {  // lmw, stmw (OPT_NATIVE2): ST_LMW / ST_STMW for an aligned range inside MEM1, else the interpreter
+        if (!(c->j->opt & OPT_NATIVE2) || !c->fastmem || c->inCold) return false;
+        rc_flush(c);  // the stubs read and write guest GPRs in memory
+        ea_disp(c, ra, simm);
+        add_const(e, R1, RG, OFF_GPR(rd), R12);
+        dp_imm(e, MOV, 0, R2, 0, 32 - rd);
+        branch_abs(e, C_AL, true, stub(c, op == 46 ? ST_LMW : ST_STMW));
+        u32 slow = branch_c(e, C_CS, 0);
+        u32 resume = e->n;
+        cold_begin(c);
+        fix_to_cold(c, slow);
+        emit_fallback(c, inst);
+        cold_end(c, resume);
+        if (op == 46) rc_after_interp(c);  // lmw wrote GPRs in memory: the cache forgets them
+        return true;
+    }
     case 32: case 33: case 34: case 35: case 40: case 41: case 42: case 43: {  // lwz lwzu lbz lbzu lhz lhzu lha lhau
         bool update = op & 1;
         if (update && (ra == 0 || ra == rd)) return false;  // invalid forms
@@ -2230,6 +2257,40 @@ static bool compile_int(Cg* c, u32 inst) {
         int d = dst(c, ra, R0);
         dp_rsr(e, MOV, 0, d, 0, s, xo == 24 ? LSL : LSR, R2);
         dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
+        return true;
+    }
+    case 792: {  // sraw (OPT_NATIVE2): shift amounts 32..63 fill with the sign, as ARM's register shifts do
+        if (!(c->j->opt & OPT_NATIVE2)) return false;
+        int s = src(c, rd, R0);
+        int b = src(c, rb, R1);
+        dp_imm(e, AND, 0, R1, b, 0x3F);
+        dp_rsr(e, MOV, 0, R2, 0, s, ASR, R1);
+        dp_rsr(e, MOV, 0, R3, 0, R2, LSL, R1);           // the result shifted back: differs when 1-bits were lost
+        dp_reg(e, CMP, 1, 0, R3, s);
+        dp_imm_c(e, C_NE, CMP, 1, 0, s, 0);               // ... and CA only for a negative source: LT
+        int x = src(c, ID_XER, R3);
+        int xd = dst(c, ID_XER, R3);
+        dp_imm(e, BIC, 0, xd, x, IMM(XER_CA));
+        dp_imm_c(e, C_LT, ORR, 0, xd, xd, IMM(XER_CA));
+        dst_done(c, ID_XER, xd);
+        int d = dst(c, ra, R0);
+        mov_reg(e, d, R2);
+        dst_done(c, ra, d);
+        if (rc) update_cr0(c, d);
+        return true;
+    }
+    case 491: case 459: {  // divw, divwu (OPT_NATIVE2; ARMv6 has no divider): the interpreter's arithmetic in C
+        if (!(c->j->opt & OPT_NATIVE2)) return false;
+        int a = src(c, ra, R0);
+        int b = src(c, rb, R1);
+        mov_reg(e, R0, a);
+        mov_reg(e, R1, b);
+        mov_reg(e, R2, RG);
+        call(c, xo == 491 ? (const void*)jit_divw : (const void*)jit_divwu);
+        int d = dst(c, rd, R0);
+        mov_reg(e, d, R0);
+        dst_done(c, rd, d);
         if (rc) update_cr0(c, d);
         return true;
     }
@@ -2896,11 +2957,11 @@ static void emit_estimate(Cg* c, int d, u32 rb, u32 lane, bool rsqrt) {
 }
 
 // fcmpu / fcmpo: CR field and FPSCR[FPCC] = 8 less, 4 greater, 2 equal, 1 unordered (exception bits are not kept).
-static void emit_fcmp(Cg* c, u32 crf, u32 fa, u32 fb) {
+static void emit_fcmp(Cg* c, u32 crf, u32 fa, u32 fb, u32 lane) {
     Emit* e = &c->e;
     u32 sh = 28 - 4 * crf, enc = 0;
-    ld_fpr(c, 0, fa, 0);
-    ld_fpr(c, 1, fb, 0);
+    ld_fpr(c, 0, fa, lane);
+    ld_fpr(c, 1, fb, lane);
     vcmp_d(e, 0, 1);
     vmrs_apsr(e);
     dp_imm(e, MOV, 0, R0, 0, 1);
@@ -3348,7 +3409,7 @@ static bool compile_float(Cg* c, u32 inst) {
         bool single = op == 59;
         if (op == 63) {
             switch (xo) {
-            case 0: case 32: emit_fcmp(c, (inst >> 23) & 7, ra, rb); return true;
+            case 0: case 32: emit_fcmp(c, (inst >> 23) & 7, ra, rb, 0); return true;
             case 12: case 14: case 15: case 40: case 72: case 264:
                 if (inst & 1) return false;
                 break;
@@ -3413,6 +3474,10 @@ static bool compile_float(Cg* c, u32 inst) {
             st_fpr(c, 0, frd, 0);
             st_fpr(c, 1, frd, 1);
             return true;
+        case 0: case 32: case 64: case 96:  // ps_cmpu0 ps_cmpo0 ps_cmpu1 ps_cmpo1 (OPT_NATIVE2): fcmpu / fcmpo on one lane
+            if (!(c->j->opt & OPT_NATIVE2)) return false;
+            emit_fcmp(c, (inst >> 23) & 7, ra, rb, xo >= 64);
+            return true;
         case 72:  // ps_mr
             ld_fpr(c, 0, rb, 0);
             ld_fpr(c, 1, rb, 1);
@@ -3452,7 +3517,6 @@ static bool compile_float(Cg* c, u32 inst) {
     return false;
 }
 
-// Dispatch key of a block: the machine state compiled code depends on, beyond the guest PC.
 // OPT_SYSCALL: the number of instructions of the system-call handler at physical 0xC00, when it is a short run of
 // ori, mfspr, mtspr to HID0 or an SPRG, isync and sync ending in rfi (the SDK's PPCSync); 0 otherwise. Nothing in it
 // can change what compiled code depends on except MSR and HID2, which jit_sc_handler checks after it.
@@ -3470,6 +3534,7 @@ static u32 sc_handler_len(const Jit* j) {
     return 0;
 }
 
+// Dispatch key of a block: the machine state compiled code depends on, beyond the guest PC.
 static u32 block_key(const Gekko* g) {
     return (g->msr & (MSR_IR | MSR_DR | MSR_PR | MSR_FP)) | ((g->fpscr & FPSCR_RN) ? 1u << 30 : 0u) |
            (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE));
@@ -4381,9 +4446,40 @@ static void emit_stubs(Jit* j) {
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     bx_reg_c(e, C_EQ, R1);
+    dp_imm(e, EOR, 0, R12, R12, 8);  // the slot next to it (OPT_IND2 fills it; empty otherwise)
+    ldmia(e, R12, (1u << R0) | (1u << R1));
+    dp_reg(e, CMP, 1, 0, R0, R2);
+    bx_reg_c(e, C_EQ, R1);
     str_imm(e, R2, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 1);  // 1: a miss in the table (the dispatcher counts it)
     branch_c(e, C_AL, j->stub[ST_EXIT]);
+    // ST_LMW / ST_STMW (OPT_NATIVE2): r0 = guest address, r1 = &Gekko.gpr[rD], r2 = registers (32 - rD). An aligned
+    // range inside MEM1 (through 0x80000000) is copied and they return with carry clear; anything else, carry set and
+    // nothing done (the site's interpreter fallback). r0-r3, r12 clobbered.
+    for (int st = 0; st < 2; st++) {
+        j->stub[st ? ST_STMW : ST_LMW] = e->n;
+        dp_imm(e, TST, 1, 0, R0, 3);
+        u32 bad1 = branch_c(e, C_NE, 0);
+        dp_imm(e, SUB, 0, R12, R0, IMM(0x80000000u));
+        dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+        u32 bad2 = branch_c(e, C_CS, 0);
+        dp_reg_c(e, C_AL, ADD, 0, R3, R12, R2, LSL, 2);  // the end: at most 128 bytes past the start, no wrap
+        dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
+        u32 bad3 = branch_c(e, C_HI, 0);
+        dp_reg(e, ADD, 0, R3, RRAM, R0);
+        u32 loop = e->n;
+        if (!st) { ldr_post(e, R12, R3, 4); rev(e, R12, R12); str_post(e, R12, R1, 4); }
+        else { ldr_post(e, R12, R1, 4); rev(e, R12, R12); str_post(e, R12, R3, 4); }
+        dp_imm(e, SUB, 1, R2, R2, 1);
+        branch_c(e, C_NE, loop);
+        dp_imm(e, CMN, 1, 0, R0, 0);  // carry clear: done
+        bx_reg_c(e, C_AL, LR);
+        patch_branch(e, bad1, e->n);
+        patch_branch(e, bad2, e->n);
+        patch_branch(e, bad3, e->n);
+        dp_imm(e, CMP, 1, 0, R0, 0);  // carry set: not done
+        bx_reg_c(e, C_AL, LR);
+    }
     // ST_INTERP: reached with "bl" followed by three literals: guest pc, instruction, and the block's instructions before it.
     // Runs the instruction in the interpreter at the exact guest time and returns past the literals with the flags of
     // "cmp r0, #0" (non-zero: leave compiled code; jit_interp has written g->pc).
@@ -4736,6 +4832,10 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         FastEntry* ft = fast_select(j, key);
         if (plain && j->linking) {
             FastEntry* f = &ft[fast_index(pc)];
+            if ((j->opt & OPT_IND2) && f->pc != pc && f->pc != 1) {  // the newest in the first slot, the one before next to it
+                FastEntry* o = &ft[fast_index(pc) ^ 1];
+                if (o->pc != pc) *o = *f;
+            }
             f->pc = pc;
             f->fn = (void*)en->fn;
         }
@@ -4757,7 +4857,13 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         } else if (s == (u32*)1) { j->stats.dispIndirect++; lastMiss = true; missKey = block_key(g); }
         else if (s) j->stats.dispLink++;
         else if ((s64)n >= room) j->stats.dispBudget++;
-        else j->stats.dispOther++;
+        else {
+            j->stats.dispOther++;
+            u32 at = g->pc, pa;  // what it was: an exception vector, or the instruction before where it goes on
+            if ((at & ~0x1F00u) == 0 || (at & ~0x1F00u) == 0x80000000u) j->stats.exitVector[(at >> 8) & 31]++;
+            else if (gk_translate(g, at - 4, false, false, &pa, false) && pa + 4 <= j->ramSize)
+                count_op(&j->stats.exitOther, (u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]);
+        }
         if (s > (u32*)1 && j->linking && gen == j->gen) { site = s; siteGen = gen; siteKey = key; }
         // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
@@ -4817,8 +4923,9 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
-    j->fast = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry));
-    if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fast); free(j); return NULL; }
+    j->fastMem = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry) + 16);
+    j->fast = j->fastMem ? (FastEntry*)(((uintptr_t)j->fastMem + 15) & ~(uintptr_t)15) : NULL;
+    if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fastMem); free(j); return NULL; }
     j->linking = true;
     j->memStubs = true;
     j->traces = true;
@@ -4842,7 +4949,7 @@ void jit_destroy(Jit* j) {
     gekko_set_jit(j->g, NULL, NULL);
     free(j->table);
     free(j->buckets);
-    free(j->fast);
+    free(j->fastMem);
     free(j->compiledPc);
     free(j);  // the executable region is kept for the process lifetime
 }

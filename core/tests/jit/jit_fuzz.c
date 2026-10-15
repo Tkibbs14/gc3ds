@@ -107,7 +107,7 @@ static u32 gen(St* st) {
         }
         case 1: case 2: {  // XO / X-form group 31
             static const u32 xos[] = { 266, 10, 138, 202, 40, 8, 136, 104, 28, 60, 444, 412, 316, 124, 476, 284, 24, 536,
-                                       824, 26, 954, 922, 0, 32, 235, 75, 11, 19, 144 };
+                                       824, 26, 954, 922, 0, 32, 235, 75, 11, 19, 144, 491, 459, 792 };
             u32 xo = xos[rnd() % (sizeof xos / sizeof xos[0])];
             if (xo == 0 || xo == 32) { rd = rbits(3) << 2; rc = 0; }
             if (xo == 19) { ra = rb = 0; rc = 0; }
@@ -123,6 +123,15 @@ static u32 gen(St* st) {
         case 4: case 5: {  // D-form loads / stores
             static const u32 ops[] = { 32, 33, 34, 35, 40, 41, 42, 43, 36, 37, 38, 39, 44, 45 };
             u32 op = ops[rnd() % 14];
+            if (rnd() % 16 == 0) {  // lmw / stmw: a window base (sometimes misaligned or the uncached mirror), from r20 up
+                op = (rnd() & 1) ? 46 : 47;
+                rd = 20 + rnd() % 12;
+                ra = 1 + rnd() % 31;
+                load_base(st, ra, 4);
+                u32 d = (u32)(s32)((s32)(rnd() % 256) - 128) & ~3u;
+                if (rnd() % 8 == 0) d |= 1 + rnd() % 3;
+                return (op << 26) | (rd << 21) | (ra << 16) | (d & 0xFFFF);
+            }
             u32 size = op <= 33 || op == 36 || op == 37 ? 4 : (op <= 35 || op == 38 || op == 39) ? 1 : 2;
             if (st->lastBase && rnd() % 2) {
                 ra = st->lastBase;  // the same base again: check hoisting's unchecked accesses

@@ -349,6 +349,8 @@ typedef struct {
     bool hlelink, abHlelink;  // --hlelink on|off (on), --ab hlelink: stand-in blocks go on through the indirect table (OPT_HLELINK)
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
     bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
+    bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
+    bool native2, abNative2;  // --native2 on|off (off), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
     bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
@@ -397,7 +399,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -423,6 +425,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--hlelink")) o->hlelink = !strcmp(v, "on");
         else if (!strcmp(a, "--crstub")) o->crstub = !strcmp(v, "on");
         else if (!strcmp(a, "--rotmask")) o->rotmask = !strcmp(v, "on");
+        else if (!strcmp(a, "--native2")) o->native2 = !strcmp(v, "on");
+        else if (!strcmp(a, "--ind2")) o->ind2 = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
@@ -548,17 +552,15 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
     if (g_perf) fprintf(g_perf, "# cmd \"%s\" at real %.1f s: %s\n", cmd, realS, ok ? "applied" : "unknown");
 }
 
-// The 8 most frequent interpreted instructions since the last call.
-static void perf_fallbacks(void) {
-    if (!g_perf || !g_jit) return;
+// The 8 most frequent instructions of an opcode table since the last call (prevTable: its copy then), on one line.
+static void perf_top_ops(const char* title, const JitOpCounts* c, JitOpCounts* prevTable) {
     static JitOpCounts d;
-    const JitOpCounts* c = &jit_stats(g_jit)->fallbackRun;
     const u32* cur = (const u32*)c;
-    u32* prev = (u32*)&g_fbPrev;
+    u32* prev = (u32*)prevTable;
     u32* dd = (u32*)&d;
     u32 n = sizeof d / 4;
     for (u32 i = 0; i < n; i++) { dd[i] = cur[i] - prev[i]; prev[i] = cur[i]; }
-    fprintf(g_perf, "# fallbacks 10s:");
+    fprintf(g_perf, "# %s 10s:", title);
     // Index i of the flattened table: primary[64], x31[1024], x19[1024], x63[1024], x59[32], x4[1024].
     for (int k = 0; k < 8; k++) {
         u32 best = 0;
@@ -580,6 +582,23 @@ static void perf_fallbacks(void) {
         fprintf(g_perf, " %s=%lu", dis, (unsigned long)dd[best]);
         dd[best] = 0;
     }
+}
+
+// The 8 most frequent interpreted instructions since the last call; the dispatcher's "other" returns the same way
+// (by the instruction before where execution goes on, or by exception vector).
+static void perf_fallbacks(void) {
+    if (!g_perf || !g_jit) return;
+    static JitOpCounts exitPrev;
+    static u32 vecPrev[32];
+    perf_top_ops("other exits after", &jit_stats(g_jit)->exitOther, &exitPrev);
+    fprintf(g_perf, "; to vectors:");
+    for (u32 v = 0; v < 32; v++) {
+        u32 n = jit_stats(g_jit)->exitVector[v] - vecPrev[v];
+        if (n) fprintf(g_perf, " %x00=%lu", (unsigned)v, (unsigned long)n);
+        vecPrev[v] = jit_stats(g_jit)->exitVector[v];
+    }
+    fprintf(g_perf, "\n");
+    perf_top_ops("fallbacks", &jit_stats(g_jit)->fallbackRun, &g_fbPrev);
     fprintf(g_perf, "\n");
     // The interpreted mfspr / mtspr by SPR number (the ones worth compiling next).
     static u32 sprPrev[2][1024];
@@ -690,7 +709,9 @@ static const char* run(const char* path) {
                            (g_opt.syscall && !g_opt.abSyscall && !g_opt.abStack ? OPT_SYSCALL : 0) |
                            (g_opt.hlelink && !g_opt.abHlelink && !g_opt.abStack ? OPT_HLELINK : 0) |
                            (g_opt.crstub && !g_opt.abCrstub ? OPT_CRSTUB : 0) |
-                           (g_opt.rotmask && !g_opt.abRotmask ? OPT_ROTMASK : 0));  // A/Bs start off
+                           (g_opt.rotmask && !g_opt.abRotmask ? OPT_ROTMASK : 0) |
+                           (g_opt.native2 && !g_opt.abNative2 ? OPT_NATIVE2 : 0) |
+                           (g_opt.ind2 && !g_opt.abInd2 ? OPT_IND2 : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
@@ -887,6 +908,8 @@ static const char* run(const char* path) {
                 if (g_opt.abHlelink && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_HLELINK);
                 if (g_opt.abCrstub && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_CRSTUB);
                 if (g_opt.abRotmask && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_ROTMASK);
+                if (g_opt.abNative2 && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_NATIVE2);
+                if (g_opt.abInd2 && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_IND2);
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
@@ -1092,11 +1115,17 @@ static const char* run(const char* path) {
                                 "cold %.1f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
                                 (double)js->wordsCold / kept);
                         // Returns to the C dispatcher per second over the last 10 s, by reason, and emulation slices.
-                        static u64 last[6];
-                        u64 cur[6] = { js->dispLink, js->dispIndirect, js->dispBudget, js->dispOther, g_gekkoRuns, js->fastSwitches };
+                        // Indirect misses by what the target was: a polling or idle block (never in the table), a block that
+                        // lookup compiled then, the slot held another target, the slot was empty, the block key changed.
+                        static u64 last[11];
+                        u64 cur[11] = { js->dispLink, js->dispIndirect, js->dispBudget, js->dispOther, g_gekkoRuns, js->fastSwitches,
+                                        js->missPoll, js->missFirst, js->missTaken, js->missEmpty, js->missKey };
                         fprintf(g_perf, "# dispatches/s: link requests %.0f, indirect misses %.0f, budget ends %.0f, other "
-                                "%.0f; gekko_run slices/s %.0f; indirect table resets/s %.0f\n", (cur[0] - last[0]) / 10.0, (cur[1] - last[1]) / 10.0,
-                                (cur[2] - last[2]) / 10.0, (cur[3] - last[3]) / 10.0, (cur[4] - last[4]) / 10.0, (cur[5] - last[5]) / 10.0);
+                                "%.0f; gekko_run slices/s %.0f; indirect table resets/s %.0f; misses: polling %.0f, first %.0f, "
+                                "slot taken %.0f, empty %.0f, key %.0f\n", (cur[0] - last[0]) / 10.0, (cur[1] - last[1]) / 10.0,
+                                (cur[2] - last[2]) / 10.0, (cur[3] - last[3]) / 10.0, (cur[4] - last[4]) / 10.0, (cur[5] - last[5]) / 10.0,
+                                (cur[6] - last[6]) / 10.0, (cur[7] - last[7]) / 10.0, (cur[8] - last[8]) / 10.0,
+                                (cur[9] - last[9]) / 10.0, (cur[10] - last[10]) / 10.0);
                         memcpy(last, cur, sizeof last);
                     }
                     if (g_opt.pmuSplit) pmu_split_report(g_perf);
