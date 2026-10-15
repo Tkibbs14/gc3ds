@@ -674,6 +674,11 @@ static const char* run(const char* path) {
         u32* code = g_jit ? jit_scratch(g_jit, &words) : NULL;
         timing = timing_probe(code, words, g_sys.mem1, MEM1_SIZE);
         if (g_jit) jit_invalidate_all(g_jit);
+        FILE* tf = fopen("sdmc:/gc3ds/timing.txt", "w");  // also on its own, in case the run after it fails
+        if (tf) {
+            fputs(timing, tf);
+            fclose(tf);
+        }
     }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
     free(dol);

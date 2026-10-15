@@ -44,10 +44,13 @@ static void sel(unsigned p) {
     g_tick0 = svcGetSystemTick();
 }
 static void rd(unsigned long long* cyc, unsigned long long* e0, unsigned long long* e1) {
-    // Counters that report no cycles are not counting (Azahar accepts the system call and does nothing): use the tick.
-    if (g_pmuOk && pmu_read(cyc, e0, e1) && *cyc) return;
+    const unsigned long long byTick = (svcGetSystemTick() - g_tick0) * 804 / 268;  // ticks at 268 MHz -> cycles at 804 MHz
+    // The counters are trusted only while their cycle count agrees with the tick within 2x (Azahar accepts the system
+    // call and leaves junk; a misconfigured counter on the device would show the same way).
+    if (g_pmuOk && pmu_read(cyc, e0, e1) && *cyc >= byTick / 2 && *cyc <= byTick * 2 + 1000) return;
+    if (g_pmuOk) out("# timing: counters disagree with the tick (%llu cycles vs %llu); tick from here on, events zero\n", *cyc, byTick);
     g_pmuOk = false;
-    *cyc = (svcGetSystemTick() - g_tick0) * 804 / 268;  // ticks at 268 MHz -> cycles at 804 MHz
+    *cyc = byTick;
     *e0 = *e1 = 0;
 }
 

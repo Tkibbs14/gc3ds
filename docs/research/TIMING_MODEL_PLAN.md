@@ -33,6 +33,33 @@ so changes are judged on the PC before they reach the device, then measure each 
    Hardest part, weakest accuracy; full simulators (gem5) cannot run the 3DS OS and run ~1 M instructions/s.
 4. Then measure **every** modelled mechanism against the 2DS and record which ones the model gets right.
 
+## Coverage: every part of the 3DS that sets speed (owner direction, 2026-10-15)
+
+James: complete coverage of the hardware, if at all possible; the tooling lives in the repo and is what tells us how
+things will run before they reach the device. Each mechanism gets a device probe (ground truth), then a model, then a
+recorded comparison of the two.
+
+| Area | Mechanism | Device probe | Model |
+|---|---|---|---|
+| CPU core | pipeline: latencies / throughput (int, mul, load-use, VFP single / double, div, sqrt, core <-> VFP moves) | timingprobe.c `op` (built 10-15) | partial (scheduler model) |
+| CPU core | branch prediction: mispredict penalty | timingprobe.c `branch` | no |
+| Instruction fetch | L1 I-cache 16 KB, L2, memory: cycles per instruction by code size | timingprobe.c `icode` 1 KB - 8 MB | I-cache sim (icache.c) |
+| Data side | L1 D-cache 16 KB, L2 2 MB, FCRAM latency by working set | timingprobe.c `chase` 4 KB - 16 MB | no |
+| Data side | main / micro TLB reach and miss cost | timingprobe.c `tlb` 8 - 4096 pages | no |
+| Data side | store / write-buffer / write-miss cost | timingprobe.c `stream` | no |
+| Cores | another core's traffic through the shared L2 / bus | timingprobe.c `xcore` (core 2 streaming) | no |
+| Cores | cores 1-3: availability and speed, cross-core handoff | hwprobe.c (since 10-10) | no |
+| Kernel | system calls (tick, cache maintenance), thread switch, events, interrupts | timingprobe.c `svc` (part); hwprobe handoff | no |
+| GPU (PICA200) | vertex throughput (shader / fixed), triangle setup, fill rate by format, texture fetch and its cache, combiner stages, depth / blend, command-list overhead, display / memory transfers | planned | no |
+| DSP | ndsp mixing cost per voice, latency | planned | no |
+| DMA | copies between FCRAM, VRAM and linear memory | planned | no |
+| Storage | SD reads: throughput, latency, small reads (disc streaming) | planned | no |
+| Clocks | 268 vs 804 MHz, L2 on / off (osSetSpeedupEnable) | hwprobe clock (part) | no |
+
+First device run of timingprobe.c: relay job 172 (queued 2026-10-15). In Azahar it runs end to end (crash-tested) and
+shows Azahar models no caches at all (chase flat at ~4.1 cycles from 4 KB to 16 MB, code fetch flat at 3.0 cycles to
+8 MB): an emulator's timing is not a stand-in for the device, which is the point of probing the device.
+
 ## Limits
 
 - A/B effects here are 1-5%, smaller than any model's error: the 2DS stays the final judge for every default.
