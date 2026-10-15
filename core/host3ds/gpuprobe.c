@@ -23,6 +23,8 @@
 static char g_buf[16 << 10];
 static size_t g_len;
 extern FILE* probe_live;  // timingprobe.c: lines also go out as they are measured
+void** probe_chase_prepare(u32 bytes);         // timingprobe.c: a random pointer cycle over its scratch
+double probe_chase_run(void*** p, u32 loads);  // ns per load
 static void out(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -312,6 +314,51 @@ const char* gpu_probe(void) {
         env_color_only();
 
         // Draw calls: one small triangle each.
+        // Contention: core 0's pointer chase (timingprobe.c's scratch) while the GPU samples a large texture, the
+        // texture in FCRAM (the GPU's reads share the bus with the CPU's) and then in VRAM. The draws (~270 ms) are
+        // submitted without waiting, the chase runs meanwhile, then the frame is waited for.
+        out("# gpu: section contention\n");
+        {
+            C3D_Tex bigV;
+            bool vramOk = C3D_TexInitVRAM(&bigV, 1024, 1024, GPU_RGBA8);
+            if (vramOk) {  // in 256 KB lines: a line's width is 16 bits of 16-byte units
+                const u32 kPart = 256u << 10;
+                for (u32 off = 0; off + kPart <= big.size; off += kPart)
+                    C3D_SyncTextureCopy((u32*)((u8*)big.data + off), GX_BUFFER_DIM(kPart >> 4, 0), (u32*)((u8*)bigV.data + off),
+                                        GX_BUFFER_DIM(kPart >> 4, 0), kPart, GX_TRANSFER_RAW_COPY(1));
+            }
+            for (int i = 0; i < 6; i++) {
+                quad[i].u = kQ[i][2];
+                quad[i].v = kQ[i][3];
+            }
+            GSPGPU_FlushDataCache(quad, sizeof(Vert) * 6);
+            C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+            C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+            env_textured();
+            static const u32 kChase[] = {1u << 20, 8u << 20};
+            for (int k = 0; k < 2; k++) {
+                void** p = probe_chase_prepare(kChase[k]);
+                if (!p) { out("# gpu contention: no chase scratch\n"); break; }
+                double idle = probe_chase_run(&p, 200000);
+                for (int where = 0; where < 2; where++) {
+                    if (where == 1 && !vramOk) break;
+                    C3D_TexBind(0, where ? &bigV : &big);
+                    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+                    C3D_FrameDrawOn(g_rt);
+                    for (int l = 0; l < 48; l++) C3D_DrawArrays(GPU_TRIANGLES, 0, 6);
+                    C3D_FrameEnd(0);
+                    double busy = probe_chase_run(&p, 200000);
+                    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);  // the GPU's frame done
+                    C3D_FrameEnd(0);
+                    out("# gpu contention chase %luK: %.1f ns per load idle, %.1f ns while the GPU samples a 1024x1024 RGBA8 texture in %s\n",
+                        (unsigned long)(kChase[k] >> 10), idle, busy, where ? "VRAM" : "FCRAM");
+                }
+            }
+            if (vramOk) C3D_TexDelete(&bigV);
+            C3D_TexBind(0, NULL);
+            env_color_only();
+        }
+
         out("# gpu: section setup\n");
         C3D_TexBind(0, NULL);
         Vert* grid = linearAlloc(sizeof(Vert) * (400 / 4) * (240 / 4) * 6);

@@ -7,6 +7,7 @@
 #   bash core/tools/relay.sh log JOB               follow a job's log into core/out/relay_JOB.csv until it ends
 #   bash core/tools/relay.sh status                when the 2DS last polled for a job and last posted a log
 #   bash core/tools/relay.sh jobs | cancel JOB | push
+#   bash core/tools/relay.sh send FILE SDPATH | cat SDPATH   a file onto the SD card / a text file from it into a log
 #   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
 #        set opt|sched|merge|vtrim|pld|splitopen|vwmem VALUE, stop (host3ds/main.c apply_cmd)
 #   bash core/tools/relay.sh frames JOB              the job's frames so far into core/out/frames_JOB/ (BMP, + PNG)
@@ -22,11 +23,13 @@ build="$here/host3ds/gc3ds.3dsx"
 api() { curl -sS --fail-with-body -H "x-relay-token: $token" "$@"; }
 
 push() {
-    [ -f "$build" ] || { echo "no $build (bash core/host3ds/build.sh)" >&2; exit 1; }
+    local file="${1:-$build}"
+    [ -f "$file" ] || { echo "no $file (bash core/host3ds/build.sh)" >&2; exit 1; }
     local note
     note="$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)$(git -C "$here" diff --quiet 2>/dev/null || echo -dirty)"
     local id
-    id="$(api -X PUT --data-binary @"$build" -H 'Content-Type: application/octet-stream' "$url/build?note=$note" | sed -n 's/^build //p')"
+    id="$(api -X PUT --data-binary @"$file" -H 'Content-Type: application/octet-stream' "$url/build?note=$note" | sed -n 's/^build //p')"
+    [ "$file" = "$build" ] || { echo "$id"; return; }
     # The build's ELF, kept to decode crash addresses from the 2DS (builds are not byte-reproducible).
     mkdir -p "$here/out/elfs"
     [ -n "$id" ] && [ -f "$here/host3ds/gc3ds.elf" ] && cp "$here/host3ds/gc3ds.elf" "$here/out/elfs/$id.elf"
@@ -91,6 +94,11 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
     push) push ;;
     queue) queue "$@" ;;
+    # send FILE SDPATH: any file onto the 2DS's SD card (e.g. native mode's 3dsx to sdmc:/3ds/gc3ds_native.3dsx); the
+    # 2DS must already run a build with --fetch-to (main.c's file jobs). cat SDPATH: a text file from the SD into the log.
+    send) id="$(push "$1")"; [ -n "$id" ] || { echo "upload failed" >&2; exit 1; }
+          printf '{"args": "--fetch-to %s", "build": "%s"}' "$2" "$id" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
+    cat) printf '{"args": "--cat %s", "build": "-"}' "$1" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     run) job="$(queue "$@")"; follow "$job" ;;
     log) follow "$1" ;;
     jobs) api "$url/jobs" ;;

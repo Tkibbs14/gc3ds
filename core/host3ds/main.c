@@ -48,6 +48,7 @@ void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
 extern FILE* probe_live;  // timingprobe.c: probe lines also go here as they are measured
+extern bool g_probeRisky;  // timingprobe.c: --probe-risky (the DMA engine)
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
@@ -430,6 +431,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
+        else if (!strcmp(a, "--probe-risky")) g_probeRisky = !strcmp(v, "on");  // timingprobe.c: the DMA engine too
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
         else if (!strcmp(a, "--luma-dumps")) snprintf(o->lumaDumps, sizeof o->lumaDumps, "%s", v);
@@ -1474,6 +1476,37 @@ static void remote_mode(const char* selfPath) {
             snprintf(note, sizeof note, "relay: restarted into this build %.1f s after asking (a new build or a fresh start)", (double)(osGetTime() - restartAt) / 1000.0);
             relay_note(note);
             restartAt = 0;
+        }
+        // File jobs (relay.sh send / cat): no machine runs. --fetch-to PATH: the job's build is any file, saved to PATH
+        // (e.g. native mode's 3dsx). --cat PATH: a text file from the SD card into the job's log.
+        const char* ft = strstr(job.args, "--fetch-to ");
+        const char* ct = strstr(job.args, "--cat ");
+        if (ft || ct) {
+            char path[160], note[200];
+            sscanf((ft ? ft + 11 : ct + 6), "%159s", path);
+            if (ft) {
+                printf("fetching %s to %s...\n", job.build, path);
+                bool ok = relay_fetch_build(job.build, path, err, sizeof err);
+                snprintf(note, sizeof note, ok ? "relay: saved to %s" : "relay: not saved to %s", path);
+                relay_note(note);
+                if (!ok) relay_note(err);
+                relay_job_end(ok ? "done" : "failed");
+            } else {
+                FILE* f = fopen(path, "r");
+                if (!f) { snprintf(note, sizeof note, "relay: cannot open %s", path); relay_note(note); relay_job_end("failed"); continue; }
+                char line[512];
+                u32 bytes = 0;
+                while (fgets(line, sizeof line, f)) {
+                    size_t n = strlen(line);
+                    if (n && line[n - 1] == '\n') line[n - 1] = 0;
+                    relay_note(line);
+                    // The log ring holds 512 KB and drops past it: pause each 128 KB for the poster (every ~2 s) to drain.
+                    if ((bytes += (u32)n) >= (128u << 10)) { bytes = 0; svcSleepThread(3000000000LL); }
+                }
+                fclose(f);
+                relay_job_end("done");
+            }
+            continue;
         }
         if (strcmp(job.build, "-") && strcmp(job.build, self)) {
             if (fromPending) {

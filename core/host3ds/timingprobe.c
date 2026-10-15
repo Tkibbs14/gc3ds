@@ -732,6 +732,68 @@ static void forms(u8* mem, u32* order) {
     measure("op", "ldr_rev_dep (BE chase, 4K)", k_ldr_rev, &start, 16);
 }
 
+// ---- contention: core 0's memory latency while another bus master works (BENCHMARK_TOOLING_SURVEY.md probe 11) ----
+// The scratch the chase uses, kept for gpuprobe.c's GPU-load case (it runs after this probe, on the same memory).
+static u8* g_probeMem;
+static u32 g_probeBytes;
+static u32* g_probeOrder;
+bool g_probeRisky;  // --probe-risky: the DMA engine too (gc3ds never drives it; a run only when James can restart the 2DS)
+void** probe_chase_prepare(u32 bytes) {
+    if (!g_probeMem || !g_probeOrder || bytes > g_probeBytes) return NULL;
+    return build_cycle(g_probeMem, bytes / 32, line_addr, g_probeOrder);
+}
+double probe_chase_run(void*** p, u32 loads) {  // ns per load, timed with the tick
+    u32 n = loads / 8 ? loads / 8 : 1;
+    u64 t = svcGetSystemTick();
+    k_chase(p, n);
+    t = svcGetSystemTick() - t;
+    return (double)t * 1e9 / SYSCLOCK_ARM11 / (8.0 * n);
+}
+
+static void dma_probe(void) {
+    const u32 kBytes = 4u << 20;
+    u8* src = linearAlloc(kBytes);
+    u8* dst = linearAlloc(kBytes);
+    if (!src || !dst) {
+        out("# timing dma: cannot allocate 2 x 4 MB of linear memory\n");
+        if (src) linearFree(src);
+        if (dst) linearFree(dst);
+        return;
+    }
+    memset(src, 0x5A, kBytes);
+    memset(dst, 0, kBytes);
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)src, kBytes);
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)dst, kBytes);
+    void** p = probe_chase_prepare(1u << 20);
+    double alone = p ? probe_chase_run(&p, 400000) : -1;
+    for (int pass = 0; pass < 2; pass++) {  // pass 1: core 0 chases 1 MB while the copy runs
+        DmaConfig cfg;
+        dmaConfigInitDefault(&cfg);
+        Handle h = 0;
+        out("# timing: section dma pass %d\n", pass);
+        u64 t0 = svcGetSystemTick();
+        Result r = svcStartInterProcessDma(&h, CUR_PROCESS_HANDLE, (u32)dst, CUR_PROCESS_HANDLE, (u32)src, kBytes, &cfg);
+        if (R_FAILED(r)) { out("# timing dma: start failed %08lx\n", (unsigned long)r); break; }
+        double during = pass && p ? probe_chase_run(&p, 100000) : -1;
+        DmaState st = DMASTATE_STARTING;
+        u64 limit = t0 + 2ull * SYSCLOCK_ARM11;
+        do { svcGetDmaState(&st, h); } while (st != DMASTATE_DONE && svcGetSystemTick() < limit);
+        u64 t1 = svcGetSystemTick();
+        svcCloseHandle(h);
+        svcInvalidateProcessDataCache(CUR_PROCESS_HANDLE, (u32)dst, kBytes);
+        bool same = dst[0] == 0x5A && dst[kBytes / 2] == 0x5A && dst[kBytes - 1] == 0x5A;
+        double mbs = (double)kBytes / 1048576.0 / ((double)(t1 - t0) / SYSCLOCK_ARM11);
+        if (!pass) out("# timing dma 4 MB FCRAM -> FCRAM (kernel DMA, default config): %.0f MB/s%s%s\n", mbs,
+                       st == DMASTATE_DONE ? "" : " (not done after 2 s)", same ? "" : " (copy wrong)");
+        else out("# timing dma: core 0 chase 1 MB %.1f ns per load alone, %.1f ns while the DMA copies (that copy %.0f MB/s)\n",
+                 alone, during, mbs);
+        memset(dst, 0, kBytes);
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)dst, kBytes);
+    }
+    linearFree(src);
+    linearFree(dst);
+}
+
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc) {
     static char buf[96 << 10];
     g_out = buf;
@@ -792,6 +854,13 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const 
     storage(disc);
     SECTION("clocks");
     clocks(mem, order);
+    g_probeMem = mem;  // for the contention cases (here and gpuprobe.c)
+    g_probeBytes = mem ? memBytes : 0;
+    g_probeOrder = order;
+    if (g_probeRisky) {
+        SECTION("dma");
+        dma_probe();
+    }
     out("# timing: probe end after %.1f s\n", (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11);
     return buf;
 }
