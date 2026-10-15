@@ -29,6 +29,8 @@ extern float frameUsagePct;
 }
 
 int game_main(int argc, char* argv[]);
+// dusk/audio.h's DUSK_AUDIO_SKIP on the 3DS (patch_dusk.sh): every mDoAud_* call returns its default while this is false.
+bool gc3ds_native_audio_enabled();
 namespace native {
 extern std::atomic<uint32_t> g_fifoBytes;  // aurora_3ds.cpp
 extern std::atomic<uint32_t> g_drawDones;
@@ -75,6 +77,14 @@ static void parse_args(int argc, char** argv) {
         if (!strcmp(argv[i], "--seconds") && i + 1 < argc) g_seconds = (u32)strtoul(argv[++i], nullptr, 10);
         else if (!strcmp(argv[i], "--return") && i + 1 < argc) snprintf(g_returnPath, sizeof g_returnPath, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) parse_press(argv[++i]);
+        else if (!strcmp(argv[i], "--stage") && i + 1 < argc) {
+            // Dusklight's boot-to-stage (its --stage NAME,room,point,layer): the logo scene starts a blank save in that
+            // stage's play scene, no title or file select (e.g. F_SP121,0,0 for Hyrule Field).
+            char name[32] = "";
+            int room = 0, point = 0, layer = -1;
+            if (sscanf(argv[++i], "%31[^,],%d,%d,%d", name, &room, &point, &layer) >= 1 && name[0])
+                dusk::StageRequested = {name, true, (s8)room, (s16)point, (s8)layer};
+        }
         else if (argv[i][0] && argv[i][0] != '-') snprintf(g_disc, sizeof g_disc, "%s", argv[i]);
     }
 }
@@ -155,6 +165,9 @@ void apply_settings() {
 uint32_t arena_bytes() { return 44u << 20; }  // the heaps m_Do_machine.cpp carves: ~37 MB with the 3DS sizes
 const char* disc_path() { return g_disc; }
 bool audio_enabled() { return false; }
+}  // namespace native
+bool gc3ds_native_audio_enabled() { return native::audio_enabled(); }
+namespace native {
 void poll_events() {
     if (!aptMainLoop()) g_exit = true;
     hidScanInput();
@@ -262,20 +275,90 @@ void trace_memory(const char* where) {
 }
 }  // namespace native
 
+// Crashes on the game's main thread go here instead of Luma's exception screen, so an automated run (gc3ds's --native
+// job) comes back by itself: the handler (on its own stack, in the exception's context) only copies the registers and
+// sends the thread on to crash_exit, which writes sdmc:/gc3ds/native/crash.txt, hands the 3DS back to gc3ds (--return)
+// and ends the process; gc3ds posts crash.txt with the run's logs. A second exception, or one on another thread, ends
+// the default way (Luma's screen). The 2DS's first run (2026-10-15) stopped at that screen until James pressed a key.
+static u8 g_exStack[0x2000] __attribute__((aligned(8)));
+static u8 g_exitStack[0x8000] __attribute__((aligned(8)));
+static ERRF_ExceptionInfo g_exInfo;
+static CpuRegisters g_exRegs;
+static volatile bool g_crashed;
+extern "C" void native_crash_resume(CpuRegisters* r) __attribute__((noreturn));
+__asm__(".text; .arm; .align 2; .global native_crash_resume; .type native_crash_resume, %function;"
+        "native_crash_resume: ldr r1, [r0, #64]; msr cpsr_f, r1; ldmia r0, {r0-r15};");
+static bool readable(u32 a) { return (a >= 0x00100000u && a < 0x10000000u) || (a >= 0x14000000u && a < 0x40000000u); }
+
+static void crash_exit() {
+    threadOnException(nullptr, nullptr, nullptr);  // a fault from here on: Luma's screen
+    static const char* const kType[] = {"prefetch abort", "data abort", "undefined instruction", "VFP exception"};
+    FILE* f = fopen("sdmc:/gc3ds/native/crash.txt", "w");
+    if (f) {
+        const ERRF_ExceptionInfo& e = g_exInfo;
+        const CpuRegisters& r = g_exRegs;
+        fprintf(f, "crash: %s on the main thread at pc %08lx lr %08lx sp %08lx cpsr %08lx far %08lx fsr %08lx fpexc %08lx\n",
+                (unsigned)e.type < 4 ? kType[e.type] : "exception", (unsigned long)r.pc, (unsigned long)r.lr, (unsigned long)r.sp,
+                (unsigned long)r.cpsr, (unsigned long)e.far, (unsigned long)e.fsr, (unsigned long)e.fpexc);
+        fprintf(f, "registers:");
+        for (int i = 0; i < 13; i++) fprintf(f, " r%d=%08lx", i, (unsigned long)r.r[i]);
+        fprintf(f, "\nstack:");
+        u32 sp = r.sp & ~3u;
+        for (int i = 0; i < 48 && readable(sp + 4 * i); i++) fprintf(f, "%s%08lx", i % 8 ? " " : "\n  ", (unsigned long)((const u32*)sp)[i]);
+        fprintf(f, "\nbuild %s %s (decode with addr2line on /root/native/build/trial.elf)\n", __DATE__, __TIME__);
+        fclose(f);
+    }
+    native::trace("crash: pc %08lx lr %08lx far %08lx (crash.txt)", (unsigned long)g_exRegs.pc, (unsigned long)g_exRegs.lr,
+                  (unsigned long)g_exInfo.far);
+    if (g_perf) fflush(g_perf);
+    if (g_returnPath[0]) return_to(g_returnPath);
+    exit(1);
+}
+
+static void on_exception(ERRF_ExceptionInfo* ex, CpuRegisters* r) {
+    if (g_crashed) {  // crash_exit itself faulted: re-run the instruction without a handler (Luma's screen)
+        threadOnException(nullptr, nullptr, nullptr);
+        native_crash_resume(r);
+    }
+    g_crashed = true;
+    g_exInfo = *ex;
+    g_exRegs = *r;
+    r->pc = (u32)(uintptr_t)crash_exit;
+    r->sp = (u32)(uintptr_t)(g_exitStack + sizeof g_exitStack);
+    native_crash_resume(r);
+}
+
 int main(int argc, char** argv) {
+    threadOnException(on_exception, g_exStack + sizeof g_exStack, WRITE_DATA_TO_HANDLER_STACK);
+    remove("sdmc:/gc3ds/native/crash.txt");
     osSetSpeedupEnable(true);
     gfxInitDefault();
     consoleInit(GFX_BOTTOM, nullptr);
     printf("gc3ds native mode: Twilight Princess\n");
     g_startMs = osGetTime();
     parse_args(argc, argv);
+    if (argc <= 1) {  // started by hand (or in Azahar, which passes none): sdmc:/gc3ds/native/args.txt, if there
+        static char text[512];
+        static char* av[32];
+        FILE* af = fopen("sdmc:/gc3ds/native/args.txt", "r");
+        if (af) {
+            size_t n = fread(text, 1, sizeof text - 1, af);
+            fclose(af);
+            text[n] = 0;
+            int ac = 0;
+            av[ac++] = argv && argc > 0 ? argv[0] : (char*)"gc3ds-native";
+            for (char* tok = strtok(text, " \t\r\n"); tok && ac < 31; tok = strtok(nullptr, " \t\r\n")) av[ac++] = tok;
+            parse_args(ac, av);
+        }
+    }
     if (!find_disc()) native::fatal("no Twilight Princess image under sdmc:/gc3ds or sdmc:/gc3ds/games");
     mkdir("sdmc:/gc3ds", 0777);
     mkdir("sdmc:/gc3ds/native", 0777);
     g_perf = fopen("sdmc:/gc3ds/native/perf.csv", "w");
     if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s,busy_pct\n", g_disc);
     native::trace_memory("start");
-    native::trace("run control: %u s, return to %s, %d presses", (unsigned)g_seconds, g_returnPath[0] ? g_returnPath : "-", g_nPress);
+    native::trace("run control: %u s, return to %s, %d presses, stage %s", (unsigned)g_seconds, g_returnPath[0] ? g_returnPath : "-",
+                  g_nPress, dusk::StageRequested.set ? dusk::StageRequested.stage.c_str() : "-");
     {  // std::thread on this toolchain: does a thread start and finish?
         native::trace("std::thread test: creating");
         volatile bool ran = false;

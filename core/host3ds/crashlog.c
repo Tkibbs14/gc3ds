@@ -163,10 +163,19 @@ void crash_resume(CpuRegisters* r) __attribute__((noreturn));
 __asm__(".text; .arm; .align 2; .global crash_resume; .type crash_resume, %function;"
         "crash_resume: ldr r1, [r0, #64]; msr cpsr_f, r1; ldmia r0, {r0-r15};");
 
-// Records, then removes the handler and re-runs the instruction: it faults again, the default way.
+void (*crashlog_recover)(void);
+static u8 g_recoverStack[0x8000] __attribute__((aligned(8)));
+static volatile int g_recovering;
+
+// Records, then removes the handler and re-runs the instruction: it faults again, the default way; or, with
+// crashlog_recover set (a relay job), sends the thread on to it once (a second crash while recovering: the default way).
 static void handle(ERRF_ExceptionInfo* ex, CpuRegisters* r, int thread) {
     crashlog_record(ex, r, thread);
     threadOnException(NULL, NULL, NULL);
+    if (crashlog_recover && !__sync_lock_test_and_set(&g_recovering, 1)) {
+        r->pc = (u32)crashlog_recover;
+        r->sp = (u32)(g_recoverStack + sizeof g_recoverStack);
+    }
     crash_resume(r);
 }
 static void h_main(ERRF_ExceptionInfo* ex, CpuRegisters* r) { handle(ex, r, CRASH_MAIN); }

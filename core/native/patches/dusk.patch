@@ -219,6 +219,22 @@ index c9ba131..dd16f42 100644
      if (!mz_zip_reader_locate_file_v2(pZip, fileName.c_str(), nullptr, 0, &fileIdx)) {
          return std::nullopt;
      }
+diff --git a/src/dusk/audio.h b/src/dusk/audio.h
+index 0f24768..50e0463 100644
+--- a/src/dusk/audio.h
++++ b/src/dusk/audio.h
+@@ -6,7 +6,10 @@
+ #define DUSK_AUDIO_DISABLED 0
+ #endif
+ 
+-#if TARGET_PC
++#if TARGET_PC && defined(__3DS__)
++bool gc3ds_native_audio_enabled();  // core/native/platform/native_3ds.cpp
++#define DUSK_AUDIO_SKIP(...) if (!gc3ds_native_audio_enabled()) return __VA_ARGS__;
++#elif TARGET_PC
+ #define DUSK_AUDIO_SKIP(...)
+ #else
+ #define DUSK_AUDIO_SKIP(...)
 diff --git a/src/dusk/config.cpp b/src/dusk/config.cpp
 index 9afdf58..2e24fd9 100644
 --- a/src/dusk/config.cpp

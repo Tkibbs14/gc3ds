@@ -124,6 +124,22 @@ if 'native, audio off' not in s:
     open(p, 'w').write(s)
     print(p, 'guards added')
 PY
+# Audio off on the 3DS, as Dusklight's own switch meant to do: DUSK_AUDIO_SKIP(default) at the top of each mDoAud_*
+# returns its default when native mode has no audio engine (it is empty on PC). Without it the play scene waited for
+# good on mDoAud_load1stDynamicWave / check1stDynamicWave (Azahar, boot to F_SP121, 2026-10-15).
+python3 - <<'PY'
+p = 'src/dusk/audio.h'
+s = open(p).read()
+old = '#if TARGET_PC\n#define DUSK_AUDIO_SKIP(...)\n#else'
+new = ('#if TARGET_PC && defined(__3DS__)\nbool gc3ds_native_audio_enabled();  // core/native/platform/native_3ds.cpp\n'
+       '#define DUSK_AUDIO_SKIP(...) if (!gc3ds_native_audio_enabled()) return __VA_ARGS__;\n#elif TARGET_PC\n'
+       '#define DUSK_AUDIO_SKIP(...)\n#else')
+if 'gc3ds_native_audio_enabled' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('audio skip on the 3DS:', 'gc3ds_native_audio_enabled' in s)
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches

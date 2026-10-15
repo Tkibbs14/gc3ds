@@ -12,3 +12,6 @@ void crashlog_record(ERRF_ExceptionInfo* ex, CpuRegisters* r, int thread);  // f
 void crashlog_set_info(int k, u32 v);
 void crashlog_report(FILE* f);               // prints the previous record once (perf.csv)
 void crashlog_luma_again(FILE* f, const char* list);  // --luma-dumps N[,N...]: those arm11 dumps reported again
+// Set while a relay job runs (main.c): after recording, the crashed thread goes on to this function (on a stack of its
+// own) instead of faulting again into Luma's exception screen, so gc3ds restarts by itself and reports the crash.
+extern void (*crashlog_recover)(void);

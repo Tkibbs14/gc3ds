@@ -101,9 +101,10 @@ case "$cmd" in
           printf '{"args": "--fetch-to %s", "build": "%s"}' "$2" "$id" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     # native SECONDS [PRESS]: a native-mode run with no hands: gc3ds starts sdmc:/3ds/gc3ds_native.3dsx (relay.sh send
     # it first) for SECONDS, pressing PRESS (NAME@FROM-TO,... in frames: A B X Y START L R Z UP DOWN LEFT RIGHT, SUP
-    # SDOWN SLEFT SRIGHT for the circle pad), and when it comes back posts native mode's perf.csv and trace.txt.
+    # SDOWN SLEFT SRIGHT for the circle pad; - for none), optionally booting straight into STAGE (NAME,room,point[,layer],
+    # Dusklight's boot-to-stage: e.g. F_SP121,0,0 Hyrule Field), and when it comes back posts perf.csv and trace.txt.
     native) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"
-            a="--native $1"; [ -n "${2:-}" ] && a="$a --press $2"
+            a="--native $1"; [ -n "${2:-}" ] && [ "$2" != "-" ] && a="$a --press $2"; [ -n "${3:-}" ] && a="$a --stage $3"
             printf '{"args": "%s", "build": "%s"}' "$a" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     # (the server wants a known build on every job: the latest machine job's, which the 2DS does not need for --cat)
     cat) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"

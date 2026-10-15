@@ -1448,6 +1448,18 @@ static void restart_for_job(const char* selfPath, const char* why) {
 // Remote runs: jobs queued from the PC through the relay (relay.c, core/tools/relay.sh) run one after another, each
 // streaming its perf log back; a job for another build downloads it, keeps the job and asks for a restart.
 // SELECT leaves. Jobs default to 600 s so a forgotten --seconds cannot run forever.
+// A relay job that crashed gc3ds (crashlog_recover): its id, kept across the restart, then reported and ended.
+#define RELAY_CRASHED "sdmc:/gc3ds/relay_crashed.txt"
+static unsigned g_crashJob;
+static const char* g_crashSelf;
+static void crash_recover(void) {  // the crashed thread, after crash.bin is written (crashlog.c)
+    FILE* f = fopen(RELAY_CRASHED, "w");
+    if (f) { fprintf(f, "%u\n", g_crashJob); fclose(f); }
+    if (g_perf) fflush(g_perf);
+    relaunch_into(g_crashSelf);
+    exit(1);
+}
+
 // Native mode (core/native): its .3dsx on the SD card (relay.sh send) and its logs.
 #define NATIVE_PATH "sdmc:/3ds/gc3ds_native.3dsx"
 #define NATIVE_DIR "sdmc:/gc3ds/native"
@@ -1478,6 +1490,20 @@ static void remote_mode(const char* selfPath) {
     printf("Remote runs: starting the network...\n");
     if (!relay_start(err, sizeof err)) { printf("relay: %s\n\nPress A\n", err); wait_key(KEY_A); return; }
     const char* self = relay_self_id(selfPath);
+    FILE* cr = fopen(RELAY_CRASHED, "r");  // the last job crashed gc3ds, which restarted by itself: report it, end it
+    if (cr) {
+        unsigned id = 0;
+        if (fscanf(cr, "%u", &id) != 1) id = 0;
+        fclose(cr);
+        remove(RELAY_CRASHED);
+        if (id) {
+            relay_job_begin(id, RELAY_RESUME_SEQ);
+            relay_note("relay: gc3ds crashed during this job and restarted by itself; the crash record follows");
+            FILE* t = relay_tee(NULL);
+            if (t) { crashlog_report(t); fclose(t); }
+            relay_job_end("crashed");
+        }
+    }
     RelayJob job;
     bool have = load_pending(&job), fromPending = have;
     FILE* rf = fopen(RELAY_RESTART, "r");
@@ -1535,21 +1561,26 @@ static void remote_mode(const char* selfPath) {
         if (nt) {
             if (fromPending) {
                 relay_note("relay: back from native mode; its perf.csv and trace.txt follow");
+                FILE* cf = fopen(NATIVE_DIR "/crash.txt", "r");  // native mode crashed and came back by itself
+                if (cf) { fclose(cf); post_file(NATIVE_DIR "/crash.txt"); }
                 post_file(NATIVE_DIR "/perf.csv");
                 post_file(NATIVE_DIR "/trace.txt");
                 relay_job_end("done");
                 continue;
             }
-            static char secs[16], press[256];
-            static const char* nargs[6];
-            secs[0] = press[0] = 0;
+            static char secs[16], press[256], stage[48];
+            static const char* nargs[8];
+            secs[0] = press[0] = stage[0] = 0;
             sscanf(nt + 9, "%15s", secs);
             const char* pr = strstr(job.args, "--press ");
             if (pr) sscanf(pr + 8, "%255s", press);
+            const char* st = strstr(job.args, "--stage ");
+            if (st) sscanf(st + 8, "%47s", stage);
             int n = 0;
             nargs[n++] = "--seconds"; nargs[n++] = secs;
             nargs[n++] = "--return"; nargs[n++] = selfPath;
             if (press[0]) { nargs[n++] = "--press"; nargs[n++] = press; }
+            if (stage[0]) { nargs[n++] = "--stage"; nargs[n++] = stage; }
             FILE* nf = fopen(NATIVE_PATH, "rb");
             if (!nf) { relay_note("relay: no " NATIVE_PATH " (relay.sh send it first)"); relay_job_end("failed"); continue; }
             fclose(nf);
@@ -1568,7 +1599,8 @@ static void remote_mode(const char* selfPath) {
                 continue;
             }
             char note[96];
-            snprintf(note, sizeof note, "relay: starting native mode for %s s%s%s", secs, press[0] ? ", presses " : "", press);
+            snprintf(note, sizeof note, "relay: starting native mode for %s s%s%s%s%s", secs, press[0] ? ", presses " : "", press,
+                     stage[0] ? ", stage " : "", stage);
             relay_note(note);
             relay_flush();
             printf("Starting native mode (%s s)...\n", secs);
@@ -1620,7 +1652,11 @@ static void remote_mode(const char* selfPath) {
         if (gi < 0) { printf("%s\n", err); relay_note(err); relay_job_end("failed"); continue; }
         g_opt = o;
         g_relayRun = true;
+        g_crashJob = job.id;
+        g_crashSelf = selfPath;
+        crashlog_recover = crash_recover;  // a crash in this run restarts gc3ds by itself
         const char* result = run(g_files[gi]);
+        crashlog_recover = NULL;
         g_relayRun = false;
         if (g_runErr[0]) relay_note(g_runErr);
         relay_job_end(result);

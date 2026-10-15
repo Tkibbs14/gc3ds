@@ -21,7 +21,9 @@ INCS     := -I$(abspath $(NATIVE))/shim -I$(DUSK)/include -I$(DUSK)/assets/GZ2E0
             -I$(DUSK)/extern/aurora/include/dolphin -I$(DUSK)/extern/aurora/include -I$(DUSK)/sdk/include -I$(DUSK)/src \
             -I$(DUSK)/extern -I$(DUSK)/extern/borealis/include -I$(DEPS)/fmt/include -I$(DEPS)/json/include -I$(DEPS)/cxxopts/include -I$(DEPS)/xxhash -I$(DEPS)/imgui -I$(DEPS)/miniz -I$(DEPS)/picosha2
 # As Dusklight's GCC flags (CMakeLists.txt), plus int-sized enums (devkitARM defaults to short ones; the game asserts).
-COMMON   := $(ARCH) $(OPT) -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -Wno-multichar -w $(DEFS) $(INCS)
+# -MMD -MP: a .d per object, included below, so a header change rebuilds what uses it (DUSK_AUDIO_SKIP in
+# dusk/audio.h did not, 2026-10-15: the play scene kept waiting on audio).
+COMMON   := -MMD -MP $(ARCH) $(OPT) -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -Wno-multichar -w $(DEFS) $(INCS)
 CFLAGS   := -std=gnu11 $(COMMON)
 CXXFLAGS := -std=gnu++20 -Wno-deprecated-declarations -include native_prefix.h $(COMMON)
 
@@ -55,7 +57,7 @@ AOBJS    := $(patsubst $(AUR)/%.cpp,$(OUT)/aurora/%.o,$(ASRCS))
 # The matrix library is C (C_MTX*, C_VEC*, C_QUAT*).
 ACSRCS   := $(wildcard $(AUR)/lib/dolphin/mtx/*.c)
 AOBJS    += $(patsubst $(AUR)/%.c,$(OUT)/aurora/%.c.o,$(ACSRCS))
-AFLAGS   := -std=gnu++20 $(ARCH) $(OPT) -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -w \
+AFLAGS   := -std=gnu++20 -MMD -MP $(ARCH) $(OPT) -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -w \
             -D__3DS__ -DAURORA -DTARGET_PC -DAURORA_ENABLE_GX -DMTX_USE_PS=1 -DFMT_HEADER_ONLY=1 \
             -I$(abspath $(NATIVE))/shim -I$(DEPS)/fmt/include -I$(DEPS)/xxhash -I$(DEPS)/imgui \
             -I$(AUR)/include -I$(AUR)/include/dolphin -I$(AUR)/lib -I$(DUSK)/extern/borealis/include
@@ -99,3 +101,5 @@ $(OUT)/platform/aurora/%.o: $(NATIVE)/platform/aurora/%.cpp
 	@mkdir -p $(dir $@)
 	@$(CXX) $(AFLAGS) -I$(DEVKITPRO)/libctru/include -c $< -o $@ 2> $@.err || { echo "FAIL platform/aurora/$*.cpp"; rm -f $@; }
 	@[ -s $@.err ] || rm -f $@.err
+
+-include $(shell find $(OUT) -name "*.d" 2>/dev/null)
