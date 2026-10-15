@@ -193,6 +193,21 @@ it is mostly GX wait, not dispatch. Guest mix (PC interpreter, TP 900, 1.04 G in
 stores 15%, conditional branches 8.1%, blr 3.3%, b 3.5%; full speed is ~104-150 M guest instructions/s, i.e. ~5-8 core-0
 cycles per guest instruction against 25.8 now, and core 2's GX work would have to scale ~5x with it.
 
+## Contention and core 0's data misses (2026-10-15, jobs 192 and qemu)
+
+- **GPU texture reads slow core 0's memory** (gpuprobe contention, job 192): a pointer chase over 1 MB (L2) took 34.6 ns
+  per load idle and 70.1 ns while the GPU sampled a 1024x1024 RGBA8 texture in FCRAM; over 8 MB (memory) 194 vs 703 ns.
+  gc3ds keeps game textures in FCRAM (pica.c C3D_TexInit), so every frame the GPU draws (~8-11 ms) competes with core 0.
+  The VRAM comparison did not run (no 4 MB of VRAM free): retry with a smaller texture.
+- **Where compiled code's data misses come from** (core/tools/qemu-plugins/dcache.c, TP 850-910 under qemu, compiled
+  code's accesses only, the first 100 M as warm-up; L1 miss rate 1.4%): guest RAM 42%; the JIT buffer read as data 35%;
+  large mappings 19% (the indirect tables); the Gekko struct 3.5%. By issuing code: the shared `indirect` stub's table
+  read 427 k (L2 hits), `link` literals 203 k (mostly L2 misses: the PC build's 8 MB buffer refills, not the 2DS
+  pattern), `storepipe` 161 k, the float stubs ~200 k (guest data).
+- **The indirect-branch table** (FAST_BITS 16): 65,536 slots of 8 bytes, 512 KB per key, 4 keys: every blr / bctr
+  reads one slot, and the hot targets sit one per cache line. ~1 M returns/s on the 2DS at ~28 cycles of L2 each would
+  be ~3.5% of core 0. Variant FAST_BITS=13 + 2-way (--ind2 on) on the 2DS: job 193.
+
 ## Sharing the tooling (owner direction, 2026-10-15)
 
 James: once the measurements are in, make the tooling something everyone can use. The probes already live in this

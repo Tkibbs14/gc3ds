@@ -19,7 +19,7 @@ cfg="$here/host3ds/relay.txt"
 [ -f "$cfg" ] || { echo "missing $cfg" >&2; exit 1; }
 url="$(sed -n 's/^url //p' "$cfg" | tr -d '\r')"
 token="$(sed -n 's/^token //p' "$cfg" | tr -d '\r')"
-build="$here/host3ds/gc3ds.3dsx"
+build="${RELAY_BUILD:-$here/host3ds/gc3ds.3dsx}"  # RELAY_BUILD: another 3dsx (a variant build)
 api() { curl -sS --fail-with-body -H "x-relay-token: $token" "$@"; }
 
 push() {

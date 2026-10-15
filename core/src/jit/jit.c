@@ -5306,10 +5306,18 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     jit_invalidate_all(j);
     g_jit = j;
 #ifndef __3DS__
-    if (getenv("JIT_RANGES"))  // for core/tools/qemu-plugins/icache.c's report: the buffer's regions and the text's base
+    if (getenv("JIT_RANGES")) {  // for core/tools/qemu-plugins/icache.c's report: the buffer's regions and the text's base
         fprintf(stderr, "range regions stubs %08x hot %08x cold %08x end %08x text jit_create %08x\n",
                 (u32)(uintptr_t)j->code, (u32)(uintptr_t)(j->code + j->stubWords), (u32)(uintptr_t)(j->code + j->coldStart),
                 (u32)(uintptr_t)(j->code + j->codeWords), (u32)(uintptr_t)jit_create);
+        // The shared stubs' byte offsets (dcache_report.py names the misses a stub makes).
+        static const char* const kSt[ST_N] = { "enter", "exit", "link", "dyn", "budget", "indirect", "interp", "loadslow",
+                                                "storeslow", "storepipe", "deopt", "hoistchk", "memdirty", "indlr", "indctr",
+                                                "lmw", "stmw" };
+        fprintf(stderr, "range stubs");
+        for (int k = 0; k < ST_N; k++) fprintf(stderr, " %s %x", kSt[k], j->stub[k] * 4);
+        fprintf(stderr, "\n");
+    }
 #endif
     return j;
 }
