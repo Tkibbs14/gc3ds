@@ -1037,3 +1037,6 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   Transpose 2.2%, J3DGD* setup ~1% each. They run periodically and are evicted in between. Scale: block-code misses
   are ~17% of core 0's cycles (fetch stalls ~23%, ~3/4 of them block code), so each of these is worth ~0.5-2%;
   native stand-ins (PSMTXConcat first, the audio channel math next) are the candidates, judged on the 2DS.
+- **OPT_ROTMASK (job 156): within noise** (core 0 cutscene 25.21 on vs 25.00 off, later 12.49 vs 12.46); off.
+  With CRSTUB neutral too, shaving words off common instructions has stopped paying: the gains of this session came
+  from removing dispatcher / C round trips (stack: +2.2% / +4.2%), not from smaller sequences.

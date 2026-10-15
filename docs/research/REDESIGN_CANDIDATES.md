@@ -190,8 +190,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 - **Status:** partly built (2026-10-14). Candidate 1 (CR-field dead stores) rejected by its model: exact ~0.3% of hot
   words, inexact ~1.5-2%. Candidate 2 (OPT_RETSTUB) built: -2.1% hot words, +1.0% / +1.6% core 0 (job 148, trimmed
-  means), default on together with OPT_SYSCALL and OPT_HLELINK (job 151: +2.5% / +5.7%). Candidates 3 (float loads and
-  stores, ~1% of hot words) and 4 (register pinning) wait behind the trace re-test (HANDOFF 2026-10-14 late night).
+  means), default on together with OPT_SYSCALL and OPT_HLELINK (job 151: +2.2% / +4.2%). Shorter common sequences
+  measured neutral on the 2DS: OPT_CRSTUB (compare CR updates in shared stubs, job 155), OPT_ROTMASK (rlwinm as shifts,
+  job 156); both off. Candidates 3 (float loads and stores, ~1% of hot words) and 4 (register pinning) are parked:
+  words shaved per instruction have stopped showing on the hardware (HANDOFF 2026-10-14 late night).
 - **Lesson:** executed hot words per guest instruction did not predict I-cache misses for this change: misses follow the
   hot code's footprint (distinct lines touched), not the words executed per instruction.
 - **Re-evaluate when:** several small exact reductions can be stacked into one A/B, or a footprint measure (distinct hot
