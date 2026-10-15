@@ -155,14 +155,21 @@ const char* gpu_probe(void) {
         GSPGPU_FlushDataCache(vf, sizeof(Vert) * kVerts);
         GSPGPU_FlushDataCache(vs, sizeof(VertS) * kVerts);
         VCtx vc = {kVerts};
-        static const struct { const char* name; int nattr; } kF[] = {{"pos float3", 1}, {"pos float3 + color u8x4", 2},
-                                                                    {"pos float3 + color u8x4 + tc float2", 3}};
-        for (int k = 0; k < 3; k++) {
+        // Each format packed at exactly its own size: on the device, a stride wider than the attributes loaded (24
+        // bytes holding 16 bytes of attributes) hung the GPU (job 177; Azahar had accepted it).
+        static const struct { const char* name; int nattr, stride; } kF[] = {
+            {"pos float3", 1, 12}, {"pos float3 + color u8x4", 2, 16}, {"pos float3 + color u8x4 + tc float2", 3, 24}};
+        u8* packed = linearAlloc(sizeof(Vert) * kVerts);
+        for (int k = 0; packed && k < 3; k++) {
+            for (int i = 0; i < kVerts; i++) memcpy(packed + (size_t)i * kF[k].stride, &vf[i], kF[k].stride);
+            GSPGPU_FlushDataCache(packed, (u32)kF[k].stride * kVerts);
             attrs_float(kF[k].nattr);
-            bufs(vf, sizeof(Vert), kF[k].nattr);
+            bufs(packed, kF[k].stride, kF[k].nattr);
             float ms = frames(draw_tris, &vc, NULL);
-            out("# gpu vertex %s (24-byte stride): %.2f ns per vertex (%.2f ms for %d)\n", kF[k].name, ms * 1e6f / kVerts, ms, kVerts);
+            out("# gpu vertex %s (%d-byte stride): %.2f ns per vertex (%.2f ms for %d)\n", kF[k].name, kF[k].stride,
+                ms * 1e6f / kVerts, ms, kVerts);
         }
+        if (packed) linearFree(packed);
         C3D_AttrInfo* ai = C3D_GetAttrInfo();
         AttrInfo_Init(ai);
         AttrInfo_AddLoader(ai, 0, GPU_SHORT, 4);
