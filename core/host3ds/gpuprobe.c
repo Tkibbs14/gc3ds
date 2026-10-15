@@ -17,12 +17,18 @@
 
 static char g_buf[8 << 10];
 static size_t g_len;
+extern FILE* probe_live;  // timingprobe.c: lines also go out as they are measured
 static void out(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    size_t at = g_len;
     int n = vsnprintf(g_buf + g_len, sizeof g_buf - g_len, fmt, ap);
     va_end(ap);
     if (n > 0) g_len += (size_t)n < sizeof g_buf - g_len ? (size_t)n : sizeof g_buf - g_len - 1;
+    if (probe_live && g_len > at) {
+        fputs(g_buf + at, probe_live);
+        fflush(probe_live);
+    }
 }
 
 typedef struct { float x, y, z; u8 r, g, b, a; float u, v; } Vert;  // 24 bytes

@@ -47,6 +47,7 @@ static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
+extern FILE* probe_live;  // timingprobe.c: probe lines also go here as they are measured
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
@@ -671,6 +672,15 @@ static const char* run(const char* path) {
     const char* timing = NULL;
     if (g_opt.timingProbe) {
         printf("timing probe...\n");
+        if (g_opt.timingProbe == 2) {
+            // --timing-probe only: the log first, so every line streams to the relay as it is measured (a crash or a
+            // hang mid-probe still leaves everything before it, and the last "section" line), with the previous run's
+            // crash report (job 175 ended without a word, 10-15).
+            perf_open(path);
+            crashlog_report(g_perf);
+            if (g_opt.lumaDumps[0]) crashlog_luma_again(g_perf, g_opt.lumaDumps);
+            probe_live = g_perf;
+        }
         u32 words = 0;
         u32* code = g_jit ? jit_scratch(g_jit, &words) : NULL;
         timing = timing_probe(code, words, g_sys.mem1, MEM1_SIZE, is_disc(path) ? path : NULL);
@@ -680,7 +690,7 @@ static const char* run(const char* path) {
             fputs(timing, tf);
             fclose(tf);
         }
-        if (g_opt.timingProbe == 2) {  // --timing-probe only: the measurements are the job; no machine runs
+        if (g_opt.timingProbe == 2) {  // the measurements are the job; no machine runs
             // The GPU probe too: it rebinds citro3d state the renderer owns, so only when no game runs after it.
             const char* gpu = g_pica ? gpu_probe() : "# gpu: no GPU backend in this build\n";
             FILE* gf = fopen("sdmc:/gc3ds/timing_gpu.txt", "w");
@@ -688,15 +698,17 @@ static const char* run(const char* path) {
                 fputs(gpu, gf);
                 fclose(gf);
             }
-            perf_open(path);
+            probe_live = NULL;
             if (g_perf) {
-                fputs(timing, g_perf);
-                fputs(gpu, g_perf);
                 fclose(g_perf);
                 g_perf = NULL;
             }
             free(dol);
             return "done";
+        }
+        if (g_perf) {
+            fclose(g_perf);
+            g_perf = NULL;
         }
     }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);

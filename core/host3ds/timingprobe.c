@@ -24,13 +24,22 @@ void jit_host_sync_icache(void* start, u32 bytes);
 
 static char* g_out;
 static size_t g_outLen, g_outCap;
+// probe_live: every line also goes here as it is measured (a relay job's log), so a crash or a hang mid-probe still
+// leaves what came before it, and the last "section" line names where it stopped.
+FILE* probe_live;
 static void out(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    size_t at = g_outLen;
     int n = vsnprintf(g_out + g_outLen, g_outCap - g_outLen, fmt, ap);
     va_end(ap);
     if (n > 0) g_outLen += (size_t)n < g_outCap - g_outLen ? (size_t)n : g_outCap - g_outLen - 1;
+    if (probe_live && g_outLen > at) {
+        fputs(g_out + at, probe_live);
+        fflush(probe_live);
+    }
 }
+#define SECTION(name) out("# timing: section %s\n", name)
 
 typedef void (*Kernel)(void* ctx, u32 n);
 static volatile u32 g_sink;
@@ -456,21 +465,31 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const 
         order = (u32*)(mem + memBytes);
     } else
         mem = NULL;
+    SECTION("pipeline");
     pipeline();
+    SECTION("branches");
     branches();
+    SECTION("icode");
     if (code && codeWords) icode(code, codeWords);
     if (mem) {
+        SECTION("chase");
         chase(mem, memBytes, order);
+        SECTION("tlb");
         tlb(mem, memBytes, order);
         Buf b = {mem, 4u << 20};
         if (memBytes >= b.bytes) measure("stream", "4M stores", k_stream, &b, b.bytes / 4.0);
+        SECTION("xcore");
         xcore(mem, memBytes, order);
     }
     measure("svc", "GetSystemTick", k_tick, NULL, 1);
     measure("svc", "icache sync (flush + 0x94)", k_sync, NULL, 1);
+    SECTION("bandwidth");
     bandwidth(mem, memBytes);
+    SECTION("kernel_switch");
     kernel_switch();
+    SECTION("storage");
     storage(disc);
+    SECTION("clocks");
     clocks(mem, order);
     out("# timing: probe end after %.1f s\n", (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11);
     return buf;
