@@ -257,7 +257,16 @@ VFastStats g_vfastStats;
 
 // One gathered vertex: the attributes the draw uses, decoded, plus channel 0's lit colour for colour texgen. pn and
 // tm[] index the job's own matrix copies once vfast_prepare has finished.
-typedef struct { float p[3], n[3], t[8][2], c0[2]; u32 col[2]; u8 hasColor; } VIn;
+// The texture coordinates come last: a job stores each vertex in VJob.inStride bytes, up to the highest coordinate the
+// draw uses (TP's draws use one: 52 bytes instead of 108; job memory per vertex ~145 -> ~90 bytes, so more jobs fit the
+// vertex worker's ring, and less of it crosses the shared L2).
+typedef struct { float p[3], n[3], c0[2]; u32 col[2]; u8 hasColor; float t[8][2]; } VIn;
+#define VIN(job, vi) ((VIn*)(void*)((u8*)(job)->in + (size_t)(vi) * (job)->inStride))
+bool g_vinCompact = false;  // off: every vertex takes a whole VIn (the A/B's other arm; each job keeps its own stride)
+static u32 vin_stride(u32 texUsed) {
+    if (!g_vinCompact) return (u32)sizeof(VIn);
+    return (u32)offsetof(VIn, t) + 8u * (texUsed ? 32u - (u32)__builtin_clz(texUsed) : 0u);
+}
 // A vertex's matrix indices, in their own array: the GX thread writes them (gather_indices, the matrix copies) and the
 // vertex worker writes VIn, so no cache line is written by both cores. Inside VIn every line of a deferred job moved
 // between cores 2 and 3, and a cache hit cost as much as a gather (2DS job 115: hits 33-35% of the worker, ~1.5 us a
@@ -282,7 +291,8 @@ struct VJob {
     const u32 *srcPa, *srcSeg;  // each segment's physical address (VC_NO_PA: not in RAM) and prim << 16 | count
     u32 onePa, oneSeg; // a single segment's, held in the job
     u32 made;          // g_memStamps.now before the job read guest RAM (the stream copy of a deferred gather is that old)
-    VIn* in;
+    VIn* in;           // count vertices of inStride bytes each (VIN)
+    u32 inStride;
     VIx* ix;           // the vertices' matrix indices (VIx)
     float (*pos)[21];  // position matrix (3x4) followed by its normal matrix (3x3), per local index
     float (*tex)[12];  // texture matrices (3x4), per local index
@@ -389,7 +399,7 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
                 if (pa < PA_MEM1_END) __builtin_prefetch(mem1 + pa);
             }
         }
-        VIn* in = &job->in[vi];
+        VIn* in = VIN(job, vi);
         if (indices) {
             VIx* x = &job->ix[vi];
             x->pn = job->pnDefault;
@@ -438,7 +448,7 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
 static void gpu_colours(const VJob* job, PVert* out) {
     u32 ch = job->rasChan & 1;
     for (u32 vi = 0; vi < job->count; vi++) {
-        const VIn* in = &job->in[vi];
+        const VIn* in = VIN(job, vi);
         u32 cc = ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch];
         u8* o = out[vi].col;
         o[0] = (u8)(cc >> 24); o[1] = (u8)(cc >> 16); o[2] = (u8)(cc >> 8); o[3] = (u8)cc;
@@ -688,7 +698,7 @@ static u32 index_list(const VJob* job, VIdx* out) {
 // used texture coordinates. Not c0, pn or tm (per draw).
 static u32 vc_rec(const VJob* job) { return 24u + (job->nrmUsed ? 12u : 0u) + 8u * (u32)__builtin_popcount(job->texUsed); }
 static void vc_pack(u8* d, const VJob* job, const VIn* in, u32 n) {
-    for (u32 i = 0; i < n; i++, in++) {
+    for (u32 i = 0; i < n; i++, in = (const VIn*)(const void*)((const u8*)in + job->inStride)) {
         memcpy(d, in->p, 12); d += 12;
         if (job->nrmUsed) { memcpy(d, in->n, 12); d += 12; }
         memcpy(d, in->col, 8); d += 8;
@@ -698,7 +708,7 @@ static void vc_pack(u8* d, const VJob* job, const VIn* in, u32 n) {
     }
 }
 static void vc_unpack(VIn* out, const VJob* job, const u8* d, u32 n) {
-    for (u32 i = 0; i < n; i++, out++) {
+    for (u32 i = 0; i < n; i++, out = (VIn*)(void*)((u8*)out + job->inStride)) {
         memcpy(out->p, d, 12); d += 12;
         if (job->nrmUsed) { memcpy(out->n, d, 12); d += 12; } else out->n[0] = out->n[1] = out->n[2] = 0;
         memcpy(out->col, d, 8); d += 8;
@@ -730,7 +740,7 @@ static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const
     }
     if (!ok) { vc->st.uncacheable++; return; }
     if (vc->pos + len > vc->size) { vc->total += vc->size - vc->pos; vc->pos = 0; }
-    vc_pack(vc->ring + vc->pos, job, job->in + from, cnt);
+    vc_pack(vc->ring + vc->pos, job, VIN(job, from), cnt);
     e.at = vc->total;
     e.off = vc->pos;
     vc->total += len;
@@ -745,11 +755,13 @@ static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const
     vc->st.inserts++;
 }
 
-static bool vc_same(const VJob* job, const VIn* a, const VIn* b, u32 n) {
+static bool vc_same(const VJob* job, const u8* ab, const u8* bb, u32 n) {
     for (u32 i = 0; i < n; i++) {
-        if (memcmp(a[i].p, b[i].p, sizeof a[i].p) || memcmp(a[i].col, b[i].col, sizeof a[i].col) || a[i].hasColor != b[i].hasColor) return false;
-        if (memcmp(a[i].n, b[i].n, sizeof a[i].n)) return false;
-        for (u32 t = 0; t < 8; t++) if (((job->texUsed >> t) & 1) && memcmp(a[i].t[t], b[i].t[t], sizeof a[i].t[t])) return false;
+        const VIn* a = (const VIn*)(const void*)(ab + (size_t)i * job->inStride);
+        const VIn* b = (const VIn*)(const void*)(bb + (size_t)i * job->inStride);
+        if (memcmp(a->p, b->p, sizeof a->p) || memcmp(a->col, b->col, sizeof a->col) || a->hasColor != b->hasColor) return false;
+        if (memcmp(a->n, b->n, sizeof a->n)) return false;
+        for (u32 t = 0; t < 8; t++) if (((job->texUsed >> t) & 1) && memcmp(a->t[t], b->t[t], sizeof a->t[t])) return false;
     }
     return true;
 }
@@ -837,14 +849,14 @@ static void gather_cached(VJob* job, bool indices) {
             hit = e != NULL;
             if (hit) {
                 u64 tu = VC_CLOCK();
-                vc_unpack(job->in + at, job, vc->ring + e->off, cnt);
+                vc_unpack(VIN(job, at), job, vc->ring + e->off, cnt);
                 if (timed) { g_vcPhase[4] += VC_CLOCK() - tu; g_vcPhase[5] += 2; }
                 vc->st.hits++;
                 vc->st.hitVerts += cnt;
                 if (g_vcacheCheck) {  // the checker: gather again and compare
-                    static VIn fresh[1024], keep[1024];  // (PC only; static: the 3DS worker's stack is 32 KB)
+                    static u8 fresh[1024 * sizeof(VIn)], keep[1024 * sizeof(VIn)];  // (PC only; static: the 3DS worker's stack is 32 KB)
                     if (cnt <= 1024) {
-                        memcpy(keep, job->in + at, cnt * sizeof(VIn));
+                        memcpy(keep, VIN(job, at), cnt * job->inStride);
                         // The self-test (VCACHE_PLANT): one hit in 97 sees its stream changed under it, unstamped, as a
                         // game writing vertex data without a flush would; those must show as differences. (Ignoring
                         // the stamps alone proved nothing: TP's stamped pages held unchanged vertex data, job 113 PC.)
@@ -852,8 +864,8 @@ static void gather_cached(VJob* job, bool indices) {
                         if (flip) *flip ^= 0x5A;
                         gather_range(job, false, at, at + cnt);
                         if (flip) *flip ^= 0x5A;
-                        memcpy(fresh, job->in + at, cnt * sizeof(VIn));
-                        memcpy(job->in + at, keep, cnt * sizeof(VIn));
+                        memcpy(fresh, VIN(job, at), cnt * job->inStride);
+                        memcpy(VIN(job, at), keep, cnt * job->inStride);
                         g_vcacheChecked++;
                         if (!vc_same(job, fresh, keep, cnt)) g_vcacheCheckFails++;
                     }
@@ -891,16 +903,6 @@ static void gather_cached(VJob* job, bool indices) {
 VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel* sel, const u8* raw, u32 count,
                     u32 vsize, bool gpuLight, bool defer, void* mem, PVert* out) {
     VJob* job = mem;
-    u8* m = (u8*)mem + align8(sizeof(VJob));
-    job->in = (VIn*)m;
-    m += align8(count * (u32)sizeof(VIn));
-    job->ix = (VIx*)m;
-    m += align8(count * (u32)sizeof(VIx));
-    u8* rawCopy = m;  // the stream, for a gather left to vfast_finish
-    m += align8(count * vsize);
-    job->pos = (float (*)[21])m;
-    m += align8(pos_cap(gx, count) * 21 * 4);
-    job->tex = (float (*)[12])m;
     job->count = count;
     job->gpuLight = gpuLight;
     job->gpuPos = false;
@@ -911,7 +913,6 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     g_pendVc = NULL; g_pendN = 0;
     job->made = g_memStamps.now;
     __sync_synchronize();  // the stamp before the reads it covers
-    VIn* g_in = job->in;
     // The draw's setup (decode layout, outputs needed, texture units, lighting halves, projection) depends only on
     // registers, so it is kept until one of them changes value (GXCore versions) or the draw's format, the TEV's
     // selection or the lighting mode differ.
@@ -928,6 +929,18 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     }
     memcpy(job->P, S->P, sizeof job->P);
     memcpy(job->unit, S->unit, sizeof job->unit);
+    // The job's memory (vfast_job_bytes reserved it for a full VIn per vertex; the vertices take only inStride).
+    u8* m = (u8*)mem + align8(sizeof(VJob));
+    job->in = (VIn*)(void*)m;
+    job->inStride = vin_stride(S->texUsed);
+    m += align8(count * job->inStride);
+    job->ix = (VIx*)(void*)m;
+    m += align8(count * (u32)sizeof(VIx));
+    u8* rawCopy = m;  // the stream, for a gather left to vfast_finish
+    m += align8(count * vsize);
+    job->pos = (float (*)[21])(void*)m;
+    m += align8(pos_cap(gx, count) * 21 * 4);
+    job->tex = (float (*)[12])(void*)m;
     u32 numChans = S->numChans, chans = S->chans, genUsed = S->genUsed, texUsed = S->texUsed;
     bool nrmUsed = S->nrmUsed, eyeUsed = S->eyeUsed, nbt = S->nbt, index3 = S->index3, pnDirect = S->pnDirect;
     const VHalf (*half)[2] = S->half;
@@ -1019,7 +1032,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         }
         VLit* lv = g_lit;
         for (u32 vi = 0; vi < count; vi++) {
-            const VIn* in = &g_in[vi];
+            const VIn* in = VIN(job, vi);
             VLit* v = &lv[vi];
             if (eyeUsed) {
                 u32 pn = job->ix[vi].pn, pm = pn * 4, nm = 0x400 + (pn & 31) * 3;
@@ -1043,7 +1056,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
             const float* oc = lv[vi].lc[sel->rasChan & 1];
             PVert* o = &out[vi];
             o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
-            if (chans & 1) { g_in[vi].c0[0] = lv[vi].lc[0][0]; g_in[vi].c0[1] = lv[vi].lc[0][1]; }
+            if (chans & 1) { VIN(job, vi)->c0[0] = lv[vi].lc[0][0]; VIN(job, vi)->c0[1] = lv[vi].lc[0][1]; }
         }
     }
     dprof_end(PROF_VLIGHT, t0);
@@ -1091,7 +1104,7 @@ static void job_origin(VJob* job);
 
 #define TG_LOOP(KIND, STQ) do { \
     _Pragma("GCC unroll 4") \
-    for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[ix[vi].tm[gi]], &in[vi], KIND, off, STQ, out[vi].tc[u]); \
+    for (u32 vi = 0; vi < count; vi++) texgen_one(job->tex[ix[vi].tm[gi]], IN_(vi), KIND, off, STQ, out[vi].tc[u]); \
 } while (0)
 
 // Per-phase time of vfast_finish on calls the caller marks (g_vfPhaseTimed: the 3DS vertex worker, one job in 16):
@@ -1106,22 +1119,25 @@ void vfast_finish(VJob* job, PVert* out) {
     }
     tp1 = vf_clock();
     u32 count = job->count;
-    const VIn* in = job->in;
     const VIx* ix = job->ix;
     const float* P = job->P;
+    // The vertices' base and stride in locals: writes to out may alias the job, which would reload them per access.
+    const u8* const inb = (const u8*)job->in;
+    const u32 ist = job->inStride;
+#define IN_(vi) ((const VIn*)(const void*)(inb + (size_t)(vi) * ist))
     if (job->gpuPos && !job->originDone) job_origin(job);
     if (job->gpuPos) {  // the shader transforms: position from the origin and palette row; normals for shader lighting
         const float* slot3 = job->slot3;
         float ox = job->origin[0], oy = job->origin[1], oz = job->origin[2];
         for (u32 vi = 0; vi < count; vi++) {
             float* o = out[vi].pos;
-            o[0] = in[vi].p[0] - ox; o[1] = in[vi].p[1] - oy; o[2] = in[vi].p[2] - oz; o[3] = slot3[ix[vi].pn];
+            o[0] = IN_(vi)->p[0] - ox; o[1] = IN_(vi)->p[1] - oy; o[2] = IN_(vi)->p[2] - oz; o[3] = slot3[ix[vi].pn];
         }
         if (job->gpuLight) {
 #pragma GCC unroll 4
             for (u32 vi = 0; vi < count; vi++) {
                 const float* N = job->pos[ix[vi].pn] + 12;
-                float nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
+                float nx = IN_(vi)->n[0], ny = IN_(vi)->n[1], nz = IN_(vi)->n[2];
                 PVert* o = &out[vi];
                 o->nrm[0] = N[0] * nx + N[1] * ny + N[2] * nz;
                 o->nrm[1] = N[3] * nx + N[4] * ny + N[5] * nz;
@@ -1134,7 +1150,7 @@ void vfast_finish(VJob* job, PVert* out) {
 #pragma GCC unroll 4
     for (u32 vi = 0; vi < count; vi++) {
         const float* M = job->pos[ix[vi].pn];
-        float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2];
+        float x = IN_(vi)->p[0], y = IN_(vi)->p[1], z = IN_(vi)->p[2];
         float e0 = M[0] * x + M[1] * y + M[2] * z + M[3];
         float e1 = M[4] * x + M[5] * y + M[6] * z + M[7];
         float e2 = M[8] * x + M[9] * y + M[10] * z + M[11];
@@ -1146,7 +1162,7 @@ void vfast_finish(VJob* job, PVert* out) {
         for (u32 vi = 0; vi < count; vi++) {
             const float* M = job->pos[ix[vi].pn];
             const float* N = M + 12;
-            float x = in[vi].p[0], y = in[vi].p[1], z = in[vi].p[2], nx = in[vi].n[0], ny = in[vi].n[1], nz = in[vi].n[2];
+            float x = IN_(vi)->p[0], y = IN_(vi)->p[1], z = IN_(vi)->p[2], nx = IN_(vi)->n[0], ny = IN_(vi)->n[1], nz = IN_(vi)->n[2];
             PVert* o = &out[vi];
             o->eye[0] = M[0] * x + M[1] * y + M[2] * z + M[3];
             o->eye[1] = M[4] * x + M[5] * y + M[6] * z + M[7];
@@ -1166,7 +1182,7 @@ texcoords:
             continue;
         }
         if (vu->mode == VU_COLOUR) {
-            for (u32 vi = 0; vi < count; vi++) { out[vi].tc[u][0] = in[vi].c0[0] / 255.0f; out[vi].tc[u][1] = in[vi].c0[1] / 255.0f; }
+            for (u32 vi = 0; vi < count; vi++) { out[vi].tc[u][0] = IN_(vi)->c0[0] / 255.0f; out[vi].tc[u][1] = IN_(vi)->c0[1] / 255.0f; }
             continue;
         }
         u32 gi = vu->gi, off = vu->off;
@@ -1189,6 +1205,7 @@ texcoords:
         g_vfPhase[0] += tp1 - tp0; g_vfPhase[1] += tp2 - tp1; g_vfPhase[2] += tp3 - tp2;
     }
 }
+#undef IN_
 
 u32 vfast_job_matrices(const VJob* job, const float (**pos)[21]) { *pos = job->pos; return job->nPos; }
 const float* vfast_job_proj(const VJob* job) { return job->P; }
@@ -1208,7 +1225,7 @@ static void job_origin(VJob* job) {
     if (!job->count) return;
     float p[3] = { 0, 0, 0 };
     if (job->gathered) {
-        memcpy(p, job->in[0].p, sizeof p);
+        memcpy(p, VIN(job, 0)->p, sizeof p);
     } else if (job->pos_.mode) {
         const u8* q = job->raw + (job->pnDirect ? 1u : 0u) + (u32)__builtin_popcount(job->tmDirect);
         const u8* src = fetch(job->mem1, &job->pos_, &q, job->pos_.n * job->pos_.cs);

@@ -53,6 +53,11 @@ static int by_value(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 
+u32 jitsample_hot(const Jit* j, u32* pcs, u32 max) {
+    if (!g_thread || !g_samples) return 0;
+    return jit_hot_blocks(j, g_samples, g_n, pcs, max);
+}
+
 void jitsample_report(FILE* f, const Jit* j) {
     if (!g_thread || !f) return;
     u32 n = g_n, outside = g_outside;

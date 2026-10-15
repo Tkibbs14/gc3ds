@@ -5552,6 +5552,51 @@ void jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
     }
 }
 
+static const u32* g_hotCount;
+static int by_hot(const void* a, const void* b) {
+    u32 x = g_hotCount[*(const u32*)a], y = g_hotCount[*(const u32*)b];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+u32 jit_hot_blocks(const Jit* j, const u32* addrs, u32 n, u32* pcs, u32 max) {
+    static u32 *order, *count, *hot;
+    if (!order) order = malloc(MAX_ENTRIES * sizeof *order);
+    if (!count) count = malloc(MAX_ENTRIES * sizeof *count);
+    if (!hot) hot = malloc(MAX_ENTRIES * sizeof *hot);
+    if (!order || !count || !hot) return 0;
+    u32 m = j->nEntries, key = block_key(j->g);
+    for (u32 i = 0; i < m; i++) { order[i] = i; count[i] = 0; }
+    g_sortEntries = j->table;
+    qsort(order, m, sizeof *order, by_fn);
+    for (u32 k = 0; k < n; k++) {
+        u32 a = addrs[k], lo = 0, hi = m, best = NO_ENTRY;
+        while (lo < hi) {  // the last block starting at or before a
+            u32 mid = (lo + hi) / 2;
+            if ((u32)(uintptr_t)j->table[order[mid]].fn <= a) { best = order[mid]; lo = mid + 1; } else hi = mid;
+        }
+        if (best != NO_ENTRY) count[best]++;
+    }
+    u32 nh = 0;
+    for (u32 i = 0; i < m; i++) {
+        const Entry* en = &j->table[i];
+        if (count[i] && en->msrBits == key && !en->idle && !en->poll) hot[nh++] = i;
+    }
+    g_hotCount = count;
+    qsort(hot, nh, sizeof *hot, by_hot);
+    if (nh > max) nh = max;
+    for (u32 i = 0; i < nh; i++) pcs[i] = j->table[hot[i]].pc;
+    return nh;
+}
+
+u32 jit_precompile(Jit* j, const u32* pcs, u32 n) {
+    u32 key = block_key(j->g), gen = j->gen, made = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (!lookup(j, pcs[i], key)) continue;
+        if (j->gen != gen) break;  // the buffer filled and was flushed: the order is lost anyway
+        made++;
+    }
+    return made;
+}
+
 const JitStats* jit_stats(const Jit* j) { return &j->stats; }
 
 // The fuller of the two regions.

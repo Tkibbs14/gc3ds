@@ -356,6 +356,8 @@ typedef struct {
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
     bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
     bool befloat, abBefloat;  // --befloat on|off (off), --ab befloat: float stubs in big-endian data mode (OPT_BEFLOAT)
+    bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
+    bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
@@ -369,6 +371,7 @@ typedef struct {
     int aotCall, aotAbi, aotPipe;  // --aotcall N, --aotabi 0|1, --aotpipe 0|1 (-1: default); live: set aotcall / aotabi / aotpipe
 } RunOpts;
 static RunOpts g_opt;
+static bool g_relayoutOn;  // the relayout arm (--relayout, --ab relayout)
 
 static u16 scripted_buttons(void) {
     u16 b = 0;
@@ -395,6 +398,7 @@ static void opts_default(RunOpts* o) {
     // stretch +1.5 / +1.4% (jobs 160 and 162).
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
+    o->vin = false;   // compact job vertices (job memory per vertex ~145 -> ~90 bytes): off until the 2DS A/B shows a gain
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
@@ -412,7 +416,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -447,6 +451,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--befloat")) o->befloat = !strcmp(v, "on");
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
+        else if (!strcmp(a, "--relayout")) o->relayout = !strcmp(v, "on");
+        else if (!strcmp(a, "--vin")) o->vin = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
@@ -501,7 +507,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -786,6 +792,7 @@ static const char* run(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
+        g_vinCompact = g_opt.vin && !g_opt.abVin;  // --ab vin starts off
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
         if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build (lookup tables %s), %s\n", aot_available() ? "present" : "absent",
@@ -942,6 +949,8 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_fskip() ? 1 : 0);
                 fprintf(g_perf, ",%d", aot_enabled() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_steal() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_relayoutOn ? 1 : 0);
+                fprintf(g_perf, ",%d", g_vinCompact ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -959,6 +968,19 @@ static const char* run(const char* path) {
                     apply_cmd(cmd, (double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 // A/B in two phases of AB_SECS: the native stand-in for Twilight Princess's shadow scan (hle_tp.c) on
                 // and off (hle column; each switch drops all compiled code, so read each phase after its first seconds).
+                // Hot-block relayout: the hot list from the samples since the last report (before anything below drops
+                // code), then a flush in both arms, and in the relayout arm the hot blocks compiled first.
+                if ((g_opt.relayout || g_opt.abRelayout) && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    static u32 hotPcs[8192];
+                    u32 nHot = jitsample_hot(g_jit, hotPcs, 8192);
+                    g_relayoutOn = g_opt.abRelayout ? !g_relayoutOn : true;
+                    jit_invalidate_all(g_jit);
+                    u64 tc = svcGetSystemTick();
+                    u32 made = g_relayoutOn ? jit_precompile(g_jit, hotPcs, nHot) : 0;
+                    if (g_perf) fprintf(g_perf, "# relayout %s at real %.0f s: %lu hot blocks sampled, %lu compiled first in %.1f ms\n",
+                                        g_relayoutOn ? "on" : "off", (double)(now - t0) / SYSCLOCK_ARM11, (unsigned long)nHot,
+                                        (unsigned long)made, (double)(svcGetSystemTick() - tc) * 1000.0 / SYSCLOCK_ARM11);
+                }
                 if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
                     hle_set_enabled(!hle_enabled());
                     jit_invalidate_all(g_jit);
@@ -991,6 +1013,7 @@ static const char* run(const char* path) {
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
+                if (g_opt.abVin && perfRows % AB_SECS == 0) g_vinCompact = !g_vinCompact;  // new jobs only: no recompile
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());
                 if (g_opt.abSteal && g_pica && perfRows % AB_SECS == 0) pica_set_steal(!pica_steal());

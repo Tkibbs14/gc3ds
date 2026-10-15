@@ -182,4 +182,10 @@ bool jit_host_fault_init(const u8* ram);
 // host start address in Gekko.hostPc. jit_map_hosts replaces host addresses with the guest PC of the block they are
 // in (0 when none).
 extern volatile u32 jit_in_run;
+// Hot-block relayout (--relayout, --ab relayout): the blocks the sampler saw, most sampled first (only blocks of the
+// current block key, no idle or polling blocks), as guest PCs; then, after a flush, jit_precompile compiles them in
+// that order, so the code that runs every frame lies together at the start of the buffer instead of among blocks that
+// ran once (I-fetch stalls were 21% of core 0, job 184). Needs blocks to store their start (jit_set_profile).
+u32 jit_hot_blocks(const Jit* j, const u32* hostAddrs, u32 n, u32* pcs, u32 max);
+u32 jit_precompile(Jit* j, const u32* pcs, u32 n);  // how many were compiled (stops if the buffer fills)
 void jit_map_hosts(const Jit* j, u32* addrs, u32 n);

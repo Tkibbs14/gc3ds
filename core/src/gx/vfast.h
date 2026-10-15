@@ -60,6 +60,7 @@ const VCacheStats* vcache_stats(const VCache* vc);
 void vfast_set_sources(VCache* vc, const u32* pa, const u32* seg, u32 n);
 void vfast_job_set_cache(VJob* job, VCache* vc);
 extern bool g_vcacheOn;     // off: every draw gathers (A/B)
+extern bool g_vinCompact;   // vertices in job memory sized to the texture coordinates the draw uses (--vin, --ab vin)
 extern bool g_vcacheCheck;  // PC checker: hits are gathered again and compared
 extern bool g_vcachePlant;  // the checker's self-test: page stamps ignored
 extern u64 g_vcacheCheckFails, g_vcacheChecked;
