@@ -4,6 +4,7 @@
 // probe-only jobs: it rebinds citro3d state that gc3ds's renderer (gx/pica) assumes it owns, and no game runs after.
 //   vertex FMT      60,000 vertices of zero-area triangles (nothing filled): ns per vertex by attribute format
 //   fill CASE       full-screen layers at 400x240: ns per pixel (and Mpixel/s) plain, blended, depth-tested, textured
+//                   (each with the target's centre pixel read back: zero means nothing was drawn and the number is void)
 //                   by format and size (a large texture sampled across the screen misses the texture cache), and by
 //                   the number of combiner stages
 //   draws CASE      1,000 one-triangle draws: GPU and CPU microseconds per draw, with and without a state change
@@ -60,6 +61,29 @@ static float frames(DrawFn draw, void* ctx, float* cpuMs) {
     C3D_FrameEnd(0);
     if (cpuMs) *cpuMs = cpu;
     return best;
+}
+
+// Whether `draw` puts pixels on the target: cleared to zero, drawn once, copied to linear memory, centre pixel read.
+// Job 178's fill cases reported 15 Gpixel/s because every quad sat at clip z = +0.5, outside the PICA200's 0 >= z >= -w,
+// and nothing was drawn; a number is only kept beside this check now.
+static u32 centre_pixel(DrawFn draw, void* ctx) {
+    u32* lin = linearAlloc(240 * 400 * 4);
+    if (!lin) return 0xDEADBEEF;
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    C3D_RenderTargetClear(g_rt, C3D_CLEAR_ALL, 0, 0);
+    C3D_FrameDrawOn(g_rt);
+    draw(ctx);
+    C3D_FrameEnd(0);
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);  // waits for that frame
+    C3D_FrameEnd(0);
+    memset(lin, 0, 240 * 400 * 4);
+    GSPGPU_FlushDataCache(lin, 240 * 400 * 4);
+    C3D_SyncDisplayTransfer((u32*)g_rt->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), lin, GX_BUFFER_DIM(240, 400),
+                            GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8));
+    GSPGPU_InvalidateDataCache(lin, 240 * 400 * 4);
+    u32 px = lin[200 * 240 + 120];
+    linearFree(lin);
+    return px;
 }
 
 static void env_color_only(void) {
@@ -149,8 +173,8 @@ const char* gpu_probe(void) {
     if (vf && vs) {
         for (int i = 0; i < kVerts; i++) {
             float x = (float)((i / 3) % 200) / 100.0f - 1.0f;
-            vf[i] = (Vert){x, 0.0f, 0.5f, 255, 255, 255, 255, 0.0f, 0.0f};
-            vs[i] = (VertS){(s16)(x * 100), 0, 50, 0, 255, 255, 255, 255, 0, 0};
+            vf[i] = (Vert){x, 0.0f, -0.5f, 255, 255, 255, 255, 0.0f, 0.0f};
+            vs[i] = (VertS){(s16)(x * 100), 0, -50, 100, 255, 255, 255, 255, 0, 0};
         }
         GSPGPU_FlushDataCache(vf, sizeof(Vert) * kVerts);
         GSPGPU_FlushDataCache(vs, sizeof(VertS) * kVerts);
@@ -189,7 +213,7 @@ const char* gpu_probe(void) {
         // u, v over 0..1 on the screen: the 64x64 texture is magnified (few texels, cache-friendly); the 1024x1024 ones
         // are minified ~2.5x without mipmaps (texels far apart: the texture cache misses).
         static const float kQ[6][4] = {{-1, -1, 0, 0}, {1, -1, 1, 0}, {1, 1, 1, 1}, {-1, -1, 0, 0}, {1, 1, 1, 1}, {-1, 1, 0, 1}};
-        for (int i = 0; i < 6; i++) quad[i] = (Vert){kQ[i][0], kQ[i][1], 0.5f, 200, 100, 50, 128, kQ[i][2], kQ[i][3]};
+        for (int i = 0; i < 6; i++) quad[i] = (Vert){kQ[i][0], kQ[i][1], -0.5f, 200, 100, 50, 128, kQ[i][2], kQ[i][3]};
         GSPGPU_FlushDataCache(quad, sizeof(Vert) * 6);
         memset(small.data, 0x7F, small.size);
         memset(big.data, 0x5A, big.size);
@@ -212,7 +236,7 @@ const char* gpu_probe(void) {
         };
         for (unsigned k = 0; k < sizeof kC / sizeof kC[0]; k++) {
             out("# gpu: section fill %s\n", kC[k].name);
-            C3D_DepthTest(kC[k].mode == 2, GPU_LEQUAL, kC[k].mode == 2 ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
+            C3D_DepthTest(kC[k].mode == 2, GPU_GEQUAL, kC[k].mode == 2 ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
             if (kC[k].mode == 1)
                 C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
             else
@@ -223,8 +247,11 @@ const char* gpu_probe(void) {
             } else
                 env_stages(kC[k].stages);
             float ms = frames(draw_layers, &fc, NULL);
-            out("# gpu fill %s: %.3f ns per pixel (%.0f Mpixel/s; %.2f ms for %d layers of 400x240)\n", kC[k].name,
-                ms * 1e6f / pixels, pixels / (ms * 1e3f), ms, kLayers);
+            FCtx one = {1};
+            u32 px = centre_pixel(draw_layers, &one);
+            out("# gpu fill %s: %.3f ns per pixel (%.0f Mpixel/s; %.2f ms for %d layers of 400x240), centre pixel %08lx%s\n",
+                kC[k].name, ms * 1e6f / pixels, pixels / (ms * 1e3f), ms, kLayers, (unsigned long)px,
+                px ? "" : " NOT DRAWN: the number is void");
         }
         C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
@@ -232,6 +259,10 @@ const char* gpu_probe(void) {
 
         // Draw calls: one small triangle each.
         out("# gpu: section draws\n");
+        // A triangle of ~32 pixels: the quad's first triangle, now actually drawn, would fill half the screen per draw.
+        static const float kT[3][2] = {{0, 0}, {0.04f, 0}, {0, 0.04f}};
+        for (int i = 0; i < 3; i++) quad[i] = (Vert){kT[i][0], kT[i][1], -0.5f, 200, 100, 50, 255, 0, 0};
+        GSPGPU_FlushDataCache(quad, sizeof(Vert) * 3);
         for (int change = 0; change < 2; change++) {
             DCtx dc = {1000, change != 0};
             float cpu = 0, ms = frames(draw_many, &dc, &cpu);
