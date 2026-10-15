@@ -1057,3 +1057,5 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Where the next real step is:** in the cutscene core 0 alone runs ~25% but the game ~21.5%, because core 0 waits for
   the GX thread ~11% of the time; the GX side (core 2) and the vertex worker (core 3) are worth up to ~+15% there. In
   the core-0-bound stretch, what is left in this JIT is ~1% items; more needs registers and FPRs across blocks.
+- **Owner direction (2026-10-15): GX side next (cores 2-3, the cutscene's limit), then back to the JIT for the rebuild**
+  (registers and FPRs kept across blocks; the peephole route is exhausted). The rebuild is a committed next step.
