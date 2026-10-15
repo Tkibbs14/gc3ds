@@ -1011,3 +1011,12 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   plain means while the 2DS's code buffer overflowed; fix the two trace-mode fuzzer bugs and the overflow first.
   (2) Register write-backs at block exits (~14% of hot words). (3) The shared stubs (31 KB, 4% of misses) ordered so
   the hot ones share lines.
+- **Traces re-measured (job 154, `--ab traces`, today's defaults): they lose.** Core 0 cutscene 23.58 +- 0.17 on vs
+  24.95 +- 0.22 off (-5.5%), I-cache misses +17%, fetch stalls +28%; later stretch even (12.21 vs 12.10, medians
+  12.38 vs 12.46), fetch stalls +15%. Fewer words executed per guest instruction, but tails compiled into several
+  traces make the hot code bigger. **What the 2DS rewards is less distinct hot code** (static words of the blocks in
+  use), not fewer executed words: OPT_RETSTUB removed ~1.8% of static hot words and gained ~1-1.6%. The two old
+  trace-mode fuzzer failures no longer reproduce (default seeds 31 / 41, chain 5 / 2 with traces on: 0 fails).
+- **Baseline of the new defaults (jobs 152-153, 120 s):** core 0 cutscene 25.56 / 25.61% (+-0.21), speed ~21.3%.
+- **Next: OPT_CRSTUB (job 155):** a compare's CR update (BIC + 3 conditional ORRs) as one BL to a shared stub per field,
+  signedness and register; ~3 words fewer per compare and record form, ~3-4% of static hot words.

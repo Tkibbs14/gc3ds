@@ -196,3 +196,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   hot code's footprint (distinct lines touched), not the words executed per instruction.
 - **Re-evaluate when:** several small exact reductions can be stacked into one A/B, or a footprint measure (distinct hot
   lines per field) shows which code the misses come from.
+
+## C14. Traces as the default (blocks follow branches, side exits)
+
+- **Status:** rejected 2026-10-14 (job 154): core 0 cutscene -5.5%, I-cache misses +17%, later stretch even.
+- **Why:** duplicated tails make the hot code bigger; the 2DS's core 0 is bound by instruction fetch, which follows
+  the distinct hot code, not the words executed per instruction (-18% under qemu).
+- **Re-evaluate when:** traces could share their tails (a trace ends where another block already starts), or the
+  I-cache stops being the limit.
