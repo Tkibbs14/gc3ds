@@ -132,6 +132,19 @@ pixel matches the expected colour, e.g. blend 0x64321940 = half of 0xc8643280). 
 - Memory fill read 2.9, 27 and 34 GB/s in jobs 178-180: the tick around C3D_SyncMemoryFill does not time the fill
   itself; not usable yet. Display transfer 1.69 - 1.98 ms; texture copies 230 - 250 MB/s.
 
+## Sharing the tooling (owner direction, 2026-10-15)
+
+James: once the measurements are in, make the tooling something everyone can use. The probes already live in this
+public repository (GPL-2); to make them usable outside gc3ds:
+
+1. A standalone homebrew app built from timingprobe.c and gpuprobe.c: no gc3ds, relay or game disc needed; it runs every
+   probe and writes one results file to the SD card.
+2. A results format with the console model, firmware, clock mode and probe version, so runs from different consoles
+   (Old / New 3DS, 2DS, XL) compare line by line.
+3. A reference results file from this New 2DS XL, and a page describing each probe, what it isolates and its known
+   caveats (from BENCHMARK_TOOLING_SURVEY.md).
+4. The calibrated model, once it matches the device, beside them.
+
 ## Limits
 
 - A/B effects here are 1-5%, smaller than any model's error: the 2DS stays the final judge for every default.
