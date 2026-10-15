@@ -92,7 +92,7 @@ bool gc3ds_gx_init(void) {
     // does not fit runs on the GX thread instead of the worker (2DS job 238: the GX thread saturated, core 3 at ~30%).
     pica_set_job_ring(4096u << 10);
     // sdmc:/gc3ds/native/gxopt.txt turns paths off for bisection: q early queue, m merging, w vertex worker,
-    // t shader transform, i indexed draws, s early splits; and on: 2 a second vertex worker on core 1, S the GX thread
+    // t shader transform, i indexed draws, s early splits, n native shapes; and on: 2 a second vertex worker on core 1, S the GX thread
     // running queued jobs while it would wait for the worker, D the stream dump.
     // --gxopt (native_3ds.cpp) first, else the file.
     extern char g_gxopt[32];
@@ -113,6 +113,8 @@ bool gc3ds_gx_init(void) {
             if (strchr(o, '2')) pica_set_worker2(true);
             if (strchr(o, 'S')) pica_set_steal(true);
             if (strchr(o, 'D')) g_dumpWant = true;
+            if (strchr(o, 'n')) pica_set_native_shapes(false);
+            pica_set_native_opts((strchr(o, 'F') ? 1u : 0u) | (strchr(o, 'L') ? 2u : 0u));  // native shapes' bisection
             if (strchr(o, 'd')) {
                 g_noDraw = *g_s->gx.core.backend;
                 g_noDraw.draw = no_draw;
@@ -150,6 +152,12 @@ void gc3ds_gx_feed(const u8* data, u32 len) {
         data += n;
         len -= n;
     }
+}
+
+// The game flushed (or invalidated) memory from the CPU's cache (Aurora's OSCache, patch_dusk.sh): on the GameCube that
+// is how its GPU sees vertex data the CPU rewrote, so native shapes made from it are made again (pica.c).
+void gc3ds_dc_store(const void* p, u32 len) {
+    if (g_on) pica_native_store(p, len);
 }
 
 // Waits until everything fed so far has been drawn and the vertex worker has read the game's arrays (before the game
@@ -239,5 +247,21 @@ void gc3ds_gx_stats(char* out, u32 size) {
         n += snprintf(out + n, size - n, " %.0f/%llu", (double)g_gxOpTicks[i] * 1000.0 / SYSCLOCK_ARM11,
                       (unsigned long long)g_gxOpCount[i]);
         g_gxOpTicks[i] = g_gxOpCount[i] = 0;
+    }
+    // Native shapes (pica.c g_nsStats, totals): drawn converted, conversions, their vertices; old path for state, layout,
+    // memory; dropped for a flush, hash checks, changed, evictions, draws of changing shapes; then ms since the last line
+    // converting and drawing converted, flushed ranges looked at, ring overflows; shapes kept and their KB.
+    if (n > 0 && (u32)n < size) {
+        u32 live, bytes = pica_native_bytes(&live);
+        const u64* ns = g_nsStats;
+        static u64 lastBuild, lastDraw;
+        double buildMs = (double)(ns[11] - lastBuild) * 1000.0 / SYSCLOCK_ARM11, drawMs = (double)(ns[12] - lastDraw) * 1000.0 / SYSCLOCK_ARM11;
+        lastBuild = ns[11];
+        lastDraw = ns[12];
+        n += snprintf(out + n, size - n, " | ns %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %.0f %.0f %llu %llu %lu %lu",
+                      (unsigned long long)ns[0], (unsigned long long)ns[1], (unsigned long long)ns[2], (unsigned long long)ns[3],
+                      (unsigned long long)ns[4], (unsigned long long)ns[5], (unsigned long long)ns[6], (unsigned long long)ns[7],
+                      (unsigned long long)ns[8], (unsigned long long)ns[9], (unsigned long long)ns[10], buildMs, drawMs,
+                      (unsigned long long)ns[13], (unsigned long long)ns[14], (unsigned long)live, (unsigned long)(bytes >> 10));
     }
 }

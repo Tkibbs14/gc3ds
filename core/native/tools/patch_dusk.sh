@@ -237,6 +237,35 @@ if 'the GameCube\'s list as it is' not in s:
     open(p, 'w').write(s)
 print('J3D display lists unoptimized:', 'the GameCube\'s list as it is' in s)
 PY
+# Cache flushes: Aurora's are empty (a PC has no GPU-incoherent cache). gc3ds's native shapes (pica.c) are vertex
+# buffers converted once from the game's display lists and vertex arrays; the game flushes what it rewrites with the CPU
+# (CPU skinning, vertex colour animation, display-list patches), as the GameCube's GPU needed, so each flush goes to
+# gc3ds_dc_store (platform/gx/gx_3ds.c), and shapes made from that memory are made again.
+python3 - <<'PY'
+p = 'extern/aurora/lib/dolphin/os/OSCache.cpp'
+s = open(p).read()
+old = '''void DCInvalidateRange(void*, u32) {}
+void DCFlushRange(void*, u32) {}
+void DCStoreRange(void*, u32) {}
+void DCFlushRangeNoSync(void*, u32) {}
+void DCStoreRangeNoSync(void*, u32) {}
+'''
+new = '''#if defined(__3DS__)
+void gc3ds_dc_store(const void* p, u32 len);  // gc3ds native mode: native shapes made from flushed memory are made again
+void DCInvalidateRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
+void DCFlushRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
+void DCStoreRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
+void DCFlushRangeNoSync(void* p, u32 n) { gc3ds_dc_store(p, n); }
+void DCStoreRangeNoSync(void* p, u32 n) { gc3ds_dc_store(p, n); }
+#else
+''' + old + '''#endif
+'''
+if 'gc3ds_dc_store' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('aurora cache flushes to gc3ds:', 'gc3ds_dc_store' in s)
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches

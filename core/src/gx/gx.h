@@ -71,6 +71,10 @@ struct GXBackend {
     // Optional: triangles from `nv` vertices and `ni` u16 indices in host byte order (native mode, Aurora's
     // GX_AURORA_DRAW_INDEXED), each vertex transformed once. Returns false when not taken; fifo.c then expands it.
     bool (*draw_indexed)(void* ctx, System* s, u32 vat, const u8* verts, u32 nv, u32 vsize, const u8* idx, u32 ni);
+    // Optional (native mode): the same draw read in place from a display list called by reference, `cmd` its command's
+    // address there (stable while the list lives), so the backend may keep the draw converted. False: not taken.
+    bool (*draw_native)(void* ctx, System* s, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
+                        const u8* idx, u32 ni);
 };
 // True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
 extern bool g_gxMergeOpen;

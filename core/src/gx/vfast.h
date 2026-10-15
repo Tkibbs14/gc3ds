@@ -106,3 +106,28 @@ typedef struct { float lights[40][4], sel[4][4], mat[4], amb[4], vsel[4], on[4];
 bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u);
 // The shader's colour computation in C (the PC checks it against the reference): RGBA 0..255.
 void vfast_gpu_light_model(const VLightUniforms* u, const PVert* v, float out[4]);
+
+#ifdef GC3DS_NATIVE
+// Native mode's converted shapes (pica.c): a model's GX_AURORA_DRAW_INDEXED decoded once into vertex buffers the PICA
+// reads, drawn each frame with only the matrices and state of the moment.
+void vfast_proj(const GXCore* gx, const VFold* f, float P[16]);  // projection x viewport x fold (as the GPU transform)
+enum { VN_POS = 1, VN_NRM = 2, VN_COL0 = 4, VN_COL1 = 8, VN_TEX0 = 16 };
+typedef struct {
+    u32 present;           // VN_* bits (VN_TEX0 << i for texture coordinate i)
+    bool pnDirect;         // a position matrix index in each vertex
+    u32 lo[12], hi[12];    // per attribute (position, normal, colours, texture coordinates): the bytes of array
+                           // elements its indices reach, [lo, hi); 0, 0 when not indexed
+} VNatInfo;
+// The current vertex descriptor for format `vat`; false when native shapes do not take it (texture matrix indices in
+// the vertices, no position).
+bool vfast_native_info(const GXCore* gx, u32 vat, VNatInfo* ni);
+// Every vertex's attributes, as gather_range decodes them: pos[i] = (x, y, z, position matrix row), normals, colours as
+// bytes R, G, B, A, texture coordinates (NULL outputs are skipped); fills ni's ranges.
+void vfast_native_decode(const GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize, VNatInfo* ni, float (*pos)[4],
+                         float (*nrm)[3], u8 (*col[2])[4], float (*tex[8])[2]);
+// The delivered colour channel for the native shader path: lit (the channel's lights packed to the front of u->lights,
+// *nLights of them, the shader loops over those) or not (u->vsel picks the material from the vertex colour or the
+// register). colSrc: the vertex colour that feeds it (0, 1; 2: none present, white). False for what the shader does not
+// do: specular attenuation, an alpha half lit unlike the colour half, texture coordinates from a colour.
+bool vfast_native_light(const GXCore* gx, const VSel* sel, u32 present, VLightUniforms* u, u32* nLights, u32* colSrc, bool* lit);
+#endif

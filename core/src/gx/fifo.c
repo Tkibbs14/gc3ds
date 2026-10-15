@@ -429,6 +429,15 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
         NEED(len);
         const u8* idx = a + 7;
         const u8* verts = idx + ni * 2;
+        if (inList && ni && vsize && gx->backend && gx->backend->draw_native &&
+            gx->backend->draw_native(gx->backendCtx, s, a[0] & 7, p, 3 + len, verts, nv, vsize, idx, ni)) {
+            gx->draws++;
+            g_dlStats[1]++;
+            gx->vertices += nv;
+            gx->primCount[2]++;
+            gx->aurora[6]++;
+            return 3 + len;
+        }
         if (ni && vsize && gx->backend && gx->backend->draw_indexed &&
             gx->backend->draw_indexed(gx->backendCtx, s, a[0] & 7, verts, nv, vsize, idx, ni)) {
             gx->draws++;

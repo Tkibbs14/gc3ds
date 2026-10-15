@@ -228,7 +228,7 @@ void frame_end() {
     double dlMs = ticks_to_us(g_dlTicks) / 1000.0 / s_frames, dlKb = g_dlBytes / 1024.0 / s_frames,
            dlCalls = (double)g_dlCalls / s_frames;  // per frame
     g_dlTicks = g_dlBytes = g_dlCalls = 0;
-    static char gxStats[640];  // gc3ds's GX: draws, vertices, Aurora command counts (gx_3ds.c)
+    static char gxStats[1024];  // gc3ds's GX: draws, vertices, Aurora command counts (gx_3ds.c)
     gc3ds_gx_stats(gxStats, sizeof gxStats);
     float px = 0, py = 0, pz = 0;
     native_player_pos(&px, &py, &pz);  // % of each frame the game worked (Dusklight's frame limiter)

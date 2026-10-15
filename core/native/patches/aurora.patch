@@ -68,6 +68,31 @@ index 5bf9460..ac89d1c 100644
    aurora::gx::fifo::publish();
  }
  
+diff --git a/lib/dolphin/os/OSCache.cpp b/lib/dolphin/os/OSCache.cpp
+index 7d8815c..6283516 100644
+--- a/lib/dolphin/os/OSCache.cpp
++++ b/lib/dolphin/os/OSCache.cpp
+@@ -16,11 +16,20 @@ u32 copy_data(void* dest, const void* src, u32 nBytes) {
+ } // namespace
+ 
+ extern "C" {
++#if defined(__3DS__)
++void gc3ds_dc_store(const void* p, u32 len);  // gc3ds native mode: native shapes made from flushed memory are made again
++void DCInvalidateRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
++void DCFlushRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
++void DCStoreRange(void* p, u32 n) { gc3ds_dc_store(p, n); }
++void DCFlushRangeNoSync(void* p, u32 n) { gc3ds_dc_store(p, n); }
++void DCStoreRangeNoSync(void* p, u32 n) { gc3ds_dc_store(p, n); }
++#else
+ void DCInvalidateRange(void*, u32) {}
+ void DCFlushRange(void*, u32) {}
+ void DCStoreRange(void*, u32) {}
+ void DCFlushRangeNoSync(void*, u32) {}
+ void DCStoreRangeNoSync(void*, u32) {}
++#endif
+ void DCZeroRange(void* addr, u32 nBytes) {
+   if (nBytes != 0) {
+     std::memset(addr, 0, nBytes);
 diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
 index bcaba60..213f171 100644
 --- a/lib/gx/fifo.cpp

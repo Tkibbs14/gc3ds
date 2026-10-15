@@ -127,6 +127,16 @@ static struct {
     u32 palGen[PAL_SLOTS], lastSlot, lastGen;
     float lastRaw[12], lastOrigin[3];
     bool lastValid;
+#ifdef GC3DS_NATIVE
+    // Native shapes (below): the attribute layout is a native shape's (attrs_regular restores the arena's); the shader's
+    // nat and lcount uniforms; palette rows 0-38 as native draws uploaded them (natRowValid: bit per row).
+    bool natAttr;
+    s8 uNat, uLcount;
+    u64 natRowValid;
+    float natRow[39][4];
+    u32 natProjVer;  // xfRegVersion of the projection in g.proj (native draws)
+    bool natProjOk;
+#endif
 } g;
 
 PicaStats g_picaStats;
@@ -180,13 +190,43 @@ static void set_vbase(u32 v) {
     g.vbase = v;
 }
 
+// The arena's vertex layout (PVert: v0-v6), as begin_frame sets it.
+static void attrs_arena(void) {
+    C3D_AttrInfo* ai = C3D_GetAttrInfo();
+    AttrInfo_Init(ai);
+    AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
+    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);  // eye-space position (shader lighting)
+    AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);  // eye-space normal
+}
+
+#ifdef GC3DS_NATIVE
+// After native shapes (their own buffers and attribute layout, the shader's native path): the arena's again.
+static void attrs_regular(void) {
+    if (!g.natAttr) return;
+    g.natAttr = false;
+    attrs_arena();
+    C3D_BufInfo* bi = C3D_GetBufInfo();
+    BufInfo_Init(bi);
+    BufInfo_Add(bi, g.arena + g.vbase, sizeof(PVert), 7, 0x6543210);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 0, 0, 0, 0);
+}
+#else
+static inline void attrs_regular(void) {}
+#endif
+
 static void draw_arrays(u32 first, u32 n) {
+    attrs_regular();
     set_vbase(0);
     C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)n);
     g_picaStats.drawCalls++;
 }
 
 static void draw_elements(u32 first, u32 n) {
+    attrs_regular();
     C3D_DrawElements(GPU_TRIANGLES, (int)n, C3D_UNSIGNED_SHORT, g.idx + first);
     g_picaStats.drawCalls++;
 }
@@ -213,6 +253,10 @@ static void flush_arena(void) {
     g.idxFlushed = g.idxUsed;
 }
 
+#ifdef GC3DS_NATIVE
+static void ns_grave_free(void);  // native shapes (below)
+#endif
+
 static void free_all_textures(void) {
     for (u32 i = 0; i < MAX_TEX; i++)
         if (g.tex[i].live) { C3D_TexDelete(&g.tex[i].tex); g.tex[i].live = false; }
@@ -231,16 +275,13 @@ static void begin_frame(void) {
     for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
     g.nGrave = 0;
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
+#ifdef GC3DS_NATIVE
+    ns_grave_free();  // native shapes retired before the previous submit, which the GPU has finished
+    g.natAttr = false;
+    if (g.uNat >= 0) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 0, 0, 0, 0);
+#endif
     C3D_BindProgram(&g.prog);
-    C3D_AttrInfo* ai = C3D_GetAttrInfo();
-    AttrInfo_Init(ai);
-    AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
-    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
-    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
-    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
-    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
-    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);  // eye-space position (shader lighting)
-    AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);  // eye-space normal
+    attrs_arena();
     C3D_BufInfo* bi = C3D_GetBufInfo();
     BufInfo_Init(bi);
     BufInfo_Add(bi, g.arena, sizeof(PVert), 7, 0x6543210);
@@ -323,6 +364,10 @@ u64 g_vwInline, g_vwInlineVerts;  // draws (and their vertices) too large for th
 
 u32 pica_queue_offset(void) { return g_q ? (u32)((u8*)g_q - __C3D_Context) : 0xFFFFFFFFu; }
 
+// Native shapes draw from their own buffers, not the arena: g_nsSince counts their indices since the last split, so
+// that a frame of them is split as often (split_early; always 0 in the emulator).
+static u32 g_nsSince;
+
 // Submits what is queued so far so that the `transfers` GX transfers queued next run after it. The GX command queue
 // holds 32 entries (citro3d) and runs only at C3D_FrameEnd; libctru panics when it is full, so a frame that has
 // queued many splits and transfers (several emulated fields between presents) is submitted early.
@@ -337,6 +382,7 @@ static void split(u32 transfers) {
     g_picaStats.splits++;
     g.queued += 1 + transfers;
     g.splitArena = g.arenaUsed;
+    g_nsSince = 0;
     if (!transfers) queue_run();  // with transfers, the caller runs the queue once it has added them
 }
 
@@ -577,24 +623,31 @@ static void apply_tev(const PicaTev* t) {
 typedef struct { u32 n, key[72]; PicaTev tev; } TevSlot;
 static TevSlot* g_tevCache;
 
+// The TEV program of registers k (tev_key's n words): from the cache, else compiled into it (or into *tmp without one).
+static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev* tmp) {
+    if (!g_tevCache) g_tevCache = calloc(1u << TEVC_BITS, sizeof *g_tevCache);
+    u32 h = 2166136261u;
+    for (u32 i = 0; i < n; i++) h = (h ^ k[i]) * 16777619u;
+    TevSlot* slot = g_tevCache ? &g_tevCache[(h ^ (h >> 15)) & ((1u << TEVC_BITS) - 1)] : NULL;
+    if (slot && slot->n == n && !memcmp(slot->key, k, n * 4)) return &slot->tev;
+    tev_pica_compile(gx, tmp);
+    g_picaStats.tevCompiles++;
+    if (tmp->approx) note_approx(tmp->approx);
+    if (!slot) return tmp;
+    slot->n = n;
+    memcpy(slot->key, k, n * 4);
+    slot->tev = *tmp;
+    return &slot->tev;
+}
+
 // Recompiles the TEV program only when a register it depends on changed, and only when the cache does not hold it.
 static void update_tev(const GXCore* gx) {
     u32 k[72], n = tev_key(gx, k);
     if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
     memcpy(g.tevKey, k, n * 4);
     g_picaStats.tevChanges++;
-    if (!g_tevCache) g_tevCache = calloc(1u << TEVC_BITS, sizeof *g_tevCache);
-    u32 h = 2166136261u;
-    for (u32 i = 0; i < n; i++) h = (h ^ k[i]) * 16777619u;
-    TevSlot* slot = g_tevCache ? &g_tevCache[(h ^ (h >> 15)) & ((1u << TEVC_BITS) - 1)] : NULL;
-    if (slot && slot->n == n && !memcmp(slot->key, k, n * 4)) {
-        g.tev = slot->tev;
-    } else {
-        tev_pica_compile(gx, &g.tev);
-        g_picaStats.tevCompiles++;
-        if (g.tev.approx) note_approx(g.tev.approx);
-        if (slot) { slot->n = n; memcpy(slot->key, k, n * 4); slot->tev = g.tev; }
-    }
+    PicaTev tmp;
+    g.tev = *tev_lookup(gx, k, n, &tmp);
     apply_tev(&g.tev);
     g.sel = (VSel){ g.tev.rasChan, g.tev.numTex, { g.tev.texCoord[0], g.tev.texCoord[1], g.tev.texCoord[2] } };
     g.tevValid = true;
@@ -842,6 +895,9 @@ static void flush_sub(void) {
 }
 
 static void pal_upload(u32 k, const float* m) {
+#ifdef GC3DS_NATIVE
+    g.natRowValid &= ~(7ull << (3 * k));  // rows a native draw may have left there
+#endif
     memcpy(g.pal[k], m, sizeof g.pal[k]);
     C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + 3 * (int)k, 3);
     for (int r = 0; r < 3; r++) u[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
@@ -1240,8 +1296,10 @@ static void vw_sync_all(void) {
 // (Splitting at a closed batch waited for every queued job, so it was only done with <= 4 jobs queued; with draw
 // merging a job is ~28 draws, the gate rarely opened, and splits fell from 67 to 49-55/s while the GX thread's wait for
 // the GPU rose from 1.7% to 6-7%: 2DS, 9388639.)
+#define NS_SPLIT (3u * SPLIT_VERTS)
 static void split_early(void) {
-    if (!g_earlySplit || !g_q || !g.frame || g.arenaUsed - g.splitArena < SPLIT_VERTS || g.queued + 8 > GXQUEUE_BUDGET)
+    if (!g_earlySplit || !g_q || !g.frame || (g.arenaUsed - g.splitArena < SPLIT_VERTS && g_nsSince < NS_SPLIT) ||
+        g.queued + 8 > GXQUEUE_BUDGET)
         return;
     if (!g_splitOpen || !g.batchOpen || g_vwReserved) {  // the whole batch: only when the worker is nearly idle
         if (vw_nearly_idle()) split(0);
@@ -1268,6 +1326,7 @@ static void split_early(void) {
     g_picaStats.splits++;
     g.queued += 1;
     g.splitArena = g.arenaUsed;
+    g_nsSince = 0;
     queue_run();
 }
 
@@ -1952,7 +2011,557 @@ static bool pica_draw_indexed(void* ctx, System* s, u32 vat, const u8* verts, u3
     return true;
 }
 
+#ifdef GC3DS_NATIVE
+// ---- native shapes (native mode; docs/research/NATIVE_PORT_PLAN.md, "Converted shapes") ----
+// Dusklight's models reach the stream as display lists called by reference, each shape's geometry one
+// GX_AURORA_DRAW_INDEXED (Aurora's optimizer: unique vertices as GameCube attribute indices, u16 triangles). The vertex
+// path gathered and transformed ~73,000 such vertices a frame on cores 2-3 (title demo, 5-7 fps). Here each command is
+// converted once: its vertices decoded into PICA vertex buffers in linear memory (position + matrix row, normal,
+// colours, texture coordinates), its indices copied; each frame it is drawn with the matrices, texgen, lighting and
+// TEV state of the moment, all transformed in the vertex shader's native path (gxpass_native.v.pica).
+//   Kept by the command's address (stable while its display list lives) and a key of the vertex format and the arrays
+// it reads. A shape is made again when memory it was made from changes: Dusklight keeps the GameCube's cache flushes
+// (DCStoreRange after CPU skinning, vertex colour animation, display-list rewrites), which Aurora's OSCache passes
+// here (pica_native_store); a shape seen changing three times stays on the old path (CPU-deformed geometry). A few
+// shapes a frame are checked against a hash of their sources, which counts any change the flushes missed.
+#define NS_SLOTS 4096                // power of two
+#define NS_PROBE 16
+#define NS_BUDGET (8u << 20)         // linear memory for converted shapes
+#define NS_KEY 32
+#define NS_RANGES 13                 // the display list, and the array elements of up to 12 indexed attributes
+#define NS_GRAVE 1024
+enum { NO_POS, NO_NRM, NO_COL0, NO_COL1, NO_TEX0, NO_IDX = 12, NO_N };
+typedef struct {
+    const u8* cmd;                   // the command in its display list; NULL: a free slot
+    u32 len, nv, ni, bytes, lastFrame, hash, present, rows, live;
+    u32 key[NS_KEY];
+    u8* mem;                         // one linear block: the streams at off[] (~0u: absent)
+    u32 off[NO_N];
+    float origin[3];                 // subtracted from every position; folded into the matrices' translations
+    bool pnDirect;
+    u8 nr;
+    u32 r0[NS_RANGES], r1[NS_RANGES], lo, hi;  // the bytes it was made from, [r0, r1), and their hull
+} NShape;
+static NShape* g_ns;
+static u32* g_nsLive;   // slots in use, packed (NShape.live: the position here)
+static u32 g_nsLiveN, g_nsBytes, g_nsVerify;
+static u8* g_nsGrave[NS_GRAVE];  // retired buffers: the GPU may still read them until the frame's submit is done
+static u32 g_nsGraveN;
+static volatile bool g_nsWant = true;
+// Counters (totals): [0] draws drawn converted, [1] conversions, [2] their vertices; old path for want of [3] state
+// support, [4] the shape's layout, [5] memory or slots; [6] shapes dropped for a flush on their memory, [7] hash checks,
+// [8] of them changed, [9] evictions, [10] draws of shapes left on the old path as changing; ticks of [11] conversions,
+// [12] native draws (conversions included); [13] flushed ranges looked at, [14] ring overflows.
+u64 g_nsStats[16];
+void pica_set_native_shapes(bool on) { g_nsWant = on; }
+bool pica_native_shapes(void) { return g_nsWant; }
+u32 pica_native_bytes(u32* live) { if (live) *live = g_nsLiveN; return g_nsBytes; }
+
+// Which memory converted shapes were made from: a bit per 256 bytes of the heap window (the game's heaps are there; a
+// shape with anything outside is not converted). Flushes on marked memory go into a ring the GX thread reads.
+#define NW_BASE 0x08000000u
+#define NW_SPAN 0x08000000u
+#define NW_SHIFT 8
+static volatile u32 g_nwBits[(NW_SPAN >> NW_SHIFT) / 32];
+#define ND_RING 1024
+static struct { u32 lo, hi; } g_ndRing[ND_RING];
+static volatile u32 g_ndHead, g_ndTail, g_ndOverflow, g_ndLock;
+
+// Any thread (the game's, through Aurora's DCFlushRange / DCStoreRange / DCInvalidateRange).
+void pica_native_store(const void* p, u32 len) {
+    u32 a = (u32)(uintptr_t)p;
+    if (!len || a - NW_BASE >= NW_SPAN) return;
+    u32 end = a + len;
+    if (end < a || end - NW_BASE > NW_SPAN) end = NW_BASE + NW_SPAN;
+    u32 first = (a - NW_BASE) >> NW_SHIFT, last = (end - 1 - NW_BASE) >> NW_SHIFT;
+    bool marked = false;
+    for (u32 i = first; i <= last && !marked; i++) {
+        u32 w = g_nwBits[i >> 5];
+        if (!w) { i |= 31; continue; }
+        marked = (w >> (i & 31)) & 1;
+    }
+    if (!marked) return;
+    while (__sync_lock_test_and_set(&g_ndLock, 1)) {}
+    u32 h = g_ndHead;
+    if (h - g_ndTail >= ND_RING) {
+        g_ndOverflow = 1;
+    } else {
+        g_ndRing[h % ND_RING].lo = a;
+        g_ndRing[h % ND_RING].hi = end;
+        vw_dmb();
+        g_ndHead = h + 1;
+    }
+    __sync_lock_release(&g_ndLock);
+}
+
+static inline u32 ns_hash_ptr(const void* p) { u32 h = (u32)(uintptr_t)p * 2654435761u; return h ^ (h >> 15); }
+
+// Shapes seen made again, by command: three times and it stays on the old path (CPU-deformed geometry).
+#define NS_DYN 1024
+static struct { const u8* cmd; u32 kills; } g_nsDyn[NS_DYN];
+static void ns_dyn_note(const u8* cmd) {
+    u32 i = ns_hash_ptr(cmd) & (NS_DYN - 1);
+    if (g_nsDyn[i].cmd != cmd) { g_nsDyn[i].cmd = cmd; g_nsDyn[i].kills = 0; }
+    g_nsDyn[i].kills++;
+}
+static bool ns_dynamic(const u8* cmd) {
+    u32 i = ns_hash_ptr(cmd) & (NS_DYN - 1);
+    return g_nsDyn[i].cmd == cmd && g_nsDyn[i].kills >= 3;
+}
+
+static void ns_grave_free(void) {
+    for (u32 i = 0; i < g_nsGraveN; i++) linearFree(g_nsGrave[i]);
+    g_nsGraveN = 0;
+}
+
+static void ns_kill(NShape* e) {
+    if (g_nsGraveN == NS_GRAVE) { end_frame(); begin_frame(); }  // begin_frame frees the grave
+    g_nsGrave[g_nsGraveN++] = e->mem;
+    g_nsBytes -= e->bytes;
+    u32 pos = e->live, last = g_nsLive[--g_nsLiveN];
+    g_nsLive[pos] = last;
+    g_ns[last].live = pos;
+    e->cmd = NULL;
+    e->mem = NULL;
+}
+
+// Flushed memory since the last look: the shapes made from it go.
+static void ns_dirty(void) {
+    u32 h = g_ndHead;
+    vw_dmb();
+    if (g_ndOverflow) {
+        g_ndOverflow = 0;
+        while (g_nsLiveN) ns_kill(&g_ns[g_nsLive[0]]);
+        g_ndTail = h;
+        g_nsStats[14]++;
+        return;
+    }
+    while (g_ndTail != h) {
+        u32 lo = g_ndRing[g_ndTail % ND_RING].lo, hi = g_ndRing[g_ndTail % ND_RING].hi;
+        vw_dmb();
+        g_ndTail = g_ndTail + 1;
+        g_nsStats[13]++;
+        for (u32 j = 0; j < g_nsLiveN;) {
+            NShape* e = &g_ns[g_nsLive[j]];
+            bool hit = false;
+            if (lo < e->hi && hi > e->lo)
+                for (u32 r = 0; r < e->nr && !hit; r++) hit = lo < e->r1[r] && hi > e->r0[r];
+            if (!hit) { j++; continue; }
+            ns_dyn_note(e->cmd);
+            ns_kill(e);  // position j now holds another shape
+            g_nsStats[6]++;
+        }
+    }
+}
+
+static u32 ns_sources_hash(const NShape* e) {
+    u32 h = 2166136261u;
+    for (u32 r = 0; r < e->nr; r++) {
+        u32 lo = e->r0[r] & ~3u;
+        h = (h ^ hash_words((const u8*)(uintptr_t)lo, e->r1[r] - lo)) * 16777619u;
+    }
+    return h;
+}
+
+// Two shapes a present: their sources hashed again (what the flushes would have missed).
+static void ns_verify(void) {
+    for (int k = 0; k < 2 && g_nsLiveN; k++) {
+        NShape* e = &g_ns[g_nsLive[g_nsVerify++ % g_nsLiveN]];
+        g_nsStats[7]++;
+        if (ns_sources_hash(e) == e->hash) continue;
+        g_nsStats[8]++;
+        ns_dyn_note(e->cmd);
+        ns_kill(e);
+    }
+}
+
+// The key: vertex format, descriptor and, for indexed attributes, the arrays and their byte order.
+static void ns_key(const GXCore* gx, u32 vat, u32* k) {
+    u32 lo = gx->cp[0x50], hi = gx->cp[0x60], n = 0, used = 0;
+    k[n++] = vat; k[n++] = lo; k[n++] = hi;
+    k[n++] = gx->cp[0x70 + vat]; k[n++] = gx->cp[0x80 + vat]; k[n++] = gx->cp[0x90 + vat];
+    u32 modes = ((lo >> 9) & 0xFF) | (hi << 8);  // two bits per attribute: position, normal, colours, coordinates
+    for (u32 i = 0; i < 12; i++)
+        if (((modes >> (2 * i)) & 3) >= 2) { used |= 1u << i; k[n++] = gx->cp[0xA0 + i]; k[n++] = gx->cp[0xB0 + i]; }
+    k[n++] = gx->arrayLE & used;
+    while (n < NS_KEY) k[n++] = 0;
+}
+
+// Linear memory for a conversion: evicts shapes not drawn in this or the previous frame, oldest first.
+static u8* ns_alloc(u32 bytes) {
+    for (int tries = 0; tries < 64; tries++) {
+        if (g_nsBytes + bytes <= NS_BUDGET) {
+            u8* m = linearAlloc(bytes);
+            if (m) return m;
+        }
+        NShape* old = NULL;
+        for (u32 j = 0; j < g_nsLiveN; j++) {
+            NShape* e = &g_ns[g_nsLive[j]];
+            if (e->lastFrame + 1 < g.frameNo && (!old || e->lastFrame < old->lastFrame)) old = e;
+        }
+        if (!old) return NULL;
+        ns_kill(old);
+        g_nsStats[9]++;
+    }
+    return NULL;
+}
+
+static bool ns_range(NShape* e, u32 lo, u32 hi) {
+    if (lo >= hi) return true;
+    if (lo - NW_BASE >= NW_SPAN || hi - NW_BASE > NW_SPAN || e->nr == NS_RANGES) return false;
+    e->r0[e->nr] = lo; e->r1[e->nr] = hi; e->nr++;
+    if (lo < e->lo) e->lo = lo;
+    if (hi > e->hi) e->hi = hi;
+    return true;
+}
+
+static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
+                        const u8* idx, u32 ni, const u32* key, NShape* e) {
+    VNatInfo inf;
+    if (!vfast_native_info(gx, vat, &inf)) { g_nsStats[4]++; return NULL; }
+    u32 off[NO_N], at = 0;
+    static const u8 kSize[NO_IDX] = { 16, 12, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8 };
+    for (u32 k = 0; k < NO_IDX; k++) {
+        bool has = k == NO_POS || (inf.present & (k == NO_NRM ? VN_NRM : k == NO_COL0 ? VN_COL0 : k == NO_COL1 ? VN_COL1
+                                                 : VN_TEX0 << (k - NO_TEX0)));
+        off[k] = has ? at : ~0u;
+        if (has) at = (at + kSize[k] * nv + 15) & ~15u;
+    }
+    off[NO_IDX] = at;
+    at += ni * 2;
+    u32 bytes = (at + 15) & ~15u;
+    u8* mem = ns_alloc(bytes);
+    if (!mem) { g_nsStats[5]++; return NULL; }
+    u64 t0 = g_profClock ? g_profClock() : 0;
+    float (*pos)[4] = (float (*)[4])(void*)(mem + off[NO_POS]);
+    float (*nrm)[3] = off[NO_NRM] != ~0u ? (float (*)[3])(void*)(mem + off[NO_NRM]) : NULL;
+    u8 (*col[2])[4] = { off[NO_COL0] != ~0u ? (u8 (*)[4])(mem + off[NO_COL0]) : NULL,
+                        off[NO_COL1] != ~0u ? (u8 (*)[4])(mem + off[NO_COL1]) : NULL };
+    float (*tex[8])[2];
+    for (u32 i = 0; i < 8; i++) tex[i] = off[NO_TEX0 + i] != ~0u ? (float (*)[2])(void*)(mem + off[NO_TEX0 + i]) : NULL;
+    vfast_native_decode(gx, vat, verts, nv, vsize, &inf, pos, nrm, col, tex);
+    // Matrix rows (each vertex's own, or the draw's default: row 0 here, loaded per draw) and the origin.
+    u32 rows = 0;
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    bool ok = true;
+    for (u32 i = 0; i < nv; i++) {
+        float* p = pos[i];
+        if (inf.pnDirect) {
+            u32 pn = (u32)p[3];
+            if (pn > 27) ok = false;
+            else rows |= 1u << pn;
+        } else {
+            p[3] = 0;
+        }
+        for (int c = 0; c < 3; c++) { if (p[c] < mn[c]) mn[c] = p[c]; if (p[c] > mx[c]) mx[c] = p[c]; }
+    }
+    float o[3];
+    for (int c = 0; c < 3; c++) o[c] = nv ? 0.5f * (mn[c] + mx[c]) : 0;
+    for (u32 i = 0; i < nv; i++) for (int c = 0; c < 3; c++) pos[i][c] -= o[c];
+    u16* ix = (u16*)(void*)(mem + off[NO_IDX]);
+    memcpy(ix, idx, ni * 2);
+    for (u32 t = 0; t + 2 < ni; t += 3)  // a bad index makes its triangle degenerate (as vw_do_indexed)
+        if (ix[t] >= nv || ix[t + 1] >= nv || ix[t + 2] >= nv) ix[t] = ix[t + 1] = ix[t + 2] = 0;
+    e->nr = 0;
+    e->lo = 0xFFFFFFFFu;
+    e->hi = 0;
+    u32 c0 = (u32)(uintptr_t)cmd;
+    ok = ok && ns_range(e, c0, c0 + len);
+    for (u32 k = 0; k < 12 && ok; k++) ok = ns_range(e, inf.lo[k], inf.hi[k]);
+    if (!ok) {
+        linearFree(mem);  // never handed to the GPU
+        g_nsStats[4]++;
+        return NULL;
+    }
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)mem, bytes);
+    e->cmd = cmd;
+    e->len = len; e->nv = nv; e->ni = ni / 3 * 3; e->bytes = bytes; e->present = inf.present; e->rows = rows;
+    e->pnDirect = inf.pnDirect;
+    memcpy(e->key, key, sizeof e->key);
+    e->mem = mem;
+    memcpy(e->off, off, sizeof off);
+    memcpy(e->origin, o, sizeof o);
+    e->hash = ns_sources_hash(e);
+    for (u32 r = 0; r < e->nr; r++)
+        for (u32 i = (e->r0[r] - NW_BASE) >> NW_SHIFT; i <= (e->r1[r] - 1 - NW_BASE) >> NW_SHIFT; i++)
+            g_nwBits[i >> 5] |= 1u << (i & 31);
+    e->live = g_nsLiveN;
+    g_nsLive[g_nsLiveN++] = (u32)(e - g_ns);
+    g_nsBytes += bytes;
+    g_nsStats[1]++;
+    g_nsStats[2] += nv;
+    if (t0) g_nsStats[11] += g_profClock() - t0;
+    return e;
+}
+
+// The shape for this command and key, converted if it is not yet; NULL: the old path draws it.
+static NShape* ns_get(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize, const u8* idx,
+                      u32 ni) {
+    u32 key[NS_KEY];
+    ns_key(gx, vat, key);
+    u32 h = ns_hash_ptr(cmd);
+    NShape* freeSlot = NULL;
+    NShape* oldest = NULL;
+    for (u32 p = 0; p < NS_PROBE; p++) {
+        NShape* e = &g_ns[(h + p) & (NS_SLOTS - 1)];
+        if (!e->cmd) { if (!freeSlot) freeSlot = e; continue; }
+        if (e->cmd == cmd && e->len == len && !memcmp(e->key, key, sizeof key)) return e;
+        if (!oldest || e->lastFrame < oldest->lastFrame) oldest = e;
+    }
+    if (!freeSlot) {  // the probe window is full: its least recently drawn shape goes, if not drawn this frame or the last
+        if (!oldest || oldest->lastFrame + 1 >= g.frameNo) { g_nsStats[5]++; return NULL; }
+        ns_kill(oldest);
+        g_nsStats[9]++;
+        freeSlot = oldest;
+    }
+    return ns_build(gx, vat, cmd, len, verts, nv, vsize, idx, ni, key, freeSlot);
+}
+
+// Palette rows dst..dst+2 = XF rows src..src+2 (a 3x4 matrix) with `o` folded into the translation; uploaded only when
+// they differ from what the rows hold.
+static void ns_rows(const GXCore* gx, u32 src, u32 dst, const float* o, bool fold) {
+    float m[12];
+    memcpy(m, &gx->xf[(src & 63) * 4], sizeof m);
+    if (fold) for (int r = 0; r < 3; r++) m[4 * r + 3] += m[4 * r] * o[0] + m[4 * r + 1] * o[1] + m[4 * r + 2] * o[2];
+    if (((g.natRowValid >> dst) & 7) == 7 && !memcmp(g.natRow[dst], m, sizeof m)) return;
+    memcpy(g.natRow[dst], m, sizeof m);
+    g.natRowValid |= 7ull << dst;
+    C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + (int)dst, 3);
+    for (int r = 0; r < 3; r++) u[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
+    g_picaStats.palUploads++;
+}
+
+// Texture unit u's texgen matrix (palette rows 30 + 3u ..), m as the shader applies it to (x, y, z, 1).
+static void ns_texrows(u32 u, const float* m) {
+    u32 dst = 30 + 3 * u;
+    if (((g.natRowValid >> dst) & 7) == 7 && !memcmp(g.natRow[dst], m, 12 * sizeof(float))) return;
+    memcpy(g.natRow[dst], m, 12 * sizeof(float));
+    g.natRowValid |= 7ull << dst;
+    C3D_FVec* v = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + (int)dst, 3);
+    for (int r = 0; r < 3; r++) v[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
+}
+
+// The native batch's colour: lighting uniforms in the native path's layout (lights packed, lcount over them).
+static void ns_light_uniforms(const VLightUniforms* u, u32 n, bool lit) {
+    if (lit) {
+        C3D_FVec* L = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uLights, (int)(5 * n));
+        for (u32 i = 0; i < 5 * n; i++) L[i] = FVec4_New(u->lights[i][0], u->lights[i][1], u->lights[i][2], u->lights[i][3]);
+        for (int i = 0; i < 2; i++) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uSel + i, u->sel[i][0], u->sel[i][1], u->sel[i][2], u->sel[i][3]);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uAmb, u->amb[0], u->amb[1], u->amb[2], u->amb[3]);
+        C3D_IVUnifSet(GPU_VERTEX_SHADER, g.uLcount, (int)n - 1, 0, 5, 0);
+    }
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uMat, u->mat[0], u->mat[1], u->mat[2], u->mat[3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uVsel, u->vsel[0], u->vsel[1], u->vsel[2], u->vsel[3]);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uOn, u->on[0], u->on[1], lit ? 1.0f : 0.0f, 0);
+}
+
+static struct { VLightUniforms lu; u32 n; bool lit; } g_nl;  // the open native batch's colour
+
+// Options (gxopt letters, for bisection on the 2DS): NSO_NOFIXED inputs a shape lacks come from constant buffers
+// instead of the PICA's fixed attributes; NSO_NOLIGHT lit draws stay on the old path.
+enum { NSO_NOFIXED = 1, NSO_NOLIGHT = 2 };
+static volatile u32 g_nsOpt;
+void pica_set_native_opts(u32 opts) { g_nsOpt = opts; }
+static u8 *g_nsZero, *g_nsWhite;  // 64K vertices of bytes 0 / 255 (NSO_NOFIXED)
+
+// An input the shape does not have, in register reg: white (colour, bytes 255) or zero.
+static void ns_const(C3D_AttrInfo* ai, C3D_BufInfo* bi, int reg, bool white) {
+    if ((g_nsOpt & NSO_NOFIXED) && g_nsZero && g_nsWhite) {
+        int id = AttrInfo_AddLoader(ai, reg, GPU_UNSIGNED_BYTE, 4);
+        BufInfo_Add(bi, white ? g_nsWhite : g_nsZero, 4, 1, (u64)id);
+        return;
+    }
+    int id = AttrInfo_AddFixed(ai, reg);
+    float v = white ? 255.0f : 0.0f;
+    C3D_FixedAttribSet(id, v, v, v, v);
+}
+
+// What the native path supports of the current state (t: its TEV program): texgen of the regular kind only, and a
+// colour channel vfast_native_light takes.
+static bool ns_state_ok(const GXCore* gx, const PicaTev* t, bool fill) {
+    VSel sel = { t->rasChan, t->numTex, { t->texCoord[0], t->texCoord[1], t->texCoord[2] } };
+    u32 numGens = gx->xf[0x103F] & 15;
+    for (u32 u = 0; u < sel.numTex && u < 3; u++) {
+        u32 gi = sel.texCoord[u] & 7;
+        if (gi < numGens && ((gx->xf[0x1040 + gi] >> 4) & 7) != 0) return false;
+    }
+    VLightUniforms lu;
+    u32 n, colSrc;
+    bool lit;
+    if (!vfast_native_light(gx, &sel, 0, fill ? &g_nl.lu : &lu, fill ? &g_nl.n : &n, &colSrc, fill ? &g_nl.lit : &lit)) return false;
+    if ((g_nsOpt & NSO_NOLIGHT) && (fill ? g_nl.lit : lit)) return false;
+    return true;
+}
+
+static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
+                             const u8* idx, u32 ni) {
+    (void)ctx;
+    if (!g_nsWant || !g_ns || g.uNat < 0 || g.uLcount < 0 || nv > 0xFFFF || nv == 0 || ni < 3) return false;
+    if (g_fskipNow) { g_fskipDraws++; return true; }
+    if (ns_dynamic(cmd)) { g_nsStats[10]++; return false; }
+    u64 t0 = g_profClock ? g_profClock() : 0;
+    GXCore* gx = &s->gx.core;
+    if (g_gxMergeOpen) merge_issue(s);
+    vw_apply();
+    begin_frame();
+    if (C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+    ns_dirty();
+    u32 cull = (gx->bp[0x00] >> 14) & 3;
+    if (cull == 3) { g_nsStats[0]++; return true; }  // every triangle culled
+    u32 zop;
+    float zz;
+    if (ztex_value(s, gx, &zop, &zz)) { g_nsStats[3]++; return false; }  // Z-texture depth: the CPU's
+    const u32 cls = 8;
+    bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
+                gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && cls == g.batchCls;
+    u32 key[96], kn = 0;
+    if (!same) {
+        kn = batch_key(gx, key);
+        key[kn++] = cls;
+        same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
+        if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
+    }
+    if (!same) {  // a native batch opens: its state must be one the native path supports
+        u32 tk[72], tn = tev_key(gx, tk);
+        PicaTev tmp;
+        const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, tk, tn, &tmp);
+        if (!ns_state_ok(gx, t, false)) { g_nsStats[3]++; return false; }
+    }
+    u32 frameBefore = g.frameNo;
+    NShape* e = ns_get(gx, vat, cmd, len, verts, nv, vsize, idx, ni);
+    if (!e) return false;
+    if (g.frameNo != frameBefore) same = false;  // a retired shape ended the frame: state is applied again
+    for (int attempt = 0; !same && attempt < 3; attempt++) {
+        frameBefore = g.frameNo;
+        flush_batch();
+        split_early();
+        update_tev(gx);
+        kn = batch_key(gx, key);
+        key[kn++] = cls;
+        tex_key(gx, key, &kn);
+        C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
+        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+        if (g.frameNo != frameBefore) continue;  // a texture ended the frame: once more in the new one
+        ns_state_ok(gx, &g.tev, true);
+        apply_frag(gx);
+        for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
+        ns_light_uniforms(&g_nl.lu, g_nl.n, g_nl.lit);
+        C3D_CullFace(kCull[cull]);
+        g.batchGpuLight = false;
+        g.batchGpuPos = true;
+        g.batchCull = kCull[cull];
+        g.batchOpen = true;
+        g.batchFirst = g.arenaUsed;
+        g.batchIdxFirst = g.idxUsed;
+        g_recJob = g_vwHead;
+        g.batchIdx = true;
+        g.palSerial++;
+        memcpy(g.batchKey, key, kn * 4);
+        g.batchKeyLen = kn;
+        same = true;
+    }
+    if (!same) return false;
+    g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
+    g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
+    split_early();
+    e->lastFrame = g.frameNo;
+    // Projection (as the GPU transform's), when the XF registers changed.
+    if (!g.natProjOk || g.natProjVer != gx->xfRegVersion || !g.projValid) {
+        VFold f;
+        vfold_init(gx, SX * 2.0f / TW, SY * 2.0f / TH, FLIP_Y, &f);
+        float P[16];
+        vfast_proj(gx, &f, P);
+        if (!g.projValid || memcmp(P, g.proj, sizeof P)) {
+            memcpy(g.proj, P, sizeof P);
+            C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uProj, 4);
+            for (int r = 0; r < 4; r++) u[r] = FVec4_New(P[4 * r], P[4 * r + 1], P[4 * r + 2], P[4 * r + 3]);
+            g.projValid = true;
+        }
+        g.natProjVer = gx->xfRegVersion;
+        g.natProjOk = true;
+    }
+    // Position matrices: the rows the vertices name, or the draw's default matrix in rows 0-2.
+    if (e->pnDirect) {
+        for (u32 r = e->rows; r; r &= r - 1) { u32 row = (u32)__builtin_ctz(r); ns_rows(gx, row, row, e->origin, true); }
+    } else {
+        ns_rows(gx, gx->cp[0x30] & 63, 0, e->origin, true);
+    }
+    g.palValid = 0;  // the GPU transform's palette slots are overwritten
+    g.lastValid = false;
+    // Vertex layout: this shape's buffers; texture units' inputs by their texgen source.
+    C3D_AttrInfo* ai = C3D_GetAttrInfo();
+    AttrInfo_Init(ai);
+    C3D_BufInfo* bi = C3D_GetBufInfo();
+    BufInfo_Init(bi);
+    u8* m = e->mem;
+    int id = AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
+    BufInfo_Add(bi, m + e->off[NO_POS], 16, 1, (u64)id);
+    {
+        u32 ch = g.tev.rasChan & 1, c = ch;
+        if (ch == 1 && !(e->present & VN_COL1) && (e->present & VN_COL0)) c = 0;
+        if (e->present & (VN_COL0 << c)) {
+            id = AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+            BufInfo_Add(bi, m + e->off[NO_COL0 + c], 4, 1, (u64)id);
+        } else {
+            ns_const(ai, bi, 1, true);
+        }
+    }
+    u32 ma = gx->cp[0x30], mb = gx->cp[0x40], numGens = gx->xf[0x103F] & 15;
+    // Only the inputs the draw uses: every attribute past three costs ~45% of the vertex rate (GPU_GUIDANCE rule 2); the
+    // shader's reads of the others feed outputs nothing samples.
+    for (u32 u = 0; u < g.tev.numTex && u < 3; u++) {
+        float tm[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+        u32 gi = g.tev.texCoord[u] & 7;
+        int src = -1;  // -1 none (0, 0, 1), 0 position, 1 normal, 5.. coordinate
+        if (u < g.tev.numTex && gi < numGens) {
+            u32 cfg = gx->xf[0x1040 + gi], sr = (cfg >> 7) & 31, tmi = gi < 4 ? (ma >> (6 + 6 * gi)) & 63 : (mb >> (6 * (gi - 4))) & 63;
+            memcpy(tm, &gx->xf[tmi * 4], 12 * sizeof(float));
+            if (!((cfg >> 1) & 1)) { tm[8] = tm[9] = tm[10] = 0; tm[11] = 1; }  // s, t only: q = 1
+            src = sr <= 1 ? (int)sr : sr >= 5 && sr <= 12 ? (int)sr : -1;
+            if (src == 1 && !(e->present & VN_NRM)) src = -2;  // no normal: (0, 0, 0)
+            if (src >= 5 && !(e->present & (VN_TEX0 << (src - 5)))) src = -3;  // no coordinate: (0, 0)
+        }
+        if (src == 0) {  // position, relative to the origin: fold it in
+            for (int r = 0; r < 3; r++) tm[4 * r + 3] += tm[4 * r] * e->origin[0] + tm[4 * r + 1] * e->origin[1] + tm[4 * r + 2] * e->origin[2];
+            id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 3);
+            BufInfo_Add(bi, m + e->off[NO_POS], 16, 1, (u64)id);
+        } else if (src == 1) {
+            id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 3);
+            BufInfo_Add(bi, m + e->off[NO_NRM], 12, 1, (u64)id);
+        } else {
+            // A coordinate is loaded as (s, t, 0) and GX's input is (s, t, 1); no input (or none present) is (0, 0, 1):
+            // the z column joins the translation and the input's z is 0. No normal present: (0, 0, 0).
+            if (src != -2) for (int r = 0; r < 3; r++) { tm[4 * r + 3] += tm[4 * r + 2]; tm[4 * r + 2] = 0; }
+            if (src >= 5) {
+                id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 2);
+                BufInfo_Add(bi, m + e->off[NO_TEX0 + (src - 5)], 8, 1, (u64)id);
+            } else {
+                ns_const(ai, bi, 2 + (int)u, false);
+            }
+        }
+        ns_texrows(u, tm);
+    }
+    if (g_nl.lit && (e->present & VN_NRM)) {
+        id = AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);
+        BufInfo_Add(bi, m + e->off[NO_NRM], 12, 1, (u64)id);
+    } else if (g_nl.lit) {
+        ns_const(ai, bi, 6, false);
+    }
+    if (!g.natAttr) { C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 1, 0, 0, 0); g.natAttr = true; }
+    C3D_DrawElements(GPU_TRIANGLES, (int)e->ni, C3D_UNSIGNED_SHORT, m + e->off[NO_IDX]);
+    g_picaStats.drawCalls++;
+    g_nsSince += e->ni;
+    g_nsStats[0]++;
+    if (t0) g_nsStats[12] += g_profClock() - t0;
+    return true;
+}
+#endif
+
+#ifdef GC3DS_NATIVE
+static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, pica_draw_native };
+#else
 static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed };
+#endif
 
 // ---- present ----
 // ---- screenshots of what the top screen shows (sdmc:/gc3ds/shots, key points only) ----
@@ -2026,8 +2635,14 @@ static void cap_write(void) {
     g_capState = 3;  // the writer thread takes it from here
 }
 
+#ifdef GC3DS_NATIVE
+static void ns_verify(void);
+#endif
 bool pica_present(System* s, u32 xfbAddr) {
     pica_merge_flush(s, false);
+#ifdef GC3DS_NATIVE
+    if (g.frame) ns_verify();
+#endif
     if (g_capState == 2) cap_write();  // the copy was queued with the previous present
     PXfb* show = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) {
@@ -2131,6 +2746,19 @@ bool pica_attach(System* s) {
         g.palSerial = 1;
         emu_log(LOG_GX, "pica: position transform %s (uniforms %d %d)\n", g.gpuPos ? "in the shader" : "on the CPU only",
                 g.uProj, g.uPal);
+#ifdef GC3DS_NATIVE
+        g.uNat = shaderInstanceGetUniformLocation(vs, "nat");
+        g.uLcount = shaderInstanceGetUniformLocation(vs, "lcount");
+        g_ns = calloc(NS_SLOTS, sizeof *g_ns);
+        g_nsLive = calloc(NS_SLOTS, sizeof *g_nsLive);
+        if (!g_ns || !g_nsLive) { free(g_ns); free(g_nsLive); g_ns = NULL; g_nsLive = NULL; }
+        g_nsZero = linearAlloc(65536 * 4);
+        g_nsWhite = linearAlloc(65536 * 4);
+        if (g_nsZero) { memset(g_nsZero, 0, 65536 * 4); svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)g_nsZero, 65536 * 4); }
+        if (g_nsWhite) { memset(g_nsWhite, 0xFF, 65536 * 4); svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)g_nsWhite, 65536 * 4); }
+        emu_log(LOG_GX, "pica: native shapes %s (uniforms %d %d)\n", g_ns && g.uNat >= 0 && g.uLcount >= 0 ? "on" : "unavailable",
+                g.uNat, g.uLcount);
+#endif
         g.arena = linearAlloc(ARENA_VERTS * sizeof(PVert));
         if (!g.arena) return false;
         g.idx = linearAlloc(IDX_MAX * sizeof(u16));

@@ -1379,6 +1379,173 @@ bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u) {
     return true;
 }
 
+#ifdef GC3DS_NATIVE
+// ---- native mode's converted shapes (pica.c, docs/research/NATIVE_PORT_PLAN.md "Converted shapes") ----
+void vfast_proj(const GXCore* gx, const VFold* f, float P[16]) { proj_fold(gx, f, P); }
+
+// The decode layout of vertex format `vat` with each attribute's array, as setup_compute and attr_array set it.
+static void nat_layout(const GXCore* gx, u32 vat, VAttr* pos, VAttr* nrm, VAttr col[2], VAttr tex[8], bool* nbt, bool* index3) {
+    u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
+    u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
+    u32 fmt = (a >> 1) & 7;
+    attr_init(gx, pos, (lo >> 9) & 3, ARR_POS, fmt, (a & 1) ? 3 : 2, comp_size(fmt), fmt == 4 ? 1.0f : 1.0f / (float)(1u << ((a >> 4) & 31)));
+    *nbt = (a >> 9) & 1;
+    *index3 = (a >> 31) & 1;
+    static const u8 shift[4] = { 7, 6, 15, 14 };
+    fmt = (a >> 10) & 7;
+    attr_init(gx, nrm, (lo >> 11) & 3, ARR_NRM, fmt, *nbt ? 9 : 3, comp_size(fmt), fmt >= 4 ? 1.0f : 1.0f / (float)(1u << shift[fmt & 3]));
+    for (u32 i = 0; i < 2; i++) {
+        fmt = (a >> (14 + 4 * i)) & 7;
+        attr_init(gx, &col[i], (lo >> (13 + 2 * i)) & 3, ARR_COL0 + i, fmt, 1, color_size(fmt), 1.0f);
+    }
+    u32 tcnt[8] = { (a >> 21) & 1, b & 1, (b >> 9) & 1, (b >> 18) & 1, (b >> 27) & 1, (c >> 5) & 1, (c >> 14) & 1, (c >> 23) & 1 };
+    u32 tfmt[8] = { (a >> 22) & 7, (b >> 1) & 7, (b >> 10) & 7, (b >> 19) & 7, (b >> 28) & 7, (c >> 6) & 7, (c >> 15) & 7, (c >> 24) & 7 };
+    u32 tsh[8] = { (a >> 25) & 31, (b >> 4) & 31, (b >> 13) & 31, (b >> 22) & 31, c & 31, (c >> 9) & 31, (c >> 18) & 31, (c >> 27) & 31 };
+    for (u32 i = 0; i < 8; i++)
+        attr_init(gx, &tex[i], (hi >> (2 * i)) & 3, ARR_TEX0 + i, tfmt[i], tcnt[i] ? 2 : 1, comp_size(tfmt[i]),
+                  tfmt[i] == 4 ? 1.0f : 1.0f / (float)(1u << tsh[i]));
+    attr_array(gx, pos, ARR_POS);
+    attr_array(gx, nrm, ARR_NRM);
+    attr_array(gx, &col[0], ARR_COL0);
+    attr_array(gx, &col[1], ARR_COL0 + 1);
+    for (u32 i = 0; i < 8; i++) attr_array(gx, &tex[i], ARR_TEX0 + i);
+}
+
+bool vfast_native_info(const GXCore* gx, u32 vat, VNatInfo* ni) {
+    u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
+    memset(ni, 0, sizeof *ni);
+    if ((lo >> 1) & 0xFF) return false;   // texture matrix indices in the vertices
+    if (!((lo >> 9) & 3)) return false;  // no position
+    ni->present = VN_POS;
+    if ((lo >> 11) & 3) ni->present |= VN_NRM;
+    if ((lo >> 13) & 3) ni->present |= VN_COL0;
+    if ((lo >> 15) & 3) ni->present |= VN_COL1;
+    for (u32 i = 0; i < 8; i++) if ((hi >> (2 * i)) & 3) ni->present |= VN_TEX0 << i;
+    ni->pnDirect = lo & 1;
+    return true;
+}
+
+// An attribute's element: from the stream (direct) or its array; for an indexed one the index widens [*lo, *hi).
+// elem: the bytes one element occupies in its array (the range covers exactly those: a dynamic buffer next to an array
+// must not count as part of it).
+static inline const u8* nat_fetch(const VAttr* a, const u8** p, u32 direct, u32 elem, u32* lo, u32* hi) {
+    if (a->mode == 1) { const u8* q = *p; *p += direct; return q; }
+    u32 idx = a->mode == 2 ? (*p)[0] : be16(*p);
+    *p += a->mode == 2 ? 1 : 2;
+    u32 pa = a->base + idx * a->stride;
+    if (pa < *lo) *lo = pa;
+    if (pa + elem > *hi) *hi = pa + elem;
+    return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? (const u8*)(uintptr_t)pa : kZero;
+}
+
+void vfast_native_decode(const GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize, VNatInfo* ni, float (*pos)[4],
+                         float (*nrmOut)[3], u8 (*colOut[2])[4], float (*texOut[8])[2]) {
+    VAttr pa, na, ca[2], ta[8];
+    bool nbt, index3;
+    nat_layout(gx, vat, &pa, &na, ca, ta, &nbt, &index3);
+    const VAttr* all[12] = { &pa, &na, &ca[0], &ca[1], &ta[0], &ta[1], &ta[2], &ta[3], &ta[4], &ta[5], &ta[6], &ta[7] };
+    for (u32 k = 0; k < 12; k++) { ni->lo[k] = 0xFFFFFFFFu; ni->hi[k] = 0; }
+    u32 pnDefault = gx->cp[CP_MATINDEX_A] & 63;
+    for (u32 vi = 0; vi < count; vi++) {
+        const u8* p = raw + vi * vsize;
+        u32 pn = pnDefault;
+        if (ni->pnDirect) pn = *p++;
+        float* o = pos[vi];
+        o[0] = o[1] = o[2] = 0;
+        {
+            const u8* src = nat_fetch(&pa, &p, pa.n * pa.cs, pa.n * pa.cs, &ni->lo[0], &ni->hi[0]);
+            for (u32 k = 0; k < pa.n; k++) o[k] = read_comp(src + k * pa.cs, pa.fmt, pa.scale);
+        }
+        o[3] = (float)pn;
+        if (na.mode) {
+            const u8* src;
+            if (na.mode != 1 && nbt && index3) {
+                src = nat_fetch(&na, &p, 0, 3u * na.cs, &ni->lo[1], &ni->hi[1]);
+                nat_fetch(&na, &p, 0, 3u * na.cs, &ni->lo[1], &ni->hi[1]);
+                nat_fetch(&na, &p, 0, 3u * na.cs, &ni->lo[1], &ni->hi[1]);
+            } else {
+                src = nat_fetch(&na, &p, na.n * na.cs, na.n * na.cs, &ni->lo[1], &ni->hi[1]);
+            }
+            if (nrmOut) for (u32 k = 0; k < 3; k++) nrmOut[vi][k] = read_comp(src + k * na.cs, na.fmt, na.scale);
+        }
+        for (u32 i = 0; i < 2; i++) {
+            if (!ca[i].mode) continue;
+            const u8* src = nat_fetch(&ca[i], &p, ca[i].cs, ca[i].cs, &ni->lo[2 + i], &ni->hi[2 + i]);
+            u32 c = read_color(src, ca[i].fmt);
+            if (colOut[i]) { u8* d = colOut[i][vi]; d[0] = (u8)(c >> 24); d[1] = (u8)(c >> 16); d[2] = (u8)(c >> 8); d[3] = (u8)c; }
+        }
+        for (u32 i = 0; i < 8; i++) {
+            if (!ta[i].mode) continue;
+            const u8* src = nat_fetch(&ta[i], &p, ta[i].n * ta[i].cs, ta[i].n * ta[i].cs, &ni->lo[4 + i], &ni->hi[4 + i]);
+            if (!texOut[i]) continue;
+            texOut[i][vi][0] = read_comp(src, ta[i].fmt, ta[i].scale);
+            texOut[i][vi][1] = ta[i].n == 2 ? read_comp(src + ta[i].cs, ta[i].fmt, ta[i].scale) : 0.0f;
+        }
+    }
+    for (u32 k = 0; k < 12; k++) if (all[k]->mode < 2 || ni->lo[k] > ni->hi[k]) ni->lo[k] = ni->hi[k] = 0;
+}
+
+bool vfast_native_light(const GXCore* gx, const VSel* sel, u32 present, VLightUniforms* u, u32* nLights, u32* colSrc, bool* lit) {
+    u32 ch = sel->rasChan & 1, numChans = gx->xf[0x1009] & 3;
+    memset(u, 0, sizeof *u);
+    *nLights = 0;
+    *lit = false;
+    u32 c = ch;
+    if (ch == 1 && !(present & VN_COL1) && (present & VN_COL0)) c = 0;
+    *colSrc = (present & (VN_COL0 << c)) ? c : 2;
+    if (ch >= numChans) {  // the vertex colour as it is (setup_compute: lc = vc)
+        u->vsel[0] = u->vsel[1] = 1;
+        return true;
+    }
+    u32 ctrl[2] = { gx->xf[0x100E + ch], gx->xf[0x1010 + ch] };
+    bool on[2] = { (ctrl[0] >> 1) & 1, (ctrl[1] >> 1) & 1 };
+    if (on[1] && !on[0]) return false;                            // alpha lit, colour not
+    if (on[0] && ((ctrl[0] >> 9) & 3) == 1) return false;         // specular attenuation
+    if (on[1] && ((ctrl[0] ^ ctrl[1]) & 0x7FBCu)) return false;   // alpha lit unlike the colour half
+    // A texture coordinate generated from a colour needs it on the CPU.
+    u32 numGens = gx->xf[0x103F] & 15;
+    for (u32 i = 0; i < sel->numTex && i < 3; i++) {
+        u32 gi = sel->texCoord[i] & 7;
+        if (gi < numGens && ((gx->xf[0x1040 + gi] >> 4) & 7) >= 2) return false;
+    }
+    for (int h = 0; h < 2; h++) {
+        u->vsel[h] = ctrl[h] & 1;
+        u->vsel[2 + h] = (ctrl[h] >> 6) & 1;
+        u->on[h] = on[h];
+    }
+    float m[4], a[4];
+    unpack(gx->xf[0x100C + ch], m);
+    unpack(gx->xf[0x100A + ch], a);
+    for (int k = 0; k < 4; k++) { u->mat[k] = m[k] / 255.0f; u->amb[k] = a[k] / 255.0f; }
+    if (!on[0]) return true;
+    *lit = true;
+    u32 diffFn = (ctrl[0] >> 7) & 3;
+    u->sel[0][diffFn == 0 ? 0 : diffFn == 1 ? 1 : 2] = 1;
+    u->sel[1][!((ctrl[0] >> 9) & 1) ? 0 : 1] = 1;
+    u->sel[2][0] = u->sel[3][0] = 1;
+    u32 mask = ((ctrl[0] >> 2) & 15) | (((ctrl[0] >> 11) & 15) << 4), n = 0;
+    for (u32 i = 0; i < 8; i++) {
+        if (!((mask >> i) & 1)) continue;
+        u32 base = 0x600 + 16 * i;
+        float (*L)[4] = &u->lights[5 * n++];
+        float cc[4];
+        unpack(gx->xf[base + 3], cc);
+        for (int k = 0; k < 3; k++) {
+            L[0][k] = xf_f(gx, base + 10 + k);
+            L[1][k] = xf_f(gx, base + 13 + k);
+            L[3][k] = xf_f(gx, base + 4 + k);
+            L[4][k] = xf_f(gx, base + 7 + k);
+        }
+        for (int k = 0; k < 4; k++) L[2][k] = cc[k] / 255.0f;
+        if (L[4][0] == 0 && L[4][1] == 0 && L[4][2] == 0) L[4][0] = 1;
+        L[3][3] = L[4][3] = 1;
+    }
+    if (!n) { u->lights[4][0] = 1; n = 1; }  // the loop runs at least once: one light of colour 0
+    *nLights = n;
+    return true;
+}
+#endif
+
 static float dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 // The shader clamps every reciprocal to +-1e18, so that a term its selector discards stays finite (the PICA

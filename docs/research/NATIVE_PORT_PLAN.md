@@ -161,6 +161,33 @@ GameCube's GPU did in hardware. **Tuning this path will not reach 30 fps.** Next
 into PICA vertex buffers (one index, PICA formats, linear memory) in the J3D model code, and draw them with only the
 matrices per frame; 2D, effects and the rest stay on this path.
 
+### Converted shapes (2026-10-15 night)
+
+Built in gc3ds's GX consumer rather than in J3D (pica.c "native shapes", vfast.c `vfast_native_*`, the shader's
+native path in gxpass_native.v.pica from `gen_gxpass.sh native`). Why there and not in J3DShapeDraw: Aurora's optimizer
+already turns each J3D shape into one GX_AURORA_DRAW_INDEXED inside a display list the stream calls by reference, so the
+consumer sees a stable address per shape (the command's place in its list) together with everything needed to decode
+it (VCD / VAT / array bases at that moment); a J3D-side converter would duplicate the decoder and miss non-J3D lists.
+
+- **Kept by** the command's address + a key (vertex format, VCD, VAT, indexed attributes' array bases / strides /
+  byte order). Converted once into linear memory: position (x, y, z, matrix row) relative to the shape's bounding-box
+  centre, normal, colours, texture coordinates, u16 indices. 8 MB budget, least recently drawn evicted, retired
+  buffers freed only after the GPU finished the frame that may use them.
+- **Each frame** a converted draw uploads only what the moment owns: the XF position matrices it names (origin folded
+  into the translation, rule 29), the texgen matrices of the TEV's texture units, the projection when XF registers
+  changed, the TEV / texture / blend state through the existing batch key. The shader transforms, generates texture
+  coordinates from position / normal / coordinate inputs with q divide, and lights over the channel's enabled lights
+  only (a loop, `lcount`), or outputs the material when unlit. Normals use the position matrix's 3x3, normalised
+  (exact for rotation and uniform scale).
+- **Invalidation:** Aurora's DCFlushRange / DCStoreRange / DCInvalidateRange (empty on the PC) report to gc3ds
+  (patch_dusk.sh); a flush on memory a shape was made from drops it, and a shape dropped three times stays on the old
+  path (CPU skinning, vertex colour animation). Two shapes a present are hashed against their sources to count any
+  change the flushes miss (`ns` counters in perf.csv).
+- **Old path** keeps: texture matrix indices in vertices, emboss / colour texgen, specular lighting, an alpha half lit
+  unlike the colour half, Z-texture draws, sources outside the 0x08000000 heap window, matrix rows past 27.
+- Found on the way: picasso silently truncates an `ifc` else block longer than 255 instructions (the PICA's IFC holds
+  it in 8 bits); the native path is a `callc` that ends the shader itself.
+
 ## Risks
 
 - Unmeasured: TP's game logic on an 804 MHz ARM11 (no NEON; VFP11 doubles are slow). Step 1 answers it.

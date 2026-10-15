@@ -83,7 +83,8 @@ SHADER   := $(OUT)/gx/shader/gxpass.shbin.o
 objs: $(OBJS) $(DOBJS) $(AOBJS) $(POBJS) $(SHADER) $(GOBJS)
 	@echo "compiled $(words $(OBJS)) game, $(words $(DOBJS)) Dusklight-layer, $(words $(AOBJS)) Aurora, $(words $(POBJS)) platform and $(words $(GOBJS)) GX objects into $(OUT)"
 
-$(SHADER): $(CORE)/src/gx/pica/gxpass.v.pica
+# Native builds use the shader with the converted-shape path (gen_gxpass.sh native), under the emulator's name.
+$(SHADER): $(CORE)/src/gx/pica/gxpass_native.v.pica
 	@mkdir -p $(dir $@)
 	@cd $(dir $@) && $(DEVKITPRO)/tools/bin/picasso -o gxpass.shbin $< && $(DEVKITPRO)/tools/bin/bin2s gxpass.shbin | $(DEVKITARM)/bin/arm-none-eabi-as -o gxpass.shbin.o
 	@printf 'extern const u8 gxpass_shbin_end[];\nextern const u8 gxpass_shbin[];\nextern const u32 gxpass_shbin_size;\n' > $(dir $@)gxpass_shbin.h
