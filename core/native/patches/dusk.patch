@@ -206,6 +206,22 @@ index 2522f4a..944f030 100644
      const JAUSectionHeap::TSectionHeapData& heapData = sectionHeap->getSectionHeapData();
      const JAUSection::TSectionData& sectionData = sectionHeap->getSectionData();
  
+diff --git a/src/d/actor/d_a_alink_swindow.inc b/src/d/actor/d_a_alink_swindow.inc
+index 33f1fee..a67aba3 100644
+--- a/src/d/actor/d_a_alink_swindow.inc
++++ b/src/d/actor/d_a_alink_swindow.inc
+@@ -41,7 +41,11 @@ void daAlink_c::setOriginalHeap(JKRExpHeap** i_ppheap, u32 i_size) {
+         u32 var_r28 = 0x10;
+         u32 size = ROUND(i_size, 16);
+ #if TARGET_PC
++#if defined(__3DS__)
++        size *= 2;  // native mode on the 3DS: no mods, and a 13 MB game heap
++#else
+         size *= 20; // Increase Link's heap size to prevent mods from crashing with higher-quality models.
++#endif
+ #endif
+         JKRHeap* parent = mDoExt_getGameHeap();
+ 
 diff --git a/src/dusk/archive.cpp b/src/dusk/archive.cpp
 index c9ba131..dd16f42 100644
 --- a/src/dusk/archive.cpp

@@ -140,6 +140,19 @@ if 'gc3ds_native_audio_enabled' not in s:
     open(p, 'w').write(s)
 print('audio skip on the 3DS:', 'gc3ds_native_audio_enabled' in s)
 PY
+# Link's archive heaps: Dusklight's PC build makes them 20x larger for mods' models; on the 3DS (no mods) that is a 13.3 MB
+# request the 13 MB game heap cannot meet (Azahar, boot to F_SP121: abort creating fpcNm_ALINK_e). 2x keeps headroom.
+python3 - <<'PY'
+p = 'src/d/actor/d_a_alink_swindow.inc'
+s = open(p).read()
+old = '        size *= 20; // Increase Link\'s heap size to prevent mods from crashing with higher-quality models.\n'
+new = ('#if defined(__3DS__)\n        size *= 2;  // native mode on the 3DS: no mods, and a 13 MB game heap\n#else\n' + old + '#endif\n')
+if 'native mode on the 3DS: no mods' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('alink heap on the 3DS:', 'native mode on the 3DS: no mods' in s)
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches
