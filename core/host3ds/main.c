@@ -352,7 +352,7 @@ typedef struct {
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
     bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
     bool befloat, abBefloat;  // --befloat on|off (off), --ab befloat: float stubs in big-endian data mode (OPT_BEFLOAT)
-    bool latch, abLatch;      // --latch on|off (off), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
+    bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
     bool native2, abNative2;  // --native2 on|off (on), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
     bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
@@ -389,6 +389,7 @@ static void opts_default(RunOpts* o) {
     // Interpreted ps_cmp*, lmw / stmw, divw, sraw compiled (OPT_NATIVE2): core 0 cutscene +0.5 / +0.9%, Link / Epona
     // stretch +1.5 / +1.4% (jobs 160 and 162).
     o->native2 = true;
+    o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
