@@ -56,7 +56,8 @@ static volatile u32 g_sink;
 
 // Without the performance counters (an emulator such as Azahar refuses them), cycles come from the system tick at the
 // ARM11's clock and the events read zero: every benchmark still runs, so the probe itself is tested off the device.
-static bool g_pmuOk;
+static bool g_pmuOk, g_disagreed;
+static unsigned g_badRun;
 static u64 g_tick0;
 static void sel(unsigned p) {
     if (g_pmuOk) pmu_select(p);
@@ -68,9 +69,12 @@ static void rd(unsigned long long* cyc, unsigned long long* e0, unsigned long lo
     // call and leaves junk; a misconfigured counter on the device would show the same way).
     // Only long measurements are compared: on the device the first, tiny ones read 2,870 counter cycles against 690 by
     // the tick (job 176), where the tick's granularity and the system calls around it dominate.
+    // A disagreement is that run's alone (job 181: the code-install case, around the whole-I-cache invalidate, read
+    // 0.98 M counter cycles against 2.1 M by the tick, and the counters were dropped for the rest of the probe);
+    // measure() drops them only after three measurements in a row disagreed.
     if (g_pmuOk && pmu_read(cyc, e0, e1) && *cyc && (byTick < 2000000 || (*cyc >= byTick / 2 && *cyc <= byTick * 2))) return;
-    if (g_pmuOk) out("# timing: counters disagree with the tick (%llu cycles vs %llu); tick from here on, events zero\n", *cyc, byTick);
-    g_pmuOk = false;
+    if (g_pmuOk && !g_disagreed) out("# timing: counters disagree with the tick (%llu cycles vs %llu): runs by the tick, events zero\n", *cyc, byTick);
+    g_disagreed = true;
     *cyc = byTick;
     *e0 = *e1 = 0;
 }
@@ -80,6 +84,7 @@ static void rd(unsigned long long* cyc, unsigned long long* e0, unsigned long lo
 static void measure(const char* name, const char* param, Kernel k, void* ctx, double opsPerUnit) {
     unsigned long long cyc, e0, e1;
     u32 n = 1;
+    g_disagreed = false;
     for (;;) {  // size n to ~20 M cycles (also warms the caches and TLB)
         sel(0);
         k(ctx, n);
@@ -105,6 +110,11 @@ static void measure(const char* name, const char* param, Kernel k, void* ctx, do
         "dcwmiss %.4f tlbmiss %.4f branch %.3f stall_lsu %.3f\n", name, param, cmin,
         c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]), ev[0][0], ev[0][1], ev[1][0], ev[1][1],
         ev[2][0], ev[2][1], ev[3][0], ev[3][1], ev[4][0], ev[4][1]);
+    g_badRun = g_disagreed ? g_badRun + 1 : 0;
+    if (g_pmuOk && g_badRun >= 3) {
+        out("# timing: three measurements in a row disagreed: the tick from here on\n");
+        g_pmuOk = false;
+    }
 }
 
 // ---- instruction fetch ----
