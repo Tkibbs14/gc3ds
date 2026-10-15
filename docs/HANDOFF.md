@@ -1059,3 +1059,14 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   the core-0-bound stretch, what is left in this JIT is ~1% items; more needs registers and FPRs across blocks.
 - **Owner direction (2026-10-15): GX side next (cores 2-3, the cutscene's limit), then back to the JIT for the rebuild**
   (registers and FPRs kept across blocks; the peephole route is exhausted). The rebuild is a committed next step.
+
+## 2026-10-15: GX side (cores 2-3), first look
+
+- **Where the cutscene's time goes on cores 2-3 (job 163, defaults):** core 0 waits for the GX side 14%; the GX thread is
+  81.5% busy, ~23% of it waiting for space in the vertex-job ring (`valloc`, ~5 jobs of ~21 KB fit in 128 KB) while the
+  worker is 61% busy (gather and colours ~70% of it, random reads of guest vertex arrays); ~63k draws/s merged into
+  ~2,900 jobs/s; the GPU ~11.6 ms per frame. `core/tools/gx_split.py relay_N.csv --col C --val V` prints these per arm.
+- **Rejected: the GX thread running queued jobs while it would wait (`--steal`, job 164, off).** It ran ~400 jobs/s and
+  the GX-side waits fell (ring 21 -> 16%, core 0's wait 10 -> 8.8%), but core 0 got slower in both stretches (medians
+  cutscene 25.37 -> 24.52, later 12.31 -> 11.72): gathers on another core's schedule cost core 0 its shared L2, as the
+  second worker did (C2, jobs 125 / 127). Moving gather work around does not pay; less of it might (C1).

@@ -206,3 +206,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   the distinct hot code, not the words executed per instruction (-18% under qemu).
 - **Re-evaluate when:** traces could share their tails (a trace ends where another block already starts), or the
   I-cache stops being the limit.
+
+## C15. The GX thread runs vertex jobs while it would wait (--steal)
+
+- **Status:** rejected 2026-10-15 (job 164): GX-side waits fell, core 0 slowed 3-5% (L2, as C2). Kept, off.
+- **Re-evaluate when:** the gathers stop streaming guest RAM (C1), so the jobs no longer pollute the L2.

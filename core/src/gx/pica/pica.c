@@ -1117,13 +1117,17 @@ static void vw_done(u32 c) {
 }
 
 static volatile bool g_vwSteal;
-u64 g_vwStolen;
+u64 g_vwStolen, g_vwStealEmpty, g_vwStealKind;  // jobs run; attempts that found no unclaimed job / a CPU-culled one
 void pica_set_steal(bool on) { g_vwSteal = on; }
 bool pica_steal(void) { return g_vwSteal; }
 // The GX thread, about to wait for the worker: runs the next queued job if it may finish out of order. false: none.
 static bool vw_steal(void) {
     u32 c;
-    if (!g_vwSteal || !vw_claim(&c, true)) return false;
+    if (!g_vwSteal) return false;
+    if (!vw_claim(&c, true)) {
+        if (g_vwClaim == g_vwHead) g_vwStealEmpty++; else g_vwStealKind++;
+        return false;
+    }
     if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, NULL);  // (the worker's cache is its own)
     vw_do(&g_vw[c % VW_SLOTS]);
     g_vwStolen++;

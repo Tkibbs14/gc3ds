@@ -1030,12 +1030,16 @@ static const char* run(const char* path) {
                                 lastCyc = g_sys.cpu.cycles;
                             }
                             static u64 lastW2;
-                            static u64 lastSt;
-                            fprintf(g_perf, "# vworker 2 10s: %.0f jobs/s on core 1 (%s); %.0f jobs/s run by the GX thread while waiting (%s)\n",
+                            static u64 lastSt, lastSe, lastSk;
+                            fprintf(g_perf, "# vworker 2 10s: %.0f jobs/s on core 1 (%s); %.0f jobs/s run by the GX thread while waiting (%s), "
+                                    "%.0f/s found none unclaimed, %.0f/s a CPU-culled one\n",
                                     (double)(g_vw2Jobs - lastW2) / 10.0, g_pica && pica_worker2() ? "on" : "off",
-                                    (double)(g_vwStolen - lastSt) / 10.0, g_pica && pica_steal() ? "on" : "off");
+                                    (double)(g_vwStolen - lastSt) / 10.0, g_pica && pica_steal() ? "on" : "off",
+                                    (double)(g_vwStealEmpty - lastSe) / 10.0, (double)(g_vwStealKind - lastSk) / 10.0);
                             lastW2 = g_vw2Jobs;
                             lastSt = g_vwStolen;
+                            lastSe = g_vwStealEmpty;
+                            lastSk = g_vwStealKind;
                             static u64 lastPh[4], lastVc[8];
                             u64 ph[4] = { g_vfPhase[0], g_vfPhase[1], g_vfPhase[2], g_vwPhaseAll };
                             u64 vcp[8];

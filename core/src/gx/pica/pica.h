@@ -90,7 +90,7 @@ extern u64 g_vw2Jobs;
 // the worker was 61% busy (job 163). g_vwStolen: jobs the GX thread ran.
 void pica_set_steal(bool on);
 bool pica_steal(void);
-extern u64 g_vwStolen;
+extern u64 g_vwStolen, g_vwStealEmpty, g_vwStealKind;
 void pica_describe(u32 draws);
 const char* pica_take_description(void);
 void pica_description_taken(void);
