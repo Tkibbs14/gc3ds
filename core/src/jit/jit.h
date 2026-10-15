@@ -119,6 +119,9 @@ u32 jit_sched(const Jit* j);
 // below keep the budget branch (every loop of linked blocks passes one; ST_INDIRECT and the dispatcher check too), so a
 // run may go past its budget by a chain of forward blocks. Every block still counts its instructions exactly. Modelled
 // at 0.70 hot words per block run (2.5%; TP 850-880, JIT_REGSTAT).
+// OPT_ICBI: icbi no longer ends its block: the interpreter runs it in place and compiled code leaves only when it
+// dropped compiled code (a page that held some). TP ran ~62,000 icbi exits a second, each a dispatcher round trip,
+// against ~10 flushes a second (job 184).
 // OPT_IND2: the indirect-branch table is 2-way: a target whose slot holds another one goes to the slot next to it (same
 // cache line), which ST_INDIRECT checks second. The 2DS's misses were ~3,400/s "slot taken" (job 157).
 // OPT_NATIVE2: instructions the 2DS interpreted thousands of times a second compiled natively (each fallback is a C
@@ -130,7 +133,7 @@ u32 jit_sched(const Jit* j);
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
-       OPT_ALL = 8191 };
+       OPT_ICBI = 8192, OPT_ALL = 16383 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

@@ -310,7 +310,7 @@ static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
     if ((inst >> 26) == 31 && (xo == 339 || xo == 467))
         g_jit->stats.sprRun[xo == 467][((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)]++;
     bool stop;
-    u32 npc;
+    u32 npc, gen = g_jit->gen;
     if (g_profClock && !(n & 63)) {  // sampled: a clock read per fallback would cost more than many fallbacks
         u32 op = inst >> 26;
         u64 t0 = g_profClock();
@@ -319,7 +319,9 @@ static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
     } else {
         npc = gekko_interp_one(g, pc, inst, &stop);
     }
-    if (npc != pc + 4 || stop) { g->pc = npc; return 1; }
+    // The code was dropped (an icbi on a page with compiled code, OPT_ICBI): its bytes stay until the next compile, so
+    // returning into it is safe, but it must leave now.
+    if (npc != pc + 4 || stop || g_jit->gen != gen) { g->pc = npc; return 1; }
     // XER[SO] newly set (an overflow-form instruction, mtxer): leave, so the dispatcher switches to exact CR updates
     // before any more code compiled without SO runs.
     if (!g_jit->soExact && (g->xer & XER_SO)) { g->pc = npc; return 1; }
@@ -3880,6 +3882,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
         count_op(&j->stats.fallback, inst);
         emit_fallback(c, inst);
+        if (inst >> 26 == 31 && ((inst >> 1) & 0x3FF) == 982 && (j->opt & OPT_ICBI)) continue;  // icbi: see OPT_ICBI
         if (is_branch(inst) || ends_block(inst)) {
             // The interpreter ran it and went on to pc + 4 (other targets left through emit_fallback's exit). Never
             // linked: these instructions change state that compiled code depends on (MSR, HID2, FPSCR[RN], BATs).
