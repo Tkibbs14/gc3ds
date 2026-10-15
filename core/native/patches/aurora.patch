@@ -34,7 +34,7 @@ index 94481a4..566e8fe 100644
    std::atomic_ref<T>{ref}.store(val, std::memory_order_release);
  #else
 diff --git a/lib/dolphin/gx/GXDispList.cpp b/lib/dolphin/gx/GXDispList.cpp
-index 5bf9460..157c792 100644
+index 5bf9460..ac89d1c 100644
 --- a/lib/dolphin/gx/GXDispList.cpp
 +++ b/lib/dolphin/gx/GXDispList.cpp
 @@ -46,6 +46,10 @@ u32 GXEndDisplayList() {
@@ -48,14 +48,20 @@ index 5bf9460..157c792 100644
  void GXCallDisplayList(const void* data, u32 nbytes) {
    // Flush any pending dirty state before calling
    if (__gx->dirtyState != 0) {
-@@ -58,7 +62,13 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
+@@ -58,7 +62,19 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
    }
  
    // Write display list contents to the FIFO
 +#if defined(__3DS__)
 +  const uint64_t gc3dsT0 = gc3ds_ticks();
 +#endif
++#if defined(__3DS__)
++  GX_WRITE_AURORA(0x0060);  // gc3ds native mode: CALL_DL by reference (u64 pointer, u32 size)
++  GX_WRITE_U64(reinterpret_cast<uintptr_t>(data));
++  GX_WRITE_U32(nbytes);
++#else
    aurora::gx::fifo::write_data(data, nbytes);
++#endif
 +#if defined(__3DS__)
 +  gc3ds_dl_account(nbytes, gc3ds_ticks() - gc3dsT0);  // gc3ds native mode: list copies' bytes and time
 +#endif

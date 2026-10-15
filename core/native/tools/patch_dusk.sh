@@ -197,6 +197,27 @@ if 'gc3ds_dl_account' not in s:
     s = s.replace(old, new).replace(decl, newdecl)
     open(p, 'w').write(s)
 print('aurora display-list accounting:', 'gc3ds_dl_account' in s)
+# Then by reference: job 217 measured the copies at 680 KB and 4.2 ms of each heavy frame, plus 7.3 ms scanning the
+# stream they bloated. On the 3DS a called list goes into the stream as GX_AURORA (0x50) subcommand 0x0060, a 64-bit
+# pointer and a 32-bit size, read in place by the consumer, as the GameCube's GPU read display lists.
+s = open(p).read()
+old = '''  aurora::gx::fifo::write_data(data, nbytes);
+#if defined(__3DS__)
+  gc3ds_dl_account'''
+new = '''#if defined(__3DS__)
+  GX_WRITE_AURORA(0x0060);  // gc3ds native mode: CALL_DL by reference (u64 pointer, u32 size)
+  GX_WRITE_U64(reinterpret_cast<uintptr_t>(data));
+  GX_WRITE_U32(nbytes);
+#else
+  aurora::gx::fifo::write_data(data, nbytes);
+#endif
+#if defined(__3DS__)
+  gc3ds_dl_account'''
+if 'CALL_DL by reference' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('aurora display lists by reference:', 'CALL_DL by reference' in s)
 PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
