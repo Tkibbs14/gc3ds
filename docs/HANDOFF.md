@@ -960,3 +960,27 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Baseline of the night's defaults (job 130, tp850, 600 s, no A/B):** cutscene (first 300 s) 20.06% +- 0.26, core 0
   22.83% (gxwait 11.1%, valloc 21%, worker 55% busy); later core-0-bound stretch 11.80% +- 0.05 (core 0 11.87%).
   No new Luma dumps (arm11 9, arm9 2). Compare the next builds' runs against these, within-run A/B first.
+
+## 2026-10-14 night: JIT code size, candidates 1-2 measured (job 148)
+
+- **Corrected qemu baseline** (TP 850-880 from `tp_arm_850.state`, traces off, fault mode off, hoist + kstore, as the
+  2DS): **4.80 executed hot words per guest instruction**. Earlier JIT_REGSTAT tables counted the statistics' own
+  counters (8.58); they are left out now. Largest shares: lwz 11.7% (4.2 words), bc 11.4% (6.2), stw 6.5% (3.9),
+  addi 5.4% (1.7), bclr 4.2% (6.8), cmpli + cmpi 5.6% (6.4-6.5), paired-single / float arithmetic ~13% (10-21 words).
+  This window starts with a load: icbi is 1.4% of its instructions (each one an interpreter fallback and a dispatcher
+  round trip, as icbi ends the block), while the 2DS runs only ~15k fallbacks/s in the measured scenes.
+- **Candidate 1, CR-field dead stores: not built.** The fate model (JIT_REGSTAT, `CR-field fate`) over 2.9M executed
+  CR-field writes: a fused bc next and the field dead on every path 5.3%, dead only past a load / store or a call 42.2%,
+  live 2.4% + 32.8%, unknown 17.3%. Exact elimination reaches ~0.3% of hot words; even the inexact (Dolphin-style)
+  version, where a dead field may be stale at exceptions and dispatcher exits, reaches ~1.5-2%.
+- **Candidate 2, OPT_RETSTUB (`--retstub on`, `--ab retstub`), off:** blr / bctr / bctrl through shared stubs. qemu:
+  bclr 6.8 -> 3.8 words, all hot words 4.80 -> 4.70 (-2.1%), identical instruction count, final PC, GX bytes and last
+  frame; fuzzer clean (run_jit_fuzz.sh with JIT_FUZZ_OPT=19 incl. planted bugs, chain seeds 1-8 and default seeds
+  11/21/31 with traces and fault mode off). **2DS job 148 (`--ab retstub`, 600 s):** core 0 cutscene 24.40 +- 0.21 on vs
+  24.10 +- 0.24 off, later stretch 12.13 +- 0.07 vs 12.34 +- 0.40: within noise. Cutscene I-cache misses did not move
+  (6.69 vs 6.71 M/s): 2% fewer executed words are not 2% fewer misses. bl's LR write (literal load, store, literal) has
+  no shorter form without a taken branch into cold code.
+- **Fuzzer fix:** a chain case skipped for an aliasing access (fault mode) left its memory differing, and the next ten
+  cases failed on it (seed 1, both with and without the new opt bit); the skip now takes the compared memory from the
+  interpreter.
+- Tools: `core/tools/ab_split.py relay_N.csv` (A/B by the opt column, cutscene vs later stretch, settle after switches).

@@ -185,3 +185,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   versions, and measure core 0 on the 2DS.
 - **Re-evaluate when:** now. This is the only candidate that attacks the 33-cycle wall as a whole, and the test runs on
   TP, which is already on the card.
+
+## C13. JIT code size, peephole candidates (CR dead stores, bl / bclr, float loads and stores, register pinning)
+
+- **Status:** measuring (2026-10-14). Candidate 1 (CR-field dead stores) rejected by its model: exact ~0.3% of hot
+  words, inexact ~1.5-2%. Candidate 2 (OPT_RETSTUB) built, -2.1% hot words under qemu, within noise on the 2DS (job 148),
+  off. HANDOFF 2026-10-14 night has the numbers.
+- **Lesson:** executed hot words per guest instruction did not predict I-cache misses for this change: misses follow the
+  hot code's footprint (distinct lines touched), not the words executed per instruction.
+- **Re-evaluate when:** several small exact reductions can be stacked into one A/B, or a footprint measure (distinct hot
+  lines per field) shows which code the misses come from.
