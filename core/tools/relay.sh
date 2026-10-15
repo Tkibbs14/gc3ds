@@ -8,6 +8,7 @@
 #   bash core/tools/relay.sh status                when the 2DS last polled for a job and last posted a log
 #   bash core/tools/relay.sh jobs | cancel JOB | push
 #   bash core/tools/relay.sh send FILE SDPATH | cat SDPATH   a file onto the SD card / a text file from it into a log
+#   bash core/tools/relay.sh native SECONDS [PRESS]   a native-mode run, logs back in the job (no hands)
 #   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
 #        set opt|sched|merge|vtrim|pld|splitopen|vwmem VALUE, stop (host3ds/main.c apply_cmd)
 #   bash core/tools/relay.sh frames JOB              the job's frames so far into core/out/frames_JOB/ (BMP, + PNG)
@@ -98,8 +99,14 @@ case "$cmd" in
     # 2DS must already run a build with --fetch-to (main.c's file jobs). cat SDPATH: a text file from the SD into the log.
     send) id="$(push "$1")"; [ -n "$id" ] || { echo "upload failed" >&2; exit 1; }
           printf '{"args": "--fetch-to %s", "build": "%s"}' "$2" "$id" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
+    # native SECONDS [PRESS]: a native-mode run with no hands: gc3ds starts sdmc:/3ds/gc3ds_native.3dsx (relay.sh send
+    # it first) for SECONDS, pressing PRESS (NAME@FROM-TO,... in frames: A B X Y START L R Z UP DOWN LEFT RIGHT, SUP
+    # SDOWN SLEFT SRIGHT for the circle pad), and when it comes back posts native mode's perf.csv and trace.txt.
+    native) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"
+            a="--native $1"; [ -n "${2:-}" ] && a="$a --press $2"
+            printf '{"args": "%s", "build": "%s"}' "$a" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     # (the server wants a known build on every job: the latest machine job's, which the 2DS does not need for --cat)
-    cat) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" {print $3; exit}')"
+    cat) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"
          printf '{"args": "--cat %s", "build": "%s"}' "$1" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     run) job="$(queue "$@")"; follow "$job" ;;
     log) follow "$1" ;;

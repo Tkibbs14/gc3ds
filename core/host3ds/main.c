@@ -1352,6 +1352,8 @@ static Result g_relaunchRc;  // why relaunch_into failed (0: it did not)
 // blocking), so they run on their own thread and relaunch_into waits for it at most 3 s; a thread still blocked then
 // is left behind (the process ends soon after) and the owner restarts by hand.
 static const char* g_relaunchPath;
+static const char* const* g_relaunchArgs;  // argv[1...] for the program started (native mode's run control), or NULL
+static int g_relaunchArgc;
 static volatile int g_relaunchDone;  // 0 running, 1 done (g_relaunchRc says how)
 static bool relaunch_ipc(const char* path);
 static void relaunch_thread(void* arg) {
@@ -1389,7 +1391,13 @@ static bool relaunch_ipc(const char* path) {
     static u32 argBuf[0x400 / 4];
     memset(argBuf, 0, sizeof argBuf);
     argBuf[0] = 1;  // argv[0] = the full path, as the launcher passes it (main takes its own path from it)
-    snprintf((char*)&argBuf[1], sizeof argBuf - 4, "%s", path);
+    char* at = (char*)&argBuf[1];
+    char* end = (char*)argBuf + sizeof argBuf - 1;
+    at += snprintf(at, end - at, "%s", path) + 1;
+    for (int i = 0; i < g_relaunchArgc && g_relaunchArgs && at < end; i++) {  // then argv[1...], NUL-separated
+        at += snprintf(at, end - at, "%s", g_relaunchArgs[i]) + 1;
+        argBuf[0]++;
+    }
     u32* cmd = getThreadCommandBuffer();
     cmd[0] = IPC_MakeHeader(2, 0, 2);
     cmd[1] = IPC_Desc_StaticBuffer(strlen(target) + 1, 0);
@@ -1440,6 +1448,30 @@ static void restart_for_job(const char* selfPath, const char* why) {
 // Remote runs: jobs queued from the PC through the relay (relay.c, core/tools/relay.sh) run one after another, each
 // streaming its perf log back; a job for another build downloads it, keeps the job and asks for a restart.
 // SELECT leaves. Jobs default to 600 s so a forgotten --seconds cannot run forever.
+// Native mode (core/native): its .3dsx on the SD card (relay.sh send) and its logs.
+#define NATIVE_PATH "sdmc:/3ds/gc3ds_native.3dsx"
+#define NATIVE_DIR "sdmc:/gc3ds/native"
+
+// A text file from the SD card into the running job's log, line by line (relay.sh cat, native runs).
+static bool post_file(const char* path) {
+    FILE* f = fopen(path, "r");
+    char note[200];
+    if (!f) { snprintf(note, sizeof note, "relay: cannot open %s", path); relay_note(note); return false; }
+    snprintf(note, sizeof note, "relay: file %s", path);
+    relay_note(note);
+    char line[512];
+    u32 bytes = 0;
+    while (fgets(line, sizeof line, f)) {
+        size_t n = strlen(line);
+        if (n && line[n - 1] == '\n') line[n - 1] = 0;
+        relay_note(line);
+        // The log ring holds 512 KB and drops past it: pause each 128 KB for the poster (every ~2 s) to drain.
+        if ((bytes += (u32)n) >= (128u << 10)) { bytes = 0; svcSleepThread(3000000000LL); }
+    }
+    fclose(f);
+    return true;
+}
+
 static void remote_mode(const char* selfPath) {
     char err[256];
     consoleClear();
@@ -1492,21 +1524,57 @@ static void remote_mode(const char* selfPath) {
                 if (!ok) relay_note(err);
                 relay_job_end(ok ? "done" : "failed");
             } else {
-                FILE* f = fopen(path, "r");
-                if (!f) { snprintf(note, sizeof note, "relay: cannot open %s", path); relay_note(note); relay_job_end("failed"); continue; }
-                char line[512];
-                u32 bytes = 0;
-                while (fgets(line, sizeof line, f)) {
-                    size_t n = strlen(line);
-                    if (n && line[n - 1] == '\n') line[n - 1] = 0;
-                    relay_note(line);
-                    // The log ring holds 512 KB and drops past it: pause each 128 KB for the poster (every ~2 s) to drain.
-                    if ((bytes += (u32)n) >= (128u << 10)) { bytes = 0; svcSleepThread(3000000000LL); }
-                }
-                fclose(f);
-                relay_job_end("done");
+                relay_job_end(post_file(path) ? "done" : "failed");
             }
             continue;
+        }
+        // Native mode runs (relay.sh native N [PRESS]): the 2DS goes to native mode's .3dsx with --seconds N, --return
+        // (this build) and --press, and comes back here by itself, where the kept job posts native mode's logs. A run
+        // that crashes stops at Luma's exception screen: after a restart by hand the logs are posted the same way.
+        const char* nt = strstr(job.args, "--native ");
+        if (nt) {
+            if (fromPending) {
+                relay_note("relay: back from native mode; its perf.csv and trace.txt follow");
+                post_file(NATIVE_DIR "/perf.csv");
+                post_file(NATIVE_DIR "/trace.txt");
+                relay_job_end("done");
+                continue;
+            }
+            static char secs[16], press[256];
+            static const char* nargs[6];
+            secs[0] = press[0] = 0;
+            sscanf(nt + 9, "%15s", secs);
+            const char* pr = strstr(job.args, "--press ");
+            if (pr) sscanf(pr + 8, "%255s", press);
+            int n = 0;
+            nargs[n++] = "--seconds"; nargs[n++] = secs;
+            nargs[n++] = "--return"; nargs[n++] = selfPath;
+            if (press[0]) { nargs[n++] = "--press"; nargs[n++] = press; }
+            FILE* nf = fopen(NATIVE_PATH, "rb");
+            if (!nf) { relay_note("relay: no " NATIVE_PATH " (relay.sh send it first)"); relay_job_end("failed"); continue; }
+            fclose(nf);
+            save_pending(&job);
+            g_relaunchArgs = nargs;
+            g_relaunchArgc = n;
+            bool ok = relaunch_into(NATIVE_PATH);
+            g_relaunchArgs = NULL;
+            g_relaunchArgc = 0;
+            if (!ok) {
+                remove(RELAY_PENDING);
+                char note[96];
+                snprintf(note, sizeof note, "relay: cannot start native mode (hb:ldr %08lx)", (unsigned long)g_relaunchRc);
+                relay_note(note);
+                relay_job_end("failed");
+                continue;
+            }
+            char note[96];
+            snprintf(note, sizeof note, "relay: starting native mode for %s s%s%s", secs, press[0] ? ", presses " : "", press);
+            relay_note(note);
+            relay_flush();
+            printf("Starting native mode (%s s)...\n", secs);
+            for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();
+            g_quitApp = true;
+            return;
         }
         if (strcmp(job.build, "-") && strcmp(job.build, self)) {
             if (fromPending) {

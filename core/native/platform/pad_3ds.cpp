@@ -6,6 +6,8 @@
 
 #include <dolphin/pad.h>
 
+#include "native.h"
+
 #include <cstdlib>
 #include <cstring>
 
@@ -28,7 +30,7 @@ u32 PADRead(PADStatus* status) {
     }
     PADStatus& s = status[0];
     memset(&s, 0, sizeof s);
-    const u32 held = hidKeysHeld();
+    const u32 held = hidKeysHeld() | native::scripted_keys();  // --press: scripted buttons (automated runs)
     if (held & KEY_A) s.button |= PAD_BUTTON_A;
     if (held & KEY_B) s.button |= PAD_BUTTON_B;
     if (held & KEY_X) s.button |= PAD_BUTTON_X;
@@ -50,6 +52,8 @@ u32 PADRead(PADStatus* status) {
     circlePosition cp, cs;
     hidCircleRead(&cp);
     hidCstickRead(&cs);
+    int sdx, sdy;
+    if (native::scripted_stick(&sdx, &sdy)) { cp.dx = (s16)sdx; cp.dy = (s16)sdy; }
     s.stickX = scale_stick(cp.dx);
     s.stickY = scale_stick(cp.dy);
     s.substickX = scale_stick(cs.dx);

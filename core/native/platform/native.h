@@ -19,4 +19,8 @@ void frame_end();
 void trace(const char* fmt, ...);  // sdmc:/gc3ds/native/trace.txt, flushed at once (where start-up got to)
 void trace_memory(const char* where);  // into the trace: the largest malloc block and the heaps at this point
 [[noreturn]] void fatal(const char* message);
+// Scripted input (--press NAME@FROM-TO,...: frames since the game loop started), ORed into the pad each frame: the 3DS
+// key bits held now, and the circle pad (-156..156) when a stick direction is scripted (*stick false otherwise).
+uint32_t scripted_keys();
+bool scripted_stick(int* dx, int* dy);
 }  // namespace native
