@@ -168,6 +168,36 @@ if 'gc3ds native mode: no worker' not in s:
     open(p, 'w').write(s)
 print('aurora fifo inline on the 3DS:', 'gc3ds native mode: no worker' in s)
 PY
+# Display lists: Aurora copies each called list's bytes into the FIFO (GXCallDisplayList), where the GameCube's GPU read
+# them in place. On the 3DS the copies' bytes and time are counted (gc3ds_dl_account, aurora_3ds.cpp): the title
+# scene's demo wrote ~900 KB of GX a frame at 80-100% busy (jobs 213, 215).
+python3 - <<'PY'
+p = 'extern/aurora/lib/dolphin/gx/GXDispList.cpp'
+s = open(p).read()
+old = '''  // Write display list contents to the FIFO
+  aurora::gx::fifo::write_data(data, nbytes);
+'''
+new = '''  // Write display list contents to the FIFO
+#if defined(__3DS__)
+  const uint64_t gc3dsT0 = gc3ds_ticks();
+#endif
+  aurora::gx::fifo::write_data(data, nbytes);
+#if defined(__3DS__)
+  gc3ds_dl_account(nbytes, gc3ds_ticks() - gc3dsT0);  // gc3ds native mode: list copies' bytes and time
+#endif
+'''
+decl = '''void GXCallDisplayList(const void* data, u32 nbytes) {'''
+newdecl = '''#if defined(__3DS__)
+extern "C" uint64_t gc3ds_ticks(void);
+extern "C" void gc3ds_dl_account(uint32_t bytes, uint64_t ticks);
+#endif
+void GXCallDisplayList(const void* data, u32 nbytes) {'''
+if 'gc3ds_dl_account' not in s:
+    assert s.count(old) == 1 and s.count(decl) == 1
+    s = s.replace(old, new).replace(decl, newdecl)
+    open(p, 'w').write(s)
+print('aurora display-list accounting:', 'gc3ds_dl_account' in s)
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches

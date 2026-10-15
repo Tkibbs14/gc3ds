@@ -85,6 +85,17 @@ namespace aurora::thread {
 void set_current(const Options&) noexcept {}
 }  // namespace aurora::thread
 
+// Display-list copies (GXCallDisplayList, patched in patch_dusk.sh): bytes and ticks, read by native_3ds.cpp each second.
+namespace native {
+uint64_t g_dlBytes, g_dlTicks, g_dlCalls;
+}
+extern "C" uint64_t gc3ds_ticks(void) { return svcGetSystemTick(); }
+extern "C" void gc3ds_dl_account(uint32_t bytes, uint64_t ticks) {
+    native::g_dlBytes += bytes;
+    native::g_dlTicks += ticks;
+    native::g_dlCalls++;
+}
+
 namespace aurora::gx::fifo {
 // The draw-done marker GXSetDrawDone / GXDrawDone write: a raster register write (0x61) of BP 0x45, value 2.
 static constexpr uint8_t kDrawDone[5] = {0x61, 0x45, 0x00, 0x00, 0x02};
