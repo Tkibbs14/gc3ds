@@ -449,6 +449,7 @@ static u32 g_case;  // the case being checked (printed with a mismatch: JIT_FUZZ
 static bool g_faultMode;
 static u32 g_aliasSkips;
 static u32 g_smcSkips;  // chain cases not compared: the program stored into itself
+static u32 g_overBudget;  // chain runs that went past their budget (OPT_LATCH: only blocks that may loop check it)
 static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
 static bool alias_unchecked(u32 ea) {
     if (ea - 0x7FFF0000u < 0x01820000u || ea - 0xC0000000u < 0x01800000u || ea < 0x01800000u) return false;  // MEM1 and its guards
@@ -754,6 +755,7 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     interp_steps(n2);
     if (show) printf("  interp: to %08x, pipe %u\n", B.cpu.pc, B.gx.wgpLen);
     g_chainInfo[0] = (u32)b1; g_chainInfo[1] = (u32)n1; g_chainInfo[2] = (u32)b2; g_chainInfo[3] = (u32)n2;
+    g_overBudget += (n1 > b1) + (n2 > b2);
     return (u32)(n1 + n2);
 }
 
@@ -1075,6 +1077,8 @@ int main(int argc, char** argv) {
     printf("fault mode %s: %llu sites patched by faults, %u cases not compared (a DSI or an unmapped access at an address aliasing host memory)\n",
            jit_fault_mem(jit) ? "on" : "off", (unsigned long long)jit_stats(jit)->faults, g_aliasSkips);
     if (g_smcSkips) printf("chain cases not compared: %u stored into their own program\n", g_smcSkips);
+    if (chains) printf("chain runs past their budget: %u; blocks compiled without the budget branch: %llu of %llu\n", g_overBudget,
+                       (unsigned long long)jit_stats(jit)->blocksNoCheck, (unsigned long long)jit_stats(jit)->blocksCompiled);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
     jit_destroy(jit);

@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
     u64 blocksCompiled, instrsCompiled, instrsNative, flushes;
     u64 compileRepeats;   // blocks compiled at a PC already compiled since the last flush (a lookup missed it)
+    u64 blocksNoCheck;    // ... of them without the budget branch (OPT_LATCH)
     u32 keySeen[8], keyCount[8];  // block keys (MSR / FPSCR / HID2 bits) blocks were compiled under, and how often
     u64 blocksRun;  // entries from the C dispatcher (linked blocks run without coming back)
     u64 links;      // exits patched to jump straight to their target block
@@ -86,6 +87,7 @@ extern void (*jit_run_end_hook)(void);
 void jit_set_fault_mem(Jit* j, bool on);
 bool jit_fault_mem(const Jit* j);
 bool jit_fault(u32 hostPc, u32* resume);
+extern bool jit_fault_nosync;  // fault patches get no cache maintenance (a stale copy just faults again)
 // Code scheduled against ARM11 interlocks (tools/arm11_sched.py), for A/B: SCHED_STUBS, memory stubs whose range check
 // reads r0 and whose loads leave the byte swap to the site; SCHED_CONST, constants added in two immediates instead of
 // loaded (a negative 16-bit displacement: 2 words instead of up to 5). Drops all compiled code.
@@ -110,6 +112,10 @@ u32 jit_sched(const Jit* j);
 // OPT_BEFLOAT: the float load / store stubs (lfs, lfd, psq_l, stfd, and stfs / psq_st of known singles) move the guest
 // value straight between RAM and a VFP register in big-endian data mode (SETEND BE) instead of ldr -> rev -> vmov:
 // the core <-> VFP moves cost ~3.5-4 cycles each and do not overlap (docs/FINDINGS.md run 3).
+// OPT_LATCH (owner decision 2026-10-15: event timing may drift): only blocks that may branch back to their own address or
+// below keep the budget branch (every loop of linked blocks passes one; ST_INDIRECT and the dispatcher check too), so a
+// run may go past its budget by a chain of forward blocks. Every block still counts its instructions exactly. Modelled
+// at 0.70 hot words per block run (2.5%; TP 850-880, JIT_REGSTAT).
 // OPT_IND2: the indirect-branch table is 2-way: a target whose slot holds another one goes to the slot next to it (same
 // cache line), which ST_INDIRECT checks second. The 2DS's misses were ~3,400/s "slot taken" (job 157).
 // OPT_NATIVE2: instructions the 2DS interpreted thousands of times a second compiled natively (each fallback is a C
@@ -120,7 +126,8 @@ u32 jit_sched(const Jit* j);
 // OPT_CRSTUB: a compare's CR-field update (BIC and three conditional ORRs) is a call to a shared stub, one word instead
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
-       OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_ALL = 4095 };
+       OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
+       OPT_ALL = 8191 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

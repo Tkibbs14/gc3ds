@@ -351,6 +351,7 @@ typedef struct {
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
     bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
     bool befloat, abBefloat;  // --befloat on|off (off), --ab befloat: float stubs in big-endian data mode (OPT_BEFLOAT)
+    bool latch, abLatch;      // --latch on|off (off), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
     bool native2, abNative2;  // --native2 on|off (on), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
     bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
@@ -404,7 +405,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -418,6 +419,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
+        else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
         else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
         else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
         else if (!strcmp(a, "--dlcache")) o->dlcache = !strcmp(v, "on");
@@ -434,6 +436,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--native2")) o->native2 = !strcmp(v, "on");
         else if (!strcmp(a, "--ind2")) o->ind2 = !strcmp(v, "on");
         else if (!strcmp(a, "--befloat")) o->befloat = !strcmp(v, "on");
+        else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
@@ -720,14 +723,16 @@ static const char* run(const char* path) {
                            (g_opt.rotmask && !g_opt.abRotmask ? OPT_ROTMASK : 0) |
                            (g_opt.native2 && !g_opt.abNative2 ? OPT_NATIVE2 : 0) |
                            (g_opt.ind2 && !g_opt.abInd2 ? OPT_IND2 : 0) |
-                           (g_opt.befloat && !g_opt.abBefloat ? OPT_BEFLOAT : 0));  // A/Bs start off
+                           (g_opt.befloat && !g_opt.abBefloat ? OPT_BEFLOAT : 0) |
+                           (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
         if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build (lookup tables %s), %s\n", aot_available() ? "present" : "absent",
                             g_aotTables ? "built" : "did not fit", aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
-        if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s\n", jit_fault_mem(g_jit) ? "on" : "off",
-                            g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard);
+        if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s; patch sync %s\n", jit_fault_mem(g_jit) ? "on" : "off",
+                            g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard,
+                            jit_fault_nosync ? "none (--faultsync off)" : "outside the handler");
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
@@ -921,6 +926,7 @@ static const char* run(const char* path) {
                 if (g_opt.abNative2 && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_NATIVE2);
                 if (g_opt.abInd2 && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_IND2);
                 if (g_opt.abBefloat && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_BEFLOAT);
+                if (g_opt.abLatch && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_LATCH);
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());

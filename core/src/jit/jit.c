@@ -73,8 +73,8 @@ typedef u32 (*BlockFn)(Gekko* g);
 // bucket (a direct-mapped table evicted and recompiled colliding blocks, e.g. a real-mode exception handler at
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
 // poll: polling-loop length or 0; count: the guest instructions the block's entry takes off the budget
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count; u32 next; } Entry;
-#define JIT_PROLOGUE 2  // words of each block's budget check (compile_block); the dispatcher enters after them
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro; u32 next; } Entry;  // pro: prologue words
+#define JIT_PROLOGUE 2  // words of a block's budget check (compile_block; 1 without the branch, OPT_LATCH): the dispatcher enters after them
 #define MAX_ENTRIES (1u << 16)
 #define NO_ENTRY 0xFFFFFFFFu
 
@@ -95,8 +95,13 @@ struct Jit {
     // address lands on host memory that is not mapped, the access faults, and the host's fault handler calls jit_fault,
     // which patches the site into a branch to its slow path and resumes there. faultKey / faultVal: an open-addressed
     // table from a site's word index in `code` to its slow path's (empty: ~0), cleared with the code.
+    // faultPend: sites the handler patched whose cache sync waits for jit_entry (fault_sync): the handler makes no
+    // system call (on the 2DS the kernel crashed in svc 0x94 issued from inside a user exception handler, jobs 86-90).
     bool faultMem;
     u32 *faultKey, *faultVal, faultN;
+    u32* faultPend[32];
+    u32 faultPendN;
+    bool faultPendAll;  // more than faultPend holds: sync the whole buffer
     u8 codePages[(32u << 20) >> 12];  // physical 4 KB pages that hold compiled code (for icbi invalidation)
     u8* compiledPc;             // one bit per guest word of MEM1: a block started there since the last flush (stats)
     JitStats stats;
@@ -559,7 +564,15 @@ typedef struct { s8 id[NSLOT_STAT]; u8 readFirst; u64 written, touched; } RsEntr
 static RsEntry* g_rsE;
 // Exits at block ends, with the cache as it stood before the flush and their executions (counted by compiled code).
 enum { RX_CONST, RX_IND, RX_DISPATCH };
-typedef struct { u32 block, target, from; u8 kind; s8 id[NSLOT_STAT]; u8 dirty; } RsExit;  // from: the branch's address
+typedef struct { u32 block, target, from; u8 kind; s8 id[NSLOT_STAT]; u8 dirty, dead, deadAbi; } RsExit;  // from: the branch's address
+// Owner decision 2026-10-15 models (dead state may differ at exits; event timing may drift): dead / deadAbi, the dirty
+// slots whose write-back the exit could skip (the target overwrites them before reading them on every path; deadAbi
+// also counting the calling convention at calls and returns); g_latch, blocks with a backward exit (only they would keep
+// the budget check).
+static u64 g_dwSt[2], g_dwDead[2], g_dwAbi[2];  // write-backs at constant [0] / blr [1] exits; dead; dead with the ABI
+static u8* g_latch;
+static u64 g_latchRuns, g_allRuns;
+static u32 g_crfW;  // CR fields the block being compiled writes
 #define RX_POOL (1u << 18)
 static RsExit* g_rx;
 static u32* g_rxCount;
@@ -710,6 +723,68 @@ static void cf_note(Jit* j, u32 pc, u32 inst) {
     int k = crf_scan(j, pc + 4, f, fused) + (fused ? CF_FUSED : 0);
     if (g_cf[g_rsCur][k] < 255) g_cf[g_rsCur][k]++;
 }
+// Liveness of one guest register (isCr: the CR fields in `ids`; else GPR `ids`) along the code from pc: 1 dead (written
+// before read on every path), 0 live or unknown. abi: a bl makes r0, r11, r12 and the volatile CR fields dead (the
+// callee may clobber them; r3-r10 may be its arguments), a blr r0, r5-r12 and those fields (the caller does not rely on
+// them; r3 / r4 return values).
+static int id_dead(Jit* j, u32 pc, bool isCr, u32 ids, bool abi) {
+    u32 stack[16], nStack = 0, seen[48], seenWant[48], nSeen = 0, budget = 96;
+    stack[nStack++] = pc;
+    while (nStack) {
+        u32 p = stack[--nStack];
+        u32 want = isCr ? ids : 1;  // CR fields still to be overwritten on this path (a pushed path restarts with all)
+        for (;;) {
+            bool dup = false;  // a visit that already covered these fields
+            for (u32 k = 0; k < nSeen; k++) if (seen[k] == p && (seenWant[k] & want) == want) dup = true;
+            if (dup) break;
+            if (nSeen == sizeof seen / sizeof seen[0] || !budget--) return 0;
+            seen[nSeen] = p;
+            seenWant[nSeen++] = want;
+            u32 pa;
+            if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return 0;
+            u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+            u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
+            if (isCr) {
+                u32 rd, wr;
+                if (!crf_use(inst, &rd, &wr)) return 0;
+                if (rd & want) return 0;
+                want &= ~wr;
+                if (!want) break;
+            } else {
+                u64 r = 0, w = 0;
+                if (!gekko_regs(inst, &r, &w)) return 0;
+                if ((r >> ids) & 1) return 0;
+                if ((w >> ids) & 1) break;
+            }
+            bool vol = isCr ? !(want & 0x1C) : ids == 0 || ids == 11 || ids == 12;  // dead at a call
+            bool volRet = isCr ? !(want & 0x1C) : ids == 0 || (ids >= 5 && ids <= 12);  // dead at a return
+            if (op == 18 || op == 16) {
+                s32 off = op == 18 ? ((s32)(inst << 6)) >> 6 & ~3 : (s32)(s16)(inst & 0xFFFC);
+                u32 target = (inst & 2) ? (u32)off : p + (u32)off;
+                bool always = op == 18 || (((inst >> 21) & 20) == 20);
+                if (inst & 1) {
+                    if (!abi || !vol) return 0;
+                    if (always) break;
+                    p += 4;
+                    continue;
+                }
+                if (!always) { if (nStack == sizeof stack / sizeof stack[0]) return 0; stack[nStack++] = target; p += 4; continue; }
+                p = target;
+                continue;
+            }
+            if (op == 19 && (xo == 16 || xo == 528)) {
+                if (!abi || xo == 528 || !volRet) return 0;
+                if ((((inst >> 21) & 20) == 20)) break;
+                p += 4;
+                continue;
+            }
+            if ((op == 19 && (xo == 50 || xo == 150)) || op == 17) return 0;
+            p += 4;
+        }
+    }
+    return 1;
+}
+
 static u32 g_ctrWords;  // hot words of these counters in the instruction being compiled (left out of the per-opcode words)
 static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled code (r12, lr; flags kept)
     u32 n0 = e->n;
@@ -744,6 +819,12 @@ static void rx_fold(Jit* j, u32 nEntries) {
         u32 dirty = (u32)__builtin_popcount(r->dirty);
         g_rxN[r->kind] += n;
         g_rxTodaySt[r->kind] += n * dirty;
+        if (r->kind != RX_DISPATCH) {
+            int t = r->kind == RX_CONST ? 0 : 1;
+            g_dwSt[t] += n * dirty;
+            g_dwDead[t] += n * (u32)__builtin_popcount(r->dead);
+            g_dwAbi[t] += n * (u32)__builtin_popcount(r->deadAbi);
+        }
         if (r->kind != RX_CONST) continue;
         // A back edge (to an earlier address, within 4 KB): the blocks starting in its range are in a loop.
         u32 from = r->from, to = r->target, src = j->table[r->block].pc;
@@ -926,6 +1007,8 @@ static void rs_fold(Jit* j, u32 nEntries) {
         memset(g_hc[b], 0, HC_N);
         for (int k = 0; k < CF_N; k++) g_cfTot[k] += n * g_cf[b][k];
         memset(g_cf[b], 0, CF_N);
+        g_allRuns += n;
+        if (g_latch && g_latch[b]) g_latchRuns += n;
         g_rsExec[b] = 0;
         memset(g_rsLd[b], 0, RS_IDS);
         memset(g_rsSt[b], 0, RS_IDS);
@@ -1070,10 +1153,30 @@ static void rx_add(Cg* c, int kind, u32 target, u32 from) {
     x->target = target;
     x->from = from;
     x->kind = (u8)kind;
-    x->dirty = 0;
+    x->dirty = x->dead = x->deadAbi = 0;
+    u32 bi = 0;
+    if (kind == RX_IND) {  // the branch itself: blr returns, bctr does not tell
+        u32 pa;
+        if (gk_translate(c->j->g, from, false, false, &pa, false) && pa + 4 <= c->j->ramSize)
+            bi = ((u32)c->j->ram[pa] << 24) | ((u32)c->j->ram[pa + 1] << 16) | ((u32)c->j->ram[pa + 2] << 8) | c->j->ram[pa + 3];
+    }
+    bool isBlr = kind == RX_IND && (bi >> 26) == 19 && ((bi >> 1) & 0x3FF) == 16;
     for (int k = 0; k < NSLOT_STAT; k++) {
         x->id[k] = g_rxState.id[k];
-        if (g_rxState.id[k] >= 0 && g_rxState.dirty[k]) x->dirty |= (u8)(1u << k);
+        if (g_rxState.id[k] < 0 || !g_rxState.dirty[k]) continue;
+        x->dirty |= (u8)(1u << k);
+        int id = g_rxState.id[k];
+        bool isCr = id == ID_CR;
+        if (id == ID_XER) continue;
+        u32 ids = isCr ? g_crfW : (u32)id;
+        if (isCr && !ids) continue;
+        if (kind == RX_CONST) {
+            if (id_dead(c->j, target, isCr, ids, false)) x->dead |= (u8)(1u << k);
+            if (id_dead(c->j, target, isCr, ids, true)) x->deadAbi |= (u8)(1u << k);
+        } else if (isBlr) {  // a return: what the convention lets the caller not rely on
+            bool d = isCr ? !(ids & 0x1C) : id == 0 || (id >= 5 && id <= 12);
+            if (d) x->deadAbi |= (u8)(1u << k);
+        }
     }
     rs_emit_count(&c->e, &g_rxCount[g_rxUsed]);
     g_rxUsed++;
@@ -3561,6 +3664,27 @@ static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] +=
 #endif
 
 static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
+static u32 g_lastPro;    // ... and its prologue words (Entry.pro)
+
+// OPT_LATCH: whether the block at pc may branch to pc or below, so that a loop of linked blocks could close through it
+// (it keeps its budget check). The scan may run past where the block ends, which only keeps more checks; blr / bctr
+// go through ST_INDIRECT and rfi through the dispatcher, which check.
+static bool block_may_loop(Jit* j, u32 pc) {
+    for (u32 k = 0, p = pc; k < MAX_BLOCK_INSNS + 8; k++, p += 4) {
+        u32 pa;
+        if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return true;
+        u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+        u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
+        if (op == 18 || op == 16) {
+            s32 off = op == 18 ? (((s32)(inst << 6)) >> 6) & ~3 : (s32)(s16)(inst & 0xFFFC);
+            u32 target = (inst & 2) ? (u32)off : p + (u32)off;
+            if (target <= pc) return true;
+            if (op == 18 && !(inst & 1)) return false;  // b: the block ends there (no traces)
+        } else if (op == 19 && (xo == 16 || xo == 528) && (((inst >> 21) & 20) == 20) && !(inst & 1)) return false;
+        else if (op == 19 && xo == 50) return false;
+    }
+    return false;  // cut at its length: it falls through forward
+}
 
 // The deoptimized blocks (check hoisting): an open-addressed set of guest PCs, kept across flushes.
 static u32 deopt_hash(u32 pc) { return (pc * 2654435761u) >> (32 - DEOPT_BITS); }
@@ -3623,9 +3747,14 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     // known), and the block only runs while some budget is left; the dispatcher enters after these two words with the
     // count already taken off (JIT_PROLOGUE), so a run executes at most its budget plus one block. Exits are then plain
     // branches (exit_const); exits from the middle of the block give back the instructions it did not run.
+    // OPT_LATCH: a block that cannot close a loop only counts (the next check is in a block that can, ST_INDIRECT or
+    // the dispatcher).
+    bool check = !(j->opt & OPT_LATCH) || c->trace || noLink || (j->opt & OPT_CALLS) || hle_is_hook(g, pc) || block_may_loop(j, pc);
     u32 budgetSub = e->n;
     dp_imm(e, SUB, 1, RDC, RDC, 0);
-    u32 budgetBr = branch_c(e, C_LE, 0);
+    u32 budgetBr = check ? branch_c(e, C_LE, 0) : 0;
+    g_lastPro = check ? JIT_PROLOGUE : 1;
+    if (!check) j->stats.blocksNoCheck++;
     // The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
 #ifndef __3DS__
@@ -3641,6 +3770,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         E->readFirst = 0;
         E->written = 0;
         g_hcChk = g_hcChk2 = 0;
+        g_crfW = 0;
         memset(g_hc[g_rsCur], 0, HC_N);
         load_const(e, R12, (u32)(uintptr_t)&g_rsExec[g_rsCur]);
         ldr_imm(e, R0, R12, 0);
@@ -3711,7 +3841,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         c->tailN = 0;
         c->tailFpr = -1;
 #ifndef __3DS__
-        if (g_regStat) { hc_inst(inst); cf_note(j, c->pc, inst); }
+        if (g_regStat) {
+            hc_inst(inst);
+            cf_note(j, c->pc, inst);
+            u32 crd, cwr;
+            if (crf_use(inst, &crd, &cwr)) g_crfW |= cwr; else g_crfW = 0xFF;
+        }
 #endif
         {   // check hoisting: GPRs the previous instruction wrote lose their check; this one's writes are applied after it
             u64 rd = 0, wr = 0;
@@ -3773,6 +3908,14 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (g_regStat && g_hotLen) g_hotLen[g_rsCur] = hotEnd;
 #endif
     u32 total = hle_is_hook(g, pc) ? 0 : c->count;  // a stand-in takes off what it ran itself
+#ifndef __3DS__
+    if (g_regStat && g_latch) {  // a backward exit: a loop could close through this block
+        bool latch = false;
+        for (u32 k = 0; k < c->nLinks; k++) if (c->links[k].target <= pc) latch = true;
+        for (u32 k = 0; k < c->nExits; k++) if (c->exits[k].kind == EXIT_LINK && c->exits[k].pc <= pc) latch = true;
+        g_latch[g_rsCur] = latch;
+    }
+#endif
     e->buf[budgetSub] |= total;  // SUBS RDC, RDC, #total (at most MAX_BLOCK_INSNS: a plain immediate)
     for (u32 k = 0; k < c->nTfix; k++) {
         u32* w = c->tfix[k].cold ? &c->alt.buf[c->tfix[k].at] : &e->buf[c->tfix[k].at];
@@ -3819,10 +3962,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         word(e, (u32)(uintptr_t)c->links[k].site);
     }
     // No budget left at the entry: give the block's count back and leave with g->pc = the block.
-    patch_to(hotBuf + budgetBr, e->buf + e->n);
-    if (total) dp_imm(e, ADD, 0, RDC, RDC, total);
-    branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
-    word(e, pc);
+    if (check) {
+        patch_to(hotBuf + budgetBr, e->buf + e->n);
+        if (total) dp_imm(e, ADD, 0, RDC, RDC, total);
+        branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
+        word(e, pc);
+    }
     u32 exitWords = e->n - coldBefore;
     swap_emit(c);
     e = &c->e;
@@ -4613,18 +4758,31 @@ static void emit_stubs(Jit* j) {
     ldr_imm(e, R2, RG, OFF_LR);
     patch_branch(e, indCtr, e->n);
     dp_imm(e, BIC, 0, R2, R2, 3);
-    j->stub[ST_INDIRECT] = e->n;  // (the target block checks the budget at its entry)
+    // A hit goes on only with budget left (OPT_LATCH: its target may not check; otherwise the target's own check would
+    // leave the same way, with g->pc = the target).
+    j->stub[ST_INDIRECT] = e->n;
     mov_shift(e, 0, R1, R2, LSL, 30 - FAST_BITS);  // fast_index: (pc >> 2) & (FAST_SIZE - 1)
     mov_shift(e, 0, R1, R1, LSR, 32 - FAST_BITS);
     ldr_imm(e, R12, RG, OFF_FASTBASE);  // the running key's table (fast_select)
     dp_reg_c(e, C_AL, ADD, 0, R12, R12, R1, LSL, 3);
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
-    bx_reg_c(e, C_EQ, R1);
+    u32 miss1 = branch_c(e, C_NE, 0);
+    dp_imm(e, CMP, 1, 0, RDC, 0);
+    bx_reg_c(e, C_GT, R1);
+    u32 spent1 = branch_c(e, C_AL, 0);
+    patch_branch(e, miss1, e->n);
     dp_imm(e, EOR, 0, R12, R12, 8);  // the slot next to it (OPT_IND2 fills it; empty otherwise)
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
-    bx_reg_c(e, C_EQ, R1);
+    u32 miss2 = branch_c(e, C_NE, 0);
+    dp_imm(e, CMP, 1, 0, RDC, 0);
+    bx_reg_c(e, C_GT, R1);
+    patch_branch(e, spent1, e->n);
+    str_imm(e, R2, RG, OFF_PC);  // no budget left: as ST_DYN
+    dp_imm(e, MOV, 0, R0, 0, 0);
+    branch_c(e, C_AL, j->stub[ST_EXIT]);
+    patch_branch(e, miss2, e->n);
     str_imm(e, R2, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 1);  // 1: a miss in the table (the dispatcher counts it)
     branch_c(e, C_AL, j->stub[ST_EXIT]);
@@ -4847,6 +5005,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
                ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
     en->poll = (u8)poll;
     en->count = (u8)g_lastCount;
+    en->pro = (u8)g_lastPro;
     en->next = *head;
     *head = idx;
     return en;
@@ -4947,6 +5106,7 @@ static void jit_fill_fns(Jit* j) {
     g->jitFn[JF_MEMSTAMPS] = (u32)(uintptr_t)j->memStamps;
 }
 
+static void fault_sync(Jit* j);
 static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     Jit* j = ctx;
     u32 total = 0;
@@ -4960,6 +5120,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
     u32 missKey = 0;
     u32 siteGen = 0, siteKey = 0;
     while ((s64)total < budget) {
+        if (j->faultPendN | j->faultPendAll) fault_sync(j);
         if (!j->soExact && (g->xer & XER_SO)) { j->soExact = true; jit_invalidate_all(j); }  // see jit_set_so_exact
         u32 pc = g->pc, key = block_key(g);
         if (aot_enabled() && j->fastmem && aot_state_ok(g) && aot_is_entry(pc)) {
@@ -5017,7 +5178,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         s64 room = budget - (s64)total;
         u32 gen = j->gen, *s;
         jit_in_run = 1;
-        u32 n = run(j, (BlockFn)(void*)((u32*)(void*)en->fn + JIT_PROLOGUE), room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room,
+        u32 n = run(j, (BlockFn)(void*)((u32*)(void*)en->fn + en->pro), room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room,
                     g->cycles + total, &s, en->count - (jit_debug_plant == 8 && en->count > 1 ? 1u : 0u));  // plant 8: a wrong count
         jit_in_run = 0;
         g_where = WH_DISPATCH;
@@ -5085,6 +5246,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
         g_rsE = calloc(MAX_ENTRIES, sizeof(RsEntry));
         g_hc = calloc(MAX_ENTRIES, HC_N);
         g_cf = calloc(MAX_ENTRIES, CF_N);
+        g_latch = calloc(MAX_ENTRIES, 1);
         g_rx = calloc(RX_POOL, sizeof(RsExit));
         g_rxCount = calloc(RX_POOL, sizeof(u32));
         if (getenv("JIT_SCHEDDUMP")) {
@@ -5193,6 +5355,18 @@ void jit_set_fault_mem(Jit* j, bool on) {
 }
 bool jit_fault_mem(const Jit* j) { return j->faultMem; }
 
+// The cache sync for the sites jit_fault patched (outside the fault handler: see faultPend).
+// jit_fault_nosync: no cache maintenance at all (a stale copy faults again until the caches let it go; job 167 still
+// crashed the 2DS kernel after 6,166 faults with the sync moved here, so the root-cause test drops svc 0x94 entirely).
+bool jit_fault_nosync;
+static void fault_sync(Jit* j) {
+    if (jit_fault_nosync) { j->faultPendN = 0; j->faultPendAll = false; return; }
+    if (j->faultPendAll) jit_host_sync_icache(j->code, j->codeWords * 4);
+    else for (u32 k = 0; k < j->faultPendN; k++) jit_host_sync_icache(j->faultPend[k], 4);
+    j->faultPendN = 0;
+    j->faultPendAll = false;
+}
+
 bool jit_fault(u32 hostPc, u32* resume) {
     for (int k = 0; k < 4 && g_faultJits[k]; k++) {
         Jit* j = g_faultJits[k];
@@ -5203,7 +5377,10 @@ bool jit_fault(u32 hostPc, u32* resume) {
             u32* site = j->code + key;
             u32* dest = j->code + j->faultVal[h];
             *site = 0xEA000000u | ((u32)(s32)(dest - (site + 2)) & 0xFFFFFFu);  // b dest
-            jit_host_sync_icache(site, 4);
+            // Until fault_sync makes it visible the site may still run its old instruction: it faults again and
+            // resumes in the same slow path, so either word is correct.
+            if (j->faultPendN < sizeof j->faultPend / sizeof j->faultPend[0]) j->faultPend[j->faultPendN++] = site;
+            else j->faultPendAll = true;
             j->stats.faults++;
             *resume = (u32)(uintptr_t)dest;
             return true;
@@ -5309,6 +5486,8 @@ void jit_invalidate_all(Jit* j) {
     j->coldUsed = j->coldStart;
     j->insnsSinceFlush = 0;
     if (j->faultKey) { memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32)); j->faultN = 0; }
+    j->faultPendN = 0;  // the code is gone (the next blocks are synced as they are compiled)
+    j->faultPendAll = false;
     if (j->compiledPc) memset(j->compiledPc, 0, (24u << 20) / 32);
     fast_clear(j);
     j->gen++;
@@ -5416,8 +5595,8 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
     snprintf(line, sizeof line, "JIT: icbi %llu (%llu dropped all code), %u blocks live", (unsigned long long)s->icbis,
              (unsigned long long)s->icbiFlushes, j->nEntries);
     print(line);
-    snprintf(line, sizeof line, "JIT: %llu blocks compiled, %llu dispatches, %llu links, %llu/%llu instructions native (%.1f%%), %llu flushes",
-             (unsigned long long)s->blocksCompiled, (unsigned long long)s->blocksRun, (unsigned long long)s->links,
+    snprintf(line, sizeof line, "JIT: %llu blocks compiled (%llu without the budget branch), %llu dispatches, %llu links, %llu/%llu instructions native (%.1f%%), %llu flushes",
+             (unsigned long long)s->blocksCompiled, (unsigned long long)s->blocksNoCheck, (unsigned long long)s->blocksRun, (unsigned long long)s->links,
              (unsigned long long)s->instrsNative,
              (unsigned long long)s->instrsCompiled, s->instrsCompiled ? 100.0 * (double)s->instrsNative / (double)s->instrsCompiled : 0.0,
              (unsigned long long)s->flushes);
@@ -5592,6 +5771,15 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
             for (int q = 0; q < 8; q++)
                 if (g_psqRun[st][q][0] || g_psqRun[st][q][1])
                     n += snprintf(line + n, sizeof line - (size_t)n, " type %d %u / %u", q, g_psqRun[st][q][0], g_psqRun[st][q][1]);
+            print(line);
+        }
+        {
+            double rr = g_allRuns ? (double)g_allRuns : 1.0;
+            snprintf(line, sizeof line, "  owner-decision models: blocks with a backward exit %.1f%% of block runs (the rest could drop the "
+                     "budget branch, %.2f words per block run); write-backs at constant exits %.3f per run, dead %.3f (strict) / %.3f "
+                     "(with the ABI at calls); at blr / bctr %.3f per run, dead by the return convention %.3f",
+                     100.0 * (double)g_latchRuns / rr, (double)(g_allRuns - g_latchRuns) / rr, (double)g_dwSt[0] / rr,
+                     (double)g_dwDead[0] / rr, (double)g_dwAbi[0] / rr, (double)g_dwSt[1] / rr, (double)g_dwAbi[1] / rr);
             print(line);
         }
         snprintf(line, sizeof line, "  region model, register traffic by block: top 16 %.1f%%, 64 %.1f%%, 256 %.1f%%, 1024 %.1f%%, 4096 %.1f%%; "
