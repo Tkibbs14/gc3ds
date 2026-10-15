@@ -234,3 +234,17 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   frames would no longer be byte-identical with the PC checker unless it learns the same conversion.
 - **Re-evaluate when:** GPU time or texture decode shows up as a real share of the frame (native mode, where core 0 is
   freed, is the likely trigger), or a lossless narrower format fits a source (I4/I8/IA4/IA8 -> L8/LA8 now).
+
+## C18. Byte-swapped guest RAM (no rev on word loads and stores)
+
+- **Status:** parked (2026-10-15).
+- **What:** keep guest memory in host (little-endian) order per 32-bit word, so a guest word load or store is a plain
+  ldr / str with no rev; halfword and byte accesses flip the low address bits (XOR 2 / XOR 3), the trick N64
+  emulators use. Doubles and paired singles need their own handling.
+- **For:** ldr + rev as a dependent chain costs 6.0 cycles against 4.0 for ldr alone (timing probe, job 183): every
+  guest word load whose value is used next pays 2 cycles, plus one instruction of I-cache footprint, the 2DS's main
+  stall.
+- **Against / cost:** every path that touches guest memory changes: DMA, the GX FIFO and vertex gathers, texture
+  decode, the disc and ARAM, and the HLE hooks. The PC checker's byte-identical frames must keep holding.
+- **Re-evaluate when:** a frame's counters price the rev share (guest word loads per frame x 2 cycles) against the
+  frame, or the JIT's other levers are spent.

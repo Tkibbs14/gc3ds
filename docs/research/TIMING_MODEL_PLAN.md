@@ -132,6 +132,48 @@ pixel matches the expected colour, e.g. blend 0x64321940 = half of 0xc8643280). 
 - Memory fill read 2.9, 27 and 34 GB/s in jobs 178-180: the tick around C3D_SyncMemoryFill does not time the fill
   itself; not usable yet. Display transfer 1.69 - 1.98 ms; texture copies 230 - 250 MB/s.
 
+## Second probe set: the survey's probes (jobs 181 and 183, 2026-10-15)
+
+Added from BENCHMARK_TOOLING_SURVEY.md section 5 (a4c749d). Job 183 is the complete run with counters (3e4bdc5);
+181 repeats every CPU number within 1%, except code install (below). Cycles at 804 MHz.
+
+| Mechanism | Measured | Reading |
+|---|---|---|
+| L1 D ways (4 KB stride: 4 lines hit, 5: 8.3, 6: 16.5, 8: 27) | 4-way, 4 KB way (16 KB) | replacement not LRU: one line over costs a partial miss |
+| L2 ways (128 KB and 256 KB stride: 16 hit, 17: 43.5, 20: 91; 64 KB stride: 32 hit) | 16-way, 128 KB way (2 MB) | not LRU either |
+| line size (1 MB sequential chase: stride 4 / 8 / 16 / 32 = 6.9 / 9.7 / 15.4 / 26.8) | 32 bytes | dcrmiss 0.125 per 4-byte load |
+| sequential vs random memory (8 MB, stride 32 / 64 / 128 / 4096 vs random) | 48 / 80 / 126 / 168 vs 156 | in-order lines ~3x cheaper: prefetch or open DRAM pages; gone by 128 B |
+| misses in flight (8 MB random, 1 / 2 / 3 / 4 / 6 chains) | 156 / 147 / 146 / 146 / 146 per load | one outstanding miss: batching loads gains nothing |
+| one store per line, 512 KB / 8 MB (load: 15.8 / 46.6) | 32.4 / 83.7 | write-allocate: a store miss fills the line (dcwmiss 1.0) and costs ~2x a load miss |
+| store then load of the same word, + add | 5.07 per trio | no forwarding penalty beyond the load's |
+| stores, independent / strd / stm of 4 | 1.13 / 1.13 / 2.06 | 2 registers per cycle |
+| ldrh / ldrb then use | 4.07 | as ldr |
+| ldrd (independent) / ldm of 4 / ldm of 7 | 3.0 / 4.0 / 6.0 | ldrd slower than two ldr (2.1); ldm ~1 per register |
+| **ldr + rev as a dependent chain (the guest's big-endian load)** | **6.0** (ldr alone 4.0) | the swap adds 2 cycles to every dependent guest load |
+| taken unconditional branch, 16 - 1024 of them 8 bytes apart | 4.75 - 4.02 per branch | ~4 cycles each, no capacity cliff: no BTAC folding seen |
+| indirect call from one site: 1 target / 2 / 4 / 16 round-robin / 16 random (per call, with the loop) | 28.1 / 29.6 / 30.3 / 30.9 / 30.9 | brmiss ~0 everywhere: indirect targets are not predicted, so no mispredict either |
+| call chains depth 1 - 12 (per call + return) | 16.5 - 18.3 | no cliff at depth 3: no return-stack overflow cost seen |
+| code install: write + clean + whole I-cache invalidate + first run, 64 B / 256 B / 1 KB | 10,960 / 11,900 / 35,600 | ~200 I-cache misses after each (the whole cache refills) |
+| the same, 4 / 16 / 64 KB (job 181 / 183) | 47,400 / 110,100 / 298,500 vs 31,000 / 97,500 / 285,200 | varies 10-35% between runs |
+
+GPU, job 181 (repeated in 183):
+
+| Mechanism | Measured | Reading |
+|---|---|---|
+| vertex shader +0 / +32 / +64 instructions | 49.9 / 99.3 / 188.7 ns per vertex | each instruction costs: generated shaders should be short |
+| depth test rejecting every fragment vs drawing | 4.16 vs 4.91 ns per pixel | no real early-Z: hidden pixels cost ~85% of drawn ones |
+| texture at 1 texel per pixel: ETC1 / RGB565 / RGBA8 | 199 / 165 / 114 Mpixel/s | ETC1 is free, RGBA8 loses 45% |
+| RGBA8 at 0.5 / 1 / 2 / 2.56 texels per pixel | 178 / 114 / 30 / 17 Mpixel/s | the texture cache gives way past one texel per pixel: mipmaps matter |
+| RGBA8 256x256 (0.64 texel per pixel) | 173 Mpixel/s | |
+| full screen as 32 / 16 / 8 / 4-pixel tiles | 0.72 / 0.85 / 1.20 / 1.82 ms | small triangles are vertex-bound (50.6 ns per vertex at 4 px), setup is cheap |
+
+What it changes for the JIT (each to be priced against a frame's own counters before building):
+- the byte swap on guest loads (2 cycles per dependent load) -> byte-swapped guest RAM (REDESIGN_CANDIDATES);
+- taken branches (~4 cycles) -> fall-through layout of the hot path;
+- code install (~11,000 cycles fixed, the whole I-cache refills) -> batch installs;
+- write-allocate and one miss at a time -> compact, sequential lookup structures; no gain from overlapping loads;
+- ldrd slower than two ldr -> check where the JIT emits it.
+
 ## Sharing the tooling (owner direction, 2026-10-15)
 
 James: once the measurements are in, make the tooling something everyone can use. The probes already live in this
