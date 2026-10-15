@@ -90,7 +90,28 @@ bandwidth, kernel, SD, clocks and the GPU are still to come (job 177).
 | streaming stores | 4.1 per word (~780 MB/s) | |
 | **core 2 streaming stores over 4 MB, core 0 chase 256 KB / 1 MB / 8 MB** | **36 / 120 / 604** (alone 28 / 28 / 156) | shared L2 evicted: the mechanism behind C2 and C15 |
 | svcGetSystemTick | 198 | |
-| JIT cache sync (flush + svc 0x94) | 16,548 (~20 us) | |
+| JIT cache sync (flush + svc 0x94) | 16,548 (~20 us) | job 178: 10,095 (203 I-cache misses after it) |
+
+Job 178 (same day, counters on) repeated every CPU number above within 1% and added the counters' view: the 24 KB
+chase misses L1 on 62% of loads, 32 KB on 82%, 64 KB and up on 100%; a mispredict is 0.50 misses per random branch,
+so 7.5 cycles each; code from L2 is 0.125 I-cache misses per instruction (one per 8-instruction line), 2.39 cycles of
+fetch stall per instruction. It also reached the rest of the CPU side and the GPU:
+
+| Mechanism | Measured (job 178) |
+|---|---|
+| memcpy / memset / read (2 words per line), 4 MB FCRAM | 301 / 742 / 517 MB/s |
+| thread switch: same core round trip / core 0 <-> 2 round trip / svcSleepThread(0) | 7.91 / 2.21 / 1.13 us |
+| SD: 64 KB sequential / random 32 KB / random 2 KB | 5.11 MB/s / 9.7 ms / 4.0 ms |
+| clocks: speedup on / off (add_dep; 1 MB chase per load) | 757 MHz, 34.4 ns / 252 MHz, 229.7 ns |
+| GPU vertex, float3 at 12 / 16 / 24-byte strides; s16 at 16 | 49.7 / 49.7 / 49.8 / 56.9 ns per vertex (13.3 GPU clocks) |
+| GPU draws, ~1-triangle: GPU / CPU per draw; with a combiner change | 0.55 / 3.21 us; 0.63 / 3.51 us |
+| GPU memory fill VRAM / texture copy linear -> VRAM, VRAM -> linear | 2,945 / 234 / 229 MB/s |
+| GPU display transfer 400x240 RGBA8 -> RGB8 | 1.98 ms |
+
+**Void in job 178: every GPU fill number (15 Gpixel/s) and the vertex and draw cases' clipping path.** All positions
+sat at clip z +0.5, outside the PICA200's 0 >= z >= -w, so every triangle was clipped and nothing was drawn. Fixed
+(d8a59a8): z -0.5 and a read-back of the target's centre pixel beside each fill number; job 179 repeats the GPU set.
+Vertex costs barely depend on the attribute format, so the vertex stage (not the fetch) sets the rate.
 
 ## Limits
 
