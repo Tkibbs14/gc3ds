@@ -84,6 +84,11 @@ Homebrew Launcher by James; logs back with `relay.sh cat sdmc:/gc3ds/native/perf
    frame (median; ~1.5 ms of 16.4 ms)**, p90 9.4%, p99 10.0%; 33-55% only in the first seconds while the scene loaded.
    This is the title / opening scene with nothing drawn and audio off: gameplay is the measurement that decides
    feasibility (next: an input script to reach it), then the renderer.
+4. **Hyrule Field, hands-free (relay job 210, `relay.sh native 180 - F_SP121,0,0`):** gc3ds started native mode, which
+   booted straight into F_SP121 (Dusklight's boot-to-stage; audio skipped through DUSK_AUDIO_SKIP; Link's heaps 2x
+   instead of the PC's 20x), ran 180 s and handed back to gc3ds, which posted the logs. **164 s at the game's 30 fps,
+   busy median 14.8% of the 33.3 ms frame (~4.9 ms), p90 15.3%, p99 16.0%, max 16.3%**; GX ~69 KB a frame. Link stood
+   still (no input), nothing drawn, no audio: movement and combat are next (`--press`), then the renderer.
 
 ## Risks
 
