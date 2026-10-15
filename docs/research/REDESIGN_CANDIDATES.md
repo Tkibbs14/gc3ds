@@ -219,3 +219,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   ~4 cycles saved per float load did not show.
 - **Re-evaluate when:** the BE versions can replace the originals outright (stores of non-singles included), so the
   stub footprint does not grow.
+
+## C17. Smaller texture formats on the PICA200 (and mipmaps)
+
+- **Status:** parked (2026-10-15).
+- **What:** gc3ds decodes every GameCube texture to RGBA8 with level 0 only (`src/gx/pica/pica.c`, `C3D_TexInit(...,
+  GPU_RGBA8)`). Decode to the smallest format that holds the source instead (RGB565 / RGBA4 / RGBA5551 / LA8 / L8, or
+  ETC1 for CMPR), and upload the mip levels the GameCube texture already carries.
+- **For:** the 2DS's fill rate on a texture that misses the texture cache is set by texel bytes (gpuprobe, job 180):
+  1024x1024 minified, RGBA8 17 Mpixel/s, RGB565 27, ETC1 117, against 204 for anything that hits. Halving the texel size
+  also halves the CPU's decode writes and the upload bandwidth (texture copy measured ~240 MB/s).
+- **Against / cost:** GPU time was ~20 ms of a ~190 ms frame (gc3ds-gpu-direction): core 0 is the wall, so the GPU-side
+  gain does not show until it moves. Lossy formats (RGB565 for RGB8 sources, ETC1 encoding on the CPU) change pixels:
+  frames would no longer be byte-identical with the PC checker unless it learns the same conversion.
+- **Re-evaluate when:** GPU time or texture decode shows up as a real share of the frame (native mode, where core 0 is
+  freed, is the likely trigger), or a lossless narrower format fits a source (I4/I8/IA4/IA8 -> L8/LA8 now).
