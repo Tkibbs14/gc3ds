@@ -46,6 +46,7 @@ static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes);  // timingprobe.c: --timing-probe
+const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
@@ -680,9 +681,17 @@ static const char* run(const char* path) {
             fclose(tf);
         }
         if (g_opt.timingProbe == 2) {  // --timing-probe only: the measurements are the job; no machine runs
+            // The GPU probe too: it rebinds citro3d state the renderer owns, so only when no game runs after it.
+            const char* gpu = g_pica ? gpu_probe() : "# gpu: no GPU backend in this build\n";
+            FILE* gf = fopen("sdmc:/gc3ds/timing_gpu.txt", "w");
+            if (gf) {
+                fputs(gpu, gf);
+                fclose(gf);
+            }
             perf_open(path);
             if (g_perf) {
                 fputs(timing, g_perf);
+                fputs(gpu, g_perf);
                 fclose(g_perf);
                 g_perf = NULL;
             }

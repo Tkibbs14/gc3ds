@@ -1,0 +1,11 @@
+; GPU probe (gpuprobe.c): positions arrive in clip space; colour and one texture coordinate pass through.
+.out outpos position
+.out outclr color
+.out outtc0 texcoord0
+
+.proc main
+	mov outpos, v0
+	mov outclr, v1
+	mov outtc0, v2
+	end
+.end
