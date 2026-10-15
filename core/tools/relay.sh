@@ -48,10 +48,13 @@ follow() {
     echo "job $job -> $out" >&2
     hdr="$(mktemp)"
     : > "$out"  # the whole log is fetched again from the start (after=-1)
-    local prev
+    local prev page
+    page="$(mktemp)"
     while :; do
         prev="$after"
-        if api -D "$hdr" "$url/jobs/$job/log?after=$after" >> "$out"; then
+        # Appended only on success: a refused request's error body had landed in the log (a 429, job 182).
+        if api -D "$hdr" "$url/jobs/$job/log?after=$after" > "$page" 2>/dev/null; then
+            cat "$page" >> "$out"
             after="$(sed -n 's/^[Xx]-[Rr]elay-[Ll]ast: *//p' "$hdr" | tr -d '\r')"
             status="$(sed -n 's/^[Xx]-[Rr]elay-[Ss]tatus: *//p' "$hdr" | tr -d '\r')"
             printf '\r%s, %s lines   ' "$status" "$(wc -l < "$out")" >&2
@@ -62,7 +65,7 @@ follow() {
         fi
         sleep 10
     done
-    rm -f "$hdr"
+    rm -f "$hdr" "$page"
 }
 
 frames() {
