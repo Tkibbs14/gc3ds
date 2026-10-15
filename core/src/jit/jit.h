@@ -107,6 +107,9 @@ u32 jit_sched(const Jit* j);
 // several dispatcher round trips; the block counts the handler's instructions and goes on at pc + 4.
 // OPT_HLELINK: a native stand-in's block (hle.h) goes on through the indirect table to where the stand-in stopped,
 // instead of returning to the dispatcher after every call.
+// OPT_BEFLOAT: the float load / store stubs (lfs, lfd, psq_l, stfd, and stfs / psq_st of known singles) move the guest
+// value straight between RAM and a VFP register in big-endian data mode (SETEND BE) instead of ldr -> rev -> vmov:
+// the core <-> VFP moves cost ~3.5-4 cycles each and do not overlap (docs/FINDINGS.md run 3).
 // OPT_IND2: the indirect-branch table is 2-way: a target whose slot holds another one goes to the slot next to it (same
 // cache line), which ST_INDIRECT checks second. The 2DS's misses were ~3,400/s "slot taken" (job 157).
 // OPT_NATIVE2: instructions the 2DS interpreted thousands of times a second compiled natively (each fallback is a C
@@ -117,7 +120,7 @@ u32 jit_sched(const Jit* j);
 // OPT_CRSTUB: a compare's CR-field update (BIC and three conditional ORRs) is a call to a shared stub, one word instead
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
-       OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_ALL = 2047 };
+       OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_ALL = 4095 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

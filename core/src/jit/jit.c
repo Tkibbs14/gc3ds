@@ -31,7 +31,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 9216 };  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 11264 };  // (the BE float stubs)  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -115,6 +115,9 @@ struct Jit {
     // OPT_CRSTUB: a CR field from the ARM flags of a compare, by field, signed, and the register holding CR (ms_reg's
     // order: r2 is not used, index 0 is r1 here): BIC, three conditional ORRs, return; the flags are kept.
     u16 crStub[8][2][MS_REGS];
+    // OPT_BEFLOAT (emit_float_stubs): the big-endian set, checked and unchecked (U)
+    u16 lfsBE, lfsUBE, lfdBE, lfdUBE, stfdBE, stfdUBE, stfsKBE, stfsUKBE;
+    u16 psqLBE[8][2], psqULBE[8][2], psqSKBE[8][2], psqUSKBE[8][2];
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -2642,7 +2645,9 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         if (x != R0) mov_reg(e, R0, x);
         Jit* j = c->j;
         bool ks = kind == 2 && (j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1);  // an exact single: no round trip
-        branch_abs(e, C_AL, true, j->code + (kind == 0 ? j->lfsUStub : kind == 1 ? j->lfdUStub : kind == 2 ? (ks ? j->stfsUStK : j->stfsUStub) : j->stfdUStub));
+        bool be = (j->opt & OPT_BEFLOAT) != 0;
+        branch_abs(e, C_AL, true, j->code + (kind == 0 ? (be ? j->lfsUBE : j->lfsUStub) : kind == 1 ? (be ? j->lfdUBE : j->lfdUStub) :
+                                              kind == 2 ? (ks ? (be ? j->stfsUKBE : j->stfsUStK) : j->stfsUStub) : (be ? j->stfdUBE : j->stfdUStub)));
         if (kind == 0) { st_fpr(c, 1, fr, 0); st_fpr(c, 1, fr, 1); c->single |= 3ull << (2 * fr); }
         else if (kind == 1) st_fpr(c, 1, fr, 0);
         if (update) st_gpr(c, R0, ra);
@@ -2653,7 +2658,7 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
         set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
         bool ks = (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1);
-        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->stfsStK : c->j->stfsStub));
+        branch_abs(e, C_AL, true, c->j->code + (ks ? ((c->j->opt & OPT_BEFLOAT) ? c->j->stfsKBE : c->j->stfsStK) : c->j->stfsStub));
         u32 slow = branch_c(e, C_CS, 0);
         u32 resume = e->n;
         cold_begin(c);
@@ -2668,7 +2673,9 @@ static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool in
         if (indexed) ea_index(c, ra, rb); else ea_disp(c, ra, simm);
         set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
         if (kind == 0) c->tailFpr = (int)fr;
-        branch_abs(e, C_AL, true, c->j->code + (kind == 0 ? c->j->lfsStub : kind == 1 ? c->j->lfdStub : c->j->stfdStub));
+        bool be = (c->j->opt & OPT_BEFLOAT) != 0;
+        branch_abs(e, C_AL, true, c->j->code + (kind == 0 ? (be ? c->j->lfsBE : c->j->lfsStub) : kind == 1 ? (be ? c->j->lfdBE : c->j->lfdStub) :
+                                                 (be ? c->j->stfdBE : c->j->stfdStub)));
         u32 slow = branch_c(e, C_CS, 0);
         u32 resume = e->n;
         if (kind == 0) { st_fpr(c, 1, fr, 0); st_fpr(c, 1, fr, 1); }
@@ -2756,7 +2763,9 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         int x = hoist_addr(c, ra, (u32)((s32)(inst << 20) >> 20), update);
         if (x != R0) mov_reg(e, R0, x);
         bool ks = store && (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & (w ? 1u : 3u)) == (w ? 1u : 3u);
-        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->psqUStK[idx][w] : c->j->psqUStub[store][idx][w]));
+        bool be = (c->j->opt & OPT_BEFLOAT) != 0;
+        branch_abs(e, C_AL, true, c->j->code + (ks ? (be ? c->j->psqUSKBE[idx][w] : c->j->psqUStK[idx][w]) :
+                                                 !store && be ? c->j->psqULBE[idx][w] : c->j->psqUStub[store][idx][w]));
         u32 slow = branch_c(e, C_NE, 0);  // another GQR type: the interpreter
         if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
         if (update) st_gpr(c, R0, ra);
@@ -2775,7 +2784,9 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         bool pipe = store && c->j->gatherPut;
         if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
         bool ks = store && (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & (w ? 1u : 3u)) == (w ? 1u : 3u);
-        branch_abs(e, C_AL, true, c->j->code + (ks ? c->j->psqStK[idx][w] : c->j->psqStub[store][idx][w]));
+        bool be = (c->j->opt & OPT_BEFLOAT) != 0;
+        branch_abs(e, C_AL, true, c->j->code + (ks ? (be ? c->j->psqSKBE[idx][w] : c->j->psqStK[idx][w]) :
+                                                 !store && be ? c->j->psqLBE[idx][w] : c->j->psqStub[store][idx][w]));
         u32 slow = branch_c(e, C_CS, 0);
         if (!store) { st_fpr(c, 1, fr, 0); st_fpr(c, 2, fr, 1); }
         if (update) st_gpr(c, R0, ra);  // the stub kept the effective address in r0
@@ -4380,6 +4391,170 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     str_imm(e, R2, R1, 0);
     str_imm(e, R3, R1, 4);
     bx_reg_c(e, C_AL, LR);
+    // OPT_BEFLOAT: the same stubs with the guest value going straight between RAM and a VFP register in big-endian data
+    // mode, each with its original's protocol. VFP accesses fault unless word aligned (8 for doubles here): the checked
+    // stubs already fail on misalignment, the unchecked ones take their original. A BE-8 64-bit VLDR / VSTR puts the
+    // lower-address word in the high half: a guest double as it is; two singles take two 32-bit accesses.
+    u32 failK = e->n;  // a known-single store that fails: the site's slow path wants the bits in r2
+    vmov_r_s(e, R2, 12);
+    branch_c(e, C_AL, fail);
+    j->lfsBE = (u16)e->n;  // as lfsStub
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    setend_be(e); vldr_s(e, 0, R1, 0); setend_le(e);
+    vcvt_f64_f32(e, 1, 0);
+    bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+    j->lfsUBE = (u16)e->n;  // as lfsUStub
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, j->lfsUStub);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    setend_be(e); vldr_s(e, 0, R1, 0); setend_le(e);
+    vcvt_f64_f32(e, 1, 0);
+    bx_reg_c(e, C_AL, LR);
+    j->lfdBE = (u16)e->n;  // as lfdStub
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    setend_be(e); vldr_d(e, 1, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    j->lfdUBE = (u16)e->n;  // as lfdUStub
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, j->lfdUStub);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    setend_be(e); vldr_d(e, 1, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    j->stfdBE = (u16)e->n;  // as stfdStub
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, fail);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, fail);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    setend_be(e); vstr_d(e, 1, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    j->stfdUBE = (u16)e->n;  // as stfdUStub
+    dp_imm(e, TST, 1, 0, R0, 7);
+    branch_c(e, C_NE, j->stfdUStub);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    setend_be(e); vstr_d(e, 1, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    j->stfsKBE = (u16)e->n;  // as stfsStK (r2 = the bits on failure only)
+    vcvt_f32_f64(e, 12, 1);
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, failK);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+    dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+    dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+    branch_c(e, C_CS, failK);
+    dp_reg(e, ADD, 0, R1, R1, RRAM);
+    setend_be(e); vstr_s(e, 12, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    j->stfsUKBE = (u16)e->n;  // as stfsUStK
+    dp_imm(e, TST, 1, 0, R0, 3);
+    branch_c(e, C_NE, j->stfsUStK);
+    vcvt_f32_f64(e, 12, 1);
+    dp_reg(e, ADD, 0, R1, R0, RRAM);
+    setend_be(e); vstr_s(e, 12, R1, 0); setend_le(e);
+    bx_reg_c(e, C_AL, LR);
+    for (u32 q = 0; q < 8; q++)
+        for (u32 w = 0; w < 2; w++) {
+            j->psqLBE[q][w] = (u16)e->n;  // as psqStub[0]
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, fail);
+            if (!w) {
+                dp_imm(e, ADD, 0, R3, R12, 4);
+                dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
+                branch_c(e, C_CS, fail);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            setend_be(e);
+            vldr_s(e, 0, R1, 0);
+            if (!w) vldr_s(e, 1, R1, 4);
+            setend_le(e);
+            vcvt_f64_f32(e, 1, 0);
+            if (w) {
+                dp_imm(e, MOV, 0, R2, 0, 0);
+                load_const(e, R3, 0x3FF00000u);
+                vmov_d_rr(e, 2, R2, R3);  // ps1 = 1.0
+            } else {
+                vcvt_f64_f32(e, 2, 1);
+            }
+            bx_reg_c(e, C_AL, LR);  // carry clear from the range check
+            j->psqULBE[q][w] = (u16)e->n;  // as psqUStub[0]: Z set when done (the alignment test leaves it set)
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, IMM(0x70000u));
+            bx_reg_c(e, C_NE, LR);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, j->psqUStub[0][q][w]);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            setend_be(e);
+            vldr_s(e, 0, R1, 0);
+            if (!w) vldr_s(e, 1, R1, 4);
+            setend_le(e);
+            vcvt_f64_f32(e, 1, 0);
+            if (w) {
+                dp_imm(e, MOV, 0, R2, 0, 0);
+                load_const(e, R3, 0x3FF00000u);
+                vmov_d_rr(e, 2, R2, R3);
+            } else {
+                vcvt_f64_f32(e, 2, 1);
+            }
+            bx_reg_c(e, C_AL, LR);
+            j->psqSKBE[q][w] = (u16)e->n;  // as psqStK
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            branch_c(e, C_NE, fail);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, fail);
+            vcvt_f32_f64(e, 12, 1);
+            if (!w) vcvt_f32_f64(e, 14, 2);
+            dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
+            dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
+            dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+            branch_c(e, C_CS, failOut);
+            if (!w) {
+                dp_imm(e, ADD, 0, R12, R12, 4);
+                dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
+                branch_c(e, C_CS, failOut);
+            }
+            dp_reg(e, ADD, 0, R1, R1, RRAM);
+            setend_be(e);
+            vstr_s(e, 12, R1, 0);
+            if (!w) vstr_s(e, 14, R1, 4);
+            setend_le(e);
+            bx_reg_c(e, C_AL, LR);
+            j->psqUSKBE[q][w] = (u16)e->n;  // as psqUStK: Z set when done
+            fs_gqr(j, e, q);
+            dp_imm(e, TST, 1, 0, R1, 7);
+            bx_reg_c(e, C_NE, LR);
+            dp_imm(e, TST, 1, 0, R0, 3);
+            branch_c(e, C_NE, j->psqUStK[q][w]);
+            vcvt_f32_f64(e, 12, 1);
+            if (!w) vcvt_f32_f64(e, 14, 2);
+            dp_reg(e, ADD, 0, R1, R0, RRAM);
+            setend_be(e);
+            vstr_s(e, 12, R1, 0);
+            if (!w) vstr_s(e, 14, R1, 4);
+            setend_le(e);
+            bx_reg_c(e, C_AL, LR);
+        }
 }
 
 static void emit_stubs(Jit* j) {

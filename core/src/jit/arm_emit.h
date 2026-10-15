@@ -179,6 +179,11 @@ static inline void vmsr_fpscr(Emit* e, int rt) { E(e, 0xEEE10A10u | ((u32)rt << 
 // Loads and stores with a word-multiple offset 0..1020.
 static inline void vldr_d(Emit* e, int d, int rn, u32 off) { E(e, 0xED900B00u | ((u32)rn << 16) | ((u32)d << 12) | (off >> 2)); }
 static inline void vstr_d(Emit* e, int d, int rn, u32 off) { E(e, 0xED800B00u | ((u32)rn << 16) | ((u32)d << 12) | (off >> 2)); }
+static inline void vldr_s(Emit* e, int s, int rn, u32 off) { E(e, 0xED900A00u | ((u32)rn << 16) | vf_sd(s) | (off >> 2)); }
+static inline void vstr_s(Emit* e, int s, int rn, u32 off) { E(e, 0xED800A00u | ((u32)rn << 16) | vf_sd(s) | (off >> 2)); }
+// Data endianness (CPSR.E): big-endian loads and stores until setend_le. VFP accesses must be word aligned.
+static inline void setend_be(Emit* e) { E(e, 0xF1010200u); }
+static inline void setend_le(Emit* e) { E(e, 0xF1010000u); }
 // Moves between core and VFP registers.
 static inline void vmov_s_r(Emit* e, int sn, int rt) { E(e, 0xEE000A10u | vf_sn(sn) | ((u32)rt << 12)); }
 static inline void vmov_r_s(Emit* e, int rt, int sn) { E(e, 0xEE100A10u | vf_sn(sn) | ((u32)rt << 12)); }

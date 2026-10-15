@@ -75,3 +75,19 @@ How it is judged:
   Not started; needs the owner's call on whether architecturally dead state may differ from the interpreter.
 - Constant propagation within a block (lis / addi / ori chains): absolute addresses known at compile time skip the
   check altogether, and constants fold into immediates.
+
+## 2026-10-15: what comes next, checked against the records above
+
+The owner asked for the JIT redesign to be grounded in what is already known. Registers across blocks (region
+compilation, handing state over at links, pinning, loop regions) stays ruled out: ~1.3% / 0.6% by the region model,
+and nothing measured since contradicts it. The 2DS rewards less distinct hot code and fewer excursions into C
+(HANDOFF 2026-10-14/15). Ordered by evidence:
+
+1. **SETEND BE in the float load/store stubs (OPT_BEFLOAT).** FINDINGS.md run 3 measured the float penalty as the move
+   between core and VFP registers (~3.5-4 cycles each way, not overlapping) and big-endian data mode as +12% (scalar
+   float) / +23% (paired) on gcbench; the JIT never used it. Today every lfs / psq_l / stfs / psq_st stub goes ldr ->
+   rev -> vmov (or back); in BE mode the guest value goes straight to or from a VFP register. Float loads / stores are
+   27.6% of core 0's modelled cycles (PERF_LEVERS D2). Only the shared stubs change: no code growth. BE-8's 64-bit VLDR
+   puts the lower-address word in the high half, which is right for lfd / stfd and wrong for two singles (two VLDR.32).
+2. **C8, single-precision maths** (15.3% of modelled cycles), only where inputs are already singles in registers.
+3. Constant addresses (lis / addi bases) without checks; fault mode only if its kernel crash is understood.
