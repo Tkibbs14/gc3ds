@@ -1133,3 +1133,21 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Relay heartbeat:** `relay.sh status` (nakama-backend GET /status): the 2DS's last poll and log post.
 - **Hardware probes for the timing model:** `--timing-probe only` jobs (CPU, memory, TLB, kernel, SD, clocks in
   timingprobe.c; PICA200 in gpuprobe.c). First device runs: jobs 174-175. Matrix: docs/research/TIMING_MODEL_PLAN.md.
+
+## 2026-10-15 (evening): timing probes, where core 0's time goes, OPT_ICBI
+
+- **Timing probes** (core/host3ds/timingprobe.c, gpuprobe.c; `--timing-probe only`): the New 2DS XL measured mechanism by
+  mechanism (jobs 176-183), results and readings in docs/research/TIMING_MODEL_PLAN.md; survey of further probes in
+  docs/research/BENCHMARK_TOOLING_SURVEY.md.
+- **TP's core 0 budget** (job 184, clean run without A/B, 20.5% speed; core/tools/frame_budget.py): GX wait ~11%
+  (idle hook busy-waits for core 2), instruction-fetch stalls 21%, data stalls 22%, real dispatcher < 1%, compiling
+  ~0.5%. A/B runs recompile everything at each switch and ran at 15.5%: compare A/B phases with each other only.
+  The sampler's "dispatch" bucket is jit_entry with no block running, i.e. mostly the idle hook's GX wait.
+- **Link requests** (job 185, new counters): 155,000/s only in the state-load window, 10-140/s in play: nothing to fix.
+- **OPT_ICBI** (308e516, off): icbi inside blocks. Under qemu (TP 850-880) the dispatcher's "other" returns fell from
+  636,584 to 23,792 with identical frames; on the 2DS (jobs 186 off / 187 on, 60 s) the load window's ~622,000 icbi
+  exits were unchanged and speed identical. Open: why the 2DS still leaves after each icbi (the mask was on, opt 12915).
+  It only matters while loading; stays off.
+- **Next:** the levers by measured size: core 2's GX work (core 0 waits on it), I-cache footprint, data stalls; then
+  C18 (byte-swapped RAM, ~3-4% priced). Native mode remains the full-speed path (docs/research/NATIVE_PORT_PLAN.md,
+  DECOMP_SURVEY.md).
