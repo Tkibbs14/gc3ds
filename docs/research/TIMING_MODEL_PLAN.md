@@ -113,6 +113,25 @@ sat at clip z +0.5, outside the PICA200's 0 >= z >= -w, so every triangle was cl
 (d8a59a8): z -0.5 and a read-back of the target's centre pixel beside each fill number; job 179 repeats the GPU set.
 Vertex costs barely depend on the attribute format, so the vertex stage (not the fetch) sets the rate.
 
+GPU fill, job 180 (d8a59a8 + 4f4ea87: drawn, colours normalised, textures unbound for untextured cases; every centre
+pixel matches the expected colour, e.g. blend 0x64321940 = half of 0xc8643280). 400x240 RGBA8 target, 16 layers:
+
+| Fill case | ns per pixel | Mpixel/s |
+|---|---|---|
+| plain / alpha blend / depth test + write / 3 or 6 combiner stages | 4.90 - 4.91 | 204 |
+| texture RGBA8 64x64 (magnified, fits the texture cache) | 4.91 | 204 |
+| texture ETC1 1024x1024, minified ~2.5x, no mipmaps | 8.56 | 117 |
+| texture RGB565 1024x1024, the same | 36.5 | 27 |
+| texture RGBA8 1024x1024, the same | 59.8 | 17 |
+
+- The 204 Mpixel/s floor (~1.3 GPU clocks per pixel) does not move with blending, depth or combiner stages: those are
+  free at this size; something before them (the rasterizer or framebuffer writes) sets it.
+- Texture-cache misses dominate everything else, scaled by texel bytes: ETC1 (0.5 B/texel) is 7x faster than RGBA8
+  (4 B) and 4.3x faster than RGB565 (2 B) on a texture that misses. This bears directly on which format gc3ds decodes
+  GameCube textures into, and on mipmaps (a minified texture without them is the worst case).
+- Memory fill read 2.9, 27 and 34 GB/s in jobs 178-180: the tick around C3D_SyncMemoryFill does not time the fill
+  itself; not usable yet. Display transfer 1.69 - 1.98 ms; texture copies 230 - 250 MB/s.
+
 ## Limits
 
 - A/B effects here are 1-5%, smaller than any model's error: the 2DS stays the final judge for every default.
