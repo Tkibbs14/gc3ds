@@ -67,7 +67,9 @@ static Jit* g_hostJit;
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 bool host_jit_enable(System* s) {
-    g_hostJit = jit_create(&s->cpu, s->mem1, MEM1_SIZE, 8u << 20);
+    // GC3DS_JIT_MB: the code buffer's size (the 2DS has 16 MB; 8 MB flushes more often)
+    u32 mb = getenv("GC3DS_JIT_MB") ? (u32)atoi(getenv("GC3DS_JIT_MB")) : 8u;
+    g_hostJit = jit_create(&s->cpu, s->mem1, MEM1_SIZE, (mb ? mb : 8u) << 20);
     if (!g_hostJit) return false;
     jit_attach(g_hostJit);
     s->icbiHook = on_icbi;

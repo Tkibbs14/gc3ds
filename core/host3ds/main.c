@@ -345,6 +345,9 @@ typedef struct {
     bool abKstore;       // --ab kstore: OPT_KSTORE on and off (opt column; each switch drops all compiled code)
     bool calls, abCalls; // --calls on|off, --ab calls: traces follow bl and the callee's blr (OPT_CALLS, opt column)
     bool retstub, abRetstub;  // --retstub on|off (off), --ab retstub: blr / bctr through shared stubs (OPT_RETSTUB, opt column)
+    bool syscall, abSyscall;  // --syscall on|off (off), --ab syscall: sc with its handler inside the block (OPT_SYSCALL, opt column)
+    bool hlelink, abHlelink;  // --hlelink on|off (off), --ab hlelink: stand-in blocks go on through the indirect table (OPT_HLELINK)
+    bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
     bool abFskip;        // --ab fskip: on and off (fskip column; starts off)
@@ -389,7 +392,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -411,6 +414,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--kstore")) o->kstore = !strcmp(v, "on");
         else if (!strcmp(a, "--calls")) o->calls = !strcmp(v, "on");
         else if (!strcmp(a, "--retstub")) o->retstub = !strcmp(v, "on");
+        else if (!strcmp(a, "--syscall")) o->syscall = !strcmp(v, "on");
+        else if (!strcmp(a, "--hlelink")) o->hlelink = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
@@ -596,11 +601,13 @@ static bool is_disc(const char* path) {
 static char g_runErr[400];  // why the last run failed (relay jobs report it)
 
 // Runs one program with g_opt; returns "done" (time limit or SELECT), "stopped" (the machine stopped) or "failed".
+static bool g_ranGame;  // a program ran in this process (remote_mode restarts before the next job)
 static const char* run(const char* path) {
     size_t size = 0;
     u8* dol = NULL;
     char err[256];
     g_runErr[0] = 0;
+    g_ranGame = true;
     consoleClear();
     if (g_disc.file) disc_close(&g_disc);
     if (is_disc(path)) {
@@ -672,7 +679,9 @@ static const char* run(const char* path) {
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
         jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0) |
                            (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.calls && !g_opt.abCalls ? OPT_CALLS : 0) |
-                           (g_opt.retstub && !g_opt.abRetstub ? OPT_RETSTUB : 0));  // A/Bs start off
+                           (g_opt.retstub && !g_opt.abRetstub ? OPT_RETSTUB : 0) |
+                           (g_opt.syscall && !g_opt.abSyscall ? OPT_SYSCALL : 0) |
+                           (g_opt.hlelink && !g_opt.abHlelink ? OPT_HLELINK : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
@@ -865,6 +874,10 @@ static const char* run(const char* path) {
                 if (g_opt.abFcache && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_FCACHE);
                 if (g_opt.abCalls && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_CALLS);
                 if (g_opt.abRetstub && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_RETSTUB);
+                if (g_opt.abSyscall && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_SYSCALL);
+                if (g_opt.abHlelink && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_HLELINK);
+                if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
+                    jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
                 if (g_opt.abDlcache && perfRows % AB_SECS == 0) g_vcacheOn = !g_vcacheOn;  // entries stay stamped while off
                 if (g_opt.abVw2 && g_pica && perfRows % AB_SECS == 0) pica_set_worker2(!pica_worker2());
@@ -1322,6 +1335,13 @@ static void remote_mode(const char* selfPath) {
             // The JIT fuzzer needs two machines of its own: it runs at the next start, before gc3ds allocates anything.
             save_pending(&job);
             restart_for_job(selfPath, "This job runs the JIT fuzzer at startup.");
+            return;
+        }
+        if (g_ranGame) {
+            // A run leaves malloc's heap fragmented: the next job in the same process started with its largest block at
+            // 1.1 MB instead of 4.2 MB (jobs 145 and 150), where textures go missing. Every job gets a fresh start.
+            save_pending(&job);
+            restart_for_job(selfPath, "A fresh start for this job (the last run fragmented the heap).");
             return;
         }
         RunOpts o;

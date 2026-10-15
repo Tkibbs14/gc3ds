@@ -207,10 +207,15 @@ static u32 jit_gather_at(Gekko* g, u32 v, u32 sizePc) {
 // g->pc where guest code goes on. If it cannot start, the one instruction there is interpreted instead. `pc` comes from
 // the block: linked blocks jump to each other without writing g->pc, which is stale here (2DS, 9d7c239: the stand-in
 // saw a stale PC, declined, and the instruction at that PC was interpreted, which froze Twilight Princess).
+// With pc's bit 0 set (OPT_HLELINK) compiled code goes on through the indirect table, unless Gekko.jitStatus is 1 here:
+// the stand-in did not run, and the instruction interpreted in its place may have changed anything.
 static u32 jit_hle(Gekko* g, u32 pc, s32 budget) {
+    bool link = pc & 1;
+    pc &= ~1u;
     g->pc = pc;
     u32 n = hle_run(g, budget > 0 ? (u32)budget : 1u);
     if (n) return n;
+    if (link) g_status = 1;
     u32 pa;
     bool stop;
     if (!gk_translate(g, g->pc, false, false, &pa, false) || pa + 4 > g_jit->ramSize) return 0;
@@ -254,7 +259,37 @@ static void count_op(JitOpCounts* t, u32 inst) {
     else if (op == 4) t->x4[xo]++;
 }
 
+// OPT_SYSCALL: sc, then the n instructions of its handler (sc_handler_len checked them when the block was compiled),
+// interpreted in one call. Exception entry clears MSR[EE], so the dispatcher could take no interrupt between them: it
+// would run exactly these instructions. Returns 1 (g->pc written) when compiled code must not go on at pc + 4: the
+// handler went elsewhere, changed MSR beyond EE or HID2, or re-enabled EE with an interrupt pending.
+#define INST_SC 0x44000002u
+#define INST_SC_HANDLER 0x44000003u  // emit_fallback's literal for an sc with its handler: n in bits 2-6
+static u32 jit_sc_handler(Gekko* g, u32 pc, u32 n) {
+    g_jit->stats.fallbacksRun += 1 + n;
+    count_op(&g_jit->stats.fallbackRun, INST_SC);
+    u32 msr0 = g->msr, hid2 = g->spr[SPR_HID2];
+    bool stop;
+    u32 npc = gekko_interp_one(g, pc, INST_SC, &stop);
+    bool req = GKP(g)->stopReq;
+    for (u32 k = 0; k < n; k++) {
+        u32 pa, w = 0;  // (an address that does not translate: 0, an illegal instruction, as the fetch never happens here)
+        if (gk_translate(g, npc, false, false, &pa, false) && pa + 4 <= g_jit->ramSize) {
+            const u8* b = g_jit->ram + pa;
+            w = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | b[3];
+        }
+        npc = gekko_interp_one(g, npc, w, &stop);
+        req |= GKP(g)->stopReq;
+    }
+    GKP(g)->brk = false;  // the exception and rfi ask for an interrupt check: the conditions below are that check
+    bool leave = npc != pc + 4 || ((msr0 ^ g->msr) & ~MSR_EE) || g->spr[SPR_HID2] != hid2 || req ||
+                 ((g->msr & MSR_EE) && (g->extIrq || GKP(g)->decPending));
+    if (leave) { g->pc = npc; return 1; }
+    return 0;
+}
+
 static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
+    if ((inst & ~(31u << 2)) == INST_SC_HANDLER) return jit_sc_handler(g, pc, (inst >> 2) & 31);
     u64 n = ++g_jit->stats.fallbacksRun;
     count_op(&g_jit->stats.fallbackRun, inst);
     u32 xo = (inst >> 1) & 0x3FF;
@@ -411,6 +446,7 @@ typedef struct {
     u32 chk, chkClear;
     u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
+    u32 countExtra;  // guest instructions run inside the block beyond its own (OPT_SYSCALL: sc's handler)
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -3376,6 +3412,23 @@ static bool compile_float(Cg* c, u32 inst) {
 }
 
 // Dispatch key of a block: the machine state compiled code depends on, beyond the guest PC.
+// OPT_SYSCALL: the number of instructions of the system-call handler at physical 0xC00, when it is a short run of
+// ori, mfspr, mtspr to HID0 or an SPRG, isync and sync ending in rfi (the SDK's PPCSync); 0 otherwise. Nothing in it
+// can change what compiled code depends on except MSR and HID2, which jit_sc_handler checks after it.
+static u32 sc_handler_len(const Jit* j) {
+    if (j->g->msr & MSR_IP) return 0;  // the vectors are in ROM then
+    for (u32 k = 0; k < 16; k++) {
+        const u8* b = j->ram + 0xC00 + 4 * k;
+        u32 w = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | b[3];
+        u32 op = w >> 26, xo = (w >> 1) & 0x3FF, spr = ((w >> 16) & 31) | ((w >> 6) & 0x3E0);
+        if (op == 19 && xo == 50) return k + 1;  // rfi: the handler's instructions, rfi included
+        bool ok = op == 24 || (op == 31 && xo == 339) || (op == 31 && xo == 598) || (op == 19 && xo == 150) ||
+                  (op == 31 && xo == 467 && (spr == 1008 || (spr >= 272 && spr <= 275)));
+        if (!ok) return 0;
+    }
+    return 0;
+}
+
 static u32 block_key(const Gekko* g) {
     return (g->msr & (MSR_IR | MSR_DR | MSR_PR | MSR_FP)) | ((g->fpscr & FPSCR_RN) ? 1u << 30 : 0u) |
            (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE));
@@ -3484,11 +3537,23 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (hle_is_hook(g, pc)) {
         // A native stand-in starts here (hle.h): call it, take the guest instructions it stood in for off the budget,
         // and leave for the dispatcher at the PC it stopped at.
+        // OPT_HLELINK: through the indirect table to where it stopped, unless jit_hle asks for the dispatcher (status 1).
+        bool link = (j->opt & OPT_HLELINK) && !noLink;
         mov_reg(e, R0, RG);
-        load_const(e, R1, pc);
+        load_const(e, R1, pc | (link ? 1u : 0u));
         mov_reg(e, R2, RDC);  // the budget left: the stand-in stops when it has used it
         call(c, (const void*)jit_hle);
         dp_reg(e, SUB, 0, RDC, RDC, R0);
+        if (link) {
+            ldr_imm(e, R3, RG, OFF_JITSTATUS);
+            dp_imm(e, CMP, 1, 0, R3, 0);
+            u32 toDyn = branch_c(e, C_NE, 0);
+            ldr_imm(e, R2, RG, OFF_PC);
+            branch_abs(e, C_AL, false, stub(c, ST_INDIRECT));  // (the target block checks the budget at its entry)
+            patch_branch(e, toDyn, e->n);
+            dp_imm(e, MOV, 0, R1, 0, 0);
+            str_imm(e, R1, RG, OFF_JITSTATUS);
+        }
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
         ended = true;
     }
@@ -3504,7 +3569,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
         if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
         u32 inst = ((u32)j->ram[ipa] << 24) | ((u32)j->ram[ipa + 1] << 16) | ((u32)j->ram[ipa + 2] << 8) | j->ram[ipa + 3];
-        c->count = i + 1;
+        c->count = i + 1 + c->countExtra;
         c->gpc[i] = c->pc;
         c->gpa[i] = ipa;
         if ((ipa >> 12) < sizeof j->codePages) j->codePages[ipa >> 12] = 1;
@@ -3539,6 +3604,20 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         j->stats.instrsCompiled++;
         if ((inst >> 26) == 31 && ((inst >> 1) & 0x3FF) == 467 && (((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)) == 8)
             t.lrKnown = false;  // mtlr: a blr no longer returns to the followed bl
+        if (inst == INST_SC && (j->opt & OPT_SYSCALL)) {  // sc with its handler, inside the block (jit_sc_handler)
+            u32 n = sc_handler_len(j);
+            if (n && c->count + n < 200) {  // (Entry.count is a byte)
+                emit_fallback(c, INST_SC_HANDLER | (n << 2));  // its time literal: before sc, as for any fallback
+                u32 ran = n - (jit_debug_plant == 11 ? 1u : 0u);  // plant 11 (the fuzzer's self-test): one uncounted
+                c->exits[c->nExits - 1].count += ran;  // leaving after it: the handler ran too
+                c->countExtra += ran;
+                c->count += ran;
+                j->codePages[0] = 1;  // the handler's page: an icbi there drops this block
+                count_op(&j->stats.fallback, inst);
+                j->stats.instrsCompiled += n;
+                continue;
+            }
+        }
         if (is_branch(inst)) {
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
             if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
@@ -4696,6 +4775,12 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     jit_fill_fns(j);  // compiled code may run without jit_entry (the fuzzer)
     jit_invalidate_all(j);
     g_jit = j;
+#ifndef __3DS__
+    if (getenv("JIT_RANGES"))  // for core/tools/qemu-plugins/icache.c's report: the buffer's regions and the text's base
+        fprintf(stderr, "range regions stubs %08x hot %08x cold %08x end %08x text jit_create %08x\n",
+                (u32)(uintptr_t)j->code, (u32)(uintptr_t)(j->code + j->stubWords), (u32)(uintptr_t)(j->code + j->coldStart),
+                (u32)(uintptr_t)(j->code + j->codeWords), (u32)(uintptr_t)jit_create);
+#endif
     return j;
 }
 
@@ -4985,6 +5070,14 @@ static void print_top(const JitOpCounts* t, const char* title, void (*print)(con
 void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
     char line[400];
     const JitStats* s = &j->stats;
+#ifndef __3DS__
+    if (getenv("JIT_BLOCKMAP")) {  // the blocks compiled since the last flush: host start and guest PC (icache.c's report)
+        FILE* f = fopen(getenv("JIT_BLOCKMAP"), "w");
+        for (u32 b = 0; f && b < j->nEntries; b++)
+            if (j->table[b].fn) fprintf(f, "%08x %08x\n", (u32)(uintptr_t)j->table[b].fn, j->table[b].pc);
+        if (f) fclose(f);
+    }
+#endif
     snprintf(line, sizeof line, "JIT: icbi %llu (%llu dropped all code), %u blocks live", (unsigned long long)s->icbis,
              (unsigned long long)s->icbiFlushes, j->nEntries);
     print(line);

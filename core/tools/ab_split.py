@@ -36,12 +36,20 @@ def num(r, k):
 
 
 def stat(xs):
-    xs = [x for x in xs if x is not None]
-    if not xs:
+    """10% trimmed mean +- its standard error (winsorized variance), and the median: a few rows far off (a hitch, a
+    loading moment) move a plain mean more than a 2% change does (jobs 148-149)."""
+    xs = sorted(x for x in xs if x is not None)
+    n = len(xs)
+    if not n:
         return "-"
-    m = sum(xs) / len(xs)
-    se = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1) / len(xs)) if len(xs) > 1 else 0.0
-    return f"{m:7.2f} +-{se:5.2f} (n {len(xs)})"
+    g = n // 10
+    core = xs[g:n - g]
+    m = sum(core) / len(core)
+    w = [xs[g]] * g + core + [xs[n - g - 1]] * g
+    wm = sum(w) / n
+    se = math.sqrt(sum((x - wm) ** 2 for x in w) / (n - 1)) / ((1 - 2 * g / n) * math.sqrt(n)) if n > 1 else 0.0
+    med = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+    return f"{m:7.2f} +-{se:5.2f} (median {med:6.2f}, n {n})"
 
 
 def main():

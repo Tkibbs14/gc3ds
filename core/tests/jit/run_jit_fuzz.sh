@@ -23,5 +23,7 @@ for plant in 1 2 3 4 5 6 7 9; do
 done
 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_PLANT=8 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 4000 7 chain > "$out/plant8.txt"
 if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant8.txt"; then echo "SELF-TEST FAILED: planted bug 8 not detected (or the run crashed)"; exit 3; fi
-echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache)"
+JIT_FUZZ_NOTRACES=1 JIT_FUZZ_PLANT=11 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 32 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 4000 7 chain > "$out/plant11.txt"
+if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant11.txt"; then echo "SELF-TEST FAILED: planted bug 11 not detected (or the run crashed)"; exit 3; fi
+echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count)"
 exit $status

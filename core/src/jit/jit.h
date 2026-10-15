@@ -100,7 +100,13 @@ u32 jit_sched(const Jit* j);
 // back to it, so small functions (TP's PSVEC*, J3DFifoLoad*) cost no block exit and no indirect-table lookup.
 // OPT_RETSTUB: blr / bctr (and bctrl, conditional forms too) branch to shared stubs that read LR / CTR and look the target up,
 // one hot word per site instead of four; g->pc is written only when the lookup misses.
-enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_ALL = 31 };
+// OPT_SYSCALL: sc runs with its handler in one interpreter call inside the block (when the handler at 0xC00 is a short
+// run of SPR moves, ori, isync / sync ending in rfi, as the SDK's PPCSync is), instead of ending the block and costing
+// several dispatcher round trips; the block counts the handler's instructions and goes on at pc + 4.
+// OPT_HLELINK: a native stand-in's block (hle.h) goes on through the indirect table to where the stand-in stopped,
+// instead of returning to the dispatcher after every call.
+enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
+       OPT_ALL = 127 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.
@@ -126,7 +132,7 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
-extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short
 u32 jit_run_one_block(Jit* j);
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with

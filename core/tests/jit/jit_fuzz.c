@@ -662,6 +662,7 @@ static u32 chain_case(St* st, u32* prog) {
         for (u32 i = 0; i < len[k]; i++) {
             u32 in = gen(st);
             while (is_branch_op(in) || ((in >> 26) == 31 && ((in >> 1) & 0x3FF) == 146)) in = gen(st);  // no mtmsr
+            if (rnd() % 12 == 0) in = 0x44000002u;  // sc: the handler chain_run plants at 0xC00 (OPT_SYSCALL)
             prog[start[k] + i] = in;
         }
         u32 here = start[k] + len[k], to = start[rnd() % nseg], kind = rnd() % 10;
@@ -703,6 +704,15 @@ static void interp_steps(int n) {
 // each for as many instructions as it reports; the machines are compared after both.
 static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     for (u32 i = 0; i < words; i++) { mem1_write32(&A, CODE_PA + 4 * i, prog[i]); mem1_write32(&B, CODE_PA + 4 * i, prog[i]); }
+    {   // the system-call handler: the SDK's PPCSync, or (a third of the cases) the same with mtspr SPRG0, r10 before rfi
+        static const u32 h[] = { 0x7D30FAA6u, 0x612A0008u, 0x7D50FBA6u, 0x4C00012Cu, 0x7C0004ACu, 0x7D30FBA6u, 0x4C000064u };
+        bool sprg = rnd() % 3 == 0;
+        u32 at = 0xC00;
+        for (u32 i = 0; i < 7; i++) {
+            if (i == 6 && sprg) { mem1_write32(&A, at, 0x7D5043A6u); mem1_write32(&B, at, 0x7D5043A6u); at += 4; }
+            mem1_write32(&A, at, h[i]); mem1_write32(&B, at, h[i]); at += 4;
+        }
+    }
     for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
     jit_invalidate_all(jit);
     jit_debug_max_insns = 0;
@@ -712,11 +722,12 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     g_unkA = A.unknownMmioCount; g_unkB = B.unknownMmioCount;
     s64 b1 = 1 + rnd() % 300, b2 = 1 + rnd() % 300;
     bool show = getenv("JIT_FUZZ_CASE") && (u32)atol(getenv("JIT_FUZZ_CASE")) == g_case;
+    jit_debug_plant = plant == 11 ? 11 : 0;  // a compile-time plant: both runs
     int n1 = (int)jit_run(jit, b1);
     if (show) printf("  run 1: jit ran %d to %08x, pipe %u\n", n1, A.cpu.pc, A.gx.wgpLen);
     interp_steps(n1);
     if (show) printf("  interp: to %08x, pipe %u\n", B.cpu.pc, B.gx.wgpLen);
-    jit_debug_plant = plant == 8 ? 8 : 0;
+    jit_debug_plant = plant == 8 ? 8 : plant == 11 ? 11 : 0;
     int n2 = (int)jit_run(jit, b2);
     jit_debug_plant = 0;
     if (show) printf("  run 2: jit ran %d to %08x, pipe %u\n", n2, A.cpu.pc, A.gx.wgpLen);
