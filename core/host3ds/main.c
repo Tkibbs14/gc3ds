@@ -1313,7 +1313,7 @@ static void remote_mode(const char* selfPath) {
         relay_job_begin(job.id, fromPending ? RELAY_RESUME_SEQ : 0);
         if (fromPending && restartAt) {
             char note[96];
-            snprintf(note, sizeof note, "relay: restarted into this build %.1f s after the download", (double)(osGetTime() - restartAt) / 1000.0);
+            snprintf(note, sizeof note, "relay: restarted into this build %.1f s after asking (a new build or a fresh start)", (double)(osGetTime() - restartAt) / 1000.0);
             relay_note(note);
             restartAt = 0;
         }
