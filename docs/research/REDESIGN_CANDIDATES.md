@@ -188,9 +188,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C13. JIT code size, peephole candidates (CR dead stores, bl / bclr, float loads and stores, register pinning)
 
-- **Status:** measuring (2026-10-14). Candidate 1 (CR-field dead stores) rejected by its model: exact ~0.3% of hot
-  words, inexact ~1.5-2%. Candidate 2 (OPT_RETSTUB) built, -2.1% hot words under qemu, within noise on the 2DS (job 148),
-  off. HANDOFF 2026-10-14 night has the numbers.
+- **Status:** partly built (2026-10-14). Candidate 1 (CR-field dead stores) rejected by its model: exact ~0.3% of hot
+  words, inexact ~1.5-2%. Candidate 2 (OPT_RETSTUB) built: -2.1% hot words, +1.0% / +1.6% core 0 (job 148, trimmed
+  means), default on together with OPT_SYSCALL and OPT_HLELINK (job 151: +2.5% / +5.7%). Candidates 3 (float loads and
+  stores, ~1% of hot words) and 4 (register pinning) wait behind the trace re-test (HANDOFF 2026-10-14 late night).
 - **Lesson:** executed hot words per guest instruction did not predict I-cache misses for this change: misses follow the
   hot code's footprint (distinct lines touched), not the words executed per instruction.
 - **Re-evaluate when:** several small exact reductions can be stacked into one A/B, or a footprint measure (distinct hot

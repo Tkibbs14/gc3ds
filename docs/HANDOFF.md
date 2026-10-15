@@ -984,3 +984,30 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   cases failed on it (seed 1, both with and without the new opt bit); the skip now takes the compared memory from the
   interpreter.
 - Tools: `core/tools/ab_split.py relay_N.csv` (A/B by the opt column, cutscene vs later stretch, settle after switches).
+
+## 2026-10-14 late night: what the I-cache misses are, and fewer dispatcher round trips (jobs 149-151)
+
+- **I-cache simulation** (`core/tools/qemu-plugins/icache.c`, the ARM11's 16 KB 4-way L1 under qemu, misses per
+  line; `icache_report.py RUN GCEMU --minus WARMUP` splits them by JIT region, gcemu function and, with JIT_BLOCKMAP,
+  by block and TP function). TP 852-880, warm-up subtracted: JIT hot region 47% of all misses, gcemu C 36% (on the PC
+  most of it is GX code, which runs on cores 2-3 on the 2DS), libc 8%, cold region 5%, shared stubs 4%. **For core 0,
+  block code is ~3/4 of the misses, spread over ~60k lines** (top 1,024 lines 32%, top 4,096 64%): no small hot set.
+  The dispatcher path (jit_entry, lookup, run, gekko_run, jit_interp, ...) is the next 5-10%.
+- **Dispatcher round trips cost more than their own cycles**: each one runs C code that evicts JIT code. On the 2DS
+  the cutscene makes ~3,400 `sc`/s (TP's PPCSync; `# exceptions` line, c00) and the Link / Epona stretch ~21k
+  stand-in calls/s, each of which returned to the dispatcher (several round trips per sc).
+- **OPT_SYSCALL** (job 149): sc and its handler (checked at compile time: SPR moves, ori, isync, sync, rfi) run in one
+  interpreter call inside the block. **OPT_HLELINK** (job 150): a stand-in's block goes on through the indirect table.
+  **Together with OPT_RETSTUB (`--ab stack`, job 151): core 0 cutscene 24.33 -> 24.95% (+2.5%), Link / Epona stretch
+  11.85 -> 12.53% (+5.7%), I-cache misses -6% / -18%. Default on** (`--retstub/--syscall/--hlelink off` to compare).
+  qemu: same instruction count, final PC, GX bytes and last frame; fuzzer clean (plant 11 checks the handler count).
+- **Reading A/Bs:** `core/tools/ab_split.py` now reports 10% trimmed means and medians. A few rows far off (a hitch,
+  a load) moved plain means more than the 2% effects measured here (job 148's later stretch read "within noise" by
+  means and +1.6% by trimmed means).
+- **Heap:** the second job on a build without a restart started with malloc's largest block at 1.1 MB (jobs 145 and
+  150; job 145 is the stand-in A/B that made it default). Relay jobs now restart the process when a game already ran.
+- **Next, by the miss data:** the misses follow the total hot code and the block boundaries, so the structural
+  levers come first. (1) Re-measure traces with these tools: -18% hot words under qemu, filed as "within noise" by
+  plain means while the 2DS's code buffer overflowed; fix the two trace-mode fuzzer bugs and the overflow first.
+  (2) Register write-backs at block exits (~14% of hot words). (3) The shared stubs (31 KB, 4% of misses) ordered so
+  the hot ones share lines.

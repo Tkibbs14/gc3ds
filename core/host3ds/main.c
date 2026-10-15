@@ -344,9 +344,9 @@ typedef struct {
     bool kstore;         // --kstore on|off (on): stfs / psq_st of known exact singles skip the round trip (OPT_KSTORE)
     bool abKstore;       // --ab kstore: OPT_KSTORE on and off (opt column; each switch drops all compiled code)
     bool calls, abCalls; // --calls on|off, --ab calls: traces follow bl and the callee's blr (OPT_CALLS, opt column)
-    bool retstub, abRetstub;  // --retstub on|off (off), --ab retstub: blr / bctr through shared stubs (OPT_RETSTUB, opt column)
-    bool syscall, abSyscall;  // --syscall on|off (off), --ab syscall: sc with its handler inside the block (OPT_SYSCALL, opt column)
-    bool hlelink, abHlelink;  // --hlelink on|off (off), --ab hlelink: stand-in blocks go on through the indirect table (OPT_HLELINK)
+    bool retstub, abRetstub;  // --retstub on|off (on), --ab retstub: blr / bctr through shared stubs (OPT_RETSTUB, opt column)
+    bool syscall, abSyscall;  // --syscall on|off (on), --ab syscall: sc with its handler inside the block (OPT_SYSCALL, opt column)
+    bool hlelink, abHlelink;  // --hlelink on|off (on), --ab hlelink: stand-in blocks go on through the indirect table (OPT_HLELINK)
     bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
@@ -375,6 +375,9 @@ static void opts_default(RunOpts* o) {
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->hle = true;     // shadow-scan stand-in: Link / Epona stretch 10.6% -> 12.4%, cutscene within noise (job 145)
+    // Fewer dispatcher round trips, together (--ab stack, job 151): core 0 cutscene +2.5%, Link / Epona stretch +3.9%,
+    // I-cache misses -6% / -14%; alone: retstub +1.0 / +1.6% (job 148), syscall +2.0 / +2.3% (149), hlelink 0 / +3.6% (150).
+    o->retstub = o->syscall = o->hlelink = true;
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
@@ -679,9 +682,9 @@ static const char* run(const char* path) {
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
         jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0) |
                            (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.calls && !g_opt.abCalls ? OPT_CALLS : 0) |
-                           (g_opt.retstub && !g_opt.abRetstub ? OPT_RETSTUB : 0) |
-                           (g_opt.syscall && !g_opt.abSyscall ? OPT_SYSCALL : 0) |
-                           (g_opt.hlelink && !g_opt.abHlelink ? OPT_HLELINK : 0));  // A/Bs start off
+                           (g_opt.retstub && !g_opt.abRetstub && !g_opt.abStack ? OPT_RETSTUB : 0) |
+                           (g_opt.syscall && !g_opt.abSyscall && !g_opt.abStack ? OPT_SYSCALL : 0) |
+                           (g_opt.hlelink && !g_opt.abHlelink && !g_opt.abStack ? OPT_HLELINK : 0));  // A/Bs start off
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
