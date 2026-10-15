@@ -448,6 +448,7 @@ static u32 g_case;  // the case being checked (printed with a mismatch: JIT_FUZZ
 // whose interpreter took a DSI at such an address is not compared (counted in g_aliasSkips).
 static bool g_faultMode;
 static u32 g_aliasSkips;
+static u32 g_smcSkips;  // chain cases not compared: the program stored into itself
 static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
 static bool alias_unchecked(u32 ea) {
     if (ea - 0x7FFF0000u < 0x01820000u || ea - 0xC0000000u < 0x01800000u || ea < 0x01800000u) return false;  // MEM1 and its guards
@@ -658,6 +659,7 @@ static u32 gen_trace_branch(u32 i, u32 len, u32 prev) {
 // from the same state with a random budget, now mostly through links. The interpreter runs as many instructions as the
 // second run reports from the same state, and the machines must agree. Plant 8 gives the dispatcher a wrong count.
 #define CH_SEGS 8
+static bool g_chainCtrIsAddr;  // chain_case left CTR as an offset into the program (the caller adds CODE_EA)
 static u32 chain_case(St* st, u32* prog) {
     u32 nseg = 2 + rnd() % (CH_SEGS - 1), at = 0, start[CH_SEGS + 1], len[CH_SEGS];
     for (u32 k = 0; k < nseg; k++) len[k] = 1 + rnd() % 6;
@@ -692,8 +694,12 @@ static u32 chain_case(St* st, u32* prog) {
         else if (kind == 7) prog[here] = 0x4E800020u;                                              // blr
         else prog[here] = (24u << 26);                                                             // nop: fall through
     }
-    st->lr = CODE_EA;
-    st->ctr = ctrMode ? CODE_EA + 4 * ctrTo + rnd() % 4 : rnd() % 24;  // (bcctr ignores the low two bits)
+    // LR (and CTR in ctrMode) as offsets into the program: the caller adds CODE_EA once it has placed this program
+    // (CODE_EA here is still the last case's, which left LR pointing anywhere, the new program included: seed 3 case
+    // 17195 stored through it into its own next instruction).
+    st->lr = 0;
+    st->ctr = ctrMode ? 4 * ctrTo + rnd() % 4 : rnd() % 24;  // (bcctr ignores the low two bits)
+    g_chainCtrIsAddr = ctrMode;
     st->irq = false;
     st->user = false;
     return at;
@@ -713,6 +719,11 @@ static void interp_steps(int n) {
 // each for as many instructions as it reports; the machines are compared after both.
 static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     for (u32 i = 0; i < words; i++) { mem1_write32(&A, CODE_PA + 4 * i, prog[i]); mem1_write32(&B, CODE_PA + 4 * i, prog[i]); }
+    // The exception vectors' page, the same in both machines: nothing compares it, so a wild store an earlier case made
+    // differently could leave it different, and an exception into it diverged (seed 3 case 17195: 0x300 held zero in
+    // one machine and a float instruction in the other).
+    memset(A.mem1, 0, 0x3000);
+    memset(B.mem1, 0, 0x3000);
     {   // the system-call handler: the SDK's PPCSync, or (a third of the cases) the same with mtspr SPRG0, r10 before rfi
         static const u32 h[] = { 0x7D30FAA6u, 0x612A0008u, 0x7D50FBA6u, 0x4C00012Cu, 0x7C0004ACu, 0x7D30FBA6u, 0x4C000064u };
         bool sprg = rnd() % 3 == 0;
@@ -901,6 +912,8 @@ int main(int argc, char** argv) {
             st.fpOff = false;
             u32 words = chain_case(&st, prog);
             CODE_PA = 0x3000u + 4 * (rnd() % (1024 - words));
+            st.lr += CODE_EA;
+            if (g_chainCtrIsAddr) st.ctr += CODE_EA;
             if (getenv("JIT_FUZZ_TRACE")) { printf("chain case %u at %08x\n", k, CODE_EA); fflush(stdout); }
             {  // JIT_FUZZ_CASE=k: the program and starting registers of chain case k
                 static long want = -2;
@@ -916,6 +929,21 @@ int main(int argc, char** argv) {
                 }
             }
             int n = (int)chain_run(&st, prog, words, plant);
+            // A store into the program itself (a base register holding LR or CTR, which point into it): without icbi
+            // the interpreter runs the new bytes and compiled code the old ones, both as the architecture allows.
+            // Not compared; the memory later cases compare is taken from the interpreter.
+            bool smc = false;
+            for (u32 i = 0; i < words && !smc; i++)
+                smc = mem1_read32(&A, CODE_PA + 4 * i) != prog[i] || mem1_read32(&B, CODE_PA + 4 * i) != prog[i];
+            if (smc) {
+                g_smcSkips++;
+                memcpy(A.mem1 + MEM1_SIZE - TOP_SIZE, B.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
+                for (int e = 0; e < 2; e++) memcpy(A.mem1 + kEdgePa[e], B.mem1 + kEdgePa[e], EDGE_SIZE);
+                memcpy(A.gx.wgp, B.gx.wgp, sizeof A.gx.wgp);
+                A.gx.wgpLen = B.gx.wgpLen;
+                A.gx.bytesReceived = B.gx.bytesReceived;
+                continue;
+            }
             if (!compare(prog[0], prog[1], n, n)) {
                 fails++;
                 printf("  chain case %u at %08x: budget %u ran %u, budget %u ran %u; program:\n", k, CODE_EA, g_chainInfo[0],
@@ -1046,6 +1074,7 @@ int main(int argc, char** argv) {
     printf("gekko_regs checked on %u instructions, %u mismatches\n", g_regChecked, g_regFails);
     printf("fault mode %s: %llu sites patched by faults, %u cases not compared (a DSI or an unmapped access at an address aliasing host memory)\n",
            jit_fault_mem(jit) ? "on" : "off", (unsigned long long)jit_stats(jit)->faults, g_aliasSkips);
+    if (g_smcSkips) printf("chain cases not compared: %u stored into their own program\n", g_smcSkips);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
     jit_destroy(jit);

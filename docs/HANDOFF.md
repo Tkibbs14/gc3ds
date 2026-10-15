@@ -1040,3 +1040,20 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **OPT_ROTMASK (job 156): within noise** (core 0 cutscene 25.21 on vs 25.00 off, later 12.49 vs 12.46); off.
   With CRSTUB neutral too, shaving words off common instructions has stopped paying: the gains of this session came
   from removing dispatcher / C round trips (stack: +2.2% / +4.2%), not from smaller sequences.
+- **What still left compiled code (job 157, defaults on; new perf.csv lines):** indirect misses ~3,400/s, nearly all
+  "slot taken"; "other" returns ~4,600/s, mostly polling loops (by design), mtmsr ~600/s; interpreter fallbacks
+  ps_cmpo0 ~2k/s, lmw + stmw ~2.5k/s, mftb ~1k/s, divw ~1k/s, sraw ~0.7k/s.
+- **OPT_NATIVE2 (ps_cmp*, lmw / stmw, divw / divwu, sraw compiled): default on.** Jobs 160 and 162: core 0 cutscene
+  +0.5 / +0.9%, Link / Epona stretch +1.5 / +1.4%, I-cache misses there -9 / -4%.
+- **OPT_IND2 (2-way indirect table): neutral, off** (job 161): slot-taken misses 3.7k -> 1.2k/s, speed unchanged. A
+  dispatcher round trip costs much less than OPT_SYSCALL / OPT_HLELINK suggested; those removed tens of thousands per
+  second plus interpreter work. The fast tables are 16-byte aligned now (the pair lookup read malloc's header).
+- **Fuzzer fixes:** chain cases set LR / CTR to the program's real address (they pointed at the last case's), zero the
+  exception vectors' page in both machines, and skip cases whose program stored into itself (no icbi: the interpreter
+  runs the new bytes, compiled code the old). Default mode with fault mode off, seed 1 case 1423 differs on a denormal
+  single (the JIT flushes it, as documented): pre-existing, outside the standard gates.
+- **Device profile (job 146) is flat outside the shadow scene: no TP function above ~0.25% of core 0**, so the I-cache
+  miss clusters (audio channel updates, PSMTXConcat) are not stand-in targets after all.
+- **Where the next real step is:** in the cutscene core 0 alone runs ~25% but the game ~21.5%, because core 0 waits for
+  the GX thread ~11% of the time; the GX side (core 2) and the vertex worker (core 3) are worth up to ~+15% there. In
+  the core-0-bound stretch, what is left in this JIT is ~1% items; more needs registers and FPRs across blocks.

@@ -350,7 +350,7 @@ typedef struct {
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
     bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
-    bool native2, abNative2;  // --native2 on|off (off), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
+    bool native2, abNative2;  // --native2 on|off (on), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
     bool abStack;             // --ab stack: OPT_RETSTUB, OPT_SYSCALL and OPT_HLELINK on and off together (opt column)
     bool fcache;         // --fcache on|off (off): float lanes in VFP registers within blocks (OPT_FCACHE)
     bool abFcache;       // --ab fcache: OPT_FCACHE on and off (opt column; each switch drops all compiled code)
@@ -382,6 +382,9 @@ static void opts_default(RunOpts* o) {
     // Fewer dispatcher round trips, together (--ab stack, job 151): core 0 cutscene +2.2%, Link / Epona stretch +4.2%;
     // alone: retstub +0.8 / +1.6% (job 148), syscall +1.8 / +2.0% (149), hlelink +0.2 / +2.8% (150) (ab_split.py).
     o->retstub = o->syscall = o->hlelink = true;
+    // Interpreted ps_cmp*, lmw / stmw, divw, sraw compiled (OPT_NATIVE2): core 0 cutscene +0.5 / +0.9%, Link / Epona
+    // stretch +1.5 / +1.4% (jobs 160 and 162).
+    o->native2 = true;
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
