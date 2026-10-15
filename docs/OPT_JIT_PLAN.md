@@ -91,3 +91,16 @@ and nothing measured since contradicts it. The 2DS rewards less distinct hot cod
    puts the lower-address word in the high half, which is right for lfd / stfd and wrong for two singles (two VLDR.32).
 2. **C8, single-precision maths** (15.3% of modelled cycles), only where inputs are already singles in registers.
 3. Constant addresses (lis / addi bases) without checks; fault mode only if its kernel crash is understood.
+
+## Owner decision, 2026-10-15
+
+James: "I'd like to try out and measure and root cause all [three]. I approve all of it as long as we can get real
+gain from it." So:
+
+1. **Event timing may drift from the interpreter** (interrupts and events delivered some instructions later, as in
+   Dolphin) and **architecturally dead state may differ at exits** (dead GPR / CR write-backs dropped). Each change is
+   still judged by a 2DS A/B and kept only with a real gain. Correctness then rests on the fuzzer (which compares after
+   the same instruction count, so it still holds) and on visual checks, since the qemu same-frame test cannot hold
+   once timing moves.
+2. **Fault mode's kernel crash gets a root-cause investigation** before any retry.
+3. **C1 (GPU-resident vertex data)** follows.
