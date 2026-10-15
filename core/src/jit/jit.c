@@ -5155,7 +5155,14 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!en) break;
         bool plain = !en->idle && !en->poll;  // idle and polling-loop blocks are only ever entered from here
         if (site) {
-            if (plain && siteGen == j->gen && siteKey == key) link_site(j, site, en->fn);
+            if (!plain) j->stats.linkNotPlain++;
+            else if (siteGen != j->gen) j->stats.linkGen++;
+            else if (siteKey != key) j->stats.linkKey++;
+            else {
+                u64 before = j->stats.links;
+                link_site(j, site, en->fn);
+                if (j->stats.links == before) j->stats.linkAlready++;
+            }
             site = NULL;
         }
         // Idle loop ("b ." with interrupts on): nothing can change until the next event, so use up the budget.
@@ -5201,6 +5208,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
                 count_op(&j->stats.exitOther, (u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]);
         }
         if (s > (u32*)1 && j->linking && gen == j->gen) { site = s; siteGen = gen; siteKey = key; }
+        else if (s > (u32*)1) j->stats.linkNoSite++;
         // Polling loop (gekko_poll_loop_len) that went round again: nothing changes until the next event either.
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
             if (gekko_idle_hook(g)) { GKP(g)->brk = true; break; }
@@ -5619,6 +5627,11 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
              (unsigned long long)s->dispIndirect, (unsigned long long)s->missPoll, (unsigned long long)s->missFirst,
              (unsigned long long)s->missTaken, (unsigned long long)s->missEmpty, (unsigned long long)s->missKey,
              (unsigned long long)s->dispBudget, (unsigned long long)s->dispOther);
+    print(line);
+    snprintf(line, sizeof line, "JIT: link requests not linked: target polling / idle %llu, code dropped %llu, other key %llu, "
+             "not linkable here %llu, site already linked %llu; linked %llu", (unsigned long long)s->linkNotPlain,
+             (unsigned long long)s->linkGen, (unsigned long long)s->linkKey, (unsigned long long)s->linkNoSite,
+             (unsigned long long)s->linkAlready, (unsigned long long)s->links);
     print(line);
     snprintf(line, sizeof line, "JIT: %.1f host words per guest instruction compiled (%u KB of code); %llu fused compare-branches, %llu cached GPR reads, %llu pipe stores",
              s->instrsCompiled ? (double)code_words_used(j) / (double)s->instrsCompiled : 0.0,

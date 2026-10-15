@@ -28,6 +28,7 @@ typedef struct {
     u64 compileFails[3];  // blocks not compiled: hot code or exits overflowed (or a slow path without its tail), cold code overflowed, fix-ups overflowed
     u64 wordsHot, wordsExit, wordsCold, insnsKept;  // compile time, kept blocks: host words in the hot path, exit stubs, cold slow paths
     u64 dispLink, dispIndirect, dispBudget, dispOther;  // why compiled code returned to the dispatcher
+    u64 linkNotPlain, linkGen, linkKey, linkNoSite, linkAlready;  // link requests not linked: target a poll / idle block, code dropped since, other key, no site (the run left elsewhere), site already linked
     u64 missPoll, missFirst, missTaken, missEmpty, missKey;
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)

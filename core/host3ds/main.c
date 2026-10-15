@@ -1209,6 +1209,14 @@ static const char* run(const char* path) {
                                 (cur[6] - last[6]) / 10.0, (cur[7] - last[7]) / 10.0, (cur[8] - last[8]) / 10.0,
                                 (cur[9] - last[9]) / 10.0, (cur[10] - last[10]) / 10.0);
                         memcpy(last, cur, sizeof last);
+                        // Link requests that did not become links, by reason (job 184: 155,000 requests/s, ~2,600 links/s).
+                        static u64 lastL[6];
+                        u64 curL[6] = { js->linkNotPlain, js->linkGen, js->linkKey, js->linkNoSite, js->linkAlready, js->links };
+                        fprintf(g_perf, "# link requests/s not linked: target polling / idle %.0f, code dropped %.0f, other key %.0f, "
+                                "not linkable here %.0f, site already linked %.0f; linked %.0f\n", (curL[0] - lastL[0]) / 10.0,
+                                (curL[1] - lastL[1]) / 10.0, (curL[2] - lastL[2]) / 10.0, (curL[3] - lastL[3]) / 10.0,
+                                (curL[4] - lastL[4]) / 10.0, (curL[5] - lastL[5]) / 10.0);
+                        memcpy(lastL, curL, sizeof lastL);
                     }
                     if (g_opt.pmuSplit) pmu_split_report(g_perf);
                     fprintf(g_perf, "# clock %.0f MHz\n", cpu_mhz());
