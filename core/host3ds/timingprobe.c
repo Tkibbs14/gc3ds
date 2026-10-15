@@ -56,7 +56,9 @@ static void rd(unsigned long long* cyc, unsigned long long* e0, unsigned long lo
     const unsigned long long byTick = (svcGetSystemTick() - g_tick0) * 804 / 268;  // ticks at 268 MHz -> cycles at 804 MHz
     // The counters are trusted only while their cycle count agrees with the tick within 2x (Azahar accepts the system
     // call and leaves junk; a misconfigured counter on the device would show the same way).
-    if (g_pmuOk && pmu_read(cyc, e0, e1) && *cyc >= byTick / 2 && *cyc <= byTick * 2 + 1000) return;
+    // Only long measurements are compared: on the device the first, tiny ones read 2,870 counter cycles against 690 by
+    // the tick (job 176), where the tick's granularity and the system calls around it dominate.
+    if (g_pmuOk && pmu_read(cyc, e0, e1) && *cyc && (byTick < 2000000 || (*cyc >= byTick / 2 && *cyc <= byTick * 2))) return;
     if (g_pmuOk) out("# timing: counters disagree with the tick (%llu cycles vs %llu); tick from here on, events zero\n", *cyc, byTick);
     g_pmuOk = false;
     *cyc = byTick;
@@ -322,19 +324,15 @@ static void bandwidth(u8* mem, u32 memBytes) {
     const u32 kB = 4u << 20;
     if (mem && memBytes >= 2 * kB) {
         Copy c = {mem, mem + kB, kB};
+        SECTION("bandwidth memcpy");
         out("# timing bw memcpy 4 MB FCRAM: %.0f MB/s\n", mbps(best_of(4, f_memcpy, &c), kB));
+        SECTION("bandwidth memset");
         out("# timing bw memset 4 MB FCRAM: %.0f MB/s\n", mbps(best_of(4, f_memset, &c), kB));
+        SECTION("bandwidth read");
         out("# timing bw read 4 MB FCRAM (2 words per line): %.0f MB/s\n", mbps(best_of(4, f_read, &c), kB));
     }
-    u8* vram = vramAlloc(1u << 20);
-    if (vram && mem) {
-        Copy c = {mem, vram, 1u << 20};
-        out("# timing bw memcpy 1 MB FCRAM -> VRAM (CPU): %.0f MB/s\n", mbps(best_of(4, f_memcpy, &c), c.bytes));
-        Copy r = {vram, mem, 1u << 20};
-        out("# timing bw read 1 MB VRAM (CPU): %.0f MB/s\n", mbps(best_of(4, f_read, &r), r.bytes));
-        vramFree(vram);
-    } else
-        out("# timing bw VRAM: no VRAM free\n");
+    // CPU access to VRAM is left out: job 176 stopped in this section on the device (where exactly is open; the
+    // VRAM part, the one new kind of access, is the suspect). The GPU probe measures VRAM through the GPU.
 }
 
 // ---- kernel: thread switches through a LightEvent ping-pong, on the same core and across cores ----
@@ -351,6 +349,7 @@ static void ponger(void* arg) {
 static void kernel_switch(void) {
     static const struct { int core; const char* name; } kC[] = {{0, "same core (0)"}, {2, "core 0 <-> core 2"}};
     for (int k = 0; k < 2; k++) {
+        out("# timing: section kernel_switch %s\n", kC[k].name);
         LightEvent_Init(&g_ping, RESET_ONESHOT);
         LightEvent_Init(&g_pong, RESET_ONESHOT);
         g_pongStop = 0;
@@ -375,6 +374,7 @@ static void kernel_switch(void) {
         out("# timing kernel switch %s: %.2f us per round trip (signal, wake, signal back, wake)\n", kC[k].name,
             (double)dt * 1e6 / SYSCLOCK_ARM11 / kN);
     }
+    SECTION("kernel_switch yield");
     u64 best = ~0ull;
     for (int i = 0; i < 2000; i++) {
         u64 t = svcGetSystemTick();
@@ -388,6 +388,7 @@ static void kernel_switch(void) {
 // ---- storage: reads of the disc image from the SD card ----
 static void storage(const char* path) {
     if (!path || !path[0]) return;
+    SECTION("storage open");
     FILE* f = fopen(path, "rb");
     if (!f) {
         out("# timing sd: cannot open %s\n", path);
@@ -437,6 +438,7 @@ static void clocks(u8* mem, u32* order) {
     if (!mem) return;
     void** start = build_cycle(mem, (1u << 20) / 32, line_addr, order);
     for (int pass = 0; pass < 2; pass++) {
+        out("# timing: section clocks pass %d\n", pass);
         bool fast = pass == 0;
         osSetSpeedupEnable(fast);
         svcSleepThread(10000000);  // let the clock change settle

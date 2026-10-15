@@ -142,6 +142,7 @@ const char* gpu_probe(void) {
     env_color_only();
 
     // Vertex throughput: zero-area triangles (all three corners equal), so nothing reaches the rasterizer's fill.
+    out("# gpu: section vertex\n");
     const int kVerts = 60000;
     Vert* vf = linearAlloc(sizeof(Vert) * kVerts);
     VertS* vs = linearAlloc(sizeof(VertS) * kVerts);
@@ -203,6 +204,7 @@ const char* gpu_probe(void) {
             {"combiner 3 stages", 0, NULL, 3}, {"combiner 6 stages", 0, NULL, 6},
         };
         for (unsigned k = 0; k < sizeof kC / sizeof kC[0]; k++) {
+            out("# gpu: section fill %s\n", kC[k].name);
             C3D_DepthTest(kC[k].mode == 2, GPU_LEQUAL, kC[k].mode == 2 ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
             if (kC[k].mode == 1)
                 C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
@@ -222,6 +224,7 @@ const char* gpu_probe(void) {
         env_color_only();
 
         // Draw calls: one small triangle each.
+        out("# gpu: section draws\n");
         for (int change = 0; change < 2; change++) {
             DCtx dc = {1000, change != 0};
             float cpu = 0, ms = frames(draw_many, &dc, &cpu);
@@ -237,6 +240,7 @@ const char* gpu_probe(void) {
 
     // Transfers: through citro3d's synchronous calls, which queue on its GX command queue and wait for completion (raw
     // GX_* calls outside a frame fill that queue until libctru panics: found in Azahar, 10-15). Timed with the tick.
+    out("# gpu: section xfer\n");
     const u32 kBytes = 1u << 20;
     void* lin = linearAlloc(kBytes);
     void* vram = vramAlloc(kBytes);

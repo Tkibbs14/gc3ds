@@ -60,6 +60,38 @@ First device run of timingprobe.c: relay job 172 (queued 2026-10-15). In Azahar 
 shows Azahar models no caches at all (chase flat at ~4.1 cycles from 4 KB to 16 MB, code fetch flat at 3.0 cycles to
 8 MB): an emulator's timing is not a stand-in for the device, which is the point of probing the device.
 
+## First device measurements (New 2DS XL, relay job 176, 2026-10-15)
+
+Cycles at 804 MHz from the system tick (the counters were switched off by an over-eager check on the first, tiny
+measurement; fixed). The run stopped in the bandwidth section (CPU access to VRAM suspected; removed for now), so
+bandwidth, kernel, SD, clocks and the GPU are still to come (job 177).
+
+| Mechanism | Measured | Notes |
+|---|---|---|
+| add (dependent) | 1.06 | |
+| mul: latency / throughput | 5.0 / 2.1 | |
+| rev (dependent) | 2.0 | |
+| L1 load-to-use (pointer chase) | 4.0 | ldr then use or one instruction between: same |
+| independent loads | 1.06 | |
+| VFP add / mul single, dependent | 8.0 / 8.0 | double add 8.0, mul 9.0 |
+| VFP add single, independent | 2.0 | |
+| VFP div / sqrt single | 19 | |
+| core -> VFP -> core moves | 10 | |
+| vldr then use | 8 | |
+| branch: predictable / random direction | 3.44 / 7.19 per round (5 instructions) | mispredict penalty ~7.5 |
+| instruction fetch: code <= 16 KB | 1.0 per instruction | 20 KB 2.0, 24 KB 2.6 |
+| instruction fetch from L2 (32 KB - 1 MB) | 3.39 per instruction | ~19 cycles per 32-byte line |
+| instruction fetch beyond L2 (2 / 3 / 4 / 8 MB) | 3.9 / 5.2 / 5.6 / 6.0 | |
+| load latency L1 (<= 16 KB) | 4.0 | |
+| load latency L2 (24 KB: 18; 32 KB: 23; 64 KB - 1.5 MB) | ~28 | |
+| load latency memory (2 / 3 / 4 / 8 / 16 MB) | 35 / 102 / 128 / 156 / 166 | |
+| TLB: one line per page, 8 - 512 pages | 4.0 - 9.0 | no cliff: the heap is mapped in large pages |
+| TLB: 1024 / 4096 pages (4 / 16 MB spans) | 23 / 144 | cache and memory, not TLB |
+| streaming stores | 4.1 per word (~780 MB/s) | |
+| **core 2 streaming stores over 4 MB, core 0 chase 256 KB / 1 MB / 8 MB** | **36 / 120 / 604** (alone 28 / 28 / 156) | shared L2 evicted: the mechanism behind C2 and C15 |
+| svcGetSystemTick | 198 | |
+| JIT cache sync (flush + svc 0x94) | 16,548 (~20 us) | |
+
 ## Limits
 
 - A/B effects here are 1-5%, smaller than any model's error: the 2DS stays the final judge for every default.
