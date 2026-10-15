@@ -7,6 +7,8 @@
 //                   (each with the target's centre pixel read back: zero means nothing was drawn and the number is void)
 //                   by format and size (a large texture sampled across the screen misses the texture cache), and by
 //                   the number of combiner stages
+//   shader          the vertex case through the same shader with 32 and 64 more instructions (per instruction)
+//   setup TILE      the screen covered once by TILExTILE-pixel tiles (triangle setup by triangle size)
 //   draws CASE      1,000 one-triangle draws: GPU and CPU microseconds per draw, with and without a state change
 //   xfer CASE       display transfer, memory fill, texture copy: MB/s
 #include <3ds.h>
@@ -15,8 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "gpuprobe_shbin.h"
+#include "gpuprobe_n32_shbin.h"
+#include "gpuprobe_n64_shbin.h"
 
-static char g_buf[8 << 10];
+static char g_buf[16 << 10];
 static size_t g_len;
 extern FILE* probe_live;  // timingprobe.c: lines also go out as they are measured
 static void out(const char* fmt, ...) {
@@ -193,7 +197,30 @@ const char* gpu_probe(void) {
             out("# gpu vertex %s (%d-byte stride): %.2f ns per vertex (%.2f ms for %d)\n", kF[k].name, kF[k].stride,
                 ms * 1e6f / kVerts, ms, kVerts);
         }
-        if (packed) linearFree(packed);
+        if (packed) {
+            // Shader length: the 12-byte format through the same shader with 32 and 64 more instructions.
+            for (int i = 0; i < kVerts; i++) memcpy(packed + (size_t)i * 12, &vf[i], 12);
+            GSPGPU_FlushDataCache(packed, 12u * kVerts);
+            attrs_float(1);
+            bufs(packed, 12, 1);
+            const struct { const char* name; const u8* bin; u32 size; } kS[] = {
+                {"+32 instructions", gpuprobe_n32_shbin, gpuprobe_n32_shbin_size},
+                {"+64 instructions", gpuprobe_n64_shbin, gpuprobe_n64_shbin_size}};
+            for (int k = 0; k < 2; k++) {
+                DVLB_s* d = DVLB_ParseFile((u32*)kS[k].bin, kS[k].size);
+                if (!d) continue;
+                shaderProgram_s sp;
+                shaderProgramInit(&sp);
+                shaderProgramSetVsh(&sp, &d->DVLE[0]);
+                C3D_BindProgram(&sp);
+                float ms = frames(draw_tris, &vc, NULL);
+                out("# gpu shader %s (pos float3, 12-byte stride): %.2f ns per vertex\n", kS[k].name, ms * 1e6f / kVerts);
+                C3D_BindProgram(&g_prog);  // frames() ended on a finished frame: the GPU no longer reads sp
+                shaderProgramFree(&sp);
+                DVLB_Free(d);
+            }
+            linearFree(packed);
+        }
         C3D_AttrInfo* ai = C3D_GetAttrInfo();
         AttrInfo_Init(ai);
         AttrInfo_AddLoader(ai, 0, GPU_SHORT, 4);
@@ -206,8 +233,9 @@ const char* gpu_probe(void) {
 
     // Fill: a full-screen quad (two triangles), several layers a frame.
     Vert* quad = linearAlloc(sizeof(Vert) * 6);
-    C3D_Tex small, big, big565, bigEtc;
-    bool texOk = quad && C3D_TexInit(&small, 64, 64, GPU_RGBA8) && C3D_TexInit(&big, 1024, 1024, GPU_RGBA8) &&
+    C3D_Tex small, mid, big, big565, bigEtc;
+    bool texOk = quad && C3D_TexInit(&small, 64, 64, GPU_RGBA8) && C3D_TexInit(&mid, 256, 256, GPU_RGBA8) &&
+                 C3D_TexInit(&big, 1024, 1024, GPU_RGBA8) &&
                  C3D_TexInit(&big565, 1024, 1024, GPU_RGB565) && C3D_TexInit(&bigEtc, 1024, 1024, GPU_ETC1);
     if (quad && texOk) {
         // u, v over 0..1 on the screen: the 64x64 texture is magnified (few texels, cache-friendly); the 1024x1024 ones
@@ -216,10 +244,12 @@ const char* gpu_probe(void) {
         for (int i = 0; i < 6; i++) quad[i] = (Vert){kQ[i][0], kQ[i][1], -0.5f, 200, 100, 50, 128, kQ[i][2], kQ[i][3]};
         GSPGPU_FlushDataCache(quad, sizeof(Vert) * 6);
         memset(small.data, 0x7F, small.size);
+        memset(mid.data, 0x66, mid.size);
         memset(big.data, 0x5A, big.size);
         memset(big565.data, 0x3C, big565.size);
         memset(bigEtc.data, 0x21, bigEtc.size);
         C3D_TexFlush(&small);
+        C3D_TexFlush(&mid);
         C3D_TexFlush(&big);
         C3D_TexFlush(&big565);
         C3D_TexFlush(&bigEtc);
@@ -228,15 +258,35 @@ const char* gpu_probe(void) {
         const int kLayers = 16;
         FCtx fc = {kLayers};
         const float pixels = 400.0f * 240.0f * kLayers;
-        struct { const char* name; int mode; C3D_Tex* tex; int stages; } kC[] = {
-            {"plain", 0, NULL, 1},           {"alpha blend", 1, NULL, 1},      {"depth test + write", 2, NULL, 1},
-            {"tex rgba8 64x64", 0, &small, 1}, {"tex rgba8 1024x1024 minified", 0, &big, 1},
-            {"tex rgb565 1024x1024 minified", 0, &big565, 1}, {"tex etc1 1024x1024 minified", 0, &bigEtc, 1},
-            {"combiner 3 stages", 0, NULL, 3}, {"combiner 6 stages", 0, NULL, 6},
+        // span: the texture coordinates' range across the screen (1: the whole texture; 0.39: about one texel per
+        // pixel for 1024 texels over 400 pixels), for the texture cache's behaviour by texels per pixel.
+        struct { const char* name; int mode; C3D_Tex* tex; int stages; float span; } kC[] = {
+            {"plain", 0, NULL, 1, 1},           {"alpha blend", 1, NULL, 1, 1},      {"depth test + write", 2, NULL, 1, 1},
+            {"depth test, all rejected (GREATER on equal z)", 3, NULL, 1, 1},
+            {"tex rgba8 64x64", 0, &small, 1, 1}, {"tex rgba8 256x256 (0.64 texel per pixel)", 0, &mid, 1, 1},
+            {"tex rgba8 1024x1024 minified", 0, &big, 1, 1},
+            {"tex rgb565 1024x1024 minified", 0, &big565, 1, 1}, {"tex etc1 1024x1024 minified", 0, &bigEtc, 1, 1},
+            {"tex rgba8 1024 span 0.2 (0.5 texel per pixel)", 0, &big, 1, 0.2f},
+            {"tex rgba8 1024 span 0.39 (1 texel per pixel)", 0, &big, 1, 0.39f},
+            {"tex rgba8 1024 span 0.78 (2 texels per pixel)", 0, &big, 1, 0.78f},
+            {"tex rgb565 1024 span 0.39 (1 texel per pixel)", 0, &big565, 1, 0.39f},
+            {"tex etc1 1024 span 0.39 (1 texel per pixel)", 0, &bigEtc, 1, 0.39f},
+            {"combiner 3 stages", 0, NULL, 3, 1}, {"combiner 6 stages", 0, NULL, 6, 1},
         };
+        float span = 1;
         for (unsigned k = 0; k < sizeof kC / sizeof kC[0]; k++) {
             out("# gpu: section fill %s\n", kC[k].name);
-            C3D_DepthTest(kC[k].mode == 2, GPU_GEQUAL, kC[k].mode == 2 ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
+            if (kC[k].span != span) {
+                span = kC[k].span;
+                for (int i = 0; i < 6; i++) {
+                    quad[i].u = kQ[i][2] * span;
+                    quad[i].v = kQ[i][3] * span;
+                }
+                GSPGPU_FlushDataCache(quad, sizeof(Vert) * 6);
+            }
+            // mode 3: the depth buffer holds the previous case's equal z, so GREATER rejects every fragment (early
+            // depth rejection shows as a cost below the plain fill's).
+            C3D_DepthTest(kC[k].mode >= 2, kC[k].mode == 3 ? GPU_GREATER : GPU_GEQUAL, kC[k].mode >= 2 ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
             if (kC[k].mode == 1)
                 C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
             else
@@ -262,6 +312,29 @@ const char* gpu_probe(void) {
         env_color_only();
 
         // Draw calls: one small triangle each.
+        out("# gpu: section setup\n");
+        C3D_TexBind(0, NULL);
+        Vert* grid = linearAlloc(sizeof(Vert) * (400 / 4) * (240 / 4) * 6);
+        static const int kTile[] = {32, 16, 8, 4};
+        for (int t = 0; grid && t < 4; t++) {
+            int nx = 400 / kTile[t], ny = 240 / kTile[t], nv = 0;
+            for (int y = 0; y < ny; y++)
+                for (int x = 0; x < nx; x++) {
+                    float x0 = 2.0f * x / nx - 1, x1 = 2.0f * (x + 1) / nx - 1, y0 = 2.0f * y / ny - 1, y1 = 2.0f * (y + 1) / ny - 1;
+                    const float c[6][2] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y0}, {x1, y1}, {x0, y1}};
+                    for (int i = 0; i < 6; i++) grid[nv++] = (Vert){c[i][0], c[i][1], -0.5f, 200, 100, 50, 255, 0, 0};
+                }
+            GSPGPU_FlushDataCache(grid, sizeof(Vert) * nv);
+            bufs(grid, sizeof(Vert), 3);
+            VCtx gc = {nv};
+            float ms = frames(draw_tris, &gc, NULL);
+            out("# gpu setup %dx%d-pixel tiles: %d triangles of %d pixels covering the screen once, %.3f ms, %.1f ns per "
+                "triangle, %.1f ns per vertex\n", kTile[t], kTile[t], nv / 3, kTile[t] * kTile[t] / 2, ms, ms * 1e6f / (nv / 3),
+                ms * 1e6f / nv);
+        }
+        if (grid) linearFree(grid);
+        bufs(quad, sizeof(Vert), 3);
+
         out("# gpu: section draws\n");
         // A triangle of ~32 pixels: the quad's first triangle, now actually drawn, would fill half the screen per draw.
         static const float kT[3][2] = {{0, 0}, {0.04f, 0}, {0, 0.04f}};
@@ -274,6 +347,7 @@ const char* gpu_probe(void) {
                 change ? ", a combiner colour change before each" : "", ms * 1e3f / 1000, cpu * 1e3f / 1000);
         }
         C3D_TexDelete(&small);
+        C3D_TexDelete(&mid);
         C3D_TexDelete(&big);
         C3D_TexDelete(&big565);
         C3D_TexDelete(&bigEtc);

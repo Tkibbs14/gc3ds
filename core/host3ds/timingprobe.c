@@ -13,6 +13,16 @@
 //   stream        sequential stores over 4 MB (write-miss / write-buffer cost)
 //   svc           system calls: the tick, and the JIT's cache sync (flush + svc 0x94)
 //   xcore         chase 1 MB / 8 MB on core 0 while core 2 streams stores over 4 MB (shared L2 / bus)
+// Added from docs/research/BENCHMARK_TOOLING_SURVEY.md (2026-10-15):
+//   indirect      calls through a table from one site: 1 target, 2 / 4 / 16 round-robin, 16 random
+//   calls DEPTH   chains of distinct functions (return stack depth)
+//   btac N        N taken branches 8 bytes apart in generated code (branch target cache capacity)
+//   install SIZE  write + clean + whole I-cache invalidate + first run of SIZE bytes of code (the JIT's install)
+//   op forms      ldrh / ldrb then use, ldrd / strd / ldm / stm, and ldr + rev as a dependent chain (guest BE loads)
+//   assoc S xK    K lines S bytes apart in a random cycle (L1 / L2 ways)
+//   seqchase      sequential dependent loads by stride over 1 MB and 8 MB (line size, hardware prefetch)
+//   mlp 8M        1-6 independent chases through memory at once (misses in flight)
+//   store / load  one per 32-byte line over 8 KB / 512 KB / 8 MB (write-allocate); store then load; store throughput
 #include <3ds.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -451,8 +461,269 @@ static void clocks(u8* mem, u32* order) {
 
 // Runs every benchmark; `code` / `mem` are scratch (the JIT's buffer past its stubs, MEM1); `disc` the image the
 // storage reads use. Returns the text to put in perf.csv (valid until the next call).
+// ---- more CPU probes (docs/research/BENCHMARK_TOOLING_SURVEY.md section 5, added 2026-10-15) ----
+
+// Code install as the JIT does it: write SIZE bytes of code, clean the data cache over it, invalidate the whole
+// I-cache, run it once. "run only" is the same code warm; the differences are the sync and the cold first run.
+typedef struct { u32* buf; const u32* tmpl; u32 words; bool write; } Inst;
+static void k_install(void* ctx, u32 n) {
+    Inst* x = ctx;
+    void (*fn)(void) = (void (*)(void))(void*)x->buf;
+    while (n--) {
+        if (x->write) memcpy(x->buf, x->tmpl, x->words * 4);
+        jit_host_sync_icache(x->buf, x->words * 4);
+        fn();
+    }
+}
+static void install(u32* code, u32 codeWords) {
+    static const u32 kBytes[] = {64, 256, 1024, 4096, 16384, 65536};
+    const u32 maxWords = 65536 / 4;
+    if (codeWords < 2 * maxWords) return;
+    u32* tmpl = code + maxWords;
+    for (unsigned s = 0; s < sizeof kBytes / sizeof kBytes[0]; s++) {
+        u32 words = kBytes[s] / 4;
+        for (u32 i = 0; i < words - 1; i++) {
+            u32 r = i & 3;
+            tmpl[i] = 0xE2800001u | (r << 16) | (r << 12);  // add rR, rR, #1
+        }
+        tmpl[words - 1] = 0xE12FFF1Eu;  // bx lr
+        memcpy(code, tmpl, words * 4);
+        jit_host_sync_icache(code, words * 4);
+        Code c = {(void (*)(void))(void*)code};
+        Inst a = {code, tmpl, words, false}, b = {code, tmpl, words, true};
+        char p[40];
+        snprintf(p, sizeof p, "%luB run only", (unsigned long)kBytes[s]);
+        measure("install", p, k_icode, &c, 1);
+        snprintf(p, sizeof p, "%luB sync+run", (unsigned long)kBytes[s]);
+        measure("install", p, k_install, &a, 1);
+        snprintf(p, sizeof p, "%luB write+sync+run", (unsigned long)kBytes[s]);
+        measure("install", p, k_install, &b, 1);
+    }
+}
+
+// Indirect calls from one call site through a table of 16 distinct functions, by a 256-entry target pattern.
+#define TFN(i) static void __attribute__((noinline, noclone)) t##i(void) { g_sink += i; }
+TFN(0) TFN(1) TFN(2) TFN(3) TFN(4) TFN(5) TFN(6) TFN(7) TFN(8) TFN(9) TFN(10) TFN(11) TFN(12) TFN(13) TFN(14) TFN(15)
+static void (*const kT[16])(void) = {t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15};
+static void k_indirect(void* ctx, u32 n) {
+    const u8* idx = ctx;
+    while (n--)
+        for (u32 i = 0; i < 256; i++) kT[idx[i]]();
+}
+static void indirect(void) {
+    static u8 idx[256];
+    static const struct { const char* name; int targets; bool random; } kP[] = {
+        {"1 target", 1, false}, {"2 alternating", 2, false}, {"4 round-robin", 4, false},
+        {"16 round-robin", 16, false}, {"16 random", 16, true}};
+    for (unsigned k = 0; k < sizeof kP / sizeof kP[0]; k++) {
+        for (u32 i = 0; i < 256; i++) idx[i] = kP[k].random ? (u8)(rnd() >> 28) : (u8)(i % kP[k].targets);
+        measure("indirect", kP[k].name, k_indirect, idx, 256);
+    }
+}
+
+// Call chains of distinct functions, depth D: cD calls cD-1 ... c0. Per call + return; the return stack's depth shows
+// as the depth where the cost per call jumps.
+static u32 __attribute__((noinline, noclone)) c0(void) { return g_sink; }
+#define CFN(i, j) static u32 __attribute__((noinline, noclone)) c##i(void) { u32 r = c##j(); g_sink = r; return r + i; }
+CFN(1, 0) CFN(2, 1) CFN(3, 2) CFN(4, 3) CFN(5, 4) CFN(6, 5) CFN(7, 6) CFN(8, 7) CFN(9, 8) CFN(10, 9) CFN(11, 10) CFN(12, 11)
+static u32 (*const kC[13])(void) = {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12};
+static void k_calls(void* ctx, u32 n) {
+    u32 (*fn)(void) = kC[*(u32*)ctx];
+    while (n--) fn();
+}
+static void returns(void) {
+    static const u32 kD[] = {1, 2, 3, 4, 5, 6, 8, 12};
+    for (unsigned k = 0; k < sizeof kD / sizeof kD[0]; k++) {
+        u32 d = kD[k];
+        char p[24];
+        snprintf(p, sizeof p, "depth %lu", (unsigned long)d);
+        measure("calls", p, k_calls, &d, d + 1);
+    }
+}
+
+// N taken unconditional branches, one per 8 bytes of generated code ("b" to the next, then a filler): the BTAC's
+// capacity shows as the N where the cost per branch rises.
+static void btac(u32* code, u32 codeWords) {
+    static const u32 kN[] = {16, 32, 64, 96, 128, 192, 256, 512, 1024};
+    for (unsigned k = 0; k < sizeof kN / sizeof kN[0]; k++) {
+        u32 n = kN[k];
+        if (2 * n + 2 > codeWords) break;
+        for (u32 i = 0; i < n; i++) {
+            code[2 * i] = 0xEA000000u;  // b +8: the next pair
+            code[2 * i + 1] = 0xE1A00000u;  // mov r0, r0 (never run)
+        }
+        code[2 * n] = 0xE12FFF1Eu;  // bx lr
+        jit_host_sync_icache(code, (2 * n + 1) * 4);
+        Code c = {(void (*)(void))(void*)code};
+        char p[16];
+        snprintf(p, sizeof p, "%lu", (unsigned long)n);
+        measure("btac", p, k_icode, &c, n);
+    }
+}
+
+// Associativity: K lines all STRIDE apart in a random cycle. A cache with way size STRIDE holds as many as it has
+// ways; one more and every load misses (for an LRU / round-robin replacement).
+static u32 g_stride;
+static u32 stride_addr(u32 i) { return i * g_stride; }
+static void assoc(u8* mem, u32 memBytes, u32* order) {
+    static const struct { u32 stride; u8 ks[10]; } kA[] = {
+        {4u << 10, {2, 3, 4, 5, 6, 8, 16}},  // L1 D: 16 KB, 4-way would be a 4 KB way
+        {2u << 10, {4, 8, 9, 10, 12, 16}},
+        {64u << 10, {8, 16, 24, 32, 33, 40}},  // L2: 2 MB, 8-way (256 KB way) or 16-way (128 KB)
+        {128u << 10, {4, 8, 12, 16, 17, 20, 24, 32, 33}},
+        {256u << 10, {4, 8, 9, 12, 16, 17, 20, 24, 32}},
+    };
+    for (unsigned a = 0; a < sizeof kA / sizeof kA[0]; a++)
+        for (unsigned k = 0; k < 10 && kA[a].ks[k]; k++) {
+            u32 n = kA[a].ks[k];
+            if (n * kA[a].stride > memBytes) break;
+            g_stride = kA[a].stride;
+            void** start = build_cycle(mem, n, stride_addr, order);
+            char p[32];
+            snprintf(p, sizeof p, "%luK x%lu", (unsigned long)(kA[a].stride >> 10), (unsigned long)n);
+            measure("assoc", p, k_chase, &start, 8);
+        }
+}
+
+// Sequential dependent loads STRIDE apart over FOOTPRINT (each points at the next): line size (a miss every
+// line / stride loads) and hardware prefetch (a sequential miss cheaper than the random chase's).
+static void seqchase(u8* mem, u32 memBytes) {
+    static const u32 kFoot[] = {1u << 20, 8u << 20};
+    static const u32 kStride[] = {4, 8, 16, 32, 64, 128, 256, 4096};
+    for (unsigned f = 0; f < 2; f++) {
+        if (kFoot[f] > memBytes) break;
+        for (unsigned s = 0; s < sizeof kStride / sizeof kStride[0]; s++) {
+            u32 count = kFoot[f] / kStride[s];
+            for (u32 i = 0; i < count; i++) *(void**)(mem + i * kStride[s]) = mem + ((i + 1) % count) * kStride[s];
+            void** start = (void**)mem;
+            char p[32];
+            snprintf(p, sizeof p, "%luK stride %lu", (unsigned long)(kFoot[f] >> 10), (unsigned long)kStride[s]);
+            measure("seqchase", p, k_chase, &start, 8);
+        }
+    }
+}
+
+// Memory-level parallelism: L independent chases through one random 8 MB cycle (memory), per load.
+typedef struct { void** p[6]; } Lanes;
+#define LANE(i) l->p[i] = (void**)*l->p[i];
+static void k_lane1(void* c, u32 n) { Lanes* l = c; while (n--) { R4(LANE(0)) } g_sink = (u32)(uintptr_t)l->p[0]; }
+static void k_lane2(void* c, u32 n) {
+    void** a = ((Lanes*)c)->p[0]; void** b = ((Lanes*)c)->p[1];
+    while (n--) { R4(a = (void**)*a; b = (void**)*b;) }
+    ((Lanes*)c)->p[0] = a; ((Lanes*)c)->p[1] = b; g_sink = (u32)(uintptr_t)a + (u32)(uintptr_t)b;
+}
+static void k_lane3(void* c, u32 n) {
+    void** a = ((Lanes*)c)->p[0]; void** b = ((Lanes*)c)->p[1]; void** d = ((Lanes*)c)->p[2];
+    while (n--) { R4(a = (void**)*a; b = (void**)*b; d = (void**)*d;) }
+    ((Lanes*)c)->p[0] = a; ((Lanes*)c)->p[1] = b; ((Lanes*)c)->p[2] = d;
+    g_sink = (u32)(uintptr_t)a + (u32)(uintptr_t)b + (u32)(uintptr_t)d;
+}
+static void k_lane4(void* c, u32 n) {
+    void** a = ((Lanes*)c)->p[0]; void** b = ((Lanes*)c)->p[1]; void** d = ((Lanes*)c)->p[2]; void** e = ((Lanes*)c)->p[3];
+    while (n--) { R4(a = (void**)*a; b = (void**)*b; d = (void**)*d; e = (void**)*e;) }
+    ((Lanes*)c)->p[0] = a; ((Lanes*)c)->p[1] = b; ((Lanes*)c)->p[2] = d; ((Lanes*)c)->p[3] = e;
+    g_sink = (u32)(uintptr_t)a + (u32)(uintptr_t)b + (u32)(uintptr_t)d + (u32)(uintptr_t)e;
+}
+static void k_lane6(void* c, u32 n) {
+    void** a = ((Lanes*)c)->p[0]; void** b = ((Lanes*)c)->p[1]; void** d = ((Lanes*)c)->p[2];
+    void** e = ((Lanes*)c)->p[3]; void** f = ((Lanes*)c)->p[4]; void** g = ((Lanes*)c)->p[5];
+    while (n--) { R4(a = (void**)*a; b = (void**)*b; d = (void**)*d; e = (void**)*e; f = (void**)*f; g = (void**)*g;) }
+    ((Lanes*)c)->p[0] = a; ((Lanes*)c)->p[1] = b; ((Lanes*)c)->p[2] = d; ((Lanes*)c)->p[3] = e; ((Lanes*)c)->p[4] = f;
+    ((Lanes*)c)->p[5] = g;
+    g_sink = (u32)(uintptr_t)a + (u32)(uintptr_t)b + (u32)(uintptr_t)d + (u32)(uintptr_t)e + (u32)(uintptr_t)f + (u32)(uintptr_t)g;
+}
+static void mlp(u8* mem, u32 memBytes, u32* order) {
+    const u32 bytes = 8u << 20, count = bytes / 32;
+    if (bytes > memBytes) return;
+    build_cycle(mem, count, line_addr, order);
+    static const struct { u32 lanes; Kernel k; } kL[] = {{1, k_lane1}, {2, k_lane2}, {3, k_lane3}, {4, k_lane4}, {6, k_lane6}};
+    for (unsigned k = 0; k < sizeof kL / sizeof kL[0]; k++) {
+        Lanes l;
+        for (u32 i = 0; i < kL[k].lanes; i++) l.p[i] = (void**)(mem + line_addr(order[i * (count / kL[k].lanes)]));
+        char p[16];
+        snprintf(p, sizeof p, "%lu lanes", (unsigned long)kL[k].lanes);
+        measure("mlp 8M", p, kL[k].k, &l, 4.0 * kL[k].lanes);
+    }
+}
+
+// Store path: one store (or one load) per 32-byte line over FOOTPRINT; store-to-load forwarding; store throughput.
+static void k_store_lines(void* ctx, u32 n) {
+    Buf* b = ctx;
+    while (n--)
+        for (u32* p = (u32*)b->mem, *e = (u32*)(b->mem + b->bytes); p < e; p += 32) {
+            p[0] = n; p[8] = n; p[16] = n; p[24] = n;
+        }
+}
+static void k_load_lines(void* ctx, u32 n) {
+    Buf* b = ctx;
+    u32 acc = 0;
+    while (n--)
+        for (u32* p = (u32*)b->mem, *e = (u32*)(b->mem + b->bytes); p < e; p += 32) acc += p[0] + p[8] + p[16] + p[24];
+    g_sink = acc;
+}
+static void k_stl(void* c, u32 n) {  // store, load the same word back, add: the store -> load round trip
+    u32 a = 0;
+    while (n--) __asm__ volatile(R16("str %0, [%1]\n ldr %0, [%1]\n add %0, %0, #1\n") : "+r"(a) : "r"(g_word) : "memory");
+    g_sink = a;
+}
+static void k_str_ind(void* c, u32 n) {
+    u32 a = n;
+    while (n--) __asm__ volatile(R4("str %0, [%1]\n str %0, [%1, #4]\n str %0, [%1, #8]\n str %0, [%1, #12]\n") :: "r"(a), "r"(g_word) : "memory");
+}
+static void stores(u8* mem, u32 memBytes) {
+    static const u32 kFoot[] = {8u << 10, 512u << 10, 8u << 20};
+    for (unsigned f = 0; f < 3; f++) {
+        if (kFoot[f] > memBytes) break;
+        Buf b = {mem, kFoot[f]};
+        char p[32];
+        snprintf(p, sizeof p, "%luK one per line", (unsigned long)(kFoot[f] >> 10));
+        measure("store", p, k_store_lines, &b, kFoot[f] / 32.0);
+        measure("load", p, k_load_lines, &b, kFoot[f] / 32.0);
+    }
+    measure("op", "str_then_ldr", k_stl, NULL, 16);
+    measure("op", "str_ind", k_str_ind, NULL, 16);
+}
+
+// Load / store forms (L1 hits): sub-word loads then use, doubleword and multiple transfers, and the big-endian guest
+// load (ldr then rev) as a dependent chain: a cycle of byte-swapped pointers.
+static void k_ldrh_use(void* c, u32 n) {
+    u32 a = 0, t;
+    while (n--) __asm__ volatile(R16("ldrh %1, [%2]\n add %0, %0, %1\n") : "+r"(a), "=&r"(t) : "r"(g_word));
+    g_sink = a;
+}
+static void k_ldrb_use(void* c, u32 n) {
+    u32 a = 0, t;
+    while (n--) __asm__ volatile(R16("ldrb %1, [%2]\n add %0, %0, %1\n") : "+r"(a), "=&r"(t) : "r"(g_word));
+    g_sink = a;
+}
+static void k_ldrd(void* c, u32 n) { while (n--) __asm__ volatile(R16("ldrd r4, r5, [%0]\n") :: "r"(g_word) : "r4", "r5"); }
+static void k_strd(void* c, u32 n) { while (n--) __asm__ volatile(R16("strd r4, r5, [%0]\n") :: "r"(g_word) : "memory"); }
+static void k_ldm4(void* c, u32 n) { while (n--) __asm__ volatile(R16("ldm %0, {r4-r7}\n") :: "r"(g_word) : "r4", "r5", "r6", "r7"); }
+static void k_stm4(void* c, u32 n) { while (n--) __asm__ volatile(R16("stm %0, {r4-r7}\n") :: "r"(g_word) : "memory"); }
+static void k_ldm7(void* c, u32 n) {
+    while (n--) __asm__ volatile(R16("ldm %0, {r4-r10}\n") :: "r"(g_word) : "r4", "r5", "r6", "r7", "r8", "r9", "r10");
+}
+static void k_ldr_rev(void* c, u32 n) {  // p = rev(*p): the guest's big-endian pointer chase
+    void* p = *(void**)c;
+    while (n--) __asm__ volatile(R16("ldr %0, [%0]\n rev %0, %0\n") : "+r"(p));
+    g_sink = (u32)(uintptr_t)p;
+}
+static void forms(u8* mem, u32* order) {
+    static const struct { const char* name; Kernel k; } kK[] = {
+        {"ldrh_use", k_ldrh_use}, {"ldrb_use", k_ldrb_use}, {"ldrd_ind", k_ldrd}, {"strd_ind", k_strd},
+        {"ldm4_ind", k_ldm4},     {"stm4_ind", k_stm4},     {"ldm7_ind", k_ldm7}};
+    for (unsigned i = 0; i < sizeof kK / sizeof kK[0]; i++) measure("op", kK[i].name, kK[i].k, NULL, 16);
+    if (!mem) return;
+    void** start = build_cycle(mem, (4u << 10) / 32, line_addr, order);  // 4 KB: L1 hits
+    for (u32 i = 0; i < (4u << 10) / 32; i++) {
+        u32* slot = (u32*)(mem + i * 32);
+        *slot = __builtin_bswap32(*slot);
+    }
+    measure("op", "ldr_rev_dep (BE chase, 4K)", k_ldr_rev, &start, 16);
+}
+
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc) {
-    static char buf[24 << 10];
+    static char buf[96 << 10];
     g_out = buf;
     g_outLen = 0;
     g_outCap = sizeof buf;
@@ -471,8 +742,18 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const 
     pipeline();
     SECTION("branches");
     branches();
+    SECTION("indirect");
+    indirect();
+    SECTION("calls");
+    returns();
     SECTION("icode");
     if (code && codeWords) icode(code, codeWords);
+    SECTION("btac");
+    if (code && codeWords) btac(code, codeWords);
+    SECTION("install");
+    if (code && codeWords) install(code, codeWords);
+    SECTION("forms");
+    forms(mem, order);
     if (mem) {
         SECTION("chase");
         chase(mem, memBytes, order);
@@ -480,6 +761,14 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const 
         tlb(mem, memBytes, order);
         Buf b = {mem, 4u << 20};
         if (memBytes >= b.bytes) measure("stream", "4M stores", k_stream, &b, b.bytes / 4.0);
+        SECTION("assoc");
+        assoc(mem, memBytes, order);
+        SECTION("seqchase");
+        seqchase(mem, memBytes);
+        SECTION("mlp");
+        mlp(mem, memBytes, order);
+        SECTION("stores");
+        stores(mem, memBytes);
         SECTION("xcore");
         xcore(mem, memBytes, order);
     }
