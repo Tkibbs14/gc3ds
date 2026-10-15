@@ -1029,3 +1029,11 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   576 s, and settles 4 s after each switch. All results above use it.
 - **Next:** OPT_ROTMASK (rlwinm / rlwimi as one to three shifts instead of a rotate and a mask constant of up to four
   words; rlwinm averages 4.9 static hot words) after its fuzzer gate.
+- **I-cache misses by TP function (qemu 952-975 from `/root/tp_arm_950.state`, defaults, JIT_BLOCKMAP):** the same
+  region split as 852-880 (block code 48%, gcemu C 35% mostly GX, cold 5%, stubs 4%), but **by block the misses are
+  concentrated** where time is not: top 100 blocks 37%, top 1,000 76% of block-code misses. Audio channel updates
+  (JASChannel updateDSPChannel / updateEffectorParam / updateAutoMixer, pow2, JASTrack callbacks) ~12%, PSMTXConcat
+  5.5%, __save_gpr / __restore_gpr 3.1% (each _savegpr_N entry compiles its own copy of the tail), J3DPSCalcInverse-
+  Transpose 2.2%, J3DGD* setup ~1% each. They run periodically and are evicted in between. Scale: block-code misses
+  are ~17% of core 0's cycles (fetch stalls ~23%, ~3/4 of them block code), so each of these is worth ~0.5-2%;
+  native stand-ins (PSMTXConcat first, the audio channel math next) are the candidates, judged on the 2DS.
