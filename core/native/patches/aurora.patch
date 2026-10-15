@@ -33,3 +33,19 @@ index 94481a4..566e8fe 100644
  #if defined(__cpp_lib_atomic_ref)
    std::atomic_ref<T>{ref}.store(val, std::memory_order_release);
  #else
+diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
+index bcaba60..213f171 100644
+--- a/lib/gx/fifo.cpp
++++ b/lib/gx/fifo.cpp
+@@ -24,7 +24,11 @@ uint32_t sDlWritePos = 0;
+ 
+ namespace {
+ constexpr Module Log{"aurora::gx::fifo"};
++#if defined(__3DS__)
++constexpr auto kProcessingMode = ProcessingMode::Inline;  // gc3ds native mode: no worker on the game's core
++#else
+ constexpr auto kProcessingMode = ProcessingMode::Thread;
++#endif
+ constexpr uint32_t kDrawBatchSize = 1;
+ 
+ bool sFrameActive = false;

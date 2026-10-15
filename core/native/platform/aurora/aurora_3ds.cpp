@@ -29,6 +29,7 @@ char g_gameName[4];
 namespace native {
 std::atomic<uint32_t> g_fifoBytes{0};  // GX stream bytes consumed since the last read (frame statistics)
 std::atomic<uint32_t> g_drawDones{0};
+uint64_t g_procTicks;  // ticks spent in process() (Inline mode: on the game's thread)
 }  // namespace native
 
 static char* dup_or(const char* s, const char* fallback) { return strdup(s ? s : fallback); }
@@ -89,14 +90,22 @@ namespace aurora::gx::fifo {
 static constexpr uint8_t kDrawDone[5] = {0x61, 0x45, 0x00, 0x00, 0x02};
 
 ProcessResult process(const uint8_t* data, uint32_t size) noexcept {
-    for (uint32_t i = 0; i + sizeof kDrawDone <= size; i++) {
-        if (data[i] == 0x61 && memcmp(data + i, kDrawDone, sizeof kDrawDone) == 0) {
-            native::g_fifoBytes += i + sizeof kDrawDone;
+    const u64 t0 = svcGetSystemTick();  // native::g_procTicks: the consumer's share of the frame (perf.csv)
+    const uint8_t* end = data + size;
+    for (const uint8_t* p = data; p + sizeof kDrawDone <= end;) {
+        p = (const uint8_t*)memchr(p, 0x61, (size_t)(end - p) - (sizeof kDrawDone - 1));
+        if (!p) break;
+        if (memcmp(p, kDrawDone, sizeof kDrawDone) == 0) {
+            uint32_t n = (uint32_t)(p - data) + (uint32_t)sizeof kDrawDone;
+            native::g_fifoBytes += n;
             native::g_drawDones++;
-            return {i + (uint32_t)sizeof kDrawDone, true};
+            native::g_procTicks += svcGetSystemTick() - t0;
+            return {n, true};
         }
+        p++;
     }
     native::g_fifoBytes += size;
+    native::g_procTicks += svcGetSystemTick() - t0;
     return {size, false};
 }
 void clear_draw_cache() noexcept {}

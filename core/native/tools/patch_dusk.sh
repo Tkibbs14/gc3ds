@@ -153,6 +153,21 @@ if 'native mode on the 3DS: no mods' not in s:
     open(p, 'w').write(s)
 print('alink heap on the 3DS:', 'native mode on the 3DS: no mods' in s)
 PY
+# Aurora's FIFO consumer runs in Thread mode: a worker that took the stream under a mutex the game's writes take too,
+# woken through atomic wait / notify. On the 3DS the worker's "shared cache" pinning does nothing, so it shared core 0
+# with the game (the title scene's demo: 80-100% busy, job 213). Inline mode processes the stream as it is published.
+python3 - <<'PY'
+p = 'extern/aurora/lib/gx/fifo.cpp'
+s = open(p).read()
+old = 'constexpr auto kProcessingMode = ProcessingMode::Thread;\n'
+new = ('#if defined(__3DS__)\nconstexpr auto kProcessingMode = ProcessingMode::Inline;  // gc3ds native mode: no worker on the game\'s core\n'
+       '#else\n' + old + '#endif\n')
+if 'gc3ds native mode: no worker' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('aurora fifo inline on the 3DS:', 'gc3ds native mode: no worker' in s)
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches
