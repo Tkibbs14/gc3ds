@@ -1,0 +1,115 @@
+diff --git a/include/helpers/endian.h b/include/helpers/endian.h
+index b9727ce..0072145 100644
+--- a/include/helpers/endian.h
++++ b/include/helpers/endian.h
+@@ -6,7 +6,7 @@
+ #include "dolphin/mtx.h"
+ 
+ // Platform detection - Little Endian targets
+-#if defined(_WIN32) || defined(__x86_64__) || defined(__i386__) || defined(__aarch64__) || defined(_M_X64) || defined(_M_IX86)
++#if defined(_WIN32) || defined(__x86_64__) || defined(__i386__) || defined(__aarch64__) || defined(__arm__) || defined(_M_X64) || defined(_M_IX86)
+     #define TARGET_LITTLE_ENDIAN 1
+ #else
+     #define TARGET_LITTLE_ENDIAN 0
+diff --git a/sdk/include/mods/api.h b/sdk/include/mods/api.h
+index 3015130..68c151b 100644
+--- a/sdk/include/mods/api.h
++++ b/sdk/include/mods/api.h
+@@ -1,4 +1,10 @@
+ #pragma once
++#include <stdint.h>
++#if UINTPTR_MAX > 0xFFFFFFFFu
++#define MOD_ABI_ASSERT(...) static_assert(__VA_ARGS__)
++#else
++#define MOD_ABI_ASSERT(...) static_assert(true)  // 32-bit host (3DS): the mod ABI is 64-bit only
++#endif
+ 
+ #ifdef __cplusplus
+ #include <cstddef>
+@@ -55,7 +61,7 @@ typedef enum ModResult {
+     MOD_INVALID_ARGUMENT = 5,
+ } ModResult;
+ 
+-static_assert(sizeof(ModResult) == 4,
++MOD_ABI_ASSERT(sizeof(ModResult) == 4,
+     "mod SDK enums must be int-sized; do not build mods with -fshort-enums");
+ 
+ typedef struct ModError {
+@@ -184,7 +190,7 @@ typedef struct MOD_META_ALIGN ModMetaHeader {
+     uint32_t abi_version;
+ } ModMetaHeader;
+ 
+-static_assert(sizeof(ModMetaHeader) == 8);
++MOD_ABI_ASSERT(sizeof(ModMetaHeader) == 8);
+ 
+ typedef struct MOD_META_ALIGN ModMetaImport {
+     ModMetaRecord rec;
+@@ -194,7 +200,7 @@ typedef struct MOD_META_ALIGN ModMetaImport {
+     ModMetaServiceId service_id;
+ } ModMetaImport;
+ 
+-static_assert(sizeof(ModMetaImport) == 16 + MOD_META_SERVICE_ID_SIZE);
++MOD_ABI_ASSERT(sizeof(ModMetaImport) == 16 + MOD_META_SERVICE_ID_SIZE);
+ 
+ typedef struct MOD_META_ALIGN ModMetaExport {
+     ModMetaRecord rec;
+@@ -204,7 +210,7 @@ typedef struct MOD_META_ALIGN ModMetaExport {
+     ModMetaServiceId service_id;
+ } ModMetaExport;
+ 
+-static_assert(sizeof(ModMetaExport) == 16 + MOD_META_SERVICE_ID_SIZE);
++MOD_ABI_ASSERT(sizeof(ModMetaExport) == 16 + MOD_META_SERVICE_ID_SIZE);
+ 
+ /* Hook on a function named at link time: `target` carries the &fn relocation. */
+ typedef struct MOD_META_ALIGN ModMetaHookFn {
+@@ -214,7 +220,7 @@ typedef struct MOD_META_ALIGN ModMetaHookFn {
+     void* resolved; /* runtime only */
+ } ModMetaHookFn;
+ 
+-static_assert(sizeof(ModMetaHookFn) == 24);
++MOD_ABI_ASSERT(sizeof(ModMetaHookFn) == 24);
+ 
+ /*
+  * Hook on a member function: `pmf` holds the compiler's pointer-to-member representation
+@@ -230,7 +236,7 @@ typedef struct MOD_META_ALIGN ModMetaHookMem {
+     void* resolved; /* runtime only */
+ } ModMetaHookMem;
+ 
+-static_assert(sizeof(ModMetaHookMem) == 32);
++MOD_ABI_ASSERT(sizeof(ModMetaHookMem) == 32);
+ 
+ /*
+  * Extended member-function hook record. The Microsoft x64 ABI uses a 24-byte member pointer for
+@@ -251,7 +257,7 @@ typedef struct MOD_META_ALIGN ModMetaHookMemExt {
+     void* resolved; /* runtime only */
+ } ModMetaHookMemExt;
+ 
+-static_assert(sizeof(ModMetaHookMemExt) == 24);
++MOD_ABI_ASSERT(sizeof(ModMetaHookMemExt) == 24);
+ 
+ /*
+  * Hook on a function by symbol name, for targets that cannot be named in C++ (file-local statics,
+@@ -264,7 +270,7 @@ typedef struct MOD_META_ALIGN ModMetaHookName {
+     void* resolved; /* runtime only */
+ } ModMetaHookName;
+ 
+-static_assert(sizeof(ModMetaHookName) == 16);
++MOD_ABI_ASSERT(sizeof(ModMetaHookName) == 16);
+ 
+ typedef struct ModMeta {
+     uint32_t struct_size;
+diff --git a/src/dusk/config_var.hpp b/src/dusk/config_var.hpp
+index c4d3ac1..acd4b3d 100644
+--- a/src/dusk/config_var.hpp
++++ b/src/dusk/config_var.hpp
+@@ -155,7 +155,9 @@ concept ConfigValueInteger =
+     || std::is_same_v<T, s32>
+     || std::is_same_v<T, u32>
+     || std::is_same_v<T, s64>
+-    || std::is_same_v<T, u64>;
++    || std::is_same_v<T, u64>
++    || std::is_same_v<T, int>          // 32-bit ARM: int32_t is long, so int is a separate type
++    || std::is_same_v<T, unsigned int>;
+ 
+ template <typename T>
+ struct ConfigValueTraits {
