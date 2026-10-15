@@ -998,8 +998,9 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   stand-in calls/s, each of which returned to the dispatcher (several round trips per sc).
 - **OPT_SYSCALL** (job 149): sc and its handler (checked at compile time: SPR moves, ori, isync, sync, rfi) run in one
   interpreter call inside the block. **OPT_HLELINK** (job 150): a stand-in's block goes on through the indirect table.
-  **Together with OPT_RETSTUB (`--ab stack`, job 151): core 0 cutscene 24.33 -> 24.95% (+2.5%), Link / Epona stretch
-  11.85 -> 12.53% (+5.7%), I-cache misses -6% / -18%. Default on** (`--retstub/--syscall/--hlelink off` to compare).
+  **Together with OPT_RETSTUB (`--ab stack`, job 151): core 0 cutscene 24.47 -> 25.00% (+2.2%), Link / Epona stretch
+  12.04 -> 12.54% (+4.2%). Default on** (`--retstub/--syscall/--hlelink off` to compare). Alone: retstub +0.8 / +1.6%,
+  syscall +1.8 / +2.0%, hlelink +0.2 / +2.8% (cutscene / later; all numbers by ab_split.py as fixed below).
   qemu: same instruction count, final PC, GX bytes and last frame; fuzzer clean (plant 11 checks the handler count).
 - **Reading A/Bs:** `core/tools/ab_split.py` now reports 10% trimmed means and medians. A few rows far off (a hitch,
   a load) moved plain means more than the 2% effects measured here (job 148's later stretch read "within noise" by
@@ -1020,3 +1021,11 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Baseline of the new defaults (jobs 152-153, 120 s):** core 0 cutscene 25.56 / 25.61% (+-0.21), speed ~21.3%.
 - **Next: OPT_CRSTUB (job 155):** a compare's CR update (BIC + 3 conditional ORRs) as one BL to a shared stub per field,
   signedness and register; ~3 words fewer per compare and record form, ~3-4% of static hot words.
+- **OPT_CRSTUB (job 155): neutral** (core 0 cutscene 24.91 on vs 25.06 off, later 12.49 vs 12.47); off. Three words
+  fewer per compare were paid back by the call and return (BL / BX on every compare).
+- **ab_split.py fixed (2026-10-14 night):** tp850's cutscene ends at ~301 s and a heavier section (~5%) starts at
+  ~580 s; with the A/B's phases at the same times in every job, those rows always fell into the same arm and inflated
+  its spread (+-0.25 instead of +-0.07). It now splits at 303 s, drops 8 s around the split and everything from
+  576 s, and settles 4 s after each switch. All results above use it.
+- **Next:** OPT_ROTMASK (rlwinm / rlwimi as one to three shifts instead of a rotate and a mask constant of up to four
+  words; rlwinm averages 4.9 static hot words) after its fuzzer gate.

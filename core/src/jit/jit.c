@@ -31,7 +31,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_N, ST_WORDS = 8192 };  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_N, ST_WORDS = 9216 };  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -112,6 +112,9 @@ struct Jit {
     u16 psqStK[8][2], psqUStK[8][2], stfsStK, stfsUStK;
     // ... with single bits in core registers (OPT_FCACHE): loads and stores, checked and unchecked
     u16 lfsB, lfsUB, stfsB, stfsUB, psqLB[8][2], psqULB[8][2], psqSB[8][2], psqUSB[8][2];
+    // OPT_CRSTUB: a CR field from the ARM flags of a compare, by field, signed, and the register holding CR (ms_reg's
+    // order: r2 is not used, index 0 is r1 here): BIC, three conditional ORRs, return; the flags are kept.
+    u16 crStub[8][2][MS_REGS];
     bool memStubs;              // jit_set_mem_stubs: loads and stores call them instead of checking inline
     bool traces;                // jit_set_traces: blocks follow branches (trace_branch) instead of ending at each one
     bool traceFollow;           // jit_set_trace_parts: follow unconditional b
@@ -1266,10 +1269,15 @@ static void update_crf_from_flags(Cg* c, u32 fld, bool isSigned) {
     int cr = src(c, ID_CR, R1);
     int xer = so ? src(c, ID_XER, R3) : -1;
     int d = dst(c, ID_CR, R1);
-    arm_imm(0xFu << sh, &enc); dp_imm(e, BIC, 0, d, cr, enc);  // a nibble at a multiple of 4: always an ARM immediate
-    arm_imm(8u << sh, &enc); dp_imm_c(e, isSigned ? C_LT : C_CC, ORR, 0, d, d, enc);
-    arm_imm(4u << sh, &enc); dp_imm_c(e, isSigned ? C_GT : C_HI, ORR, 0, d, d, enc);
-    arm_imm(2u << sh, &enc); dp_imm_c(e, C_EQ, ORR, 0, d, d, enc);
+    int ri = d == R1 ? 0 : d >= R4 && d <= R8 ? d - R4 + 1 : -1;
+    if ((c->j->opt & OPT_CRSTUB) && !so && cr == d && ri >= 0 && !c->inCold) {
+        branch_abs(e, C_AL, true, c->j->code + c->j->crStub[fld][isSigned][ri]);  // the same four words, shared
+    } else {
+        arm_imm(0xFu << sh, &enc); dp_imm(e, BIC, 0, d, cr, enc);  // a nibble at a multiple of 4: always an ARM immediate
+        arm_imm(8u << sh, &enc); dp_imm_c(e, isSigned ? C_LT : C_CC, ORR, 0, d, d, enc);
+        arm_imm(4u << sh, &enc); dp_imm_c(e, isSigned ? C_GT : C_HI, ORR, 0, d, d, enc);
+        arm_imm(2u << sh, &enc); dp_imm_c(e, C_EQ, ORR, 0, d, d, enc);
+    }
     if (so) {
         dp_imm(e, AND, 0, R3, xer, IMM(XER_SO));
         dp_reg_c(e, C_AL, ORR, 0, d, d, R3, LSR, (int)(31 - sh));  // SO (bit 31) to the field's bit 0
@@ -1316,6 +1324,39 @@ static void rotate_mask(Cg* c, int rd, int rs, u32 sh, u32 mask) {
 static u32 ppc_mask(u32 mb, u32 me) {
     u32 hi = 0xFFFFFFFFu >> mb, lo = me == 31 ? 0 : 0xFFFFFFFFu >> (me + 1);
     return mb <= me ? hi & ~lo : hi | ~lo;
+}
+
+// OPT_ROTMASK: rd = rotl(rs, sh) & mask(mb, me) as shifts when the mask does not wrap and the bits it keeps come from
+// one unwrapped run of rs. With hi / lo the zero bits above / below the run (ARM numbering) and a = (hi + sh) % 32,
+// t = rs LSL a puts the run's top bit at bit 31 with zeros below bit a; then t LSR hi when those zeros reach below the
+// run (a >= hi + lo), else (t LSR (hi + lo)) LSL lo clears what came in below it. srwi, slwi, clrlwi, clrrwi, extrwi
+// and extlwi take one or two words. Used only when shorter than rotate_mask's ROR and mask (a mask that does not encode
+// costs a constant of up to four words). false: not handled.
+static u32 const_words(u32 v) {
+    u32 enc;
+    if (arm_imm(v, &enc) || arm_imm(~v, &enc)) return 1;
+    u32 n = 1;
+    for (int b = 1; b < 4; b++) if ((v >> (8 * b)) & 0xFF) n++;
+    return n;
+}
+static bool rotate_mask_shifts(Cg* c, int rd, int rs, u32 sh, u32 mb, u32 me) {
+    if (!(c->j->opt & OPT_ROTMASK) || mb > me) return false;
+    u32 hi = mb, lo = 31 - me;
+    if (!(lo >= sh || hi + sh >= 32)) return false;  // the kept bits wrap around rs
+    u32 a = (hi + sh) & 31, s[3];
+    int k[3], n = 0;
+    if (a) { k[n] = LSL; s[n++] = a; }
+    if (a >= hi + lo) { if (hi) { k[n] = LSR; s[n++] = hi; } }
+    else { k[n] = LSR; s[n++] = hi + lo; if (lo) { k[n] = LSL; s[n++] = lo; } }
+    u32 mask = ppc_mask(mb, me), enc;
+    u32 old = (sh || rd != rs ? 1u : 0u) +
+              (mask == 0xFFFFFFFFu ? 0u : arm_imm(mask, &enc) || arm_imm(~mask, &enc) ? 1u : 1u + const_words(mask));
+    u32 now = n ? (u32)n : rd != rs ? 1u : 0u;
+    if (now >= old) return false;
+    int from = rs;
+    for (int i = 0; i < n; i++) { mov_shift(&c->e, 0, rd, from, k[i], (int)s[i]); from = rd; }
+    mov_reg(&c->e, rd, from);
+    return true;
 }
 
 // After a slow-path helper call: g_status 1 = the access raised an exception (leave; nothing was written), 2 = it
@@ -2044,7 +2085,7 @@ static bool compile_int(Cg* c, u32 inst) {
         u32 sh = rb, mb = (inst >> 6) & 31, me = (inst >> 1) & 31;
         int s = src(c, rd, R0);
         int d = dst(c, ra, R0);
-        rotate_mask(c, d, s, sh, ppc_mask(mb, me));
+        if (!rotate_mask_shifts(c, d, s, sh, mb, me)) rotate_mask(c, d, s, sh, ppc_mask(mb, me));
         dst_done(c, ra, d);
         if (rc) update_cr0(c, d);
         return true;
@@ -2053,7 +2094,7 @@ static bool compile_int(Cg* c, u32 inst) {
         u32 sh = rb, m = ppc_mask((inst >> 6) & 31, (inst >> 1) & 31);
         int s = src(c, rd, R0);
         int a = src(c, ra, R1);
-        rotate_mask(c, R2, s, sh, m);
+        if (!rotate_mask_shifts(c, R2, s, sh, (inst >> 6) & 31, (inst >> 1) & 31)) rotate_mask(c, R2, s, sh, m);
         if (arm_imm(m, &enc)) dp_imm(e, BIC, 0, R3, a, enc);
         else { load_const(e, R12, m); dp_reg(e, BIC, 0, R3, a, R12); }
         int d = dst(c, ra, R0);
@@ -4446,6 +4487,18 @@ static void emit_stubs(Jit* j) {
     branch_c(e, C_AL, popRet);
     emit_mem_stubs(j, e);
     emit_float_stubs(j, e);
+    for (u32 f = 0; f < 8; f++)  // OPT_CRSTUB (update_crf_from_flags)
+        for (u32 sg = 0; sg < 2; sg++)
+            for (u32 ri = 0; ri < MS_REGS; ri++) {
+                int d = ri ? (int)(R4 + ri - 1) : R1;
+                u32 sh = 28 - 4 * f;
+                j->crStub[f][sg][ri] = (u16)e->n;
+                dp_imm(e, BIC, 0, d, d, IMM(0xFu << sh));
+                dp_imm_c(e, sg ? C_LT : C_CC, ORR, 0, d, d, IMM(8u << sh));
+                dp_imm_c(e, sg ? C_GT : C_HI, ORR, 0, d, d, IMM(4u << sh));
+                dp_imm_c(e, C_EQ, ORR, 0, d, d, IMM(2u << sh));
+                bx_reg_c(e, C_AL, LR);
+            }
     if (e->overflow) { fprintf(stderr, "JIT: shared stubs exceed ST_WORDS\n"); abort(); }
     j->stubWords = e->n;
     jit_host_sync_icache(j->code, e->n * 4);

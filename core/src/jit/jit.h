@@ -105,8 +105,12 @@ u32 jit_sched(const Jit* j);
 // several dispatcher round trips; the block counts the handler's instructions and goes on at pc + 4.
 // OPT_HLELINK: a native stand-in's block (hle.h) goes on through the indirect table to where the stand-in stopped,
 // instead of returning to the dispatcher after every call.
+// OPT_ROTMASK: rlwinm / rlwimi whose mask does not wrap as one to three shifts instead of a rotate and a mask that may
+// need a constant of up to four words.
+// OPT_CRSTUB: a compare's CR-field update (BIC and three conditional ORRs) is a call to a shared stub, one word instead
+// of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
-       OPT_ALL = 127 };
+       OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_ALL = 511 };
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

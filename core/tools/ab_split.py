@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """A/B of a 2DS relay log, split into the tp850 cutscene and the later core-0-bound stretch.
 
-    python3 core/tools/ab_split.py core/out/relay_148.csv [--col opt] [--split 300] [--skip 25] [--settle 3]
+    python3 core/tools/ab_split.py core/out/relay_148.csv [--col opt] [--split 303] [--gap 8] [--end 576] [--skip 25] [--settle 4]
 
-Rows with real_s below --skip are dropped, and the first --settle seconds of every A/B phase (each switch drops all
-compiled code). Prints, per stretch and per value of the A/B column, the mean and standard error of speed_pct, core 0's
+Rows with real_s below --skip are dropped, the first --settle seconds of every A/B phase (each switch drops all
+compiled code), and --gap seconds on both sides of --split: tp850's cutscene ends at ~301 s, and its last rows (~26%)
+counted in the later stretch inflated whichever arm was running then (jobs 148-155); and rows from --end on: at ~580 s
+a heavier section starts (~5%), again always in the same arm. Prints, per stretch and per value of the A/B column, the mean and standard error of speed_pct, core 0's
 own speed (speed / (1 - gxwait_pct)), I-cache misses and instruction-fetch stalls.
 """
 import sys, math
@@ -56,7 +58,8 @@ def main():
     a = sys.argv[1:]
     path = a[0]
     opt = lambda k, d: type(d)(a[a.index(k) + 1]) if k in a else d
-    col, split, skip, settle = opt("--col", "opt"), opt("--split", 300.0), opt("--skip", 25.0), opt("--settle", 3.0)
+    col, split, skip, settle = opt("--col", "opt"), opt("--split", 303.0), opt("--skip", 25.0), opt("--settle", 4.0)
+    gap, end = opt("--gap", 8.0), opt("--end", 576.0)
     rows = load(path)
     phase_start, last = {}, None
     keep = []
@@ -66,10 +69,10 @@ def main():
             continue
         if v != last:
             start, last = t, v
-        if t < skip or t - start < settle:
+        if t < skip or t - start < settle or abs(t - split) < gap or t >= end:
             continue
         keep.append(r)
-    for name, lo, hi in (("cutscene", skip, split), ("later", split, 1e9)):
+    for name, lo, hi in (("cutscene", skip, split), ("later", split, end)):
         print(f"== {name} (real_s {lo:.0f}-{hi if hi < 1e9 else 'end'})")
         part = [r for r in keep if lo <= num(r, "real_s") < hi]
         for v in sorted({r[col] for r in part}):
