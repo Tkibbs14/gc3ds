@@ -90,6 +90,40 @@ if mark not in s:
     open(p, 'w').write(s)
     print('heap sizes patched')
 PY
+# Audio off (native::audio_enabled() false, the init flag set as Dusklight's DUSK_AUDIO_DISABLED did): no JAUSectionHeap
+# exists, and the scene manager's wave loads read through it (the 2DS's first native run, 2026-10-15: a data abort at
+# 0xF8 in Z2SceneMgr::loadSeWave from the logo scene's loadStaticWaves; asserts are compiled out). Each use returns
+# as "nothing there" without a section heap.
+python3 - <<'PY'
+import re
+guards = {
+    'src/Z2AudioLib/Z2SceneMgr.cpp': 'return 0;',
+    'src/Z2AudioLib/Z2SoundMgr.cpp': 'return false;',
+}
+for p, ret in guards.items():
+    s = open(p).read()
+    n = 0
+    def add(m):
+        global n
+        n += 1
+        return m.group(0) + '\n' + m.group(1) + 'if (sectionHeap == NULL) ' + ret + '  // native, audio off: no section heap'
+    if 'native, audio off: no section heap' not in s:
+        s = re.sub(r'([ \t]*)JUT_ASSERT\(\d+, sectionHeap\);', add, s)
+        open(p, 'w').write(s)
+    print(p, 'guards added', n)
+p = 'src/Z2AudioLib/Z2WaveArcLoader.cpp'
+s = open(p).read()
+if 'native, audio off' not in s:
+    s = s.replace('''    JAUSectionHeap* sectionHeap = JASGlobalInstance<JAUSectionHeap>::getInstance();
+    const JAUSectionHeap::TSectionHeapData& heapData''', '''    JAUSectionHeap* sectionHeap = JASGlobalInstance<JAUSectionHeap>::getInstance();
+    if (sectionHeap == NULL) return;  // native, audio off: no section heap
+    const JAUSectionHeap::TSectionHeapData& heapData''', 1)
+    s = s.replace('''        JASWaveBank* bank = JASGlobalInstance<JAUSectionHeap>::getInstance()->getWaveBankTable().getWaveBank(i);''',
+                  '''        if (JASGlobalInstance<JAUSectionHeap>::getInstance() == NULL) break;  // native, audio off
+        JASWaveBank* bank = JASGlobalInstance<JAUSectionHeap>::getInstance()->getWaveBankTable().getWaveBank(i);''', 1)
+    open(p, 'w').write(s)
+    print(p, 'guards added')
+PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base
 mkdir -p /mnt/c/Users/tyler/TP3DS/emu/core/native/patches
