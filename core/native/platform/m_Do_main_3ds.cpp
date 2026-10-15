@@ -134,6 +134,19 @@ void main01(void) {
 
 // Dusklight's game_main without its PC set-up: settings and data paths from the SD card, the disc gc3ds picked, then
 // the same start-up order (version, language, OSInit, reset data, game context) and the loop.
+// Link's position for native_3ds.cpp's per-second line (does scripted input reach the game? job 211's GX stream was
+// the same size every second). false before the player actor exists.
+bool native_player_pos(float* x, float* y, float* z) {
+    fopAc_ac_c* p = dComIfGp_getPlayer(0);
+    if (!p) return false;
+    *x = p->current.pos.x;
+    *y = p->current.pos.y;
+    *z = p->current.pos.z;
+    return true;
+}
+// Whether an event (cutscene, scripted entrance) holds the player: the field boot's Link never moved (job 211).
+int native_event_running() { return dComIfGp_event_runCheck() ? 1 : 0; }
+
 int game_main(int argc, char* argv[]) {
     dusk::registerSettings();
     native::trace("dusk::registerSettings done");

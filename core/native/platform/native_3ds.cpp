@@ -31,6 +31,8 @@ extern float frameUsagePct;
 int game_main(int argc, char* argv[]);
 // dusk/audio.h's DUSK_AUDIO_SKIP on the 3DS (patch_dusk.sh): every mDoAud_* call returns its default while this is false.
 bool gc3ds_native_audio_enabled();
+bool native_player_pos(float* x, float* y, float* z);  // m_Do_main_3ds.cpp
+int native_event_running();
 namespace native {
 extern std::atomic<uint32_t> g_fifoBytes;  // aurora_3ds.cpp
 extern std::atomic<uint32_t> g_drawDones;
@@ -212,12 +214,14 @@ void frame_end() {
     double secs = (double)(t - s_window) / SYSCLOCK_ARM11;
     double logicMs = ticks_to_us(s_sumLogic) / 1000.0 / s_frames, frameMs = ticks_to_us(s_sumFrame) / 1000.0 / s_frames;
     uint32_t bytes = g_fifoBytes.exchange(0), dd = g_drawDones.exchange(0);
-    double busy = s_sumUsage / s_frames;  // % of each frame the game worked (Dusklight's frame limiter)
+    double busy = s_sumUsage / s_frames;
+    float px = 0, py = 0, pz = 0;
+    native_player_pos(&px, &py, &pz);  // % of each frame the game worked (Dusklight's frame limiter)
     printf("\x1b[2;1H%5.1f fps  logic %6.2f ms  frame %6.2f ms   \n GX %6u KB/frame  draw-done %u/s   \n busy %5.1f%% of the frame (%5.2f ms)   \n",
            s_frames / secs, logicMs, frameMs, (unsigned)(bytes / s_frames / 1024), (unsigned)(dd / secs), busy, busy * frameMs / 100.0);
     if (g_perf) {
-        fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%u,%u,%.1f\n", (double)ticks_to_us(t) / 1e6, s_frames / secs, logicMs, frameMs,
-                (unsigned)(bytes / s_frames), (unsigned)(dd / secs), busy);
+        fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%u,%u,%.1f,%.0f,%.0f,%.0f,%lu,%d\n", (double)ticks_to_us(t) / 1e6, s_frames / secs, logicMs, frameMs,
+                (unsigned)(bytes / s_frames), (unsigned)(dd / secs), busy, px, py, pz, (unsigned long)g_frameNo, native_event_running());
         fflush(g_perf);
     }
     s_sumLogic = s_sumFrame = 0;
@@ -355,7 +359,7 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/gc3ds", 0777);
     mkdir("sdmc:/gc3ds/native", 0777);
     g_perf = fopen("sdmc:/gc3ds/native/perf.csv", "w");
-    if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s,busy_pct\n", g_disc);
+    if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s,busy_pct,link_x,link_y,link_z,frame,event\n", g_disc);
     native::trace_memory("start");
     native::trace("run control: %u s, return to %s, %d presses, stage %s", (unsigned)g_seconds, g_returnPath[0] ? g_returnPath : "-",
                   g_nPress, dusk::StageRequested.set ? dusk::StageRequested.stage.c_str() : "-");
