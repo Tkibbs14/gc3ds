@@ -69,6 +69,22 @@ compiled for the 3DS, running on gc3ds's platform layer (GX -> PICA200, disc, in
 3. **Audio** (Dusklight's JAudio / DSP path onto the 3DS DSP or a mixer on a free core), input, saves (CARD on SD).
 4. **Generalise:** the platform layer as a library other decomp ports (Wind Waker, Sunshine, ...) build against.
 
+## First runs on the New 2DS XL (2026-10-15)
+
+Delivered through the relay (`relay.sh send core/out/native.3dsx sdmc:/3ds/gc3ds_native.3dsx`), launched from the
+Homebrew Launcher by James; logs back with `relay.sh cat sdmc:/gc3ds/native/perf.csv`.
+
+1. **First run:** a data abort reading 0xF8 in `Z2SceneMgr::loadSeWave` from the logo scene's `loadStaticWaves`: with
+   audio off no `JAUSectionHeap` exists (asserts compiled out). Guarded in patch_dusk.sh (e445e85); Azahar had not
+   reached that point.
+2. **Second run (133 s):** logo and opening scene at a steady 60 fps, GX 10-18 KB a frame, draw-done twice a frame,
+   clean exit; memory 78.5 MB free at start, 33.5 MB after the 45 MB arena. The "logic" time equalled the frame (16.4
+   ms): JFWDisplay's `waitForTick` sleeps inside the game's frame.
+3. **Third run (476 s, c7d48ee, busy = Dusklight's `frameUsagePct`):** 59.9 fps average; the game worked **8.9% of each
+   frame (median; ~1.5 ms of 16.4 ms)**, p90 9.4%, p99 10.0%; 33-55% only in the first seconds while the scene loaded.
+   This is the title / opening scene with nothing drawn and audio off: gameplay is the measurement that decides
+   feasibility (next: an input script to reach it), then the renderer.
+
 ## Risks
 
 - Unmeasured: TP's game logic on an 804 MHz ARM11 (no NEON; VFP11 doubles are slow). Step 1 answers it.
