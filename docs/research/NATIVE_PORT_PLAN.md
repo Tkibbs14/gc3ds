@@ -90,6 +90,26 @@ Homebrew Launcher by James; logs back with `relay.sh cat sdmc:/gc3ds/native/perf
    busy median 14.8% of the 33.3 ms frame (~4.9 ms), p90 15.3%, p99 16.0%, max 16.3%**; GX ~69 KB a frame. Link stood
    still (no input), nothing drawn, no audio: movement and combat are next (`--press`), then the renderer.
 
+## Renderer: Aurora's stream into gc3ds's GX pipeline (design, 2026-10-15)
+
+Aurora's GX API writes the GameCube's FIFO format (BP / CP / XF register writes, draws) plus an extension opcode
+(`GX_WRITE_AURORA`, include/dolphin/gx/GXAurora.h) for what cannot be a GameCube address on a host:
+
+- `LOAD_ARRAYBASE | n`: a vertex array's host pointer (u64), size and endianness, in place of CP's array base.
+- `LOAD_TEXOBJ` / `LOAD_TLUT`: texture data pointer, width, height, format, TLUT, mips, an object ID and a data
+  **version** (a texture cache keys on ID + version: no hashing of texture data). BP image registers still follow.
+- `LOAD_COPY_SRC / DST / DEST`, `REQUEST_DEPTH_SNAPSHOT`, `BEGIN / END_OFFSCREEN`, `DESTROY_*`: EFB copies, render to
+  texture, object lifetimes.
+- `LOAD_VIEWPORT_RENDER`, `LOAD_SCISSOR_RENDER`, `LOAD_PROJECTION_FULL`, `DRAW_SIZED`, `DRAW_INDEXED`.
+- Display lists are copied inline (`GXCallDisplayList` writes the list's bytes): no list addresses.
+
+Plan: gc3ds's GX decoder (core/src/gx, its GX thread on core 2, vertex worker on core 3, PICA200 backend) gets an
+Aurora mode: the opcode's commands set host-pointer arrays (gathers read host memory instead of guest MEM1), texture
+objects (decode from the pointer, cached by ID + version, into the formats the 2DS measured as fast: RGB565 / ETC1,
+REDESIGN_CANDIDATES C17) and copy targets; everything else is the existing GameCube path. The stream reaches the GX
+thread's ring from aurora_3ds.cpp's process() (today it only finds draw-done markers). First milestone: Hyrule Field's
+geometry on the top screen with flat shading, then TEV and textures.
+
 ## Risks
 
 - Unmeasured: TP's game logic on an 804 MHz ARM11 (no NEON; VFP11 doubles are slow). Step 1 answers it.
