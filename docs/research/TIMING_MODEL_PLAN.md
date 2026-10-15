@@ -174,6 +174,25 @@ What it changes for the JIT (each to be priced against a frame's own counters be
 - write-allocate and one miss at a time -> compact, sequential lookup structures; no gain from overlapping loads;
 - ldrd slower than two ldr -> check where the JIT emits it.
 
+## Where core 0's time goes in TP (job 184, 2026-10-15)
+
+A clean run (tp850, 300 s, current defaults, no A/B: the A/B runs recompile everything at each switch and ran at 15.5%
+against 20.5% here). core/tools/frame_budget.py over the PMU columns, plus the sampler and profiler lines:
+
+| Share of core 0 | What |
+|---|---|
+| ~11% (up to ~20% by scene; gxwait_pct) | the idle hook waiting for the GX thread (core 2) to drain: core 2 is a co-limit |
+| 21% | instruction fetch stalls: 5.8 M I-cache misses/s (~29 cycles each, from L2) |
+| 22% | data stalls: load-to-use waits on L1 hits plus 1.1 M read and 0.3 M write misses/s |
+| < 1% | the dispatcher itself (~8,500 returns/s in steady play; 265,000/s only in the state-load window) |
+| ~0.5% | compiling |
+| the rest | issuing instructions (IPC 0.36; 9.3 host instructions and 25.8 cycles per guest instruction) |
+
+The sampler's "dispatch" bucket (13-21%) is jit_entry with no block running, which includes the idle hook's busy wait:
+it is mostly GX wait, not dispatch. Guest mix (PC interpreter, TP 900, 1.04 G instructions): loads 22% (lwz 12.9%),
+stores 15%, conditional branches 8.1%, blr 3.3%, b 3.5%; full speed is ~104-150 M guest instructions/s, i.e. ~5-8 core-0
+cycles per guest instruction against 25.8 now, and core 2's GX work would have to scale ~5x with it.
+
 ## Sharing the tooling (owner direction, 2026-10-15)
 
 James: once the measurements are in, make the tooling something everyone can use. The probes already live in this
