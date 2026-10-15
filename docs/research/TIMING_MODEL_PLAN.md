@@ -206,7 +206,9 @@ cycles per guest instruction against 25.8 now, and core 2's GX work would have t
   pattern), `storepipe` 161 k, the float stubs ~200 k (guest data).
 - **The indirect-branch table** (FAST_BITS 16): 65,536 slots of 8 bytes, 512 KB per key, 4 keys: every blr / bctr
   reads one slot, and the hot targets sit one per cache line. ~1 M returns/s on the 2DS at ~28 cycles of L2 each would
-  be ~3.5% of core 0. Variant FAST_BITS=13 + 2-way (--ind2 on) on the 2DS: job 193.
+  be ~3.5% of core 0 if every read went to L2. Variant FAST_BITS=13 + 2-way (--ind2 on), job 193: neutral (speed 20.4 vs
+  20.4, job 191; D-read misses 1.08 vs 1.04 M/s, indirect-table misses 1.8k -> 9.7k/s): the reads mostly hit L2 and are
+  a small part of the device's ~1 M read misses/s. Not adopted; the simulator's L1 counts overstate L2-resident data.
 
 ## Sharing the tooling (owner direction, 2026-10-15)
 
