@@ -46,6 +46,19 @@ compiled for the 3DS, running on gc3ds's platform layer (GX -> PICA200, disc, in
 - **Delivery:** gc3ds recognises the disc and relaunches into the game's native build (it already relaunches itself into
   new builds for the relay), sharing gc3ds's platform code as a library. Game assets come from the user's disc on SD.
 
+## Owner requirement: the disc image on the SD card is all a player provides (James, 2026-10-15)
+
+"As long as it makes it easy and as long as user puts an ISO on the SD card. It can work." Native mode is invisible:
+
+- The player copies their own disc image to the SD card and picks it in gc3ds; nothing else to install or choose.
+- gc3ds reads the disc's ID and revision. A native port built for exactly that disc runs native; every other disc
+  (other regions, revisions, games without a port) runs on the JIT as now. Never a native port on a disc it does not
+  match.
+- One app from the player's view: native ports inside gc3ds or relaunched by it (hb:ldr, as for relay builds).
+- Every image format gc3ds accepts works natively too (the owner's own image is .nkit.iso: check nod's reader in the
+  shim before the first device run).
+- No game data ships with gc3ds: the decompilations are code only; models, textures and sounds come from the disc.
+
 ## Plan, with a go / no-go before each large step
 
 1. **Feasibility (go / no-go for the whole route):** build Dusklight's game code with devkitARM (ARMv6K, VFP, C++20)
