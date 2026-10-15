@@ -1070,3 +1070,18 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   the GX-side waits fell (ring 21 -> 16%, core 0's wait 10 -> 8.8%), but core 0 got slower in both stretches (medians
   cutscene 25.37 -> 24.52, later 12.31 -> 11.72): gathers on another core's schedule cost core 0 its shared L2, as the
   second worker did (C2, jobs 125 / 127). Moving gather work around does not pay; less of it might (C1).
+
+## 2026-10-15: back to the JIT, grounded; OPT_BEFLOAT measured (job 166)
+
+- **The redesign was checked against the records first** (OPT_JIT_PLAN.md 2026-10-15 section). Registers across
+  blocks stays ruled out (region model ~1.3%); the grounded candidates were SETEND BE float stubs, C8 single
+  precision, constant addresses.
+- **OPT_BEFLOAT (float stubs in big-endian data mode): neutral, off.** Job 166: core 0 cutscene 25.09 on vs 25.28 off,
+  later 12.51 vs 12.50; I-cache misses +6-7% with it on: ~800 words of new stubs beside the old ones (the stores of
+  values not known single still use the originals) cost about what the shorter latency chains saved. Exact (fuzzer,
+  qemu frame). If retried, the BE versions must replace the originals, not join them.
+- **Where this leaves core 0:** every change that lowered the hot footprint or removed excursions into C paid; every
+  change that only shortened latency or executed instructions did not. The grounded JIT items left are ~1% each.
+  Larger steps need either a decision on exactness (timing of event delivery: budget checks only at loop heads, ~7% of
+  executed hot words; or CR / register dead stores across blocks) or fault mode (+11% core 0 measured, off for a 3DS
+  kernel crash while delivering a data abort, jobs 86-90).

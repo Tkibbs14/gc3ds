@@ -211,3 +211,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 - **Status:** rejected 2026-10-15 (job 164): GX-side waits fell, core 0 slowed 3-5% (L2, as C2). Kept, off.
 - **Re-evaluate when:** the gathers stop streaming guest RAM (C1), so the jobs no longer pollute the L2.
+
+## C16. Float load / store stubs in big-endian data mode (OPT_BEFLOAT)
+
+- **Status:** built and measured 2026-10-15 (job 166): neutral (core 0 -0.8% / +0.1%), I-cache misses +6-7%. Off.
+- **Why it lost:** the BE stubs were added beside the originals, growing the shared stub code the I-cache holds; the
+  ~4 cycles saved per float load did not show.
+- **Re-evaluate when:** the BE versions can replace the originals outright (stores of non-singles included), so the
+  stub footprint does not grow.
