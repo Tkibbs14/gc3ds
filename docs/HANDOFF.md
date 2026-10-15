@@ -1085,3 +1085,35 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   Larger steps need either a decision on exactness (timing of event delivery: budget checks only at loop heads, ~7% of
   executed hot words; or CR / register dead stores across blocks) or fault mode (+11% core 0 measured, off for a 3DS
   kernel crash while delivering a data abort, jobs 86-90).
+
+## 2026-10-15: owner decision items: budget checks only where loops close (OPT_LATCH), fault mode's crash
+
+- **Owner decision (James, 2026-10-15):** event timing may drift and dead state may differ at block exits, if the 2DS
+  shows a real gain; fault mode's kernel crash gets a root-cause investigation. Each item behind its own bit, kept only
+  on a 2DS A/B gain. Recorded in docs/OPT_JIT_PLAN.md.
+- **Modelled first (JIT_REGSTAT "owner-decision models", TP 850-880, mask 627):** 30.3% of block runs are in blocks
+  with a backward exit; the rest could drop the budget branch, 0.70 hot words per block run (2.5%; the "~7%" above
+  was wrong: each block's count must stay, only the branch goes). Dead write-backs at block exits: of 1.56 per run at
+  constant exits, 0.46 are dead on every path from the target (0.66 trusting the calling convention at calls); at
+  blr / bctr 0.12 of 0.42 by the return convention. ~1.6% exact-enough; not built yet.
+- **OPT_LATCH (4096; `--latch`, `--ab latch`):** a block keeps the budget branch only if a scan of its guest code finds
+  a branch to its own address or below (`block_may_loop`; traces, OPT_CALLS, polling blocks and stand-ins always keep
+  it). Every loop of linked blocks passes such a block; ST_INDIRECT now checks the budget on a hit (exactly what the
+  target's own check did, so behaviour with the bit off is unchanged); the dispatcher enters at `Entry.pro`. Blocks
+  still count every instruction, so emulated time stays exact; only where a slice ends drifts. Fuzzer full gate clean
+  with 627|4096 (chain mode: 67% of blocks without the branch, ~1,400 runs past their budget per 20,000 cases, the
+  interpreter runs what the JIT reports, 0 fails). qemu TP 850-880: same final PC, GX bytes and last frame (19k of 7.1
+  G cycles drift); hot 9.4 -> 9.3 and exit stubs 3.1 -> 2.8 words per guest instruction.
+  **2DS job 169 (cancelled at 204 s, cutscene only):** core 0 26.06 +- 0.24 on vs 25.46 +- 0.23 off (+2.4%),
+  I-cache misses -4%, fetch stalls -3%; game speed unchanged there (GX-bound). Job 170 runs the full A/B.
+- **Fault mode, root cause so far.** Luma's dump of the old crash (job 88): kernel prefetch abort at pc fffffffe with
+  r9 = 0x94, i.e. inside svc 0x94 (Luma's InvalidateEntireInstructionCache, a tail call into a stock kernel routine; its
+  svc entry re-enables interrupts), which our fault handler issued from inside the user exception handler; the 2DS
+  probe's 202 faults (job 85) never made a system call there. DFSR / FAR in that dump are stale from our data abort.
+  Step 1: `jit_fault` only rewrites the site; `fault_sync` in jit_entry syncs later (fuzzer: fault mode on, chain and
+  default, seeds 1 2 3 7, 0 fails). **Job 167 still died** (~390 s, after 6,166 faults; earlier runs: ~700, ~2,700).
+  Step 2: `--faultsync off`, no cache maintenance for patches at all (a stale copy faults again into the same slow
+  path). **Job 168** stopped at 406 s right after an A/B switch (8,011 faults), but left no new Luma dump and no crash
+  record; whether the 2DS crashed is open. Job 167's dump (#9) was marked reported by a run outside any relay job:
+  `--luma-dumps 9,10,11` (job 170) prints it. Luma research (k11_extension sources): the TLS redirect is the stock
+  kernel's; Luma only decides fatal / not; its custom svc table has no per-thread exception state.
