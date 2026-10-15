@@ -47,11 +47,17 @@ follow() {
     mkdir -p "$here/out"
     echo "job $job -> $out" >&2
     hdr="$(mktemp)"
+    : > "$out"  # the whole log is fetched again from the start (after=-1)
+    local prev
     while :; do
+        prev="$after"
         if api -D "$hdr" "$url/jobs/$job/log?after=$after" >> "$out"; then
             after="$(sed -n 's/^[Xx]-[Rr]elay-[Ll]ast: *//p' "$hdr" | tr -d '\r')"
             status="$(sed -n 's/^[Xx]-[Rr]elay-[Ss]tatus: *//p' "$hdr" | tr -d '\r')"
             printf '\r%s, %s lines   ' "$status" "$(wc -l < "$out")" >&2
+            # The relay returns at most 200 chunks (~400 s of a run) per request: a finished job is read page by page
+            # until a page brings nothing new (jobs 168-171 had been cut at ~410 s by stopping after the first page).
+            [ "$after" != "$prev" ] && continue
             case "$status" in done|failed|stopped|cancelled) echo >&2; grep -E '^# (error|machine stopped|relay)' "$out" >&2 || true; break;; esac
         fi
         sleep 10

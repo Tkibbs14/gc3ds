@@ -1117,3 +1117,19 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   record; whether the 2DS crashed is open. Job 167's dump (#9) was marked reported by a run outside any relay job:
   `--luma-dumps 9,10,11` (job 170) prints it. Luma research (k11_extension sources): the TLS redirect is the stock
   kernel's; Luma only decides fatal / not; its custom svc table has no per-thread exception state.
+
+## 2026-10-15 (afternoon): full-length A/B data; the relay log fix
+
+- **The relay logs of jobs 168-171 had been read only to ~410 s:** the relay returns at most 200 chunks (~400 s of a
+  run, one chunk per 2 s) per request, and `relay.sh log` stopped paging once a job was done. Fixed (it pages until a
+  page brings nothing new, and starts the file fresh); all three logs now run to 600 s. Analyses before this fix used
+  only the first ~400 s of the later stretch.
+- **OPT_LATCH, full data:** later stretch 12.56 vs 12.41 (job 170) and 12.51 vs 12.44 (job 171); cutscene 21.86 vs
+  21.45 and 21.72 vs 21.51. Small, same direction every time: stays the default.
+- **Fault mode without any cache maintenance for patches (`--faultsync off`, job 168), full data:** later stretch
+  **12.90 vs 12.41 (+3.9%, ~6 SE)**, core 0 cutscene 27.29 vs 24.96 (+9.3%), and the run lasted 600 s through 8,011
+  faults with no Luma dump (the earlier crashes: ~700, ~2,700, 6,166 faults; each in svc 0x94 per the dumps). Needs
+  more crash-free runs before a default; crash-risk runs only with James able to restart the 2DS.
+- **Relay heartbeat:** `relay.sh status` (nakama-backend GET /status): the 2DS's last poll and log post.
+- **Hardware probes for the timing model:** `--timing-probe only` jobs (CPU, memory, TLB, kernel, SD, clocks in
+  timingprobe.c; PICA200 in gpuprobe.c). First device runs: jobs 174-175. Matrix: docs/research/TIMING_MODEL_PLAN.md.
