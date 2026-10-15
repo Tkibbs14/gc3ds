@@ -5,6 +5,7 @@
 #        e.g. relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab traces
 #   bash core/tools/relay.sh queue [options]       the same without following (prints the job id)
 #   bash core/tools/relay.sh log JOB               follow a job's log into core/out/relay_JOB.csv until it ends
+#   bash core/tools/relay.sh status                when the 2DS last polled for a job and last posted a log
 #   bash core/tools/relay.sh jobs | cancel JOB | push
 #   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
 #        set opt|sched|merge|vtrim|pld|splitopen|vwmem VALUE, stop (host3ds/main.c apply_cmd)
@@ -84,6 +85,7 @@ case "$cmd" in
     run) job="$(queue "$@")"; follow "$job" ;;
     log) follow "$1" ;;
     jobs) api "$url/jobs" ;;
+    status) api "$url/status" ;;
     cancel) api -X POST "$url/jobs/$1/cancel" ;;
     cmd) job="$1"; shift; printf '%s' "$*" | api -X POST -H 'Content-Type: text/plain' --data-binary @- "$url/jobs/$job/cmd" ;;
     frames) frames "$1" ;;

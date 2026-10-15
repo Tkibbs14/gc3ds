@@ -330,7 +330,7 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
-    bool timingProbe;    // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots
+    int timingProbe;     // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots; only: and nothing else
     char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
@@ -422,7 +422,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on");
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
-        else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on");
+        else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
         else if (!strcmp(a, "--luma-dumps")) snprintf(o->lumaDumps, sizeof o->lumaDumps, "%s", v);
@@ -678,6 +678,16 @@ static const char* run(const char* path) {
         if (tf) {
             fputs(timing, tf);
             fclose(tf);
+        }
+        if (g_opt.timingProbe == 2) {  // --timing-probe only: the measurements are the job; no machine runs
+            perf_open(path);
+            if (g_perf) {
+                fputs(timing, g_perf);
+                fclose(g_perf);
+                g_perf = NULL;
+            }
+            free(dol);
+            return "done";
         }
     }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
