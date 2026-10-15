@@ -98,7 +98,9 @@ case "$cmd" in
     # 2DS must already run a build with --fetch-to (main.c's file jobs). cat SDPATH: a text file from the SD into the log.
     send) id="$(push "$1")"; [ -n "$id" ] || { echo "upload failed" >&2; exit 1; }
           printf '{"args": "--fetch-to %s", "build": "%s"}' "$2" "$id" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
-    cat) printf '{"args": "--cat %s", "build": "-"}' "$1" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
+    # (the server wants a known build on every job: the latest machine job's, which the 2DS does not need for --cat)
+    cat) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" {print $3; exit}')"
+         printf '{"args": "--cat %s", "build": "%s"}' "$1" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     run) job="$(queue "$@")"; follow "$job" ;;
     log) follow "$1" ;;
     jobs) api "$url/jobs" ;;
