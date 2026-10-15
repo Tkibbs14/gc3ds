@@ -3,8 +3,9 @@
 // (lib/gx/fifo.cpp, compiled unchanged, its worker thread included) stay Aurora's; the consumer behind the FIFO,
 // process(), is gc3ds's.
 //
-// Feasibility build: process() only finds draw-done markers (so the game's draw-done callbacks and GXDrawDone waits
-// behave) and counts the stream; nothing is drawn yet. Step 2 hands the stream to gc3ds's GX pipeline instead.
+// process() hands the stream to gc3ds's GX pipeline (platform/gx/gx_3ds.c) and finds the draw-done markers: at one it
+// waits for the pipeline to finish what came before, then tells Aurora (the game's draw-done callbacks and GXDrawDone
+// waits), since the game may change the arrays and lists it drew from once the draw is done.
 #include <3ds.h>
 
 #include "internal.hpp"
@@ -26,6 +27,16 @@ AuroraConfig g_config;
 char g_gameName[4];
 }  // namespace aurora
 
+extern "C" {
+bool gc3ds_gx_init(void);
+void gc3ds_gx_feed(const uint8_t* data, uint32_t len);
+void gc3ds_gx_sync(void);
+void gc3ds_gx_frame(uint32_t w, uint32_t h);
+}
+// The game's frame in GX coordinates: the GameCube's (TP's 608 x 448 EFB). pc_layer_3ds.cpp's window reports the same
+// size, so Dusklight renders 4:3 as on the GameCube (no widescreen): gc3ds's pipeline scales it to the top screen.
+static constexpr uint32_t kEfbW = 608, kEfbH = 448;
+
 namespace native {
 std::atomic<uint32_t> g_fifoBytes{0};  // GX stream bytes consumed since the last read (frame statistics)
 std::atomic<uint32_t> g_drawDones{0};
@@ -36,6 +47,7 @@ static char* dup_or(const char* s, const char* fallback) { return strdup(s ? s :
 
 namespace native {
 void trace(const char* fmt, ...);
+void trace_memory(const char* where);
 }
 // Aurora's log (with no callback it goes to stderr, which the 3DS does not show) into native mode's trace file.
 static void log_to_trace(AuroraLogLevel level, const char* module, const char* message, unsigned int len) {
@@ -54,13 +66,15 @@ AuroraInfo aurora_initialize(int, char*[], const AuroraConfig* config) {
     if (g_config.msaa == 0) g_config.msaa = 1;
     thread::set_current({.name = "Main thread"});
     gx::fifo::init();
+    if (!gc3ds_gx_init()) native::trace("gx: rendering off (the stream is consumed, nothing drawn)");
+    native::trace_memory("after the GX pipeline");
     AuroraInfo info{};
     info.backend = BACKEND_NULL;
     info.userPath = g_config.userPath;
     info.cachePath = g_config.cachePath;
     info.window = nullptr;
-    info.windowSize.width = info.windowSize.fb_width = info.windowSize.native_fb_width = 400;
-    info.windowSize.height = info.windowSize.fb_height = info.windowSize.native_fb_height = 240;
+    info.windowSize.width = info.windowSize.fb_width = info.windowSize.native_fb_width = kEfbW;
+    info.windowSize.height = info.windowSize.fb_height = info.windowSize.native_fb_height = kEfbH;
     info.windowSize.scale = 1.0f;
     return info;
 }
@@ -78,7 +92,10 @@ bool aurora_begin_frame() {
     return true;
 }
 
-void aurora_end_frame() { aurora::gx::fifo::end_frame(); }
+void aurora_end_frame() {
+    aurora::gx::fifo::end_frame();
+    gc3ds_gx_frame(kEfbW, kEfbH);
+}
 
 namespace aurora::thread {
 // libctru threads are named nowhere and placed at creation; the FIFO worker stays where std::thread puts it for now.
@@ -108,6 +125,8 @@ ProcessResult process(const uint8_t* data, uint32_t size) noexcept {
         if (!p) break;
         if (memcmp(p, kDrawDone, sizeof kDrawDone) == 0) {
             uint32_t n = (uint32_t)(p - data) + (uint32_t)sizeof kDrawDone;
+            gc3ds_gx_feed(data, n);
+            gc3ds_gx_sync();
             native::g_fifoBytes += n;
             native::g_drawDones++;
             native::g_procTicks += svcGetSystemTick() - t0;
@@ -115,6 +134,7 @@ ProcessResult process(const uint8_t* data, uint32_t size) noexcept {
         }
         p++;
     }
+    gc3ds_gx_feed(data, size);
     native::g_fifoBytes += size;
     native::g_procTicks += svcGetSystemTick() - t0;
     return {size, false};

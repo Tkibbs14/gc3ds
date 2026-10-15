@@ -42,7 +42,21 @@ typedef struct {
     // Incremented when a register of the kind changes value (BP, CP, XF registers 0x1000-): backends skip work that
     // depends only on registers that have not changed since they last did it.
     u32 bpVersion, cpVersion, xfRegVersion;
+    // Native mode (core/native, Aurora's GX stream): addresses too wide for the BP registers. Zero in the emulator,
+    // where the registers are used.
+    u32 texAddr[8];      // texture map data (GX_AURORA_LOAD_TEXOBJ)
+    u32 copyDest;        // EFB -> texture copy destination (GX_AURORA_LOAD_COPY_DEST)
+    u32 copyCtl;         // BP 0x52 format, intensity and box-filter bits from GX_AURORA_LOAD_COPY_DST
+    u8 tlutFmt[32];      // palette format per Aurora TLUT slot (GX_AURORA_LOAD_TLUT)
+    u32 arrayLE;         // bit per CP array the stream declared little-endian (not decoded yet: counted)
+    u64 aurora[8];       // Aurora commands seen: arrays, LE arrays, textures, palettes, copies, sized / indexed draws,
+                         // ignored (viewport / scissor render, projection, offscreen, polygon offset)
 } GXCore;
+
+static inline u32 gx_tex_addr(const GXCore* gx, u32 map, u32 img3) {
+    return gx->texAddr[map & 7] ? gx->texAddr[map & 7] : (img3 & 0xFFFFFF) << 5;
+}
+static inline u32 gx_copy_dest(const GXCore* gx) { return gx->copyDest ? gx->copyDest : (gx->bp[0x4B] & 0xFFFFFF) << 5; }
 
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.
 struct GXBackend {
@@ -54,6 +68,9 @@ struct GXBackend {
     // Optional: issues the draw the backend holds open for merging (g_gxMergeOpen). fifo.c calls it before any command
     // that changes state the open draw depends on.
     void (*flush)(void* ctx, System* s);
+    // Optional: triangles from `nv` vertices and `ni` u16 indices in host byte order (native mode, Aurora's
+    // GX_AURORA_DRAW_INDEXED), each vertex transformed once. Returns false when not taken; fifo.c then expands it.
+    bool (*draw_indexed)(void* ctx, System* s, u32 vat, const u8* verts, u32 nv, u32 vsize, const u8* idx, u32 ni);
 };
 // True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
 extern bool g_gxMergeOpen;

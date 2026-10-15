@@ -120,6 +120,47 @@ REDESIGN_CANDIDATES C17) and copy targets; everything else is the existing GameC
 thread's ring from aurora_3ds.cpp's process() (today it only finds draw-done markers). First milestone: Hyrule Field's
 geometry on the top screen with flat shading, then TEV and textures.
 
+### Renderer bring-up (2026-10-15 evening)
+
+Built: core/native/platform/gx/gx_3ds.c runs gc3ds's FIFO decoder, vertex work and PICA200 backend (GX thread on core
+2, vertex worker on core 3) on Aurora's stream, compiled with `-DGC3DS_NATIVE -DPA_MEM1_END=0xFFFFFFF0u` (MEM1 based
+at zero: host pointers are addresses). fifo.c decodes Aurora's extension commands (arrays, texture objects, palettes,
+copy source / target / format, sized and indexed draws, gc3ds's display list by reference); the frame ends with a
+display copy gc3ds sends itself (Aurora's GXCopyDisp does nothing) and a present. Dusklight renders at the GameCube's
+608 x 448 (the 3DS window reports that size, so no widescreen). Findings, from Azahar and a stream dump
+(native/tools/gx_dump.py):
+
+- **Every vertex array Aurora declares is little-endian** (183,040 of 183,040 in the title demo): Dusklight stores
+  the game's vertex data in host order. vfast.c / vertex.c read formats 8-15 as the little-endian variants (16-bit,
+  32-bit and RGBA6 swapped, byte formats not, as Aurora's own shader does); indexed matrix loads swap likewise.
+- **Heap:** the display-list vertex cache (~10 MB of malloc) left the game too little: Aurora's FIFO buffer failed
+  to grow at the opening scene (`fifo::write_data: failed to allocate`). Not created in native builds (it keys on guest
+  pages anyway); the game's largest free block after OSInit went from 16.8 to 26.8 MB.
+- BP 0x64 / 0x65 palette loads carry no address in Aurora's stream (LOAD_TLUT does): skipped, they read address 0.
+- **Azahar crashes (the emulator process itself) on the first draw into the native EFB**, a plain full-screen fade
+  quad, with the GX thread, worker, merging and shader transform each off; with draws dropped it runs on. Not
+  explained; the 2DS renders it (below).
+- **Null pointers:** copies and texture objects with no data (Aurora keys some copy textures on a null pointer) made
+  the backend read address 0 (2DS jobs 221, 223). Native builds set PA_MEM1_BEGIN = 1 MB: any GX read below it is
+  out of range.
+
+**First native picture on the 2DS (job 225):** the title demo's Link on Epona at sunset, geometry in place, at 0.1-4.6
+fps. Speed, by run (title demo, steady stretch; perf.csv's gx column carries the pipeline's own profile):
+
+| Run | Change | Draws / vertices a frame | fps | Where core 2 went |
+|---|---|---|---|---|
+| 225 | DRAW_INDEXED expanded to triangle lists | ~150 / ~79,000 | 4.6 | vertex work |
+| 227 | Aurora's display-list optimizer off (GameCube strips) | ~11,700 / ~62,000 | 6.3-8.6 | per-draw work, 100% busy |
+| 229-234 | optimizer on, DRAW_INDEXED drawn indexed (pica_draw_indexed) | ~250 / ~44,000 | 5.6-7.5 | Aurora commands 830-1060 ms/s |
+| 240 | job ring 4 MB (VW_MEM): no draw done inline any more | same | 5.1-6.9 | waiting ~420 ms/s on the vertex worker |
+
+The 5-10 s frames at 236-250 in runs 225-229 were the debug stream dump and trace lines (SD writes per feed), not the
+pipeline. The optimizer (dl::optimize) only merges a shape's strips into one indexed triangle list: its vertices
+still index the game's arrays, so ~44,000 GameCube-indexed vertices a frame are gathered on the CPU, the work the
+GameCube's GPU did in hardware. **Tuning this path will not reach 30 fps.** Next: convert models once, at load time,
+into PICA vertex buffers (one index, PICA formats, linear memory) in the J3D model code, and draw them with only the
+matrices per frame; 2D, effects and the rest stay on this path.
+
 ## Risks
 
 - Unmeasured: TP's game logic on an 804 MHz ARM11 (no NEON; VFP11 doubles are slow). Step 1 answers it.

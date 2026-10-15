@@ -10,7 +10,21 @@
 #define BUS_HZ 162000000u
 
 // Physical address map (hardware registers are reached at effective 0xCC000000 through the uncached BAT).
+// Native mode (core/native) overrides it: there the GX stream carries host pointers and MEM1's base is zero.
+#ifndef PA_MEM1_END
 #define PA_MEM1_END 0x01800000u
+#endif
+// The lowest address GX may read: native mode's are host pointers, and the 3DS maps nothing below 1 MB (a null array,
+// texture or list pointer must read as out of range, not fault). The emulator's MEM1 starts at 0.
+#ifndef PA_MEM1_BEGIN
+#define PA_MEM1_BEGIN 0u
+#endif
+// CP array base registers hold 26 address bits; native mode keeps whole host pointers in them.
+#ifdef GC3DS_NATIVE
+#define GX_ARRAY_MASK 0xFFFFFFFFu
+#else
+#define GX_ARRAY_MASK 0x03FFFFFFu
+#endif
 #define PA_EFB 0x08000000u
 #define PA_MMIO 0x0C000000u
 #define PA_GP_FIFO 0x0C008000u

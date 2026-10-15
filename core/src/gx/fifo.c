@@ -173,7 +173,7 @@ static void efb_copy_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32
     for (u32 ty = 0; ty < tilesY; ty++) {
         for (u32 tx = 0; tx < tilesX; tx++) {
             u32 at = dest + ty * stride + tx * bytes;
-            if (at + bytes > PA_MEM1_END) return;
+            if (at < PA_MEM1_BEGIN || at + bytes > PA_MEM1_END) return;
             u8* o = s->mem1 + at;
             memset(o, 0, bytes);
             for (u32 py = 0; py < bh; py++) {
@@ -223,7 +223,7 @@ static void efb_copy_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32
 static void efb_copy(System* s, GXCore* gx, u32 ctl) {
     u32 tl = gx->bp[BP_EFB_TL], wh = gx->bp[BP_EFB_WH];
     u32 x0 = tl & 0x3FF, y0 = (tl >> 10) & 0x3FF, w = (wh & 0x3FF) + 1, h = ((wh >> 10) & 0x3FF) + 1;
-    u32 dest = (gx->bp[BP_COPY_DEST] & 0xFFFFFF) << 5, stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5;
+    u32 dest = gx_copy_dest(gx), stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5;
     bool toXfb = (ctl >> 14) & 1, clear = (ctl >> 11) & 1;
     if (x0 + w > EFB_W) w = EFB_W - x0;
     if (y0 + h > EFB_H) h = EFB_H - y0;
@@ -237,7 +237,7 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
                 (unsigned long long)gx->draws);
         for (u32 y = 0; y < h; y++) {
             u32 row = dest + y * stride;
-            if (row + w * 2 > PA_MEM1_END) break;
+            if (row < PA_MEM1_BEGIN || row + w * 2 > PA_MEM1_END) break;
             for (u32 x = 0; x + 1 < w; x += 2) {
                 u32 c[2] = { gx->efb[(y0 + y) * EFB_W + x0 + x], gx->efb[(y0 + y) * EFB_W + x0 + x + 1] };
                 int yy[2], u = 0, v = 0;
@@ -297,7 +297,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
         {  // the copy wrote RAM (a bound: rows of h lines or tiles at the copy's stride, or 4 bytes a pixel unstrided)
             u32 wh = gx->bp[BP_EFB_WH], w = (wh & 0x3FF) + 1, h = ((wh >> 10) & 0x3FF) + 1;
             u32 stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5, len = h * stride > w * h * 4 ? h * stride : w * h * 4;
-            mem_dirty((gx->bp[BP_COPY_DEST] & 0xFFFFFF) << 5, len);
+            mem_dirty(gx_copy_dest(gx), len);
         }
         break;
     }
@@ -306,9 +306,13 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
 // LOAD_INDX_A..D: copy (size) words from an indexed array element in RAM into XF memory.
 static void load_indexed(System* s, GXCore* gx, u32 which, u32 v) {
     u32 index = v >> 16, size = ((v >> 12) & 0xF) + 1, addr = v & 0xFFF;
-    u32 base = gx->cp[CP_ARRAY_BASE + 12 + which] & 0x03FFFFFF, stride = gx->cp[CP_ARRAY_STRIDE + 12 + which] & 0xFFF;
+    u32 base = gx->cp[CP_ARRAY_BASE + 12 + which] & GX_ARRAY_MASK, stride = gx->cp[CP_ARRAY_STRIDE + 12 + which] & 0xFFF;
     u32 pa = base + index * stride;
-    for (u32 i = 0; i < size && pa + 4 * i + 4 <= PA_MEM1_END; i++) xf_write(s, gx, addr + i, mem1_read32(s, pa + 4 * i));
+    bool le = (gx->arrayLE >> (12 + which)) & 1;  // native mode: a little-endian matrix array
+    for (u32 i = 0; i < size && pa >= PA_MEM1_BEGIN && pa + 4 * i + 4 <= PA_MEM1_END; i++) {
+        u32 v = mem1_read32(s, pa + 4 * i);
+        xf_write(s, gx, addr + i, le ? bswap32(v) : v);
+    }
 }
 
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
@@ -338,19 +342,167 @@ static void dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
     g_dl[slot].bytes = b; g_dl[slot].arrays = a;
 }
 
+static void draw(System* s, GXCore* gx, u8 op, const u8* verts, u32 count, u32 vsize, bool inList) {
+    gx->draws++;
+    g_dlStats[inList ? 1 : 2]++;
+    gx->vertices += count;
+    gx->primCount[(op >> 3) & 7]++;
+    if (gx->backend && count) gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, op & 7, verts, count, vsize);
+}
+
+#ifdef GC3DS_NATIVE
+// Native mode: Aurora's extension commands, GX_AURORA (0x50) and a big-endian u16 subcommand, with the layouts of
+// extern/aurora's include/dolphin/gx/GXAurora.h and lib/gx/command_processor.cpp. Host pointers come as u64; on the
+// 3DS they fit the low word, and MEM1's base is zero, so they are used as addresses directly.
+static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
+    if (avail < 3) return 0;
+    u32 sub = rd16(p + 1), have = avail - 3;
+    const u8* a = p + 3;
+#define NEED(n) do { if (have < (u32)(n)) return 0; } while (0)
+    if (sub >= 0x0010 && sub <= 0x001F) {  // LOAD_ARRAYBASE | array: u64 data, u32 size, u8 little-endian
+        NEED(13);
+        u32 r = CP_ARRAY_BASE + (sub & 15), v = rd32(a + 4), bit = 1u << (sub & 15);
+        if (gx->cp[r] != v) { merge_break(s, gx); gx->cp[r] = v; }
+        if (a[12]) { gx->arrayLE |= bit; gx->aurora[1]++; } else gx->arrayLE &= ~bit;
+        gx->aurora[0]++;
+        return 3 + 13;
+    }
+    switch (sub) {
+    case 0x0001: NEED(24); gx->aurora[7]++; return 3 + 24;  // LOAD_VIEWPORT_RENDER: six f32
+    case 0x0002: NEED(16); gx->aurora[7]++; return 3 + 16;  // LOAD_SCISSOR_RENDER: four u32
+    case 0x0003: NEED(64); gx->aurora[7]++; return 3 + 64;  // LOAD_PROJECTION_FULL: sixteen f32
+    case 0x0020: case 0x0022: { NEED(2); u32 n = rd16(a); NEED(2 + n); return 3 + 2 + n; }  // debug group, marker
+    case 0x0021: return 3;
+    case 0x0030: {  // LOAD_TEXOBJ: u8 map, u64 data, u32 width, height, format, tlut, u8 mips, u32 id, version
+        NEED(34);
+        u32 map = a[0] & 7, addr = rd32(a + 5);
+        if (gx->texAddr[map] != addr) { merge_break(s, gx); gx->texAddr[map] = addr; gx->bpVersion++; }
+        gx->aurora[2]++;
+        return 3 + 34;
+    }
+    case 0x0031: {  // LOAD_TLUT: u8 slot, u64 data, u32 format, u16 entries, u32 id, version
+        // The texture's BP TLUT register holds the slot (GXLoadTexObj), read as TMEM offset slot * 512: the palette
+        // goes there, and its format is added to that register when it is written (bp_write).
+        NEED(23);
+        u32 slot = a[0] & 31, addr = rd32(a + 5), bytes = rd16(a + 13) * 2u, at = slot << 9;
+        merge_break(s, gx);
+        if (addr >= PA_MEM1_BEGIN && at + bytes <= (1u << 20)) memcpy(gx->tmem + at, s->mem1 + addr, bytes);
+        gx->tlutFmt[slot] = (u8)(rd32(a + 9) & 3);
+        gx->tlutVersion++;
+        gx->aurora[3]++;
+        return 3 + 23;
+    }
+    case 0x0032: case 0x0033: NEED(4); return 3 + 4;  // DESTROY_TEXOBJ / TLUT: u32 id
+    case 0x0034: NEED(8); return 3 + 8;               // DESTROY_COPY_TEX: u64 data
+    case 0x0035: {  // LOAD_COPY_SRC: s32 left, top, width, height -> BP 0x49 / 0x4A
+        NEED(16);
+        u32 x = rd32(a), y = rd32(a + 4), w = rd32(a + 8), h = rd32(a + 12);
+        bp_write(s, gx, BP_EFB_TL, (x & 0x3FF) | ((y & 0x3FF) << 10));
+        bp_write(s, gx, BP_EFB_WH, ((w - 1) & 0x3FF) | (((h - 1) & 0x3FF) << 10));
+        return 3 + 16;
+    }
+    case 0x0036: {  // LOAD_COPY_DST: u32 width, height, format, u8 mipmap -> the BP 0x52 bits GXSetTexCopyDst sets
+        NEED(13);
+        u32 fmt = rd32(a + 8), f = fmt & 15;
+        gx->copyCtl = (((f & 7) << 1 | (f >> 3)) << 3) | (a[12] ? 1u << 9 : 0) | (fmt < 4 ? 1u << 15 : 0);
+        bp_write(s, gx, BP_COPY_STRIDE, 0);  // efb_copy_texture: a packed row of tiles
+        gx->aurora[4]++;
+        return 3 + 13;
+    }
+    case 0x0037: NEED(8); gx->copyDest = rd32(a + 4); return 3 + 8;  // LOAD_COPY_DEST: u64 data
+    case 0x0038: return 3;                                           // REQUEST_DEPTH_SNAPSHOT
+    case 0x0039: NEED(8); gx->aurora[7]++; return 3 + 8;             // BEGIN_OFFSCREEN: u32 width, height
+    case 0x003A: return 3;                                           // END_OFFSCREEN
+    case 0x0040: {  // DRAW_SIZED: u8 draw opcode, u32 bytes, vertex data
+        NEED(5);
+        u32 bytes = rd32(a + 1);
+        NEED(5 + bytes);
+        u32 vsize = gx_vertex_size(gx, a[0] & 7);
+        if (bytes && vsize) draw(s, gx, a[0], a + 5, bytes / vsize, vsize, inList);
+        gx->aurora[5]++;
+        return 3 + 5 + bytes;
+    }
+    case 0x0041: {  // DRAW_INDEXED: u8 opcode (triangles), u16 vertices, u32 indices, u16 host-order indices, vertices
+        NEED(7);
+        u32 nv = rd16(a + 1), ni = rd32(a + 3), vsize = gx_vertex_size(gx, a[0] & 7);
+        u32 len = 7 + ni * 2 + nv * vsize;
+        NEED(len);
+        const u8* idx = a + 7;
+        const u8* verts = idx + ni * 2;
+        if (ni && vsize && gx->backend && gx->backend->draw_indexed &&
+            gx->backend->draw_indexed(gx->backendCtx, s, a[0] & 7, verts, nv, vsize, idx, ni)) {
+            gx->draws++;
+            g_dlStats[inList ? 1 : 2]++;
+            gx->vertices += nv;
+            gx->primCount[2]++;
+            gx->aurora[6]++;
+            return 3 + len;
+        }
+        static u8* buf;
+        static u32 cap;
+        if (ni * vsize > cap) {
+            u8* nb = realloc(buf, ni * vsize);
+            if (!nb) return 3 + len;
+            buf = nb;
+            cap = ni * vsize;
+        }
+        for (u32 i = 0; i < ni; i++) {
+            u32 k = idx[2 * i] | (u32)idx[2 * i + 1] << 8;
+            memcpy(buf + i * vsize, verts + (k < nv ? k : 0) * vsize, vsize);
+        }
+        if (ni && vsize) draw(s, gx, a[0], buf, ni, vsize, inList);
+        gx->aurora[6]++;
+        return 3 + len;
+    }
+    case 0x0060: {  // gc3ds: CALL_DL by reference (patch_dusk.sh, GXCallDisplayList): u64 data, u32 size
+        NEED(12);
+        u32 addr = rd32(a + 4), size = rd32(a + 8);
+        if (addr >= PA_MEM1_BEGIN && size) run_list(s, gx, s->mem1 + addr, size, true);
+        return 3 + 12;
+    }
+    case 0x1000: NEED(20); gx->aurora[7]++; return 3 + 20;  // GX2_SET_POLYGON_OFFSET: five f32
+    }
+#undef NEED
+    static u32 reported;
+    if (reported++ < 20) emu_log(LOG_GX, "unknown Aurora subcommand %04x\n", sub);
+    return 3;
+}
+#endif
+
 // Executes one command at p; returns its length, or 0 if more bytes are needed.
+static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList);
+#ifdef GC3DS_NATIVE
+// Native mode's decoder profile (one command in 16, scaled): ticks by command class: draws, BP, XF, CP, Aurora commands
+// other than list calls, the rest; and how many commands of each class. List calls (0x40, Aurora 0x0060) are not timed
+// themselves: their commands are.
+u64 g_gxOpTicks[6], g_gxOpCount[6];
 static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
+    u8 op = p[0];
+    u32 cls = op >= 0x80 && op < 0xC0 ? 0 : op == 0x61 ? 1 : op == 0x10 ? 2 : op == 0x08 ? 3 : op == 0x50 ? 4 : 5;
+    bool call = op == 0x40 || (op == 0x50 && avail >= 3 && p[1] == 0x00 && p[2] == 0x60);
+    static u32 n;
+    if (call || !g_profClock || (++n & 15)) {
+        if (!call) g_gxOpCount[cls]++;
+        return exec_one_(s, gx, p, avail, inList);
+    }
+    g_gxOpCount[cls]++;
+    u64 t0 = g_profClock();
+    u32 r = exec_one_(s, gx, p, avail, inList);
+    g_gxOpTicks[cls] += (g_profClock() - t0) * 16;
+    return r;
+}
+#else
+#define exec_one exec_one_
+#endif
+
+static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
     u8 op = p[0];
     if (op >= 0x80 && op < 0xC0) {
         if (avail < 3) return 0;
         u32 count = rd16(p + 1), vat = op & 7, vsize = gx_vertex_size(gx, vat);
         u32 total = 3 + count * vsize;
         if (avail < total) return 0;
-        gx->draws++;
-        g_dlStats[inList ? 1 : 2]++;
-        gx->vertices += count;
-        gx->primCount[(op >> 3) & 7]++;
-        if (gx->backend && count) gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, vat, p + 3, count, vsize);
+        draw(s, gx, op, p + 3, count, vsize, inList);
         return total;
     }
     switch (op) {
@@ -392,8 +544,24 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
     }
     case 0x61:
         if (avail < 5) return 0;
+#ifdef GC3DS_NATIVE
+        {
+            u32 reg = p[1], v = rd32(p + 1) & 0xFFFFFF;
+            // Aurora's GXCopyTex sends only the clear bit: the rest is GXSetTexCopyDst's (aurora_cmd). Display copies
+            // (bit 14) are gc3ds's own, at the end of a frame (core/native/platform/gx_3ds.c).
+            if (reg == BP_COPY_EXEC && !(v & (1u << 14))) v = (v & (1u << 11)) | gx->copyCtl;
+            // Texture TLUT registers name an Aurora palette slot: its format comes from GX_AURORA_LOAD_TLUT.
+            if ((reg >= 0x98 && reg <= 0x9B) || (reg >= 0xB8 && reg <= 0xBB)) v = (v & ~0xC00u) | (u32)gx->tlutFmt[v & 31] << 10;
+            // Palette loads from RAM (BP 0x64 / 0x65): Aurora's address field is empty; GX_AURORA_LOAD_TLUT brings it.
+            if (reg == 0x64 || reg == 0x65) return 5;
+            bp_write(s, gx, reg, v);
+        }
+        return 5;
+    case 0x50: return aurora_cmd(s, gx, p, avail, inList);
+#else
         bp_write(s, gx, p[1], rd32(p + 1) & 0xFFFFFF);
         return 5;
+#endif
     }
     static u32 reported;
     if (reported++ < 20) emu_log(LOG_GX, "unknown GX opcode %02x (pc=%08x)\n", op, s->cpu.pc);

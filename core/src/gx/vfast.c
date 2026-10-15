@@ -59,8 +59,17 @@ static u32 be32(const u8* p) { return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((
 static u32 comp_size(u32 fmt) { return fmt <= 1 ? 1 : fmt <= 3 ? 2 : 4; }
 static u32 color_size(u32 fmt) { static const u8 s[8] = { 2, 3, 4, 2, 3, 4, 4, 4 }; return s[fmt & 7]; }
 
+// Formats 8-15: the same components from a little-endian array (native mode: Dusklight stores the game's vertex
+// arrays in host order and says so in GX_AURORA_LOAD_ARRAYBASE; fifo.c GXCore.arrayLE). Bytes are unchanged.
+static inline u32 le16(const u8* p) { return p[0] | ((u32)p[1] << 8); }
+static inline u32 le32(const u8* p) { return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
 static inline float read_comp(const u8* p, u32 fmt, float scale) {
     switch (fmt) {
+    case 8: return p[0] * scale;
+    case 9: return (s8)p[0] * scale;
+    case 10: return le16(p) * scale;
+    case 11: return (s16)le16(p) * scale;
+    case 12: case 13: case 14: case 15: { u32 v = le32(p); float f; memcpy(&f, &v, 4); return f; }
     case 0: return p[0] * scale;
     case 1: return (s8)p[0] * scale;
     case 2: return be16(p) * scale;
@@ -70,6 +79,11 @@ static inline float read_comp(const u8* p, u32 fmt, float scale) {
 }
 
 static u32 read_color(const u8* p, u32 fmt) {
+    if (fmt & 8) {  // a little-endian array: the 16- and 24-bit formats are swapped, the byte formats are not
+        fmt &= 7;
+        if (fmt == 0 || fmt == 3) { u8 q[2] = { p[1], p[0] }; return read_color(q, fmt); }
+        if (fmt == 4) { u8 q[3] = { p[2], p[1], p[0] }; return read_color(q, fmt); }
+    }
     switch (fmt) {
     case 0: { u32 c = be16(p); u32 r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
               return ((r * 255 / 31) << 24) | ((g * 255 / 63) << 16) | ((b * 255 / 31) << 8) | 0xFF; }
@@ -85,13 +99,14 @@ static u32 read_color(const u8* p, u32 fmt) {
 
 static void attr_array(const GXCore* gx, VAttr* a, u32 arr) {
     if (a->mode < 2) return;
-    a->base = gx->cp[CP_ARRAY_BASE + arr] & 0x03FFFFFF;
+    a->base = gx->cp[CP_ARRAY_BASE + arr] & GX_ARRAY_MASK;
     a->stride = gx->cp[CP_ARRAY_STRIDE + arr] & 0xFF;
+    a->fmt = (u8)((a->fmt & 7) | ((gx->arrayLE >> arr) & 1) << 3);  // per draw: the array's byte order (read_comp)
 }
 
 static void attr_init(const GXCore* gx, VAttr* a, u32 mode, u32 arr, u32 fmt, u32 n, u32 cs, float scale) {
     a->mode = (u8)mode; a->fmt = (u8)fmt; a->n = (u8)n; a->cs = (u8)cs; a->scale = scale;
-    a->base = gx->cp[CP_ARRAY_BASE + arr] & 0x03FFFFFF;
+    a->base = gx->cp[CP_ARRAY_BASE + arr] & GX_ARRAY_MASK;
     a->stride = gx->cp[CP_ARRAY_STRIDE + arr] & 0xFF;
 }
 
@@ -101,7 +116,7 @@ static inline const u8* fetch(const u8* mem1, const VAttr* a, const u8** p, u32 
     u32 idx = a->mode == 2 ? (*p)[0] : be16(*p);
     *p += a->mode == 2 ? 1 : 2;
     u32 pa = a->base + idx * a->stride;
-    return pa + 64 <= PA_MEM1_END ? mem1 + pa : kZero;
+    return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? mem1 + pa : kZero;
 }
 
 // ---- lighting ----
@@ -396,7 +411,7 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
             for (u32 k = 0; k < npf; k++) {
                 u32 idx = pf[k].wide ? be16(q + pf[k].off) : q[pf[k].off];
                 u32 pa = pf[k].base + idx * pf[k].stride;
-                if (pa < PA_MEM1_END) __builtin_prefetch(mem1 + pa);
+                if (pa >= PA_MEM1_BEGIN && pa < PA_MEM1_END) __builtin_prefetch(mem1 + pa);
             }
         }
         VIn* in = VIN(job, vi);

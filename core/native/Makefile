@@ -68,9 +68,29 @@ POBJS    := $(patsubst $(NATIVE)/platform/%.cpp,$(OUT)/platform/%.o,$(PLATFORM))
 APLAT    := $(wildcard $(NATIVE)/platform/aurora/*.cpp)
 POBJS    += $(patsubst $(NATIVE)/platform/aurora/%.cpp,$(OUT)/platform/aurora/%.o,$(APLAT))
 
+# The renderer: gc3ds's GX pipeline (FIFO decoder, vertex work, PICA200 backend, the GX thread) with native addresses
+# (MEM1 based at zero up to the top of the address space: Aurora's stream carries host pointers), and its glue.
+CORE     := $(abspath $(NATIVE)/..)
+GSRCS    := $(addprefix $(CORE)/src/gx/,fifo.c vertex.c texture.c xform.c vfast.c tev_pica.c pica/pica.c) \
+            $(CORE)/host3ds/gxthread.c $(abspath $(NATIVE))/platform/gx/gx_3ds.c
+GOBJS    := $(patsubst $(CORE)/%.c,$(OUT)/gx/%.o,$(GSRCS))
+GFLAGS   := -std=gnu11 -MMD -MP $(ARCH) -O2 -mword-relocations -ffunction-sections -fdata-sections -w -D__3DS__ \
+            -DGC3DS_NATIVE -DPA_MEM1_BEGIN=0x00100000u -DPA_MEM1_END=0xFFFFFFF0u -D'VW_MEM=(4096u<<10)' -I$(CORE)/src -I$(CORE)/host3ds -I$(OUT)/gx/shader \
+            -I$(DEVKITPRO)/libctru/include
+SHADER   := $(OUT)/gx/shader/gxpass.shbin.o
+
 .PHONY: objs size
-objs: $(OBJS) $(DOBJS) $(AOBJS) $(POBJS)
-	@echo "compiled $(words $(OBJS)) game, $(words $(DOBJS)) Dusklight-layer, $(words $(AOBJS)) Aurora and $(words $(POBJS)) platform objects into $(OUT)"
+objs: $(OBJS) $(DOBJS) $(AOBJS) $(POBJS) $(SHADER) $(GOBJS)
+	@echo "compiled $(words $(OBJS)) game, $(words $(DOBJS)) Dusklight-layer, $(words $(AOBJS)) Aurora, $(words $(POBJS)) platform and $(words $(GOBJS)) GX objects into $(OUT)"
+
+$(SHADER): $(CORE)/src/gx/pica/gxpass.v.pica
+	@mkdir -p $(dir $@)
+	@cd $(dir $@) && $(DEVKITPRO)/tools/bin/picasso -o gxpass.shbin $< && $(DEVKITPRO)/tools/bin/bin2s gxpass.shbin | $(DEVKITARM)/bin/arm-none-eabi-as -o gxpass.shbin.o
+	@printf 'extern const u8 gxpass_shbin_end[];\nextern const u8 gxpass_shbin[];\nextern const u32 gxpass_shbin_size;\n' > $(dir $@)gxpass_shbin.h
+$(OUT)/gx/%.o: $(CORE)/%.c $(SHADER)
+	@mkdir -p $(dir $@)
+	@$(CC) $(GFLAGS) -c $< -o $@ 2> $@.err || { echo "FAIL gx/$*.c"; rm -f $@; }
+	@[ -s $@.err ] || rm -f $@.err
 
 $(OUT)/aurora/%.o: $(AUR)/%.cpp
 	@mkdir -p $(dir $@)

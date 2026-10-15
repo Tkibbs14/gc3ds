@@ -1484,6 +1484,32 @@ static bool post_file(const char* path) {
     return true;
 }
 
+// Native mode's top-screen captures (gx_3ds.c: shot_<frame>.bmp at a few frames of a run) as the job's frames
+// (relay.sh frames JOB), then removed. The relay sends one frame at a time: each gets a few seconds.
+static void post_native_shots(void) {
+    static const unsigned kFrames[] = { 120, 300, 600, 1200, 2400 };
+    for (unsigned i = 0; i < sizeof kFrames / sizeof kFrames[0]; i++) {
+        char path[64];
+        snprintf(path, sizeof path, NATIVE_DIR "/shot_%u.bmp", kFrames[i]);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        void* buf = n > 0 && n < (1 << 20) ? malloc((size_t)n) : NULL;
+        if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) {
+            char note[96];
+            snprintf(note, sizeof note, "relay: native capture at frame %u follows as a frame", kFrames[i]);
+            relay_note(note);
+            relay_frame(buf, (unsigned)n);
+            svcSleepThread(5000000000LL);
+        }
+        free(buf);
+        fclose(f);
+        remove(path);
+    }
+}
+
 static void remote_mode(const char* selfPath) {
     char err[256];
     consoleClear();
@@ -1565,22 +1591,26 @@ static void remote_mode(const char* selfPath) {
                 if (cf) { fclose(cf); post_file(NATIVE_DIR "/crash.txt"); }
                 post_file(NATIVE_DIR "/perf.csv");
                 post_file(NATIVE_DIR "/trace.txt");
+                post_native_shots();
                 relay_job_end("done");
                 continue;
             }
-            static char secs[16], press[256], stage[48];
-            static const char* nargs[8];
-            secs[0] = press[0] = stage[0] = 0;
+            static char secs[16], press[256], stage[48], gxopt[32];
+            static const char* nargs[12];
+            secs[0] = press[0] = stage[0] = gxopt[0] = 0;
             sscanf(nt + 9, "%15s", secs);
             const char* pr = strstr(job.args, "--press ");
             if (pr) sscanf(pr + 8, "%255s", press);
             const char* st = strstr(job.args, "--stage ");
             if (st) sscanf(st + 8, "%47s", stage);
+            const char* go = strstr(job.args, "--gxopt ");  // native mode's GX options (gx_3ds.c)
+            if (go) sscanf(go + 8, "%31s", gxopt);
             int n = 0;
             nargs[n++] = "--seconds"; nargs[n++] = secs;
             nargs[n++] = "--return"; nargs[n++] = selfPath;
             if (press[0]) { nargs[n++] = "--press"; nargs[n++] = press; }
             if (stage[0]) { nargs[n++] = "--stage"; nargs[n++] = stage; }
+            if (gxopt[0]) { nargs[n++] = "--gxopt"; nargs[n++] = gxopt; }
             FILE* nf = fopen(NATIVE_PATH, "rb");
             if (!nf) { relay_note("relay: no " NATIVE_PATH " (relay.sh send it first)"); relay_job_end("failed"); continue; }
             fclose(nf);

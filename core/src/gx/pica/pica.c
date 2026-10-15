@@ -319,6 +319,7 @@ bool pica_early_queue(void) { return g_earlyRun && g_q; }
 // Draws by batch path: [0] nothing in the key changed (fast), [1] key rebuilt and equal, [2] new batch; [3..6] new
 // batches with a changed BP / palette / light version or XFB copy since the open batch (written by the GX thread).
 u64 g_picaDrawPaths[8];
+u64 g_vwInline, g_vwInlineVerts;  // draws (and their vertices) too large for the worker's job ring, done on the GX thread
 
 u32 pica_queue_offset(void) { return g_q ? (u32)((u8*)g_q - __C3D_Context) : 0xFFFFFFFFu; }
 
@@ -458,7 +459,7 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
 
 static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg) {
     u32 bytes = gx_texture_size(fmt, w, h);
-    if (!bytes || addr + bytes > PA_MEM1_END) return NULL;
+    if (!bytes || addr < PA_MEM1_BEGIN || addr + bytes > PA_MEM1_END) return NULL;
     bool pal = fmt == 8 || fmt == 9 || fmt == 10;
     u32 tlutAddr = pal ? (tlutReg & 0x3FF) << 9 : 0, tlutFmt = pal ? (tlutReg >> 10) & 3 : 0;
     PTex* e = NULL;
@@ -532,9 +533,10 @@ static PCopy* find_copy(System* s, const GXCore* gx, u32 addr, u32 w, u32 h) {
 static C3D_Tex* fetch_texture(System* s, const GXCore* gx, u32 map) {
     u32 hi = map >= 4 ? 0x20 : 0, m = map & 3;
     u32 img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi], tlut = gx->bp[0x98 + m + hi], mode = gx->bp[0x80 + m + hi];
-    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = (img3 & 0xFFFFFF) << 5;
+    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = gx_tex_addr(gx, map, img3);
     PCopy* c = find_copy(s, gx, addr, w, h);
-    C3D_Tex* t = c ? &c->tex : cached_texture(s, gx, map, addr, fmt, w, h, tlut);
+    // Address 0: no data in RAM (native mode: a texture object Aurora gave no data, matched only by a copy to 0).
+    C3D_Tex* t = c ? &c->tex : addr ? cached_texture(s, gx, map, addr, fmt, w, h, tlut) : NULL;
     if (!t) t = &g.white;
     static const GPU_TEXTURE_WRAP_PARAM wraps[4] = { GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT };
     C3D_TexSetWrap(t, wraps[mode & 3], wraps[(mode >> 2) & 3]);
@@ -675,13 +677,13 @@ static bool ztex_value(System* s, const GXCore* gx, u32* opOut, float* zOut) {
     if (map == 8) return false;
     u32 hi = map >= 4 ? 0x20 : 0, m = map & 3;
     u32 img0 = gx->bp[0x88 + m + hi], img3 = gx->bp[0x94 + m + hi], tlut = gx->bp[0x98 + m + hi];
-    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = (img3 & 0xFFFFFF) << 5;
+    u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = gx_tex_addr(gx, map, img3);
     u32 key[5] = { img0, img3, tlut, mode, g.xfbSeq };
     if (memcmp(key, g_ztexKey, sizeof key)) {
         memcpy(g_ztexKey, key, sizeof key);
         u32 n = w * h, bytes = gx_texture_size(fmt, w, h);
         if (!scratch_reserve(n)) { g_picaStats.texFails++; return false; }
-        if (!bytes || addr + bytes > PA_MEM1_END) return false;
+        if (!bytes || !addr || addr < PA_MEM1_BEGIN || addr + bytes > PA_MEM1_END) return false;
         u32 tlutAddr = (tlut & 0x3FF) << 9;
         gx_decode_texture(s->mem1 + addr, fmt, w, h, gx->tmem + (tlutAddr & 0xFFFFF), (tlut >> 10) & 3, g_scratch);
         g_ztexUniform = true;
@@ -938,7 +940,9 @@ static void tex_key(const GXCore* gx, u32* k, u32* n) {
 // ~30 KB), and 256 KB made the GX thread wait for ring space 17% of the time (2DS, f56d430) while core 3 was half idle:
 // the ring's size is a run option (pica_set_job_ring, up to VW_MEM).
 #define VW_SLOTS 1024
+#ifndef VW_MEM  // native mode raises it: one merged model draw of Aurora's is ~2,000 vertices, several hundred KB of job
 #define VW_MEM (1024u << 10)
+#endif
 static u32 g_vwLimit = 128u << 10;              // the ring's size in use: shallow keeps syncs short (2DS, relay 76-80)
 static volatile u32 g_vwLimitWant = 128u << 10;  // pica_set_job_ring: applied when the ring is empty
 typedef struct {
@@ -955,6 +959,8 @@ typedef struct {
     u16 vrel;
     const u32* seg;    // a merged draw (draw merging below): its draws as prim << 16 | count, in job memory
     u32 nSeg;
+    const u16* tri;    // an index-list draw (pica_draw_indexed): its triangles' vertex numbers, in job memory
+    u32 nTri;
 } VWork;
 static VWork g_vw[VW_SLOTS];
 static VCache *g_vcGx, *g_vcWorker;  // display-list vertex caches (vfast.c): one per gathering thread
@@ -1051,6 +1057,14 @@ static void vw_do_indexed(const VWork* w) {
             w->nd[i][0] = pv[i].pos[0] * iw; w->nd[i][1] = pv[i].pos[1] * iw;
         }
     u16* ix = g.idx + w->ibase;
+    if (w->tri) {  // every triangle written (a bad index as a degenerate one): the batch counted 3 per triangle
+        for (u32 t = 0; t < w->nTri; t++) {
+            u32 a = w->tri[3 * t], b = w->tri[3 * t + 1], c = w->tri[3 * t + 2];
+            if (a >= count || b >= count || c >= count) a = b = c = 0;
+            vw_tri_idx(w, pv, &ix, a, b, c);
+        }
+        return;
+    }
     if (!w->nSeg) { vw_assemble_idx(w, pv, &ix, w->prim, 0, count); return; }
     for (u32 k = 0, at = 0; k < w->nSeg; k++) {
         u32 c = w->seg[k] & 0xFFFF;
@@ -1315,9 +1329,11 @@ static void vw_queue(const VWork* w, u32 verts) {
 
 static bool vw_start(void) {
     if (g_vwThread) return true;
+#ifndef GC3DS_NATIVE  // native mode: no display-list vertex cache (its pages are guest MEM1's); the game needs the heap
     if (!g_vcGx) g_vcGx = vcache_create(1536u << 10, 4096);  // ~1.5 MB of records + 0.3 MB of slots
     // The worker gathers ~40k segments/s of TP (job 111): ~6 MB of compact records hold several frames.
     if (!g_vcWorker) g_vcWorker = vcache_create(6u << 20, 32768);  // job 112: 16,384 slots evicted 16k live entries/s
+#endif
     g_vwMem = malloc(VW_MEM);
     if (!g_vwMem) g_vwMem = linearAlloc(VW_MEM);
     if (!g_vwMem) return false;
@@ -1404,8 +1420,9 @@ static void describe_draw(const GXCore* gx, u32 prim, u32 count) {
 const VCacheStats* pica_vcache_stats(int worker) { return vcache_stats(worker ? g_vcWorker : g_vcGx); }
 
 // segPa: where the stream (or each merged draw's) lies in guest RAM, VC_NO_PA when it was not read from there.
+// idx / ni: an explicit triangle list over the draw's `count` vertices (pica_draw_indexed), host-order u16 indices.
 static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize, const u32* seg, u32 nSeg,
-                     const u32* segPa) {
+                     const u32* segPa, const u8* idx, u32 ni) {
     vw_apply();
     if (g_descWant && !g_descReady) describe_draw(&s->gx.core, prim, count);
     static u32 drawN;
@@ -1432,7 +1449,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     u32 zop = 0;
     float zz = 0;
     bool ztex = !lines && ztex_value(s, gx, &zop, &zz);
-    bool gpuPos = g.gpuPos && !lines && !ztex, indexed = (g_indexed || nSeg) && !lines;
+    bool gpuPos = g.gpuPos && !lines && !ztex, indexed = ((g_indexed || nSeg) && !lines) || idx;
     // Lines and points are lit and placed on the CPU, and a batch is transformed all on the GPU or all on the CPU, and
     // indexed or not: draws of different classes never share a batch.
     u32 cls = (lines ? 1u : 0u) | (gpuPos ? 2u : 0u) | (indexed ? 4u : 0u);
@@ -1488,7 +1505,8 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     memset(&w, 0, sizeof w);
     u32 workVerts = 0, nIdx = 0;
     if (jobPath) {
-        if (nSeg) for (u32 k = 0; k < nSeg; k++) workVerts += tri_verts(seg[k] >> 16, seg[k] & 0xFFFF);
+        if (idx) workVerts = ni / 3 * 3;
+        else if (nSeg) for (u32 k = 0; k < nSeg; k++) workVerts += tri_verts(seg[k] >> 16, seg[k] & 0xFFFF);
         else workVerts = tri_verts(prim, count);
         if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
         nIdx = indexed ? workVerts : 0;
@@ -1503,10 +1521,12 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         bool needPv = !(deferLit && indexed), needNd = !gpuPos && (cull == 1 || cull == 2);
         // The draw's own arrays first, then the job (its unused end is given back after vfast_prepare: vw_trim).
         u32 jb = (vfast_job_bytes(gx, count, vsize) + 7) & ~7u;
-        u32 front = ((needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 8 + 7) & ~7u;
+        u32 front = ((needPv ? count * (u32)sizeof(PVert) : 0) + (needNd ? count * 8 : 0) + nSeg * 8 +
+                     (idx ? workVerts * 2 : 0) + 7) & ~7u;
         u32 bytes = front + jb;
         u8* mem = work ? vw_alloc(bytes) : NULL;
         if (!mem) {  // the worker is off, or the draw is larger than its job ring: done here
+            if (work) { g_vwInline++; g_vwInlineVerts += count; }
             work = false;
             if (bytes > g_jobCap) {
                 u8* m = realloc(g_jobMem, bytes);
@@ -1529,6 +1549,13 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             u32* pc = sc + nSeg;  // the segments' addresses live with the job (the worker gathers later)
             memcpy(pc, segPa, nSeg * 4);
             pac = pc;
+            at = (u8*)(pc + nSeg);
+        }
+        if (idx) {  // the indices live with the job (the stream they came in is reused); 2-byte aligned here
+            memcpy(at, idx, workVerts * 2);
+            w.tri = (const u16*)(const void*)at;
+            w.nTri = workVerts / 3;
+            at += workVerts * 2;
         }
         w.deferred = deferLit;  // vfast_prepare defers shader-lit draws only
         if (g_vcGx) vfast_set_sources(g_vcGx, pac, w.seg, nSeg ? nSeg : 1);
@@ -1666,7 +1693,8 @@ static void merge_issue(System* s) {
     g_mg.nSeg = 0;
     if (n) {
         g_picaMerge[2]++;
-        draw_job(s, g_mg.seg[0] >> 16, g_mg.vat, g_mg.raw, g_mg.count, g_mg.vsize, n > 1 ? g_mg.seg : NULL, n > 1 ? n : 0, g_mg.pa);
+        draw_job(s, g_mg.seg[0] >> 16, g_mg.vat, g_mg.raw, g_mg.count, g_mg.vsize, n > 1 ? g_mg.seg : NULL, n > 1 ? n : 0, g_mg.pa,
+                 NULL, 0);
     }
     vw_dmb();  // the draw is queued on the vertex worker before a sync on the CPU thread can see it issued
     g_gxMergeOpen = false;
@@ -1719,7 +1747,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         g_picaMerge[4]++;
         merge_issue(s);
     }
-    if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0, &pa); return; }
+    if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0, &pa, NULL, 0); return; }
     memcpy(g_mg.raw, raw, bytes);
     g_mg.pa[0] = pa;
     g_mg.seg[0] = (prim << 16) | count;
@@ -1868,7 +1896,9 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
     c->addr = dest; c->w = ow; c->h = oh; c->used = true;
     u32 bpp = fmt == 0 ? 4 : fmt == 6 ? 32 : (fmt == 3 || fmt == 4 || fmt == 5 || fmt >= 11) ? 16 : 8;
     c->ramBytes = ow * oh * bpp / 8;
-    if (dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
+    // No RAM behind it: out of range, or (native mode) a copy Aurora's stream gave no destination (the 2DS read
+    // address 0 here, job 221).
+    if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
     c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
     c->texVersion = g.xfbSeq;
 }
@@ -1909,7 +1939,20 @@ static bool pica_efb_copy(void* ctx, System* s, u32 ctl, u32 x0, u32 y0, u32 w, 
     return true;
 }
 
-static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush };
+// An index-list draw (native mode's GX_AURORA_DRAW_INDEXED, what Aurora's display-list optimizer makes of a model): each
+// of the `nv` vertices is gathered and transformed once, the triangles go to the index arena as they are. The open
+// merged draw goes first, as for any draw that cannot join it.
+static bool pica_draw_indexed(void* ctx, System* s, u32 vat, const u8* verts, u32 nv, u32 vsize, const u8* idx, u32 ni) {
+    (void)ctx;
+    if (!g.idx || nv > 0xFFFF || ni < 3) return false;
+    if (g_fskipNow) { g_fskipDraws++; return true; }
+    if (g_gxMergeOpen) merge_issue(s);
+    u32 pa = VC_NO_PA;
+    draw_job(s, PRIM_TRIS, vat, verts, nv, vsize, NULL, 0, &pa, idx, ni);
+    return true;
+}
+
+static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed };
 
 // ---- present ----
 // ---- screenshots of what the top screen shows (sdmc:/gc3ds/shots, key points only) ----

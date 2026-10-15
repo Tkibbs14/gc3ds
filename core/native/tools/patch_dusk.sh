@@ -218,6 +218,24 @@ if 'CALL_DL by reference' not in s:
     s = s.replace(old, new)
     open(p, 'w').write(s)
 print('aurora display lists by reference:', 'CALL_DL by reference' in s)
+# With GC3DS_NO_DL_OPTIMIZE (an A/B switch, off), models keep the GameCube's display lists instead of what Aurora's
+# optimizer (dl::optimize) makes of them: one merged, indexed triangle list per shape. Without the optimizer the title
+# demo sent ~11,700 draws a frame of ~5 vertices (job 227, 6-8 fps, the GX thread's per-draw work the wall); with it,
+# ~150 draws, which gc3ds's backend now draws indexed (pica_draw_indexed: each vertex transformed once).
+p = 'libs/JSystem/src/J3DGraphBase/J3DShapeDraw.cpp'
+s = open(p).read()
+old = '''    if (const auto optimized = aurora::gx::dl::optimize(displayList, displayListSize, vtxDesc)) {'''
+new = '''#if defined(__3DS__) && defined(GC3DS_NO_DL_OPTIMIZE)
+    (void)vtxDesc;  // gc3ds native mode: the GameCube's list as it is (patch_dusk.sh)
+    set_display_list_copy(mDisplayList, mDisplayListSize, displayList, displayListSize);
+    return;
+#endif
+    if (const auto optimized = aurora::gx::dl::optimize(displayList, displayListSize, vtxDesc)) {'''
+if 'the GameCube\'s list as it is' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, 'w').write(s)
+print('J3D display lists unoptimized:', 'the GameCube\'s list as it is' in s)
 PY
 git -C extern/aurora diff > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.patch
 git -C extern/aurora rev-parse HEAD > /mnt/c/Users/tyler/TP3DS/emu/core/native/patches/aurora.base

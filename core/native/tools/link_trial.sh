@@ -10,7 +10,7 @@ objs=$(find $B -name '*.o')
 echo "objects: $(echo "$objs" | wc -l)"
 $DEVKITPRO/devkitARM/bin/arm-none-eabi-size -t $objs | tail -1
 $DEVKITPRO/devkitARM/bin/arm-none-eabi-g++ -specs=3dsx.specs -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft \
-    -Wl,--gc-sections -Wl,--no-enum-size-warning -o $B/trial.elf $objs -L$DEVKITPRO/libctru/lib -lctru -lm \
+    -Wl,--gc-sections -Wl,--no-enum-size-warning -o $B/trial.elf $objs -L$DEVKITPRO/libctru/lib -lcitro3d -lctru -lm \
     2> $B/link.txt
 echo "link exit $?"
 grep -oE "undefined reference to \`[^']+'" $B/link.txt | sed "s/undefined reference to \`//; s/'$//" | sort -u > $B/undefined.txt

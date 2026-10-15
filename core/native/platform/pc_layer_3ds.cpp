@@ -31,12 +31,14 @@ void set_frame_buffer_scale(float) {}
 SDL_Window* get_sdl_window() { return nullptr; }
 AuroraWindowSize get_window_size() {
     AuroraWindowSize s{};
-    s.width = 400;
-    s.height = 240;
-    s.fb_width = 400;
-    s.fb_height = 240;
-    s.native_fb_width = 400;
-    s.native_fb_height = 240;
+    // The GameCube's frame (TP's EFB): Dusklight renders 4:3 into it and gc3ds's GX pipeline scales it to the top
+    // screen (aurora_3ds.cpp kEfbW / kEfbH).
+    s.width = 608;
+    s.height = 448;
+    s.fb_width = 608;
+    s.fb_height = 448;
+    s.native_fb_width = 608;
+    s.native_fb_height = 448;
     s.scale = 1.0f;
     return s;
 }

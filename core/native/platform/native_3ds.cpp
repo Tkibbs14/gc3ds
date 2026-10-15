@@ -75,12 +75,16 @@ static void parse_press(const char* script) {
     }
 }
 
+// --gxopt LETTERS: the GX pipeline's options (platform/gx/gx_3ds.c), as sdmc:/gc3ds/native/gxopt.txt gives them.
+extern "C" char g_gxopt[32];
+char g_gxopt[32];
 static void parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (!argv[i]) continue;
         if (!strcmp(argv[i], "--seconds") && i + 1 < argc) g_seconds = (u32)strtoul(argv[++i], nullptr, 10);
         else if (!strcmp(argv[i], "--return") && i + 1 < argc) snprintf(g_returnPath, sizeof g_returnPath, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) parse_press(argv[++i]);
+        else if (!strcmp(argv[i], "--gxopt") && i + 1 < argc) snprintf(g_gxopt, sizeof g_gxopt, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--stage") && i + 1 < argc) {
             // Dusklight's boot-to-stage (its --stage NAME,room,point,layer): the logo scene starts a blank save in that
             // stage's play scene, no title or file select (e.g. F_SP121,0,0 for Hyrule Field).
@@ -171,6 +175,8 @@ const char* disc_path() { return g_disc; }
 bool audio_enabled() { return false; }
 }  // namespace native
 bool gc3ds_native_audio_enabled() { return native::audio_enabled(); }
+extern "C" void native_trace_c(const char* text) { native::trace("%s", text); }
+extern "C" void gc3ds_gx_stats(char* out, u32 size);  // platform/gx/gx_3ds.c
 namespace native {
 void poll_events() {
     if (!aptMainLoop()) g_exit = true;
@@ -222,13 +228,15 @@ void frame_end() {
     double dlMs = ticks_to_us(g_dlTicks) / 1000.0 / s_frames, dlKb = g_dlBytes / 1024.0 / s_frames,
            dlCalls = (double)g_dlCalls / s_frames;  // per frame
     g_dlTicks = g_dlBytes = g_dlCalls = 0;
+    static char gxStats[640];  // gc3ds's GX: draws, vertices, Aurora command counts (gx_3ds.c)
+    gc3ds_gx_stats(gxStats, sizeof gxStats);
     float px = 0, py = 0, pz = 0;
     native_player_pos(&px, &py, &pz);  // % of each frame the game worked (Dusklight's frame limiter)
     printf("\x1b[2;1H%5.1f fps  logic %6.2f ms  frame %6.2f ms   \n GX %6u KB/frame  draw-done %u/s   \n busy %5.1f%% of the frame (%5.2f ms)   \n",
            s_frames / secs, logicMs, frameMs, (unsigned)(bytes / s_frames / 1024), (unsigned)(dd / secs), busy, busy * frameMs / 100.0);
     if (g_perf) {
-        fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%u,%u,%.1f,%.0f,%.0f,%.0f,%lu,%d,%.2f,%.2f,%.1f,%.0f\n", (double)ticks_to_us(t) / 1e6, s_frames / secs, logicMs, frameMs,
-                (unsigned)(bytes / s_frames), (unsigned)(dd / secs), busy, px, py, pz, (unsigned long)g_frameNo, native_event_running(), procMs, dlMs, dlKb, dlCalls);
+        fprintf(g_perf, "%.1f,%.2f,%.2f,%.2f,%u,%u,%.1f,%.0f,%.0f,%.0f,%lu,%d,%.2f,%.2f,%.1f,%.0f,%s\n", (double)ticks_to_us(t) / 1e6, s_frames / secs, logicMs, frameMs,
+                (unsigned)(bytes / s_frames), (unsigned)(dd / secs), busy, px, py, pz, (unsigned long)g_frameNo, native_event_running(), procMs, dlMs, dlKb, dlCalls, gxStats);
         fflush(g_perf);
     }
     s_sumLogic = s_sumFrame = 0;
@@ -239,6 +247,8 @@ void frame_end() {
 void trace(const char* fmt, ...) {
     static FILE* f = fopen("sdmc:/gc3ds/native/trace.txt", "w");
     if (!f) return;
+    static LightLock lock = [] { LightLock l; LightLock_Init(&l); return l; }();  // the GX thread reports here too
+    LightLock_Lock(&lock);
     va_list ap;
     va_start(ap, fmt);
     fprintf(f, "%9.3f ", (double)svcGetSystemTick() / SYSCLOCK_ARM11);
@@ -246,6 +256,7 @@ void trace(const char* fmt, ...) {
     va_end(ap);
     fputc('\n', f);
     fflush(f);
+    LightLock_Unlock(&lock);
 }
 void trace_memory(const char* where) {
     // The largest block malloc still gives (touching its first and last byte, so a lazily backed heap cannot fake it),
@@ -339,6 +350,33 @@ static void on_exception(ERRF_ExceptionInfo* ex, CpuRegisters* r) {
     native_crash_resume(r);
 }
 
+// A hang on an automated run (--return): no new game frame for 20 s once the loop has started (a GPU that stopped, a
+// wait that never ends) ends the run as a crash does, crash.txt saying so, and the 2DS goes back to gc3ds without hands.
+// It leaves without the game's static destructors (threads that may be the stuck ones): the chainload, then the exit.
+static void watchdog(void*) {
+    u32 last = 0, still = 0;
+    for (;;) {
+        svcSleepThread(1000000000LL);
+        u32 f = g_frameNo;
+        if (!f || f != last) { last = f; still = 0; continue; }
+        if (++still < 20) continue;
+        FILE* c = fopen("sdmc:/gc3ds/native/crash.txt", "w");
+        if (c) {
+            fprintf(c, "hang: no game frame for 20 s at frame %lu (watchdog)\n", (unsigned long)f);
+            fclose(c);
+        }
+        if (g_perf) fflush(g_perf);
+        native::trace("hang: no game frame for 20 s at frame %lu: back to gc3ds", (unsigned long)f);
+        if (g_returnPath[0]) return_to(g_returnPath);
+        aptExit();
+        svcExitProcess();
+    }
+}
+
+// The GX thread and the vertex worker (gc3ds's host3ds/crashlog.h hook, called in each): the same handler, so a fault
+// there also writes crash.txt and returns to gc3ds.
+extern "C" void crashlog_thread(int) { threadOnException(on_exception, g_exStack + sizeof g_exStack, WRITE_DATA_TO_HANDLER_STACK); }
+
 int main(int argc, char** argv) {
     threadOnException(on_exception, g_exStack + sizeof g_exStack, WRITE_DATA_TO_HANDLER_STACK);
     remove("sdmc:/gc3ds/native/crash.txt");
@@ -366,8 +404,9 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/gc3ds", 0777);
     mkdir("sdmc:/gc3ds/native", 0777);
     g_perf = fopen("sdmc:/gc3ds/native/perf.csv", "w");
-    if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s,busy_pct,link_x,link_y,link_z,frame,event,gx_proc_ms,dl_copy_ms,dl_kb,dl_calls\n", g_disc);
+    if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s,busy_pct,link_x,link_y,link_z,frame,event,gx_proc_ms,dl_copy_ms,dl_kb,dl_calls,gx\n", g_disc);
     native::trace_memory("start");
+    if (g_returnPath[0]) threadCreate(watchdog, nullptr, 8192, 0x20, -2, true);  // core 0, above the game's priority
     native::trace("run control: %u s, return to %s, %d presses, stage %s", (unsigned)g_seconds, g_returnPath[0] ? g_returnPath : "-",
                   g_nPress, dusk::StageRequested.set ? dusk::StageRequested.stage.c_str() : "-");
     {  // std::thread on this toolchain: does a thread start and finish?
