@@ -33,9 +33,19 @@ std::atomic<uint32_t> g_drawDones{0};
 
 static char* dup_or(const char* s, const char* fallback) { return strdup(s ? s : fallback); }
 
+namespace native {
+void trace(const char* fmt, ...);
+}
+// Aurora's log (with no callback it goes to stderr, which the 3DS does not show) into native mode's trace file.
+static void log_to_trace(AuroraLogLevel level, const char* module, const char* message, unsigned int len) {
+    static const char* const kLevel[] = {"debug", "info", "warning", "error", "fatal"};
+    native::trace("aurora %s [%s] %.*s", (unsigned)level < 5 ? kLevel[level] : "?", module ? module : "", (int)len, message);
+}
+
 AuroraInfo aurora_initialize(int, char*[], const AuroraConfig* config) {
     using namespace aurora;
     g_config = *config;
+    if (!g_config.logCallback) g_config.logCallback = log_to_trace;
     g_config.appName = dup_or(config->appName, "gc3ds");
     g_config.userPath = dup_or(config->userPath, "sdmc:/gc3ds/native/");
     g_config.cachePath = dup_or(config->cachePath, "sdmc:/gc3ds/native/cache/");

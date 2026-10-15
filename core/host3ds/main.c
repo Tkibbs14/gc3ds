@@ -45,6 +45,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
+const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes);  // timingprobe.c: --timing-probe
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
@@ -329,6 +330,7 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
+    bool timingProbe;    // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots
     char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
@@ -420,6 +422,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on");
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
+        else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on");
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
         else if (!strcmp(a, "--luma-dumps")) snprintf(o->lumaDumps, sizeof o->lumaDumps, "%s", v);
@@ -662,6 +665,16 @@ static const char* run(const char* path) {
         jit_invalidate_all(g_jit);
         if (g_useJit) jit_attach(g_jit); else gekko_set_jit(&g_sys.cpu, NULL, NULL);
     }
+    // --timing-probe: the hardware micro-benchmarks, while MEM1 and the JIT's buffer are still free (the boot below
+    // overwrites MEM1; the JIT starts empty again).
+    const char* timing = NULL;
+    if (g_opt.timingProbe) {
+        printf("timing probe...\n");
+        u32 words = 0;
+        u32* code = g_jit ? jit_scratch(g_jit, &words) : NULL;
+        timing = timing_probe(code, words, g_sys.mem1, MEM1_SIZE);
+        if (g_jit) jit_invalidate_all(g_jit);
+    }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
     free(dol);
     if (!booted) { snprintf(g_runErr, sizeof g_runErr, "boot failed: %s", err); printf("%s\n", g_runErr); return "failed"; }
@@ -687,6 +700,10 @@ static const char* run(const char* path) {
     }
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
+    if (timing && g_perf) {
+        fputs(timing, g_perf);
+        fflush(g_perf);
+    }
     const char* result = "done";
     bool saved = false;
     u32 perfRows = 0;
@@ -1523,9 +1540,17 @@ int main(int argc, char** argv) {
         char name[200] = "";
         if (fgets(name, sizeof name, ar)) {
             name[strcspn(name, "\r\n")] = 0;
-            char opt[64] = "";  // optional second line gpupos=0 / gpupos=1: the transform, fixed for the run
+            char opt[256] = "";  // optional second line gpupos=0 / gpupos=1: the transform, fixed for the run
             g_abGpuPos = false;
             g_gpuPosFixed = !(fgets(opt, sizeof opt, ar) && strstr(opt, "gpupos=0"));
+            // Further lines: run options as on the relay ("--timing-probe on --seconds 30"), space-separated.
+            while (fgets(opt, sizeof opt, ar)) {
+                char* args[24];
+                int n = 0;
+                for (char* t = strtok(opt, " \r\n"); t && n < 24; t = strtok(NULL, " \r\n")) args[n++] = t;
+                char err[160];
+                if (n && !opts_parse(&g_opt, n, args, err, sizeof err)) printf("autorun options: %s\n", err);
+            }
             for (int i = 0; i < g_nFiles; i++) if (strstr(g_files[i], name)) { run(g_files[i]); break; }
         }
         fclose(ar);

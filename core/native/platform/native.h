@@ -16,5 +16,7 @@ bool exit_requested();
 void frame_begin();
 void frame_logic_done();
 void frame_end();
+void trace(const char* fmt, ...);  // sdmc:/gc3ds/native/trace.txt, flushed at once (where start-up got to)
+void trace_memory(const char* where);  // into the trace: the largest malloc block and the heaps at this point
 [[noreturn]] void fatal(const char* message);
 }  // namespace native

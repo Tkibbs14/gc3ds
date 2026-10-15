@@ -8,14 +8,18 @@
 
 #include "dusk/main.h"
 #include "dusk/settings.h"
+#include "dusk/os.h"
 
 #include <atomic>
+#include <cstdarg>
+#include <malloc.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <thread>
 
 int game_main(int argc, char* argv[]);
 namespace native {
@@ -66,10 +70,13 @@ void init_data_paths() {
     dusk::ConfigPath = "sdmc:/gc3ds/native";
     dusk::CachePath = "sdmc:/gc3ds/native/cache";
 }
-void apply_settings() { dusk::getSettings().game.enableFrameInterpolation.setValue(dusk::FrameInterpMode::Off); }
+void apply_settings() {
+    dusk::getSettings().game.enableFrameInterpolation.setValue(dusk::FrameInterpMode::Off);
+    dusk::OSReportReallyForceEnable = true;  // the game's OSReport messages into the log while native mode is brought up
+}
 // The game's heaps: the GameCube had 24 MB of MEM1 (and 16 MB of ARAM, which the game streams through); structures
 // are the GameCube's sizes again on a 32-bit host, so the arena is near the original.
-uint32_t arena_bytes() { return 48u << 20; }
+uint32_t arena_bytes() { return 44u << 20; }  // the heaps m_Do_machine.cpp carves: ~37 MB with the 3DS sizes
 const char* disc_path() { return g_disc; }
 bool audio_enabled() { return false; }
 void poll_events() {
@@ -107,6 +114,36 @@ void frame_end() {
     s_frames = 0;
     s_window = t;
 }
+void trace(const char* fmt, ...) {
+    static FILE* f = fopen("sdmc:/gc3ds/native/trace.txt", "w");
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(f, "%9.3f ", (double)svcGetSystemTick() / SYSCLOCK_ARM11);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fflush(f);
+}
+void trace_memory(const char* where) {
+    // The largest block malloc still gives (touching its first and last byte, so a lazily backed heap cannot fake it),
+    // the heap's own accounting, and the linear heap.
+    u32 lo = 0, hi = 256u << 20;
+    while (hi - lo > (256u << 10)) {
+        u32 mid = lo + (hi - lo) / 2;
+        volatile u8* p = (volatile u8*)malloc(mid);
+        if (p) {
+            p[0] = 1;
+            p[mid - 1] = 1;
+            free((void*)p);
+            lo = mid;
+        } else
+            hi = mid;
+    }
+    struct mallinfo mi = mallinfo();
+    trace("memory %s: largest malloc block %.1f MB; heap arena %.1f MB, in use %.1f MB; linear free %.1f MB", where,
+          lo / 1048576.0, mi.arena / 1048576.0, mi.uordblks / 1048576.0, linearSpaceFree() / 1048576.0);
+}
 [[noreturn]] void fatal(const char* message) {
     printf("\nnative mode: %s\nSTART: exit\n", message);
     if (g_perf) {
@@ -133,6 +170,15 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/gc3ds/native", 0777);
     g_perf = fopen("sdmc:/gc3ds/native/perf.csv", "w");
     if (g_perf) fprintf(g_perf, "# disc %s\nreal_s,fps,logic_ms,frame_ms,gx_bytes_per_frame,drawdone_per_s\n", g_disc);
+    native::trace_memory("start");
+    {  // std::thread on this toolchain: does a thread start and finish?
+        native::trace("std::thread test: creating");
+        volatile bool ran = false;
+        std::thread t([&ran] { ran = true; });
+        native::trace("std::thread test: created");
+        t.join();
+        native::trace("std::thread test: joined, ran=%d", (int)ran);
+    }
     char* args[] = {argv && argc > 0 ? argv[0] : (char*)"gc3ds-native", g_disc, nullptr};
     int rc = game_main(2, args);
     if (g_perf) fclose(g_perf);

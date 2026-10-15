@@ -86,6 +86,8 @@ extern void (*jit_run_end_hook)(void);
 // other regions land); off when the host cannot. Drops all compiled code.
 void jit_set_fault_mem(Jit* j, bool on);
 bool jit_fault_mem(const Jit* j);
+// The code buffer past the shared stubs, emptied, as scratch for host measurements (call jit_invalidate_all after).
+u32* jit_scratch(Jit* j, u32* words);
 bool jit_fault(u32 hostPc, u32* resume);
 extern bool jit_fault_nosync;  // fault patches get no cache maintenance (a stale copy just faults again)
 // Code scheduled against ARM11 interlocks (tools/arm11_sched.py), for A/B: SCHED_STUBS, memory stubs whose range check

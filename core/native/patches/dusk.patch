@@ -165,3 +165,21 @@ index c4d3ac1..acd4b3d 100644
  
  template <typename T>
  struct ConfigValueTraits {
+diff --git a/src/m_Do/m_Do_machine.cpp b/src/m_Do/m_Do_machine.cpp
+index 3d0acca..6e04008 100644
+--- a/src/m_Do/m_Do_machine.cpp
++++ b/src/m_Do/m_Do_machine.cpp
+@@ -864,6 +864,13 @@ int mDoMch_Create() {
+     j2dHeapSize *= 2;
+     gameHeapSize *= 20; // NOTE: increased from 2 to 20 to try to solve heap alloc crashes. maybe do a better fix later
+ #endif
++#if defined(__3DS__)  // 3DS (gc3ds native mode): 32-bit, GameCube-sized structures. The GameCube ran these heaps in
++    // 24 MB (system ~3 MB, game 4.35 MB); a margin over that, not the PC sizes: ~37 MB from native mode's 44 MB arena.
++    arenaSize = 8 * 1024 * 1024;
++    archiveHeapSize = archiveHeapSize / 2 * 3 / 2;
++    j2dHeapSize = j2dHeapSize / 2 * 3 / 2;
++    gameHeapSize = gameHeapSize / 20 * 3;
++#endif
+ 
+     JFWSystem::setSysHeapSize(arenaSize);
+     my_PrintHeap("システムヒープ", arenaSize);

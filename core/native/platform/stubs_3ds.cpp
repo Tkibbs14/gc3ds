@@ -85,7 +85,7 @@ static FILE* log_file() {
     static FILE* f = fopen("sdmc:/gc3ds/native/log.txt", "w");
     return f;
 }
-bool enabled(LogLevel level, std::string_view) noexcept { return level >= LogLevel::Info; }
+bool enabled(LogLevel, std::string_view) noexcept { return true; }  // everything while native mode is brought up
 void write(LogLevel level, std::string_view module, std::string_view text) {
     static const char* const kLevel[] = {"trace", "debug", "info", "warn", "error", "fatal"};
     if (FILE* f = log_file()) {

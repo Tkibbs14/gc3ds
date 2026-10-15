@@ -5355,6 +5355,14 @@ void jit_set_fault_mem(Jit* j, bool on) {
 }
 bool jit_fault_mem(const Jit* j) { return j->faultMem; }
 
+// Scratch for host measurements (host3ds/timingprobe.c): the code buffer past the shared stubs, emptied first. Compiled
+// code must not run again until jit_invalidate_all has been called after the measurement.
+u32* jit_scratch(Jit* j, u32* words) {
+    jit_invalidate_all(j);
+    *words = j->codeWords - j->stubWords;
+    return j->code + j->stubWords;
+}
+
 // The cache sync for the sites jit_fault patched (outside the fault handler: see faultPend).
 // jit_fault_nosync: no cache maintenance at all (a stale copy faults again until the caches let it go; job 167 still
 // crashed the 2DS kernel after 6,166 faults with the sync moved here, so the root-cause test drops svc 0x94 entirely).
