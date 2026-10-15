@@ -1,5 +1,11 @@
+diff --git a/extern/aurora b/extern/aurora
+--- a/extern/aurora
++++ b/extern/aurora
+@@ -1 +1 @@
+-Subproject commit 3227d76c60e1e782ca576610bce61c9e7744d8be
++Subproject commit 3227d76c60e1e782ca576610bce61c9e7744d8be-dirty
 diff --git a/include/helpers/endian.h b/include/helpers/endian.h
-index b9727ce..0072145 100644
+index b9727ce..4df67c7 100644
 --- a/include/helpers/endian.h
 +++ b/include/helpers/endian.h
 @@ -6,7 +6,7 @@
@@ -11,6 +17,24 @@ index b9727ce..0072145 100644
      #define TARGET_LITTLE_ENDIAN 1
  #else
      #define TARGET_LITTLE_ENDIAN 0
+@@ -205,6 +205,17 @@ constexpr s32 BE<s32>::swap(s32 val) noexcept {
+     return RES_S32(val);
+ }
+ 
++#if defined(__arm__) && !defined(__aarch64__)  // 32-bit ARM: int is not s32 (int32_t is long)
++template<>
++constexpr int BE<int>::swap(int val) noexcept {
++    return (int)be32((u32)val);
++}
++template<>
++constexpr unsigned int BE<unsigned int>::swap(unsigned int val) noexcept {
++    return (unsigned int)be32((u32)val);
++}
++#endif
++
+ template<>
+ constexpr s64 BE<s64>::swap(s64 val) noexcept {
+     return RES_S64(val);
 diff --git a/sdk/include/mods/api.h b/sdk/include/mods/api.h
 index 3015130..68c151b 100644
 --- a/sdk/include/mods/api.h
@@ -98,6 +122,34 @@ index 3015130..68c151b 100644
  
  typedef struct ModMeta {
      uint32_t struct_size;
+diff --git a/src/dusk/archive.cpp b/src/dusk/archive.cpp
+index c9ba131..dd16f42 100644
+--- a/src/dusk/archive.cpp
++++ b/src/dusk/archive.cpp
+@@ -129,7 +129,7 @@ std::vector<std::string> ZipArchive::file_names() {
+ std::optional<mz_zip_archive_file_stat> stat_zip_entry(
+     mz_zip_archive* pZip, std::string_view name) {
+     const std::string fileName{name};
+-    uint32_t fileIdx;
++    mz_uint32 fileIdx;  // 32-bit ARM: uint32_t is unsigned long
+     if (!mz_zip_reader_locate_file_v2(pZip, fileName.c_str(), nullptr, 0, &fileIdx)) {
+         return std::nullopt;
+     }
+diff --git a/src/dusk/config.cpp b/src/dusk/config.cpp
+index 9afdf58..2e24fd9 100644
+--- a/src/dusk/config.cpp
++++ b/src/dusk/config.cpp
+@@ -310,6 +310,10 @@ template class ConfigImpl<u32>;
+ template class ConfigImpl<s64>;
+ template class ConfigImpl<u64>;
+ template class ConfigImpl<f32>;
++#if defined(__arm__) && !defined(__aarch64__)  // 32-bit ARM: int is not s32
++template class ConfigImpl<int>;
++template class ConfigImpl<unsigned int>;
++#endif
+ template class ConfigImpl<f64>;
+ template class ConfigImpl<std::string>;
+ template class ConfigImpl<BloomMode>;
 diff --git a/src/dusk/config_var.hpp b/src/dusk/config_var.hpp
 index c4d3ac1..acd4b3d 100644
 --- a/src/dusk/config_var.hpp

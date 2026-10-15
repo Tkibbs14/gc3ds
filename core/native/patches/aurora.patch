@@ -1,0 +1,35 @@
+diff --git a/lib/card/CardGciFolder.cpp b/lib/card/CardGciFolder.cpp
+index 00ff828..a9c8c93 100644
+--- a/lib/card/CardGciFolder.cpp
++++ b/lib/card/CardGciFolder.cpp
+@@ -478,7 +478,7 @@ void CardGciFolder::getFreeBlocks(int32_t& bytesNotUsed, int32_t& filesNotUsed)
+       --filesNotUsed;
+     }
+   }
+-  bytesNotUsed = std::max(bytesNotUsed, 0);
++  bytesNotUsed = std::max<int32_t>(bytesNotUsed, 0);  // 32-bit ARM: int32_t is long
+ }
+ 
+ void CardGciFolder::getEncoding(uint16_t& encoding) const { encoding = (uint16_t)m_encoding; }
+diff --git a/lib/dolphin/dvd/dvd.cpp b/lib/dolphin/dvd/dvd.cpp
+index 94481a4..566e8fe 100644
+--- a/lib/dolphin/dvd/dvd.cpp
++++ b/lib/dolphin/dvd/dvd.cpp
+@@ -256,7 +256,7 @@ s32 readFromHandle(CommandDataBase* handle, void* out, s32 length, s32 offset, u
+ }
+ 
+ template <typename T>
+-void atomic_store_relaxed(T& ref, T val) {
++void atomic_store_relaxed(T& ref, std::type_identity_t<T> val) {  // 32-bit ARM: u32 is unsigned long
+ #if defined(__cpp_lib_atomic_ref)
+   std::atomic_ref<T>{ref}.store(val, std::memory_order_relaxed);
+ #else
+@@ -265,7 +265,7 @@ void atomic_store_relaxed(T& ref, T val) {
+ }
+ 
+ template <typename T>
+-void atomic_store_release(T& ref, T val) {
++void atomic_store_release(T& ref, std::type_identity_t<T> val) {  // 32-bit ARM: u32 is unsigned long
+ #if defined(__cpp_lib_atomic_ref)
+   std::atomic_ref<T>{ref}.store(val, std::memory_order_release);
+ #else
