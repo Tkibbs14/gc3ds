@@ -198,7 +198,11 @@ cycles per guest instruction against 25.8 now, and core 2's GX work would have t
 - **GPU texture reads slow core 0's memory** (gpuprobe contention, job 192): a pointer chase over 1 MB (L2) took 34.6 ns
   per load idle and 70.1 ns while the GPU sampled a 1024x1024 RGBA8 texture in FCRAM; over 8 MB (memory) 194 vs 703 ns.
   gc3ds keeps game textures in FCRAM (pica.c C3D_TexInit), so every frame the GPU draws (~8-11 ms) competes with core 0.
-  The VRAM comparison did not run (no 4 MB of VRAM free): retry with a smaller texture.
+  The VRAM comparison did not run (no 4 MB of VRAM free): retry with a smaller texture. Job 196 repeated it (70 vs
+  35 ns, 704 vs 195 ns).
+- **Kernel DMA** (svcStartInterProcessDma, default config, job 196 with --probe-risky, no crash): 4 MB FCRAM -> FCRAM at
+  192 MB/s (memcpy on core 0: ~300 MB/s), and core 0's 1 MB chase was unchanged while it copied (34.5 ns either way):
+  the DMA does not pollute the L2 as the GPU's reads do. A candidate for bulk copies off core 0.
 - **Where compiled code's data misses come from** (core/tools/qemu-plugins/dcache.c, TP 850-910 under qemu, compiled
   code's accesses only, the first 100 M as warm-up; L1 miss rate 1.4%): guest RAM 42%; the JIT buffer read as data 35%;
   large mappings 19% (the indirect tables); the Gekko struct 3.5%. By issuing code: the shared `indirect` stub's table
