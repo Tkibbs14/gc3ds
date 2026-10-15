@@ -63,3 +63,8 @@ compiled for the 3DS, running on gc3ds's platform layer (GX -> PICA200, disc, in
   3DS application region; build-size growth shrinks gc3ds's malloc heap (AOT lesson, 10-14).
 - Dusklight's own additions (mods, Luau scripting, RmlUi menus, Discord presence) must be compiled out.
 - Never distribute game data or a build containing it; the user's own disc only. Never download ROMs.
+
+## After this: the 2DS timing model
+
+Once step 1 has been tested on the 2DS, a standalone project models the 2DS's speed on the PC and measures every
+modelled mechanism against the device: docs/research/TIMING_MODEL_PLAN.md (owner direction 2026-10-15).
