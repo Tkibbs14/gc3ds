@@ -18,19 +18,22 @@ DEFS     := -D__3DS__ -DDUSK_BUILDING_GAME=1 -DTARGET_PC=1 -DWIDESCREEN_SUPPORT=
             -DPARTIAL_DEBUG=1 -DNDEBUG=1 -DNDEBUG_DEFINED=1 -DDEBUG_DEFINED=0 -DDUSK_HAS_FUNCHOOK=0 -DDUSK_HAS_PREPATCH=0 -DFMT_HEADER_ONLY=1
 INCS     := -I$(abspath $(NATIVE))/shim -I$(DUSK)/include -I$(DUSK)/assets/GZ2E01 -I$(DUSK)/libs/JSystem/include \
             -I$(DUSK)/extern/aurora/include/dolphin -I$(DUSK)/extern/aurora/include -I$(DUSK)/sdk/include -I$(DUSK)/src \
-            -I$(DUSK)/extern -I$(DUSK)/extern/borealis/include -I$(DEPS)/fmt/include -I$(DEPS)/json/include -I$(DEPS)/cxxopts/include
+            -I$(DUSK)/extern -I$(DUSK)/extern/borealis/include -I$(DEPS)/fmt/include -I$(DEPS)/json/include -I$(DEPS)/cxxopts/include -I$(DEPS)/xxhash -I$(DEPS)/imgui -I$(DEPS)/miniz
 # As Dusklight's GCC flags (CMakeLists.txt), plus int-sized enums (devkitARM defaults to short ones; the game asserts).
 COMMON   := $(ARCH) $(OPT) -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -Wno-multichar -w $(DEFS) $(INCS)
 CFLAGS   := -std=gnu11 $(COMMON)
 CXXFLAGS := -std=gnu++20 -Wno-deprecated-declarations -include native_prefix.h $(COMMON)
 
 # The game's sources as files.cmake names them, without Dusklight's own platform layer (src/dusk).
-SRCS     := $(shell grep -oE "^[[:space:]]+(src|libs)/[^[:space:]]+\.(c|cpp)" $(DUSK)/files.cmake | tr -d ' \t' | grep -v "^src/dusk/" | sort -u)
+SRCS     := $(shell grep -oE "^[[:space:]]+(src|libs)/[^[:space:]]+\.(c|cpp)" $(DUSK)/files.cmake | tr -d ' \t' | grep -v "^src/dusk/" | grep -vx "src/m_Do/m_Do_main.cpp" | sort -u)
 OBJS     := $(patsubst %,$(OUT)/obj/%.o,$(SRCS))
+# Our replacement for Dusklight's PC entry point (m_Do_main.cpp), and the platform layer.
+PLATFORM := $(wildcard $(NATIVE)/platform/*.cpp)
+POBJS    := $(patsubst $(NATIVE)/platform/%.cpp,$(OUT)/platform/%.o,$(PLATFORM))
 
 .PHONY: objs size
-objs: $(OBJS)
-	@echo "compiled $(words $(OBJS)) objects into $(OUT)/obj"
+objs: $(OBJS) $(POBJS)
+	@echo "compiled $(words $(OBJS)) game objects and $(words $(POBJS)) platform objects into $(OUT)"
 
 $(OUT)/obj/%.cpp.o: $(DUSK)/%.cpp
 	@mkdir -p $(dir $@)
@@ -43,3 +46,8 @@ $(OUT)/obj/%.c.o: $(DUSK)/%.c
 
 size:
 	@find $(OUT)/obj -name '*.o' | xargs $(SIZE) -t | tail -1
+
+$(OUT)/platform/%.o: $(NATIVE)/platform/%.cpp
+	@mkdir -p $(dir $@)
+	@$(CXX) $(CXXFLAGS) -I$(NATIVE)/platform -c $< -o $@ 2> $@.err || { echo "FAIL platform/$*.cpp"; rm -f $@; }
+	@[ -s $@.err ] || rm -f $@.err
