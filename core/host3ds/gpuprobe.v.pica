@@ -1,11 +1,14 @@
 ; GPU probe (gpuprobe.c): positions arrive in clip space; colour and one texture coordinate pass through.
+; Colours arrive as unsigned bytes, which the PICA200 loads as 0-255 without normalising: scaled to 0-1 here (job 179's
+; fills all came out white, alpha 1, so the blend case blended nothing).
+.constf scale(0.0039215686, 0.0039215686, 0.0039215686, 0.0039215686)
 .out outpos position
 .out outclr color
 .out outtc0 texcoord0
 
 .proc main
 	mov outpos, v0
-	mov outclr, v1
+	mul outclr, scale, v1
 	mov outtc0, v2
 	end
 .end

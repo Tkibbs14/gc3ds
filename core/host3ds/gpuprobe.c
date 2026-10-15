@@ -244,8 +244,12 @@ const char* gpu_probe(void) {
             if (kC[k].tex) {
                 C3D_TexBind(0, kC[k].tex);
                 env_textured();
-            } else
+            } else {
+                // Unbound: a texture left bound keeps its unit fetching (job 179's combiner cases ran at exactly the
+                // ETC1 case's 8.55 ns, the last texture bound).
+                C3D_TexBind(0, NULL);
                 env_stages(kC[k].stages);
+            }
             float ms = frames(draw_layers, &fc, NULL);
             FCtx one = {1};
             u32 px = centre_pixel(draw_layers, &one);
