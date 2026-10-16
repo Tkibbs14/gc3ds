@@ -341,6 +341,18 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   is JAudio (updateDSPChannel 1.09%, updateEffectorParam 0.98%, updateSeq 0.77%, pow2 0.74%, updateAutoMixer 0.56%;
   the guest's audio engine, whose output dsp_hle discards). Only general JIT work moves the cutscene much.
 
+### Fault delivery on the 2DS kernel (fault probe, jobs 293-295)
+
+- **Job 293:** 20,000 faults on MEM1's guard page (user space, no access) were all delivered (1,660 ns each); then
+  faults at 0x50000000 (above user space) stopped the kernel after ~13,000. The Luma dumps' data abort at 541ab000 is
+  the gather pipe's host address in fault mode (mem1 - 0x80000000 + 0xCC008000).
+- **Job 294:** crashed within the probe's first ~220 faults above 0x40000000 (nothing logged).
+- **Job 295:** with every fault in user space (the guard page first) it **also** crashed within the first faults.
+- **Verdict:** the kernel's fault delivery fails at random, not only above 0x40000000; job 293's 20,000 user-space
+  faults were luck. Fault mode stays off; its accesses now clear bit 30 (harmless: uncached MEM1 reads MEM1, the other
+  regions fault in user space) but that is not the fix. No further fault experiments without a new idea about the
+  kernel side (each costs a reboot by hand).
+
 ### Core-0 switches re-tested with the GX wall gone (jobs 290-292, `--ab`, 600 s, ab_split --split 200 --end 403)
 
 The cutscene no longer waits on GX (converted shapes), so switches judged "within noise" behind that wall were run
