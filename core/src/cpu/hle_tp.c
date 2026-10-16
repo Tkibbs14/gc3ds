@@ -28,6 +28,8 @@ u64 g_hleRuns, g_hleInsns;
 // ShdwDraw stand-in costs (device profile job 266: ~34% of core 0 in the later stretch sits in it): calls, triangles the
 // fast loop skipped, guest instructions counted outside that loop, and ticks inside scan (g_profClock; 0 when off).
 u64 g_shdwStats[4];
+void (*hle_shdw_begin_hook)(void);
+void (*hle_shdw_end_hook)(void);
 static u8* g_mem;
 static u32 g_memSize;
 static int g_known = -1;  // -1 not checked yet, 0 other code, 1 recognised
@@ -361,7 +363,9 @@ u32 hle_run(Gekko* g, u32 budget) {
 #else
     u64 t0 = g_profClock ? g_profClock() : 0;
     u64 sk0 = g_shdwStats[1];
+    if (hle_shdw_begin_hook) hle_shdw_begin_hook();
     u32 n = scan(g, budget);
+    if (hle_shdw_end_hook) hle_shdw_end_hook();
     if (t0) g_shdwStats[3] += g_profClock() - t0;
     g_shdwStats[0]++;
     g_shdwStats[2] += n - 13 * (u32)(g_shdwStats[1] - sk0);

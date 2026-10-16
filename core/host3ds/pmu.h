@@ -18,6 +18,8 @@ void pmu_probe(FILE* f);
 // For measurements of a piece of code: pmu_select clears the counters and puts event pair p (0: instructions and
 // mispredicted branches, 1: I-cache and D-cache read misses, ...) on the two event counters; pmu_read returns the
 // cycles and the two events since then (false when the counters are unavailable).
+// What pmu_split_begin/end are wrapped around, for the report line.
+void pmu_split_what(const char* what);
 void pmu_select(unsigned p);
 bool pmu_read(unsigned long long* cyc, unsigned long long* ev0, unsigned long long* ev1);
 // Split of core 0's counts between compiled code (with the helpers it calls) and everything else: pmu_split_begin /

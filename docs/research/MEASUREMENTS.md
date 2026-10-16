@@ -221,6 +221,23 @@ code 11.1%. **By section (share of core-0 samples per 10 s report):**
 THP decoder (Dolphin SDK motion JPEG, used by many games' movies) up to ~78% off movie playback (now 4.1% speed). The
 cutscene has no single target: it needs the GPU port and the general JIT levers.
 
+## The ShdwDraw stand-in's own cost (jobs 267-268, device, `# hle 10s` counters)
+
+Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profClock around scan()):
+
+| Job | Build | Calls | Triangles skipped fast | Other guest instructions | ms inside | Cycles per guest instruction |
+|---|---|---|---|---|---|---|
+| 267 | registers in an array | ~215k | ~10.6M | ~301M | **~3,830** (38% of core 0) | ~7.0 |
+| 268 | registers in locals (4aaa465) | ~217k | ~10.7M | ~304M | **~3,425** (34%) | ~6.2 |
+
+- Per unit of work (ms per million other instructions) locals cost **11.5% less** (12.7 -> 11.3). Spills were a minor
+  part: the stand-in still runs at ~6 host cycles per guest instruction (all guest instructions incl. the fast-skip
+  loop's 13 each; 804 MHz).
+- ~1,400 other guest instructions per call: each call walks ~20 grid cells (octree descent + the leaf checks) before
+  it reaches an unvisited triangle and returns to guest code.
+- Next measurement: `--pmu-split hle` (job 269) splits cycles, cache misses and stalls to the stand-in, to tell memory
+  latency from instruction cost before the cell walk is rewritten natively.
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also

@@ -19,6 +19,9 @@ void hle_set_enabled(bool on);
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;
+// --pmu-split hle (3DS): called around every ShdwDraw stand-in run, for performance counters split to it.
+extern void (*hle_shdw_begin_hook)(void);
+extern void (*hle_shdw_end_hook)(void);
 extern u64 g_shdwStats[4];  // ShdwDraw stand-in (3DS): calls, triangles skipped fast, other instructions, ticks inside
 // J3D's display-list writers (hle_gd.c): called by the functions above; their own counts are also in g_hleGd*.
 void hle_gd_set_memory(u8* mem1, u32 size);

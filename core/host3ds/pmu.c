@@ -86,6 +86,8 @@ const char* pmu_columns(void) {
 static u64 g_inCyc[NPAIRS], g_inEv[NPAIRS][2], g_allCyc[NPAIRS], g_allEv[NPAIRS][2], g_s0[3];
 static u32 g_splitN;
 static bool g_inSample;
+static const char* g_splitWhat = "compiled code incl. its helpers";
+void pmu_split_what(const char* what) { g_splitWhat = what; }
 
 void pmu_split_begin(void) {
     if (!g_on || ++g_splitN % SPLIT_EVERY) return;
@@ -107,7 +109,7 @@ void pmu_split_report(FILE* f) {
     if (!g_on) return;
     u64 ic = 0, ac = 0;
     for (u32 p = 0; p < NPAIRS; p++) { ic += g_inCyc[p]; ac += g_allCyc[p]; }
-    fprintf(f, "# pmu split 10s (compiled code incl. its helpers, share of core 0; runs sampled 1/%d): cycles %.0f%%", SPLIT_EVERY,
+    fprintf(f, "# pmu split 10s (%s, share of core 0; runs sampled 1/%d): cycles %.0f%%", g_splitWhat, SPLIT_EVERY,
             ac ? 100.0 * (double)ic / (double)ac : 0.0);
     for (u32 p = 0; p < NPAIRS; p++)
         for (u32 k = 0; k < 2; k++)
