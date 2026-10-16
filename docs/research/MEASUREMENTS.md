@@ -248,6 +248,18 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   13.46% (270, with the split's ~1% overhead on): +10.5%**, cutscene 21.4% in all three (no ShdwDraw there). Separate
   runs, not an in-run A/B; the later stretch's run-to-run spread is ±1.5-3.5%.
 
+## Movie: psq_st to the locked cache compiled (jobs 266, 272, 273, device)
+
+- **Cause (job 272, `# psq_st fallbacks 10s`):** in TP's movie (510-600 s) all ~3.1-3.7M interpreted psq_st per 10 s
+  are **u8 quantized stores to the locked cache** (0xE0000000; the SDK's THP decoder writes its pixels there); 2-6 per
+  10 s for any other cause (a GQR changed after compiling). Job 266: float fallbacks took **fbfp_pct 54.5-58%** of
+  real time in the movie.
+- **Fix (35a6343):** the compiled quantized path takes an address outside MEM1 to an out-of-line locked-cache check
+  (lc_remap) and continues on its host copy; only while the BATs map 0xE0000000 there (TP: yes). Fuzzer: opt 4723
+  standard + chain seeds 1-8 0 fails; planted bug 12 caught.
+- **Job 273 (600 s):** locked-cache fallbacks 0, fbfp_pct 0.0, **movie 4.1% -> 8.6% speed (2.1x)**, guest
+  instructions 12.7 -> 25.7 M/s; cutscene 21.4%, later stretch 13.6% (unchanged).
+
 ## How much compiled code core 0's time is spread over (job 271, `--profile on`, device)
 
 New `# code footprint 10s` line (jitsample.c, jit_footprint): the sampler's block hits sorted by count, and the fewest
