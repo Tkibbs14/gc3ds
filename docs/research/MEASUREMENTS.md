@@ -191,6 +191,18 @@ conversions; the vertex worker 112 ms/s (was 300-700); the GX thread ~1,060 ms/s
 the GPU** (GXSYNC): with models on the GPU, the GPU (transform, lighting at ~72 ns per light per vertex, fill,
 textures) is now the wall.
 
+## J3D display-list writer stand-ins (HLE, jobs 264-265, device)
+
+core/src/cpu/hle_gd.c: native stand-ins for J3DGDSetLightAttn (190 instructions), SetLightPos and SetLightDir (115
+each), 7.7% of TP's guest instructions in the PC profile (hist_900). Recognised by byte hash and shape (straight-line
+apart from the compiled code's light-index clamp: index > 7 -> 0, not in the decompilation's header). PC HLE_CHECK over
+2,400 fields: **1,629,894 calls compared with the interpreter, 0 differences** (ShdwDraw 6,122 calls, 0). TP calls
+them ~40,000 times a second. Device, `--ab hlegd`, core 0: job 264 cutscene +1.99% (+-3.54), later +0.06% (+-1.66);
+job 265 +2.81% (+-3.90), later +1.39% (+-2.33); pooled 10 pairs (29-250 s) **+5.17% (+-5.08)** cutscene, 8 pairs
+later +0.77% (+-1.45). Real speed in the cutscene ~+2-3%. **Adopted** (positive in every reading, exact, no crash risk).
+**Lesson:** 7.7% of guest instructions were ~2-5% of core-0 time: straight-line stores are cheap per instruction on
+the 2DS. Rank HLE targets by device cycles per function (the sampler, `--profile on`, job 266), not instruction counts.
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also

@@ -360,6 +360,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
     bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
@@ -419,7 +420,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -812,6 +813,7 @@ static const char* run(const char* path) {
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
+        hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
@@ -943,7 +945,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
-                fprintf(g_perf, ",%d", hle_enabled() ? 1 : 0);
+                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0));  // bit 0 all, bit 1 J3DGD
                 fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_merge() ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)(pica_job_ring() >> 10) : 0u);
@@ -993,6 +995,10 @@ static const char* run(const char* path) {
                     if (g_perf) fprintf(g_perf, "# relayout %s at real %.0f s: %lu hot blocks sampled, %lu compiled first in %.1f ms\n",
                                         g_relayoutOn ? "on" : "off", (double)(now - t0) / SYSCLOCK_ARM11, (unsigned long)nHot,
                                         (unsigned long)made, (double)(svcGetSystemTick() - tc) * 1000.0 / SYSCLOCK_ARM11);
+                }
+                if (g_opt.abHlegd && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    hle_gd_set_enabled(!hle_gd_enabled());
+                    jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
                     hle_set_enabled(!hle_enabled());

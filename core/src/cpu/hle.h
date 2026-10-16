@@ -17,5 +17,14 @@ void hle_invalidate(u32 pa);
 // Stand-ins on (default) or off (comparison); compiled code holds hooks, so drop it after a change (jit_invalidate_all).
 void hle_set_enabled(bool on);
 bool hle_enabled(void);
-// Counters for the frontends: stand-in runs and guest instructions stood in for.
+// Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;
+// J3D's display-list writers (hle_gd.c): called by the functions above; their own counts are also in g_hleGd*.
+void hle_gd_set_memory(u8* mem1, u32 size);
+void hle_gd_invalidate(u32 pa);
+bool hle_gd_is_hook(u32 pc);
+// The J3DGD stand-ins alone on (default) or off (--ab hlegd; drop compiled code after a change).
+void hle_gd_set_enabled(bool on);
+bool hle_gd_enabled(void);
+u32 hle_gd_run(Gekko* g);
+extern u64 g_hleGdRuns, g_hleGdInsns;

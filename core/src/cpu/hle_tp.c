@@ -33,8 +33,11 @@ static bool g_on = true;   // hle_set_enabled
 void hle_set_enabled(bool on) { g_on = on; }
 bool hle_enabled(void) { return g_on; }
 
-void hle_set_memory(u8* mem1, u32 size) { g_mem = mem1; g_memSize = size; g_known = -1; }
-void hle_invalidate(u32 pa) { if (pa >> 12 == (PC_ENTRY & 0x0FFFFFFFu) >> 12 || pa >> 12 == (PC_EXIT & 0x0FFFFFFFu) >> 12) g_known = -1; }
+void hle_set_memory(u8* mem1, u32 size) { g_mem = mem1; g_memSize = size; g_known = -1; hle_gd_set_memory(mem1, size); }
+void hle_invalidate(u32 pa) {
+    if (pa >> 12 == (PC_ENTRY & 0x0FFFFFFFu) >> 12 || pa >> 12 == (PC_EXIT & 0x0FFFFFFFu) >> 12) g_known = -1;
+    hle_gd_invalidate(pa);
+}
 
 static u64 code_hash(void) {
     u32 pa = PC_ENTRY & 0x0FFFFFFFu, n = PC_EXIT - PC_ENTRY;
@@ -57,8 +60,8 @@ static bool known(void) {
 
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
-    if (pc != PC_ENTRY && pc != PC_NEXT) return false;
     if (!g_on) return false;
+    if (pc != PC_ENTRY && pc != PC_NEXT) return hle_gd_is_hook(pc);
     return known();
 }
 
@@ -338,7 +341,13 @@ static u32 checked(Gekko* g, u32 budget) {
 #endif
 
 u32 hle_run(Gekko* g, u32 budget) {
-    if (!g_on || !known()) return 0;
+    if (!g_on) return 0;
+    if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
+        u32 n = hle_gd_run(g);
+        if (n) { g_hleRuns++; g_hleInsns += n; }
+        return n;
+    }
+    if (!known()) return 0;
 #ifndef __3DS__
     static int chk = -1;
     if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
