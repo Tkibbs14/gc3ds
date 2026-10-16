@@ -5999,6 +5999,6 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
     }
 #endif
 }
-#endif
 
 bool jit_lc_direct(const Jit* j) { return j->lcHost && j->lcMapped; }
+#endif

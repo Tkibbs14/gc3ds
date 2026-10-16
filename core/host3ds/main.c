@@ -1099,19 +1099,21 @@ static const char* run(const char* path) {
                         static u64 lastHleRuns, lastHleInsns;
                         static u64 lastShdw[4];
                         fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu; ShdwDraw: calls %llu, "
-                                "triangles skipped fast %llu, other instructions %llu, %.1f ms inside; J3DGD runs %llu\n",
+                                "triangles skipped fast %llu, instructions %llu, %.1f ms inside; J3DGD runs %llu\n",
                                 (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns),
                                 (unsigned long long)(g_shdwStats[0] - lastShdw[0]), (unsigned long long)(g_shdwStats[1] - lastShdw[1]),
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
                                 (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
                         {  // ShdwDraw's cell walk (hle_tp.c g_shdwWalk)
-                            static u64 lastW[6];
-                            u64 w[6];
+                            static u64 lastW[10];
+                            u64 w[10];
                             memcpy(w, g_shdwWalk, sizeof w);
-                            fprintf(g_perf, "# shdw walk 10s: cells %llu, levels %llu, same leaf %llu, new leaf %llu, empty %llu, triangles checked %llu\n",
+                            fprintf(g_perf, "# shdw walk 10s: cells %llu, levels %llu, fast %llu, new leaf %llu, empty %llu, triangles checked %llu; rewound for a triangle %llu, the row end %llu, other %llu, a slice end %llu\n",
                                     (unsigned long long)(w[0] - lastW[0]), (unsigned long long)(w[1] - lastW[1]), (unsigned long long)(w[2] - lastW[2]),
-                                    (unsigned long long)(w[3] - lastW[3]), (unsigned long long)(w[4] - lastW[4]), (unsigned long long)(w[5] - lastW[5]));
+                                    (unsigned long long)(w[3] - lastW[3]), (unsigned long long)(w[4] - lastW[4]), (unsigned long long)(w[5] - lastW[5]),
+                                    (unsigned long long)(w[6] - lastW[6]), (unsigned long long)(w[7] - lastW[7]), (unsigned long long)(w[8] - lastW[8]),
+                                    (unsigned long long)(w[9] - lastW[9]));
                             memcpy(lastW, w, sizeof lastW);
                         }
                         lastHleRuns = g_hleRuns;

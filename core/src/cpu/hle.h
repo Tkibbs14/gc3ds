@@ -23,7 +23,7 @@ extern u64 g_hleRuns, g_hleInsns;
 extern void (*hle_shdw_begin_hook)(void);
 extern void (*hle_shdw_end_hook)(void);
 extern u64 g_shdwStats[4];
-extern u64 g_shdwWalk[6];  // the cell walk's shape (hle_tp.c)  // ShdwDraw stand-in (3DS): calls, triangles skipped fast, other instructions, ticks inside
+extern u64 g_shdwWalk[10];  // the cell walk's shape (hle_tp.c)  // ShdwDraw stand-in (3DS): calls, triangles skipped fast, other instructions, ticks inside
 // J3D's display-list writers (hle_gd.c): called by the functions above; their own counts are also in g_hleGd*.
 void hle_gd_set_memory(u8* mem1, u32 size);
 void hle_gd_invalidate(u32 pa);
