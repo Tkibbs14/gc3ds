@@ -69,7 +69,12 @@ void jitsample_report(FILE* f, const Jit* j) {
                 (unsigned)fp[1][0], fp[1][1] / 1024.0, (unsigned)fp[2][0], fp[2][1] / 1024.0, (unsigned)fp[3][0],
                 fp[3][1] / 1024.0, (unsigned)fp[4][0], fp[4][1] / 1024.0);
     }
-    jit_map_hosts(j, g_samples, n);
+    if (!jit_map_hosts(j, g_samples, n)) {
+        fprintf(f, "# hot guest code 10s: not mapped (no memory for the work arrays)\n");
+        g_n = 0;
+        g_outside = 0;
+        return;
+    }
     qsort(g_samples, n, sizeof *g_samples, by_value);
     // (pc, count) pairs, then the most frequent.
     static u32 pairs[2 * 4096];

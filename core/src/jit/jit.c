@@ -5621,9 +5621,21 @@ static int by_fn(const void* a, const void* b) {
     return fa < fb ? -1 : fa > fb;
 }
 
-void jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
-    static u32* order;
-    if (!order && !(order = malloc(MAX_ENTRIES * sizeof *order))) return;
+// Work arrays of the sampler's reports (jit_map_hosts, jit_hot_blocks, jit_footprint), one allocation for all three
+// (each made its own: with converted shapes the heap's largest block fell to 2.4 MB and the mapping's malloc failed,
+// so job 280's report listed host addresses).
+static u32 *g_sOrder, *g_sCount, *g_sHot;
+static bool sample_bufs(void) {
+    if (g_sOrder) return true;
+    u32* b = malloc(3u * MAX_ENTRIES * sizeof *b);
+    if (!b) return false;
+    g_sOrder = b; g_sCount = b + MAX_ENTRIES; g_sHot = b + 2 * MAX_ENTRIES;
+    return true;
+}
+
+bool jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
+    if (!sample_bufs()) return false;
+    u32* order = g_sOrder;
     u32 m = j->nEntries;
     for (u32 i = 0; i < m; i++) order[i] = i;
     g_sortEntries = j->table;
@@ -5636,6 +5648,7 @@ void jit_map_hosts(const Jit* j, u32* addrs, u32 n) {
         }
         addrs[k] = best == NO_ENTRY ? 0 : j->table[best].pc;
     }
+    return true;
 }
 
 static const u32* g_hotCount;
@@ -5644,11 +5657,8 @@ static int by_hot(const void* a, const void* b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 u32 jit_hot_blocks(const Jit* j, const u32* addrs, u32 n, u32* pcs, u32 max) {
-    static u32 *order, *count, *hot;
-    if (!order) order = malloc(MAX_ENTRIES * sizeof *order);
-    if (!count) count = malloc(MAX_ENTRIES * sizeof *count);
-    if (!hot) hot = malloc(MAX_ENTRIES * sizeof *hot);
-    if (!order || !count || !hot) return 0;
+    if (!sample_bufs()) return 0;
+    u32 *order = g_sOrder, *count = g_sCount, *hot = g_sHot;
     u32 m = j->nEntries, key = block_key(j->g);
     for (u32 i = 0; i < m; i++) { order[i] = i; count[i] = 0; }
     g_sortEntries = j->table;
@@ -5682,12 +5692,9 @@ static int by_fp(const void* a, const void* b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]) {
-    static u32 *order, *count, *hit;
     memset(out, 0, 5 * 2 * sizeof(u32));
-    if (!order) order = malloc(MAX_ENTRIES * sizeof *order);
-    if (!count) count = malloc(MAX_ENTRIES * sizeof *count);
-    if (!hit) hit = malloc(MAX_ENTRIES * sizeof *hit);
-    if (!order || !count || !hit || !n) return;
+    if (!sample_bufs() || !n) return;
+    u32 *order = g_sOrder, *count = g_sCount, *hit = g_sHot;
     u32 m = j->nEntries, in = 0, nh = 0;
     for (u32 i = 0; i < m; i++) { order[i] = i; count[i] = 0; }
     g_sortEntries = j->table;
