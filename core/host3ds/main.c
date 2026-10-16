@@ -45,6 +45,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
+void jit_bench(Jit* j, System* s, FILE* f);  // jitbench.c: --jit-bench only
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
 extern FILE* probe_live;  // timingprobe.c: probe lines also go here as they are measured
@@ -334,6 +335,7 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
+    bool jitBench;       // --jit-bench only: JIT microbenchmarks (jitbench.c) after boot, instead of the run
     int timingProbe;     // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots; only: and nothing else
     char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
     bool faultMem;       // --faultmem on: the JIT's fault mode (unchecked MEM1 loads and stores, jit_set_fault_mem)
@@ -438,6 +440,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
+        else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
         else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
         else if (!strcmp(a, "--probe-risky")) g_probeRisky = !strcmp(v, "on");  // timingprobe.c: the DMA engine too
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
@@ -840,6 +843,12 @@ static const char* run(const char* path) {
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
+    }
+    if (g_opt.jitBench && g_jit) {  // --jit-bench only: the JIT microbenchmarks with this run's options; no game runs
+        gxthread_drain();
+        jit_bench(g_jit, &g_sys, g_perf);
+        if (g_perf) { fclose(g_perf); g_perf = NULL; }
+        return "done";
     }
     if (g_pica) {
         pica_set_vertex_worker(true);
