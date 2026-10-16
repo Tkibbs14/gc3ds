@@ -163,6 +163,53 @@ static void run_case(FILE* f, const Case* c) {
     fflush(f);
 }
 
+// Block boundaries and footprint: a ring of M blocks of K guest instructions each (K - 1 addi over r3-r6, then a bne
+// cr7 taken to the next block, with a b to it on the not-taken path), each block 64 bytes apart in guest memory; run
+// round and round until the budget. What a block boundary costs (registers written back and loaded again, the linked
+// jump) and how the cost grows as the compiled code outgrows the caches.
+#define RING_PA 0x00010000u
+static void run_blocks(FILE* f, u32 k, u32 m) {
+    Gekko* g = &g_s->cpu;
+    for (u32 b = 0; b < m; b++) {
+        u32 at = RING_PA + 64 * b, next = RING_PA + 64 * ((b + 1) % m);
+        for (u32 i = 0; i + 1 < k; i++) {
+            u32 r = 3 + (i & 3);
+            mem1_write32(g_s, at + 4 * i, DF(14) | r << 21 | r << 16 | 1);  // addi rR, rR, 1
+        }
+        u32 bc = at + 4 * (k - 1);
+        mem1_write32(g_s, bc, DF(16) | 4u << 21 | 30u << 16 | ((next - bc) & 0xFFFCu));  // bne cr7, next (cr7.eq clear)
+        mem1_write32(g_s, bc + 4, DF(18) | ((next - bc - 4) & 0x03FFFFFCu));            // b next
+    }
+    for (u32 i = 0; i < 32; i++) g->gpr[i] = i;
+    g->cr = 0x88888888u;
+    g->pc = 0x80000000u | RING_PA;
+    jit_invalidate_all(g_j);
+    #define QUIET2() do { g->extIrq = false; GKP(g)->brk = false; GKP(g)->stopReq = false; g->msr &= ~MSR_EE; } while (0)
+    QUIET2();
+    jit_run(g_j, (s64)m * k * 4 + 100000);  // compiles every block of the ring
+    static const unsigned kPairs[3] = { 0, 2, 1 };
+    double cyc[3], ev[3][2];
+    u32 calls = 0;
+    for (int p = 0; p < 3; p++) {
+        pmu_select(kPairs[p]);
+        u32 ran = 0;
+        calls = 0;
+        while (ran < 2000000 && calls < 100000) { QUIET2(); ran += jit_run(g_j, 2000000 - ran); calls++; }
+        unsigned long long cy, e0, e1;
+        pmu_read(&cy, &e0, &e1);
+        cyc[p] = ran ? (double)cy / ran : 0;
+        ev[p][0] = ran ? (double)e0 / ran : 0;
+        ev[p][1] = ran ? (double)e1 / ran : 0;
+    }
+    double cmin = cyc[0] < cyc[1] ? cyc[0] : cyc[1];
+    if (cyc[2] < cmin) cmin = cyc[2];
+    fprintf(f, "# jitbench blocks K %lu M %lu: cyc %.2f per guest instruction (%.1f per block) inst %.2f stall_inst %.2f "
+            "stall_data %.2f icmiss %.4f dcrmiss %.4f (%lu runs; JIT code %.0f%% of its buffer)\n", (unsigned long)k,
+            (unsigned long)m, cmin, cmin * k, ev[0][0], ev[1][0], ev[1][1], ev[2][0], ev[2][1], (unsigned long)calls,
+            100.0 * jit_code_used(g_j));
+    fflush(f);
+}
+
 void jit_bench(Jit* j, System* s, FILE* f) {
     if (!pmu_init()) { fprintf(f, "# jitbench: performance counters unavailable (%s)\n", pmu_status()); return; }
     g_s = s;
@@ -180,6 +227,9 @@ void jit_bench(Jit* j, System* s, FILE* f) {
     fprintf(f, "# jitbench: per guest instruction, loops of %d in L1, the run's JIT options (jit opt %lx)\n", REPS,
             (unsigned long)jit_opt(j));
     for (u32 i = 0; i < sizeof kCases / sizeof kCases[0]; i++) run_case(f, &kCases[i]);
+    static const u32 kK[3] = { 2, 6, 12 }, kM[4] = { 16, 256, 1024, 4096 };
+    for (u32 a = 0; a < 3; a++)
+        for (u32 b = 0; b < 4; b++) run_blocks(f, kK[a], kM[b]);
     memcpy(&s->cpu, &saved, sizeof saved);
     jit_invalidate_all(j);
     fprintf(f, "# jitbench: done\n");
