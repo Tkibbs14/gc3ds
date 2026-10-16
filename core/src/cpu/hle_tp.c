@@ -25,6 +25,9 @@
 #define CODE_HASH 0x195639DFDBEA5654ull  // FNV-1a 64 of the guest bytes [PC_ENTRY, PC_EXIT); see code_hash
 
 u64 g_hleRuns, g_hleInsns;
+// ShdwDraw stand-in costs (device profile job 266: ~34% of core 0 in the later stretch sits in it): calls, triangles the
+// fast loop skipped, guest instructions counted outside that loop, and ticks inside scan (g_profClock; 0 when off).
+u64 g_shdwStats[4];
 static u8* g_mem;
 static u32 g_memSize;
 static int g_known = -1;  // -1 not checked yet, 0 other code, 1 recognised
@@ -96,9 +99,11 @@ static inline u32 cmps(u32 a, u32 b) { return (s32)a < (s32)b ? 8u : (s32)a > (s
 static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
 
 static u32 scan(Gekko* g, u32 budget) {
-    u32 r[32], pc = g->pc, n = 0, cr0 = 0, t;
+    // The guest registers as locals (not an array): the compiler keeps the hot ones in ARM registers; the array
+    // version spent ~7 cycles per guest instruction (2DS job 267: 38% of core 0 in the later stretch).
+    u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r6 = g->gpr[6], r7 = g->gpr[7], r8 = g->gpr[8], r14 = g->gpr[14], r15 = g->gpr[15], r16 = g->gpr[16], r17 = g->gpr[17], r18 = g->gpr[18], r19 = g->gpr[19], r20 = g->gpr[20], r21 = g->gpr[21], r22 = g->gpr[22], r23 = g->gpr[23], r24 = g->gpr[24], r25 = g->gpr[25], r26 = g->gpr[26], r27 = g->gpr[27], r28 = g->gpr[28], r29 = g->gpr[29], r30 = g->gpr[30];
+    u32 pc = g->pc, n = 0, cr0 = 0, t;
     bool crSet = false, caClear = false;
-    memcpy(r, g->gpr, sizeof r);
 // A guest access that fails stops the stand-in before that instruction, for guest code to run it.
 #define RD32(dst, addr, at) do { if (!rd32((addr), &t)) { pc = (at); goto out; } (dst) = t; } while (0)
 #define RD16(dst, addr, at) do { if (!rd16((addr), &t)) { pc = (at); goto out; } (dst) = t; } while (0)
@@ -107,113 +112,113 @@ static u32 scan(Gekko* g, u32 budget) {
     if (pc == PC_NEXT) goto L_fea4;
     if (pc != PC_ENTRY) return 0;
 L_fb48:
-    r[3] = 0x000F0000u; n++;                         // addis r3,0,15
-    r[14] = r[3] + 16960; n++;                       // addi r14,r3,16960
-    r[18] = r[28]; n++;                              // or r18,r28,r28
+    r3 = 0x000F0000u; n++;                         // addis r3,0,15
+    r14 = r3 + 16960; n++;                       // addi r14,r3,16960
+    r18 = r28; n++;                              // or r18,r28,r28
 L_fb54:
-    r[3] = 0x000F0000u; n++;                         // addis r3,0,15
-    r[0] = r[3] + 16960; n++;                        // addi r0,r3,16960
-    WR32(r[1] + 2224, r[0], 0x8007FB5Cu); n++;       // stw r0,2224(r1)
-    r[25] = 0; n++;                                  // addi r25,0,0
-    r[24] = 0; n++;                                  // addi r24,0,0
-    r[23] = 0; n++;                                  // addi r23,0,0
-    r[17] = r[30]; n++;                              // or r17,r30,r30
+    r3 = 0x000F0000u; n++;                         // addis r3,0,15
+    r0 = r3 + 16960; n++;                        // addi r0,r3,16960
+    WR32(r1 + 2224, r0, 0x8007FB5Cu); n++;       // stw r0,2224(r1)
+    r25 = 0; n++;                                  // addi r25,0,0
+    r24 = 0; n++;                                  // addi r24,0,0
+    r23 = 0; n++;                                  // addi r23,0,0
+    r17 = r30; n++;                              // or r17,r30,r30
 L_fb70:
     if (n >= budget) { pc = 0x8007FB70u; goto out; }  // slice used up: guest code goes on from the loop head
-    RD32(r[8], r[15] + 24, 0x8007FB70u); n++;        // lwz r8,24(r15)
-    RD32(r[3], r[8] + 12, 0x8007FB74u); n++;         // lwz r3,12(r8)
-    RD32(r[4], r[8] + 44, 0x8007FB78u); n++;         // lwz r4,44(r8)
-    r[7] = shr(r[17], r[4]); n++;                    // srw r7,r17,r4
-    r[5] = shr(r[19], r[4]); n++;                    // srw r5,r19,r4
-    RD32(r[0], r[8] + 52, 0x8007FB84u); n++;         // lwz r0,52(r8)
-    r[6] = shl(r[5], r[0]); n++;                     // slw r6,r5,r0
-    r[5] = shr(r[18], r[4]); n++;                    // srw r5,r18,r4
-    RD32(r[0], r[8] + 48, 0x8007FB90u); n++;         // lwz r0,48(r8)
-    r[0] = shl(r[5], r[0]); n++;                     // slw r0,r5,r0
-    r[0] = r[6] | r[0]; n++;                         // or r0,r6,r0
-    r[0] = r[7] | r[0]; n++;                         // or r0,r7,r0
-    r[5] = r[0] << 2; n++;                           // rlwinm r5,r0,2,0,29
+    RD32(r8, r15 + 24, 0x8007FB70u); n++;        // lwz r8,24(r15)
+    RD32(r3, r8 + 12, 0x8007FB74u); n++;         // lwz r3,12(r8)
+    RD32(r4, r8 + 44, 0x8007FB78u); n++;         // lwz r4,44(r8)
+    r7 = shr(r17, r4); n++;                    // srw r7,r17,r4
+    r5 = shr(r19, r4); n++;                    // srw r5,r19,r4
+    RD32(r0, r8 + 52, 0x8007FB84u); n++;         // lwz r0,52(r8)
+    r6 = shl(r5, r0); n++;                     // slw r6,r5,r0
+    r5 = shr(r18, r4); n++;                    // srw r5,r18,r4
+    RD32(r0, r8 + 48, 0x8007FB90u); n++;         // lwz r0,48(r8)
+    r0 = shl(r5, r0); n++;                     // slw r0,r5,r0
+    r0 = r6 | r0; n++;                         // or r0,r6,r0
+    r0 = r7 | r0; n++;                         // or r0,r7,r0
+    r5 = r0 << 2; n++;                           // rlwinm r5,r0,2,0,29
     n++;                                             // b 0x8007fbcc
     goto L_fbcc;
 L_fba8:
-    r[3] = r[0] + r[5]; n++;                         // add r3,r0,r5
-    r[4] = r[4] - 1; n++;                            // addi r4,r4,-1
-    r[6] = shr(r[17], r[4]); n++;                    // srw r6,r17,r4
-    r[5] = shr(r[19], r[4]); n++;                    // srw r5,r19,r4
-    r[0] = shr(r[18], r[4]); n++;                    // srw r0,r18,r4
-    r[0] = rotl(r[0], 1) & 2u; n++;                  // rlwinm r0,r0,1,30,30
-    r[0] = (rotl(r[5], 2) & 4u) | (r[0] & ~4u); n++; // rlwimi r0,r5,2,29,29
-    r[0] = (r[6] & 1u) | (r[0] & ~1u); n++;          // rlwimi r0,r6,0,31,31
-    r[5] = r[0] << 2; n++;                           // rlwinm r5,r0,2,0,29
+    r3 = r0 + r5; n++;                         // add r3,r0,r5
+    r4 = r4 - 1; n++;                            // addi r4,r4,-1
+    r6 = shr(r17, r4); n++;                    // srw r6,r17,r4
+    r5 = shr(r19, r4); n++;                    // srw r5,r19,r4
+    r0 = shr(r18, r4); n++;                    // srw r0,r18,r4
+    r0 = rotl(r0, 1) & 2u; n++;                  // rlwinm r0,r0,1,30,30
+    r0 = (rotl(r5, 2) & 4u) | (r0 & ~4u); n++; // rlwimi r0,r5,2,29,29
+    r0 = (r6 & 1u) | (r0 & ~1u); n++;          // rlwimi r0,r6,0,31,31
+    r5 = r0 << 2; n++;                           // rlwinm r5,r0,2,0,29
 L_fbcc:
-    r[0] = r[3]; n++;                                // or r0,r3,r3
-    RD32(r[5], r[3] + r[5], 0x8007FBD0u); n++;       // lwzx r5,r3,r5
-    CR(cmps(r[5], 0)); n++;                          // cmpi cr0,0,r5,0
+    r0 = r3; n++;                                // or r0,r3,r3
+    RD32(r5, r3 + r5, 0x8007FBD0u); n++;       // lwzx r5,r3,r5
+    CR(cmps(r5, 0)); n++;                          // cmpi cr0,0,r5,0
     n++;                                             // bc 4,lt,0x8007fba8
-    if ((s32)r[5] >= 0) goto L_fba8;
-    r[0] = r[5] & 0x7FFFFFFFu; n++;                  // rlwinm r0,r5,0,1,31
-    r[16] = r[3] + r[0]; n++;                        // add r16,r3,r0
-    r[0] = 1; n++;                                   // addi r0,0,1
-    r[3] = shl(r[0], r[4]); n++;                     // slw r3,r0,r4
-    r[5] = r[3] - 1; n++;                            // addi r5,r3,-1
-    r[0] = r[17] & r[5]; n++;                        // and r0,r17,r5
-    r[0] = r[3] - r[0]; n++;                         // subf r0,r0,r3
-    WR32(r[1] + 2228, r[0], 0x8007FBF8u); n++;       // stw r0,2228(r1)
-    r[0] = r[18] & r[5]; n++;                        // and r0,r18,r5
-    r[4] = r[3] - r[0]; n++;                         // subf r4,r0,r3
-    r[0] = r[19] & r[5]; n++;                        // and r0,r19,r5
-    r[0] = r[3] - r[0]; n++;                         // subf r0,r0,r3
-    CR(cmps(r[0], r[14])); n++;                      // cmp cr0,0,r0,r14
+    if ((s32)r5 >= 0) goto L_fba8;
+    r0 = r5 & 0x7FFFFFFFu; n++;                  // rlwinm r0,r5,0,1,31
+    r16 = r3 + r0; n++;                        // add r16,r3,r0
+    r0 = 1; n++;                                   // addi r0,0,1
+    r3 = shl(r0, r4); n++;                     // slw r3,r0,r4
+    r5 = r3 - 1; n++;                            // addi r5,r3,-1
+    r0 = r17 & r5; n++;                        // and r0,r17,r5
+    r0 = r3 - r0; n++;                         // subf r0,r0,r3
+    WR32(r1 + 2228, r0, 0x8007FBF8u); n++;       // stw r0,2228(r1)
+    r0 = r18 & r5; n++;                        // and r0,r18,r5
+    r4 = r3 - r0; n++;                         // subf r4,r0,r3
+    r0 = r19 & r5; n++;                        // and r0,r19,r5
+    r0 = r3 - r0; n++;                         // subf r0,r0,r3
+    CR(cmps(r0, r14)); n++;                      // cmp cr0,0,r0,r14
     n++;                                             // bc 4,lt,0x8007fc18
-    if ((s32)r[0] < (s32)r[14]) { r[14] = r[0]; n++; }  // or r14,r0,r0
-    RD32(r[0], r[1] + 2224, 0x8007FC18u); n++;       // lwz r0,2224(r1)
-    CR(cmps(r[4], r[0])); n++;                       // cmp cr0,0,r4,r0
+    if ((s32)r0 < (s32)r14) { r14 = r0; n++; }  // or r14,r0,r0
+    RD32(r0, r1 + 2224, 0x8007FC18u); n++;       // lwz r0,2224(r1)
+    CR(cmps(r4, r0)); n++;                       // cmp cr0,0,r4,r0
     n++;                                             // bc 4,lt,0x8007fc28
-    if ((s32)r[4] < (s32)r[0]) { WR32(r[1] + 2224, r[4], 0x8007FC24u); n++; }  // stw r4,2224(r1)
-    RD16(r[0], r[16] + 2, 0x8007FC28u); n++;         // lhz r0,2(r16)
-    CR(cmpu(r[0], 0)); n++;                          // cmpli cr0,0,r0,0
+    if ((s32)r4 < (s32)r0) { WR32(r1 + 2224, r4, 0x8007FC24u); n++; }  // stw r4,2224(r1)
+    RD16(r0, r16 + 2, 0x8007FC28u); n++;         // lhz r0,2(r16)
+    CR(cmpu(r0, 0)); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 12,eq,0x8007fc84
-    if (r[0] == 0) goto L_fc84;
-    CR(cmps(r[4], r[23])); n++;                      // cmp cr0,0,r4,r23
+    if (r0 == 0) goto L_fc84;
+    CR(cmps(r4, r23)); n++;                      // cmp cr0,0,r4,r23
     n++;                                             // bc 4,gt,0x8007fc84
-    if ((s32)r[4] <= (s32)r[23]) goto L_fc84;
-    CR(cmps(r[4], r[24])); n++;                      // cmp cr0,0,r4,r24
+    if ((s32)r4 <= (s32)r23) goto L_fc84;
+    CR(cmps(r4, r24)); n++;                      // cmp cr0,0,r4,r24
     n++;                                             // bc 4,gt,0x8007fc7c
-    if ((s32)r[4] <= (s32)r[24]) goto L_fc7c;
-    CR(cmps(r[4], r[25])); n++;                      // cmp cr0,0,r4,r25
+    if ((s32)r4 <= (s32)r24) goto L_fc7c;
+    CR(cmps(r4, r25)); n++;                      // cmp cr0,0,r4,r25
     n++;                                             // bc 4,gt,0x8007fc68
-    if ((s32)r[4] <= (s32)r[25]) goto L_fc68;
-    r[23] = r[24]; n++;                              // or r23,r24,r24
-    r[24] = r[25]; n++;                              // or r24,r25,r25
-    r[25] = r[4]; n++;                               // or r25,r4,r4
-    r[20] = r[21]; n++;                              // or r20,r21,r21
-    r[21] = r[22]; n++;                              // or r21,r22,r22
-    r[22] = r[16]; n++;                              // or r22,r16,r16
+    if ((s32)r4 <= (s32)r25) goto L_fc68;
+    r23 = r24; n++;                              // or r23,r24,r24
+    r24 = r25; n++;                              // or r24,r25,r25
+    r25 = r4; n++;                               // or r25,r4,r4
+    r20 = r21; n++;                              // or r20,r21,r21
+    r21 = r22; n++;                              // or r21,r22,r22
+    r22 = r16; n++;                              // or r22,r16,r16
     n++;                                             // b 0x8007fc84
     goto L_fc84;
 L_fc68:
-    r[23] = r[24]; n++;                              // or r23,r24,r24
-    r[24] = r[4]; n++;                               // or r24,r4,r4
-    r[20] = r[21]; n++;                              // or r20,r21,r21
-    r[21] = r[16]; n++;                              // or r21,r16,r16
+    r23 = r24; n++;                              // or r23,r24,r24
+    r24 = r4; n++;                               // or r24,r4,r4
+    r20 = r21; n++;                              // or r20,r21,r21
+    r21 = r16; n++;                              // or r21,r16,r16
     n++;                                             // b 0x8007fc84
     goto L_fc84;
 L_fc7c:
-    r[23] = r[4]; n++;                               // or r23,r4,r4
-    r[20] = r[16]; n++;                              // or r20,r16,r16
+    r23 = r4; n++;                               // or r23,r4,r4
+    r20 = r16; n++;                              // or r20,r16,r16
 L_fc84:
-    RD32(r[0], r[1] + 2220, 0x8007FC84u); n++;       // lwz r0,2220(r1)
-    CR(cmpu(r[16], r[0])); n++;                      // cmpl cr0,0,r16,r0
+    RD32(r0, r1 + 2220, 0x8007FC84u); n++;       // lwz r0,2220(r1)
+    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 12,eq,0x8007feb0
-    if (r[16] == r[0]) goto L_feb0;
-    RD32(r[0], r[1] + 2216, 0x8007FC90u); n++;       // lwz r0,2216(r1)
-    CR(cmpu(r[16], r[0])); n++;                      // cmpl cr0,0,r16,r0
+    if (r16 == r0) goto L_feb0;
+    RD32(r0, r1 + 2216, 0x8007FC90u); n++;       // lwz r0,2216(r1)
+    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 12,eq,0x8007feb0
-    if (r[16] == r[0]) goto L_feb0;
-    RD32(r[0], r[1] + 2212, 0x8007FC9Cu); n++;       // lwz r0,2212(r1)
-    CR(cmpu(r[16], r[0])); n++;                      // cmpl cr0,0,r16,r0
+    if (r16 == r0) goto L_feb0;
+    RD32(r0, r1 + 2212, 0x8007FC9Cu); n++;       // lwz r0,2212(r1)
+    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 4,eq,0x8007fea4
-    if (r[16] != r[0]) goto L_fea4;
+    if (r16 != r0) goto L_fea4;
     n++;                                             // b 0x8007feb0
     goto L_feb0;
 L_fea4:
@@ -222,7 +227,7 @@ L_fea4:
         // then 0x8007fcb0..0x8007fcd0 back here) that leave only r16 and the count changed and r0 / r3 / r4 / r5 / CR0 /
         // XER[CA] as the last one set them, which is rebuilt below. The list's end, an unvisited triangle and any address
         // the loop cannot read go through the instruction-by-instruction code from where it stopped.
-        u32 p = r[16], skipped = 0, lastT = 0, lastW = 0, vis = r[1] + 156;
+        u32 p = r16, skipped = 0, lastT = 0, lastW = 0, vis = r1 + 156;
         for (;;) {
             u32 a = p + 2, tt, wa, w;
             if (!rd16(a, &tt) || !tt) break;
@@ -231,56 +236,57 @@ L_fea4:
             skipped++; lastT = tt; lastW = w; p = a;
         }
         if (skipped) {
-            r[16] = p;
+            g_shdwStats[1] += skipped;
+            r16 = p;
             n += 13 * skipped;
-            r[3] = lastW;
-            r[4] = (lastT >> 5) << 2;
-            r[5] = 1u << (lastT & 31);
-            r[0] = r[3] & r[5];
-            CR(cmps(r[0], 0));
+            r3 = lastW;
+            r4 = (lastT >> 5) << 2;
+            r5 = 1u << (lastT & 31);
+            r0 = r3 & r5;
+            CR(cmps(r0, 0));
             caClear = true;
         }
     }
-    RD16(r[0], r[16] + 2, 0x8007FEA4u);              // lhzu r0,2(r16)
-    r[16] += 2; n++;
-    CR(cmpu(r[0], 0)); n++;                          // cmpli cr0,0,r0,0
+    RD16(r0, r16 + 2, 0x8007FEA4u);              // lhzu r0,2(r16)
+    r16 += 2; n++;
+    CR(cmpu(r0, 0)); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 4,eq,0x8007fcb0
-    if (r[0] != 0) goto L_fcb0;
+    if (r0 != 0) goto L_fcb0;
 L_feb0:
-    RD32(r[0], r[1] + 2228, 0x8007FEB0u); n++;       // lwz r0,2228(r1)
-    r[17] = r[17] + r[0]; n++;                       // add r17,r17,r0
-    CR(cmpu(r[17], r[29])); n++;                     // cmpl cr0,0,r17,r29
+    RD32(r0, r1 + 2228, 0x8007FEB0u); n++;       // lwz r0,2228(r1)
+    r17 = r17 + r0; n++;                       // add r17,r17,r0
+    CR(cmpu(r17, r29)); n++;                     // cmpl cr0,0,r17,r29
     n++;                                             // bc 4,gt,0x8007fb70
-    if (r[17] <= r[29]) goto L_fb70;
-    WR32(r[1] + 2220, r[22], 0x8007FEC0u); n++;      // stw r22,2220(r1)
-    WR32(r[1] + 2216, r[21], 0x8007FEC4u); n++;      // stw r21,2216(r1)
-    WR32(r[1] + 2212, r[20], 0x8007FEC8u); n++;      // stw r20,2212(r1)
-    RD32(r[0], r[1] + 2224, 0x8007FECCu); n++;       // lwz r0,2224(r1)
-    r[18] = r[18] + r[0]; n++;                       // add r18,r18,r0
-    CR(cmpu(r[18], r[27])); n++;                     // cmpl cr0,0,r18,r27
+    if (r17 <= r29) goto L_fb70;
+    WR32(r1 + 2220, r22, 0x8007FEC0u); n++;      // stw r22,2220(r1)
+    WR32(r1 + 2216, r21, 0x8007FEC4u); n++;      // stw r21,2216(r1)
+    WR32(r1 + 2212, r20, 0x8007FEC8u); n++;      // stw r20,2212(r1)
+    RD32(r0, r1 + 2224, 0x8007FECCu); n++;       // lwz r0,2224(r1)
+    r18 = r18 + r0; n++;                       // add r18,r18,r0
+    CR(cmpu(r18, r27)); n++;                     // cmpl cr0,0,r18,r27
     n++;                                             // bc 4,gt,0x8007fb54
-    if (r[18] <= r[27]) goto L_fb54;
-    r[19] = r[19] + r[14]; n++;                      // add r19,r19,r14
-    CR(cmpu(r[19], r[26])); n++;                     // cmpl cr0,0,r19,r26
+    if (r18 <= r27) goto L_fb54;
+    r19 = r19 + r14; n++;                      // add r19,r19,r14
+    CR(cmpu(r19, r26)); n++;                     // cmpl cr0,0,r19,r26
     n++;                                             // bc 4,gt,0x8007fb48
-    if (r[19] <= r[26]) goto L_fb48;
+    if (r19 <= r26) goto L_fb48;
     pc = PC_EXIT;
     goto out;
 L_fcb0:
-    r[3] = 1; n++;                                   // addi r3,0,1
-    RD16(r[4], r[16], 0x8007FCB4u); n++;             // lhz r4,0(r16)
-    r[0] = r[4] & 31u; n++;                          // rlwinm r0,r4,0,27,31
-    r[5] = shl(r[3], r[0]); n++;                     // slw r5,r3,r0
-    r[0] = (u32)((s32)r[4] >> 5); caClear = true; n++;  // srawi r0,r4,5 (r4 is a halfword: CA = 0)
-    r[4] = r[0] << 2; n++;                           // rlwinm r4,r0,2,0,29
-    r[3] = r[1] + 156; n++;                          // addi r3,r1,156
-    RD32(r[3], r[3] + r[4], 0x8007FCCCu); n++;       // lwzx r3,r3,r4
-    r[0] = r[3] & r[5]; CR(cmps(r[0], 0)); n++;      // and. r0,r3,r5
+    r3 = 1; n++;                                   // addi r3,0,1
+    RD16(r4, r16, 0x8007FCB4u); n++;             // lhz r4,0(r16)
+    r0 = r4 & 31u; n++;                          // rlwinm r0,r4,0,27,31
+    r5 = shl(r3, r0); n++;                     // slw r5,r3,r0
+    r0 = (u32)((s32)r4 >> 5); caClear = true; n++;  // srawi r0,r4,5 (r4 is a halfword: CA = 0)
+    r4 = r0 << 2; n++;                           // rlwinm r4,r0,2,0,29
+    r3 = r1 + 156; n++;                          // addi r3,r1,156
+    RD32(r3, r3 + r4, 0x8007FCCCu); n++;       // lwzx r3,r3,r4
+    r0 = r3 & r5; CR(cmps(r0, 0)); n++;      // and. r0,r3,r5
     n++;                                             // bc 4,eq,0x8007fea4
-    if (r[0] != 0) goto L_fea4;
-    r[0] = r[3] | r[5]; n++;                         // or r0,r3,r5
-    r[3] = r[1] + 156; n++;                          // addi r3,r1,156
-    WR32(r[3] + r[4], r[0], 0x8007FCE0u); n++;       // stwx r0,r3,r4
+    if (r0 != 0) goto L_fea4;
+    r0 = r3 | r5; n++;                         // or r0,r3,r5
+    r3 = r1 + 156; n++;                          // addi r3,r1,156
+    WR32(r3 + r4, r0, 0x8007FCE0u); n++;       // stwx r0,r3,r4
     pc = PC_TRI;
 out:
 #undef RD32
@@ -288,7 +294,7 @@ out:
 #undef WR32
 #undef CR
     if (!n) return 0;
-    memcpy(g->gpr, r, sizeof r);
+    g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; g->gpr[14] = r14; g->gpr[15] = r15; g->gpr[16] = r16; g->gpr[17] = r17; g->gpr[18] = r18; g->gpr[19] = r19; g->gpr[20] = r20; g->gpr[21] = r21; g->gpr[22] = r22; g->gpr[23] = r23; g->gpr[24] = r24; g->gpr[25] = r25; g->gpr[26] = r26; g->gpr[27] = r27; g->gpr[28] = r28; g->gpr[29] = r29; g->gpr[30] = r30;
     if (crSet) g->cr = (g->cr & 0x0FFFFFFFu) | ((cr0 | ((g->xer & XER_SO) ? 1u : 0u)) << 28);
     if (caClear) g->xer &= ~XER_CA;
     g->pc = pc;
@@ -353,7 +359,12 @@ u32 hle_run(Gekko* g, u32 budget) {
     if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
     u32 n = chk ? checked(g, budget) : scan(g, budget);
 #else
+    u64 t0 = g_profClock ? g_profClock() : 0;
+    u64 sk0 = g_shdwStats[1];
     u32 n = scan(g, budget);
+    if (t0) g_shdwStats[3] += g_profClock() - t0;
+    g_shdwStats[0]++;
+    g_shdwStats[2] += n - 13 * (u32)(g_shdwStats[1] - sk0);
 #endif
     if (n) { g_hleRuns++; g_hleInsns += n; }
     return n;

@@ -1063,8 +1063,14 @@ static const char* run(const char* path) {
                                 (unsigned long long)(why[3] - lastWhy[3]), (unsigned long long)(why[4] - lastWhy[4]),
                                 (unsigned long long)(why[5] - lastWhy[5]));
                         static u64 lastHleRuns, lastHleInsns;
-                        fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu\n",
-                                (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns));
+                        static u64 lastShdw[4];
+                        fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu; ShdwDraw: calls %llu, "
+                                "triangles skipped fast %llu, other instructions %llu, %.1f ms inside; J3DGD runs %llu\n",
+                                (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns),
+                                (unsigned long long)(g_shdwStats[0] - lastShdw[0]), (unsigned long long)(g_shdwStats[1] - lastShdw[1]),
+                                (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
+                                (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
+                        memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
                         lastHleRuns = g_hleRuns;
                         lastHleInsns = g_hleInsns;
                         static u64 lastTevC, lastTevK;
