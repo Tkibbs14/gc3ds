@@ -2523,7 +2523,9 @@ static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 l
         }
         if (src == 0) {  // position, relative to the origin: fold it in
             for (int r = 0; r < 3; r++) tm[4 * r + 3] += tm[4 * r] * e->origin[0] + tm[4 * r + 1] * e->origin[1] + tm[4 * r + 2] * e->origin[2];
-            id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 3);
+            // All four floats of the 16-byte position (the shader reads only xyz): a loader narrower than its buffer's
+            // stride hung the GPU (probe job 177), the suspect in native mode's hang at frame 241 (jobs 242, 244).
+            id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 4);
             BufInfo_Add(bi, m + e->off[NO_POS], 16, 1, (u64)id);
         } else if (src == 1) {
             id = AttrInfo_AddLoader(ai, 2 + (int)u, GPU_FLOAT, 3);
