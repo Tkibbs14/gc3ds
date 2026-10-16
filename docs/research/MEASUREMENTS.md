@@ -310,6 +310,37 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - Job 280 (and 282) listed host addresses / nothing: the sampler's work arrays failed to allocate with shapes' smaller
   heap (fixed: one allocation at sampler start).
 
+### ShdwDraw's cell walk and the fast cells (jobs 285-288, device; PC HLE_CHECK 6,122 calls 0 differed)
+
+- **Shape (job 285, per 10 s of the later stretch):** ~234k calls, ~3.1M cells (~13 a call), ~11.3M tree levels
+  (**3.6 per cell**, each descent from the root), new leaf 89% of cells (its triangle list scanned, ~4 visited
+  triangles each), the previous row's leaf 11%, empty leaves ~35%, ~0.22M triangles checked one by one.
+- **Fast cells (job 286-287):** whole cells keeping only what carries to the next one, rewound to the exact code at any
+  stop. 93% of cells run fast; rewinds per 10 s: ~80k for an unvisited triangle, ~150k at a row's end, ~16k at a slice
+  end, 0 for addresses. **13.1 -> 10.8 us per call**; later stretch **14.39 -> 15.11%** (emulated window; job 287 also
+  timed one call in 16 instead of every call: two clock reads were ~1.3% of core 0).
+- **Why not more (job 288, `--pmu-split hle`):** the stand-in is 29% of core 0's cycles, 42% of its instructions,
+  ~5,550 ARM instructions and ~8,800 cycles a call, **~420 instructions a cell**: head loads with checks ~45, 3.6
+  levels x ~25, ~4 visited-triangle checks x ~18, tail and leaf bookkeeping ~70, the head snapshot and spills ~60.
+  Store-buffer drains fell 259k -> 163k/s (their share rose: 84%). Next lever there: keep the descent path between
+  neighbouring cells (most share their upper levels).
+
+### Core 0 by library family (job 289, `--profile on`, 1,500 blocks a report at 0.001%; hot_funcs.py --families)
+
+| Family | Cutscene (listed 25.2%) | Later stretch (66.4%) | Movie (88.1%) |
+|---|---|---|---|
+| JAudio (JASChannel / JASTrack / JASCalc) | **8.36%** | 5.95% | 0.40% |
+| game code and the rest | 8.95% | 5.79% | 4.04% |
+| collision (ShdwDraw 31.4% of the later stretch) | 4.26% | **35.88%** | 0.83% |
+| J3D | 1.87% | 12.31% | 8.43% |
+| vector / matrix (PSVEC, PSMTX, mDoMtx, cM3d) | 1.36% | 4.80% | 2.77% |
+| GX SDK | - | 0.00% | 12.35% |
+| runtime-loaded code (THP decoder) | 0.15% | 0.09% | **53.66%** |
+
+- **The cutscene is flat:** three quarters of its samples fall in blocks past the top 1,500. Its largest named family
+  is JAudio (updateDSPChannel 1.09%, updateEffectorParam 0.98%, updateSeq 0.77%, pow2 0.74%, updateAutoMixer 0.56%;
+  the guest's audio engine, whose output dsp_hle discards). Only general JIT work moves the cutscene much.
+
 ## Converted shapes in the emulator (jobs 272, 274-276, device)
 
 - **Why (job 272):** in the cutscene core 0 waits **gxwait_pct ~19%** for the GX thread (gxthread_pct ~83%, vertex
