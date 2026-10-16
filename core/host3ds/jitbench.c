@@ -177,7 +177,9 @@ static void run_blocks(FILE* f, u32 k, u32 m) {
             mem1_write32(g_s, at + 4 * i, DF(14) | r << 21 | r << 16 | 1);  // addi rR, rR, 1
         }
         u32 bc = at + 4 * (k - 1);
-        mem1_write32(g_s, bc, DF(16) | 4u << 21 | 30u << 16 | ((next - bc) & 0xFFFCu));  // bne cr7, next (cr7.eq clear)
+        // bne cr7, next (cr7.eq clear); the last block's goes to its own b (a bc reaches only +-32 KB, the ring is larger)
+        u32 tgt = b + 1 < m ? next : bc + 4;
+        mem1_write32(g_s, bc, DF(16) | 4u << 21 | 30u << 16 | ((tgt - bc) & 0xFFFCu));
         mem1_write32(g_s, bc + 4, DF(18) | ((next - bc - 4) & 0x03FFFFFCu));            // b next
     }
     for (u32 i = 0; i < 32; i++) g->gpr[i] = i;
@@ -206,7 +208,7 @@ static void run_blocks(FILE* f, u32 k, u32 m) {
     fprintf(f, "# jitbench blocks K %lu M %lu: cyc %.2f per guest instruction (%.1f per block) inst %.2f stall_inst %.2f "
             "stall_data %.2f icmiss %.4f dcrmiss %.4f (%lu runs; JIT code %.0f%% of its buffer)\n", (unsigned long)k,
             (unsigned long)m, cmin, cmin * k, ev[0][0], ev[1][0], ev[1][1], ev[2][0], ev[2][1], (unsigned long)calls,
-            100.0 * jit_code_used(g_j));
+            jit_words_per_insn(g_j));
     fflush(f);
 }
 

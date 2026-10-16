@@ -5625,6 +5625,8 @@ static int by_fn(const void* a, const void* b) {
 // (each made its own: with converted shapes the heap's largest block fell to 2.4 MB and the mapping's malloc failed,
 // so job 280's report listed host addresses).
 static u32 *g_sOrder, *g_sCount, *g_sHot;
+static bool sample_bufs(void);
+bool jit_sample_prepare(void) { return sample_bufs(); }
 static bool sample_bufs(void) {
     if (g_sOrder) return true;
     u32* b = malloc(3u * MAX_ENTRIES * sizeof *b);

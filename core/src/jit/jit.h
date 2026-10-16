@@ -200,6 +200,8 @@ extern volatile u32 jit_in_run;
 // ran once (I-fetch stalls were 21% of core 0, job 184). Needs blocks to store their start (jit_set_profile).
 u32 jit_hot_blocks(const Jit* j, const u32* hostAddrs, u32 n, u32* pcs, u32 max);
 u32 jit_precompile(Jit* j, const u32* pcs, u32 n);  // how many were compiled (stops if the buffer fills)
+// The sampler's work arrays, allocated while the heap is still whole (jitsample_start); false: no memory.
+bool jit_sample_prepare(void);
 bool jit_map_hosts(const Jit* j, u32* addrs, u32 n);  // false: no memory for its work arrays (addrs unchanged)
 // The sampled code footprint (see jit.c): out[k] = {blocks, host bytes} covering 50, 80, 90, 99, 100% of the samples.
 void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]);

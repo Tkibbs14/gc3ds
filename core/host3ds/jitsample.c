@@ -38,6 +38,7 @@ bool jitsample_start(const Gekko* g) {
     g_g = g;
     g_samples = malloc(MAX_SAMPLES * sizeof *g_samples);
     if (!g_samples) return false;
+    jit_sample_prepare();  // the report's work arrays now, before the run fragments the heap (job 282)
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     g_thread = threadCreate(sampler, NULL, 8 * 1024, prio + 2 > 0x3F ? 0x3F : prio + 2, 1, true);
