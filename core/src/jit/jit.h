@@ -93,6 +93,10 @@ extern void (*jit_run_end_hook)(void);
 // host's handler calls jit_fault, which patches that site into a branch to its slow path and returns where to resume
 // (false: not a fault-mode site). Needs jit_host_fault_init (the host's handler, and nothing mapped where the guest's
 // other regions land); off when the host cannot. Drops all compiled code.
+// Fault mode's accesses clear this bit of the guest address before adding MEM1's base: uncached MEM1 (0xC0000000) then
+// reads MEM1 itself, and the other regions (EFB 0xC8, MMIO 0xCC, locked cache 0xE0) land 0x08 / 0x0C / 0x20 x 2^24
+// bytes past MEM1, in user space, where a fault is delivered safely (above 0x40000000 it crashed the 2DS kernel).
+#define JIT_FAULT_BIC 0x40000000u
 void jit_set_fault_mem(Jit* j, bool on);
 bool jit_fault_mem(const Jit* j);
 // The code buffer past the shared stubs, emptied, as scratch for host measurements (call jit_invalidate_all after).

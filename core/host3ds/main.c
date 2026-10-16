@@ -51,6 +51,7 @@ const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benc
 extern FILE* probe_live;  // timingprobe.c: probe lines also go here as they are measured
 extern bool g_probeRisky;  // timingprobe.c: --probe-risky (the DMA engine)
 extern const char* g_mem1Guard;             // jit_3ds.c: whether MEM1's guard regions are inaccessible
+extern const char* g_faultRegions;          // jit_3ds.c: where fault mode's other regions land, and whether they are free
 void hwprobe_run(System* s, Jit* j);  // hwprobe.c: hardware self-test to sdmc:/gc3ds/hw.txt (j may be NULL)
 
 static void scan_dir(const char* dir) {
@@ -835,6 +836,7 @@ static const char* run(const char* path) {
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard,
                             jit_fault_nosync ? "none (--faultsync off)" : "outside the handler",
                             jit_fault_fixed_data ? "fixed buffer (--faultdata fixed)" : "handler stack");
+        if (g_perf) fprintf(g_perf, "# fault mode regions (bit 30 cleared): %s\n", g_faultRegions);
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);

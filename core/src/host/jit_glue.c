@@ -36,10 +36,10 @@ bool jit_host_fault_init(const u8* ram) {
     static const u8* done;
     if (done) return done == ram;
     static const struct { u32 ea, len; } kRegions[] = {
-        { 0xC0000000u, 0x01800000u },  // MEM1, uncached
-        { 0xC8000000u, 0x00400000u },  // EFB
-        { 0xCC000000u, 0x00010000u },  // MMIO and the write-gather pipe
-        { 0xE0000000u, 0x00010000u },  // locked cache
+        // Fault-mode accesses clear bit 30 first (JIT_FAULT_BIC): uncached MEM1 is MEM1, the others land here.
+        { 0xC8000000u & ~JIT_FAULT_BIC, 0x00400000u },  // EFB
+        { 0xCC000000u & ~JIT_FAULT_BIC, 0x00010000u },  // MMIO and the write-gather pipe
+        { 0xE0000000u & ~JIT_FAULT_BIC, 0x00020000u },  // locked cache (its BAT spans 128 KB)
         { 0x00000000u, 0x01800000u },  // physical addresses
     };
     for (u32 i = 0; i < sizeof kRegions / sizeof kRegions[0]; i++) {

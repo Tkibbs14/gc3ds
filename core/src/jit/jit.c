@@ -1584,6 +1584,8 @@ static void cold_start(Cg* c, const u32 slow[2]) {
 
 // Fault mode (see Jit.faultMem): a site may run its access unchecked while the block's sites and the Jit's table have
 // room; fault_site, called at the start of the site's cold slow path, records where the handler sends it.
+// FAULT_BIC: the address bit a fault-mode access clears before adding RRAM (jit.h JIT_FAULT_BIC).
+#define FAULT_BIC JIT_FAULT_BIC
 #define FAULT_BITS 18
 #define FAULT_SLOTS (1u << FAULT_BITS)
 #define FAULT_MAX (FAULT_SLOTS / 4 * 3)
@@ -1645,10 +1647,13 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     Emit* e = &c->e;
     if (!c->fastmem) { load_slow(c, size, sign, dreg); return; }
     if (fault_ok(c)) {  // the access alone; its slow path is reached only by the fault handler's patch
+        // Bit 30 cleared first (FAULT_BIC): uncached MEM1 reads MEM1 directly and every other guest region faults in
+        // user space; faults above 0x40000000 crashed the kernel (fault probe, relay 293).
+        dp_imm(e, BIC, 0, R12, R0, IMM(FAULT_BIC));
         u32 at = e->n;
-        if (size == 4) { ldr_reg(e, dreg, RRAM, R0); rev(e, dreg, dreg); }
-        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R0); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
-        else ldrb_reg(e, dreg, RRAM, R0);
+        if (size == 4) { ldr_reg(e, dreg, RRAM, R12); rev(e, dreg, dreg); }
+        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R12); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+        else ldrb_reg(e, dreg, RRAM, R12);
         u32 resume = e->n;
         cold_begin(c);
         fault_site(c, at);
@@ -1747,9 +1752,10 @@ static void emit_store(Cg* c, u32 size, int vreg) {
     if (!c->fastmem) { store_slow(c, size, vreg); return; }
     if (fault_ok(c) && vreg != R3) {  // (the slow path needs vreg unchanged: the byte swap goes to r3)
         u32 at;
-        if (size == 4) { rev(e, R3, vreg); at = e->n; str_reg(e, R3, RRAM, R0); }
-        else if (size == 2) { rev16(e, R3, vreg); at = e->n; strh_reg(e, R3, RRAM, R0); }
-        else { at = e->n; strb_reg(e, vreg, RRAM, R0); }
+        dp_imm(e, BIC, 0, R12, R0, IMM(FAULT_BIC));  // (see emit_load)
+        if (size == 4) { rev(e, R3, vreg); at = e->n; str_reg(e, R3, RRAM, R12); }
+        else if (size == 2) { rev16(e, R3, vreg); at = e->n; strh_reg(e, R3, RRAM, R12); }
+        else { at = e->n; strb_reg(e, vreg, RRAM, R12); }
         u32 resume = e->n;
         cold_begin(c);
         fault_site(c, at);

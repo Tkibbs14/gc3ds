@@ -105,16 +105,22 @@ void fault_probe(FILE* f, const u8* mem1) {
     // address? First faults on MEM1's guard page (user space, no access), then the same number above 0x40000000. The
     // count goes to the log every 1,000, so a crash shows how far each got.
     extern const char* g_mem1Guard;
+    // Relay 293: the guard page took 20,000 faults; above 0x40000000 the kernel went down after ~13,000. Fault mode now
+    // clears bit 30 (jit.h JIT_FAULT_BIC), so its non-MEM1 faults land where the last two entries point (free user space).
     static const struct { const char* name; u32 base, span; } kStress[] = {
         { "guard page (user space, no access)", 0, 0 },
-        { "above 0x40000000 (as fault mode's non-MEM1 sites)", 0x50000000u, 0x00400000u },
+        { "MMIO with bit 30 cleared (fault mode's gather-pipe and register sites)", 0x8C000000u, 0x00010000u },
+        { "EFB with bit 30 cleared", 0x88000000u, 0x00400000u },
     };
-    for (u32 s = 0; s < 2; s++) {
-        u32 base = kStress[s].base, span = kStress[s].span;
+    for (u32 s = 0; s < 3; s++) {
+        u32 base = (u32)mem1 - 0x80000000u + kStress[s].base, span = kStress[s].span;
         if (s == 0) {
             if (strcmp(g_mem1Guard, "no access")) { fprintf(f, "# fault probe stress: guard pages %s, skipped\n", g_mem1Guard); continue; }
             base = (u32)mem1 - 4096; span = 4096;  // the guard below MEM1
         }
+        h0 = g_hits;
+        fp_load(base);
+        if (g_hits == h0) { fprintf(f, "# fault probe stress: %s at %08lx is MAPPED: skipped\n", kStress[s].name, (unsigned long)base); continue; }
         fprintf(f, "# fault probe stress: %s at %08lx, 20000 faults\n", kStress[s].name, (unsigned long)base);
         fflush(f);
         h0 = g_hits;

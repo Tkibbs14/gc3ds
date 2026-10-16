@@ -86,8 +86,36 @@ void host_mem1_free(u8* mem1, u32 size, u32 guard) {
 bool jit_fault_fixed_data;
 static ERRF_ExceptionData g_faultData __attribute__((aligned(8)));
 
+// Fault mode's accesses clear bit 30 of the guest address (JIT_FAULT_BIC): the regions other than MEM1 then land in
+// user space, where faults are delivered safely (relay 293: 20,000 faults on a user-space page with no access went
+// through; faults above 0x40000000 took the kernel down after ~13,000). Each region's host range must be free (not
+// mapped) or an access there would read or write whatever is mapped: libctru maps shared memory at 0x10000000 and up.
+// g_faultRegions: what was checked (perf.csv header); fault mode stays off when a range is in use.
+const char* g_faultRegions = "not checked";
+static bool range_free(u32 addr, u32 len) {
+    MemInfo mi;
+    PageInfo pi;
+    if (R_FAILED(svcQueryMemory(&mi, &pi, addr))) return false;
+    return mi.state == MEMSTATE_FREE && mi.base_addr <= addr && addr + len <= mi.base_addr + mi.size;
+}
+
 bool jit_host_fault_init(const u8* ram) {
     if ((u32)ram + 0x01800000u > 0x40000000u) return false;
+    static char desc[160];
+    static const struct { const char* name; u32 ea, len; } kRegions[] = {
+        { "EFB", 0xC8000000u, 0x00400000u }, { "MMIO", 0xCC000000u, 0x00010000u }, { "locked cache", 0xE0000000u, 0x00020000u },
+    };
+    u32 n = 0;
+    bool ok = true;
+    for (u32 i = 0; i < sizeof kRegions / sizeof kRegions[0]; i++) {
+        u32 host = (u32)ram - 0x80000000u + (kRegions[i].ea & ~JIT_FAULT_BIC);
+        bool f = host + kRegions[i].len <= 0x40000000u && range_free(host, kRegions[i].len);
+        ok = ok && f;
+        n += (u32)snprintf(desc + n, sizeof desc - n, "%s%s %08lx %s", i ? ", " : "", kRegions[i].name, (unsigned long)host, f ? "free" : "IN USE");
+        if (n >= sizeof desc) break;
+    }
+    g_faultRegions = desc;
+    if (!ok) return false;
     threadOnException(on_fault, g_faultStack + sizeof g_faultStack, jit_fault_fixed_data ? &g_faultData : WRITE_DATA_TO_HANDLER_STACK);
     return true;
 }
