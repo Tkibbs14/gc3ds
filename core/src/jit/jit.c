@@ -302,11 +302,25 @@ static u32 jit_sc_handler(Gekko* g, u32 pc, u32 n) {
     return 0;
 }
 
+// Why a psq_st reached the interpreter (JitStats.psqStFb; the locked cache is 16 KB at 0xE0000000, sys/system.h).
+static void psq_st_note(const Gekko* g, u32 inst, bool indexed) {
+    u32 ra = (inst >> 16) & 31, rb = (inst >> 11) & 31;
+    u32 idx = indexed ? (inst >> 7) & 7 : (inst >> 12) & 7, w = indexed ? (inst >> 10) & 1 : (inst >> 15) & 1;
+    u32 ea = (ra ? g->gpr[ra] : 0) + (indexed ? g->gpr[rb] : (u32)((s32)(inst << 20) >> 20));
+    u32 q = g->spr[SPR_GQR0 + idx], qt = q & 7, sz = qt == 4 || qt == 6 ? 1 : qt == 5 || qt == 7 ? 2 : 4;
+    u32 len = w ? sz : 2 * sz, mem1 = (ea & ~0x40000000u) - 0x80000000u;
+    u32 k = ea - 0xE0000000u < 0x4000u ? 0 : mem1 + len <= g_jit->ramSize ? ((ea & (sz - 1)) ? 2 : 1) : 3;
+    g_jit->stats.psqStFb[k]++;
+    g_jit->stats.psqStFbType[qt]++;
+}
+
 static u32 jit_interp_at(Gekko* g, u32 pc, u32 inst) {
     if ((inst & ~(31u << 2)) == INST_SC_HANDLER) return jit_sc_handler(g, pc, (inst >> 2) & 31);
     u64 n = ++g_jit->stats.fallbacksRun;
     count_op(&g_jit->stats.fallbackRun, inst);
     u32 xo = (inst >> 1) & 0x3FF;
+    if ((inst >> 26) == 60 || (inst >> 26) == 61) psq_st_note(g, inst, false);
+    else if ((inst >> 26) == 4 && ((xo & 63) == 7 || (xo & 63) == 39)) psq_st_note(g, inst, true);
     if ((inst >> 26) == 31 && (xo == 339 || xo == 467))
         g_jit->stats.sprRun[xo == 467][((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)]++;
     bool stop;

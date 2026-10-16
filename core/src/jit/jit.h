@@ -43,6 +43,10 @@ typedef struct {
     JitOpCounts exitOther;     // dispatcher returns for "other" reasons, by the guest instruction before g->pc
     u32 exitVector[32];        // ... or by exception vector (g->pc / 0x100) when the return went to one
     u32 sprRun[2][1024];       // dynamic: interpreted mfspr [0] / mtspr [1] by SPR number
+    // Interpreted psq_st / psq_stu / psq_stx / psq_stux by where they store: [0] the locked cache, [1] MEM1 with every
+    // element aligned (so the compiled code's GQR check failed: the GQR changed after compiling), [2] MEM1 misaligned,
+    // [3] anywhere else; and by the GQR's store type at run time (0 float, 4 u8, 5 u16, 6 s8, 7 s16).
+    u64 psqStFb[4], psqStFbType[8];
 } JitStats;
 
 // ram/ramSize: host view of physical RAM starting at physical 0 (for the fast memory path).

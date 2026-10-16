@@ -633,6 +633,19 @@ static void perf_fallbacks(void) {
     fprintf(g_perf, "\n");
     perf_top_ops("fallbacks", &jit_stats(g_jit)->fallbackRun, &g_fbPrev);
     fprintf(g_perf, "\n");
+    {  // interpreted psq_st by cause (jit.h JitStats.psqStFb)
+        static u64 fbPrev[4], typePrev[8];
+        const JitStats* s = jit_stats(g_jit);
+        fprintf(g_perf, "# psq_st fallbacks 10s: locked cache %llu, MEM1 aligned (GQR changed) %llu, MEM1 misaligned %llu, other %llu; "
+                "GQR store type float %llu u8 %llu u16 %llu s8 %llu s16 %llu\n",
+                (unsigned long long)(s->psqStFb[0] - fbPrev[0]), (unsigned long long)(s->psqStFb[1] - fbPrev[1]),
+                (unsigned long long)(s->psqStFb[2] - fbPrev[2]), (unsigned long long)(s->psqStFb[3] - fbPrev[3]),
+                (unsigned long long)(s->psqStFbType[0] - typePrev[0]), (unsigned long long)(s->psqStFbType[4] - typePrev[4]),
+                (unsigned long long)(s->psqStFbType[5] - typePrev[5]), (unsigned long long)(s->psqStFbType[6] - typePrev[6]),
+                (unsigned long long)(s->psqStFbType[7] - typePrev[7]));
+        memcpy(fbPrev, s->psqStFb, sizeof fbPrev);
+        memcpy(typePrev, s->psqStFbType, sizeof typePrev);
+    }
     // The interpreted mfspr / mtspr by SPR number (the ones worth compiling next).
     static u32 sprPrev[2][1024];
     const JitStats* js = jit_stats(g_jit);
