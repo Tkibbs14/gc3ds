@@ -60,6 +60,7 @@ static void boot_like(System* s) {
     gekko_set_spr(g, SPR_IBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_IBAT0U + 1, 0x00000002);
     gekko_set_spr(g, SPR_DBAT0U, 0x80001FFF); gekko_set_spr(g, SPR_DBAT0U + 1, 0x00000002);
     gekko_set_spr(g, SPR_DBAT0U + 2, 0xC0001FFF); gekko_set_spr(g, SPR_DBAT0U + 3, 0x0000002A);
+    gekko_set_spr(g, SPR_DBAT0U + 4, 0xE0000003); gekko_set_spr(g, SPR_DBAT0U + 5, 0xE0000002);  // the locked cache, 128 KB
     gekko_set_spr(g, SPR_HID2, HID2_BASE);
     gekko_set_msr(g, MSR_FP | MSR_BASE);
 }
@@ -91,6 +92,7 @@ static u32 float_base(St* st, u32 ra, u32 size) {
     u32 v = load_base(st, ra, size), k = rnd() % 16;
     if (k == 0) st->gpr[ra] = ((rnd() & 1) ? 0x80000000u : 0xC0000000u) | (MEM1_SIZE - 16 + 4 * (rnd() % 4));
     else if (k == 1) st->gpr[ra] = interesting();
+    else if (k == 2) st->gpr[ra] = 0xE0000000u + ((rnd() & 1) ? (rnd() % 0x4000u) & ~3u : 0x4000u - 16 + 4 * (rnd() % 6));  // the locked cache, its end too
     return v;
 }
 
@@ -524,6 +526,12 @@ static bool compare(u32 inst, u32 inst2, int n, int expect) {
             printf("  fpscr.FPCC jit %x interp %x\n", (a->fpscr >> 12) & 15, (b->fpscr >> 12) & 15);
             ok = false;
         }
+    if (memcmp(A.lockedCache, B.lockedCache, LOCKED_CACHE_SIZE)) {
+        if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
+        for (u32 i = 0; i < LOCKED_CACHE_SIZE; i++)
+            if (A.lockedCache[i] != B.lockedCache[i]) { printf("  locked cache +%04x jit %02x interp %02x\n", i, A.lockedCache[i], B.lockedCache[i]); break; }
+        ok = false;
+    }
     if (memcmp(A.mem1 + MEM1_SIZE - TOP_SIZE, B.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE)) {
         if (ok) printf("MISMATCH %08x  %s  (case %u)\n", inst, dis, g_case);
         printf("  memory at the end of MEM1 differs\n");
@@ -783,6 +791,12 @@ int main(int argc, char** argv) {
     if (!jit) { printf("jit_create failed\n"); sys_free(&A); sys_free(&B); return 2; }
     jit_debug_max_insns = 1;
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
+    if (!getenv("JIT_FUZZ_NOLC")) jit_set_locked_cache(jit, A.lockedCache);
+    for (u32 i = 0; i < LOCKED_CACHE_SIZE; i += 4) {  // normal singles, as fill_floats_at (lfs / psq_l of tiny values differ by design)
+        u32 ex = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254, v = (rnd() & 1) << 31 | ex << 23 | (rnd() & 0x7FFFFF);
+        A.lockedCache[i] = (u8)(v >> 24); A.lockedCache[i + 1] = (u8)(v >> 16); A.lockedCache[i + 2] = (u8)(v >> 8); A.lockedCache[i + 3] = (u8)v;
+    }
+    memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);  // (chain mode copies nothing per case)
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
     if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
     if (getenv("JIT_FUZZ_SIDE")) jit_set_trace_parts(jit, true, (u32)strtoul(getenv("JIT_FUZZ_SIDE"), NULL, 0), 0);  // 0: traces only follow b / bl / blr
@@ -964,6 +978,7 @@ int main(int argc, char** argv) {
         CODE_PA = 0x3000u + 4 * (rnd() % (1024 - len + 1));
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
+        memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);
         if (st.fmem && (floatSeq || rnd() % 8)) { fill_floats(&A); memcpy(B.mem1 + WIN_PA, A.mem1 + WIN_PA, WIN_SIZE); }
         if (psChain) {  // the chain's slots: moderate normal floats (exponents -7..8)
             for (u32 i = 0; i < 64; i += 4) {

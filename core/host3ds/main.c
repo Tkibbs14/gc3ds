@@ -319,6 +319,7 @@ typedef struct {
     u32 seconds;         // --seconds N: end the run after N real seconds
     bool abTraces, abHle, abMerge, abVwmem, abSplit, abPld;  // --ab traces|hle|merge|vwmem|splitopen|pld|none: alternates every AB_SECS
     bool traces, hle;    // --traces on|off, --hle on|off: start values (an A/B flips them)
+    bool noLc;           // --lc off: quantized psq accesses to the locked cache go to the interpreter (as before 2026-10-16)
     bool merge;          // --merge on|off: draw merging on the GX thread (pica.c; on by default)
     u32 vwmemKb;         // --vwmem KB: the vertex worker's job ring (pica_set_job_ring; --ab vwmem alternates 256 and 1024)
     bool traceFollow;    // --trace-follow on|off: traces follow unconditional b
@@ -425,6 +426,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
         else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
+        else if (!strcmp(a, "--lc")) o->noLc = !strcmp(v, "off");
         else if (!strcmp(a, "--trace-follow")) o->traceFollow = !strcmp(v, "on");
         else if (!strcmp(a, "--trace-side")) o->traceSide = !strcmp(v, "on") ? TRACE_SIDE_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
@@ -637,12 +639,12 @@ static void perf_fallbacks(void) {
         static u64 fbPrev[4], typePrev[8];
         const JitStats* s = jit_stats(g_jit);
         fprintf(g_perf, "# psq_st fallbacks 10s: locked cache %llu, MEM1 aligned (GQR changed) %llu, MEM1 misaligned %llu, other %llu; "
-                "GQR store type float %llu u8 %llu u16 %llu s8 %llu s16 %llu\n",
+                "GQR store type float %llu u8 %llu u16 %llu s8 %llu s16 %llu; locked cache compiled %s\n",
                 (unsigned long long)(s->psqStFb[0] - fbPrev[0]), (unsigned long long)(s->psqStFb[1] - fbPrev[1]),
                 (unsigned long long)(s->psqStFb[2] - fbPrev[2]), (unsigned long long)(s->psqStFb[3] - fbPrev[3]),
                 (unsigned long long)(s->psqStFbType[0] - typePrev[0]), (unsigned long long)(s->psqStFbType[4] - typePrev[4]),
                 (unsigned long long)(s->psqStFbType[5] - typePrev[5]), (unsigned long long)(s->psqStFbType[6] - typePrev[6]),
-                (unsigned long long)(s->psqStFbType[7] - typePrev[7]));
+                (unsigned long long)(s->psqStFbType[7] - typePrev[7]), jit_lc_direct(g_jit) ? "yes" : "no");
         memcpy(fbPrev, s->psqStFb, sizeof fbPrev);
         memcpy(typePrev, s->psqStFbType, sizeof typePrev);
     }
@@ -1810,6 +1812,7 @@ int main(int argc, char** argv) {
         g_sys.icbiHook = on_icbi;
         g_sys.icbiCtx = g_jit;
         jit_set_gather(g_jit, gp_wgp_put, &g_sys, GP_WGP_EA);
+        if (!g_opt.noLc) jit_set_locked_cache(g_jit, g_sys.lockedCache);
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
     }
     // romfs:/autorun.txt (test builds) names a program to start without the menu.

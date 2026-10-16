@@ -91,6 +91,7 @@ struct Jit {
     u32 nEntries;
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
     bool fastmemUser;      // ... in problem state (MSR[PR]) too
+    bool lcMapped, lcMappedUser;  // 0xE0000000-0xE0003FFF map the locked cache (supervisor / problem state)
     // Fault mode (jit_set_fault_mem): loads and stores reach MEM1 inline with no checks ([RRAM, ea]); any other
     // address lands on host memory that is not mapped, the access faults, and the host's fault handler calls jit_fault,
     // which patches the site into a branch to its slow path and resumes there. faultKey / faultVal: an open-addressed
@@ -140,6 +141,7 @@ struct Jit {
     void (*gatherPut)(void* ctx, u32 v, u32 size);  // jit_set_gather
     void* gatherCtx;
     u32 gatherEa;
+    u8* lcHost;                 // jit_set_locked_cache: the locked cache's host copy (quantized psq accesses reach it)
     u8* gatherBuf;              // jit_set_gather_buffer: the pipe's partial burst and its length, appended to inline
     u32* gatherLen;
     bool slowInline;            // jit_set_slow_inline: the old per-site slow paths instead of the shared stubs (A/B)
@@ -2860,6 +2862,23 @@ static void psq_store_value(Cg* c, u32 fr, u32 lane, u32 qt, int scale, bool sgn
 // u8 / u16 / s8 / s16 with its scale); a run-time check of the GQR, misaligned elements or an address outside MEM1 run
 // the interpreter for this one instruction. Quantized loads are exact (int, then times 2^-scale); quantized stores
 // round to single, scale, truncate toward zero and saturate, as the interpreter's quantize() (NaN gives 0).
+// In cold code, for a quantized psq access whose address r0 is outside MEM1: if all len bytes are in the locked cache
+// (16 KB at 0xE0000000; the SDK's THP movie decoder writes its pixels there with u8 psq_st, then DMAs them out), r1
+// becomes the address whose sum with RRAM is the host copy, and the access goes on at hot index hostAdd. Returns the
+// (cold) branch taken for any other address. Uses r1 and r12.
+static u32 lc_remap(Cg* c, u32 len, u32 hostAdd) {
+    Emit* e = &c->e;
+    dp_imm(e, SUB, 0, R12, R0, IMM(0xE0000000u));
+    load_const(e, R1, 0x4000u - len);
+    dp_reg(e, CMP, 1, 0, R12, R1);
+    u32 miss = branch_c(e, C_HI, 0);
+    load_const(e, R1, (u32)(uintptr_t)c->j->lcHost - (u32)(uintptr_t)c->j->ram + 0x80000000u + (jit_debug_plant == 12 ? 4u : 0u));
+    dp_reg(e, ADD, 0, R1, R1, R12);
+    u32 at = branch_c(e, C_AL, 0);
+    add_fix(c, true, at, false, hostAdd);
+    return miss;
+}
+
 static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) {
     Emit* e = &c->e;
     if (!c->fastmem || !c->ps || (!indexed && !c->lsq)) return false;
@@ -2873,7 +2892,7 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     int scale = (qs & 0x20) ? (int)qs - 64 : (int)qs;
     u32 sz = qt == 0 ? 4 : qt == 4 || qt == 6 ? 1 : 2;
     bool sgn = qt == 6 || qt == 7;
-    u32 fb[4], nfb = 0;
+    u32 fb[6], nfb = 0, fbCold = 0;  // fbCold: bit k set when fb[k] is a branch in cold code
 #ifndef __3DS__
     if (g_regStat && !c->inCold) rs_emit_count(e, &g_psqRun[store][qt][w]);
 #endif
@@ -2965,13 +2984,15 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     bool pipe = store && c->j->gatherPut;  // psq_st to the write-gather pipe: element by element, out of line
+    bool lc = c->j->lcHost && qt != 0 && ((c->j->g->msr & MSR_PR) ? c->j->lcMappedUser : c->j->lcMapped);  // (lc_remap)
     u32 outside = branch_c(e, C_CS, 0);
-    if (!pipe) fb[nfb++] = outside;
+    if (!pipe && !lc) fb[nfb++] = outside;
     if (!w) {  // the second element must be inside too
         dp_imm(e, ADD, 0, R3, R12, sz);
         dp_imm(e, CMP, 1, 0, R3, IMM(0x01800000u));
         fb[nfb++] = branch_c(e, C_CS, 0);
     }
+    u32 hostAdd = e->n;
     dp_reg(e, ADD, 0, R1, R1, RRAM);
     if (qt != 0 && scale != 0) {  // d2 = 2^-scale (load) or 2^scale (store)
         dp_imm(e, MOV, 0, R2, 0, 0);
@@ -3028,14 +3049,23 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             else { rev16(e, R2, R2); strh_imm(e, R2, R1, 2 * lane); }
         }
     }
+    if (lc && !pipe) {  // outside MEM1: the locked cache, else the interpreter
+        cold_begin(c);
+        fix_to_cold(c, outside);
+        fbCold |= 1u << nfb;
+        fb[nfb++] = lc_remap(c, w ? sz : 2 * sz, hostAdd);
+        cold_end(c, hostAdd);  // (not reached: lc_remap ends in a branch)
+    }
     if (pipe) {
         // Outside MEM1 with the compiled quantization: the gather pipe's address takes each element through jit_gather
         // (r3 = its stop status, ORed over the elements); any other address joins the interpreter fallback below.
         u32 join = e->n;
         cold_begin(c);
         fix_to_cold(c, outside);
+        if (lc) patch_branch(e, lc_remap(c, w ? sz : 2 * sz, hostAdd), e->n);
         load_const(e, R1, c->j->gatherEa);
         dp_reg(e, CMP, 1, 0, R0, R1);
+        fbCold |= 1u << nfb;
         fb[nfb++] = branch_c(e, C_NE, 0);  // a cold-to-cold branch: fixed up with the fallback below
         set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
         u32 sizePc = c->pc | (sz == 4 ? 2u : sz == 2 ? 1u : 0u);
@@ -3065,7 +3095,7 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     u32 resume = e->n;
     cold_begin(c);  // another quantization, misaligned or outside MEM1: the interpreter, out of line
     for (u32 k = 0; k < nfb; k++) {
-        if (pipe && k == nfb - 1) add_fix(c, true, fb[k], true, c->e.n);  // from the pipe check, itself cold
+        if ((fbCold >> k) & 1) add_fix(c, true, fb[k], true, c->e.n);  // from the pipe or locked-cache check, itself cold
         else fix_to_cold(c, fb[k]);
     }
     emit_fallback(c, inst);
@@ -5106,6 +5136,13 @@ static bool update_fastmem(Jit* j) {
     j->fastmemUser = j->fastmem && gk_translate(g, 0x80000000u, false, true, &a, false) && a == 0 &&
                      gk_translate(g, 0xC0000000u, false, true, &b, false) && b == 0;
     g->msr = msr;
+    // The locked cache's mapping (the SDK's LCEnable sets a BAT for 0xE0000000), in both states, for lc_remap.
+    j->lcMapped = gk_translate(g, 0xE0000000u, true, true, &a, false) && a == 0xE0000000u &&
+                  gk_translate(g, 0xE0003FFFu, true, true, &b, false) && b == 0xE0003FFFu;
+    g->msr = msr | MSR_PR;
+    j->lcMappedUser = j->lcMapped && gk_translate(g, 0xE0000000u, true, true, &a, false) && a == 0xE0000000u &&
+                      gk_translate(g, 0xE0003FFFu, true, true, &b, false) && b == 0xE0003FFFu;
+    g->msr = msr;
     return j->fastmem;
 }
 
@@ -5490,6 +5527,11 @@ void jit_set_mem_stubs(Jit* j, bool on) {
 bool jit_mem_stubs(const Jit* j) { return j->memStubs; }
 
 static void jit_fill_fns(Jit* j);
+void jit_set_locked_cache(Jit* j, u8* lc) {
+    j->lcHost = lc;
+    jit_invalidate_all(j);
+}
+
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea) {
     j->gatherPut = put;
     j->gatherCtx = ctx;
@@ -5949,3 +5991,5 @@ void jit_print_stats(const Jit* j, void (*print)(const char* line)) {
 #endif
 }
 #endif
+
+bool jit_lc_direct(const Jit* j) { return j->lcHost && j->lcMapped; }

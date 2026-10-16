@@ -66,6 +66,10 @@ float jit_words_per_insn(const Jit* j);  // host code words per guest instructio
 void jit_set_gather(Jit* j, void (*put)(void* ctx, u32 v, u32 size), void* ctx, u32 ea);
 // The pipe's partial 32-byte burst (console byte order) and its length: compiled code appends a store that does not
 // complete the burst itself, as `put` would, and calls `put` for the store that does.
+// Quantized psq_l / psq_st to the locked cache (16 KB at 0xE0000000) use this host copy directly instead of the
+// interpreter; NULL (the default) leaves them to the interpreter.
+void jit_set_locked_cache(Jit* j, u8* lc);
+bool jit_lc_direct(const Jit* j);  // set, and the current BATs map 0xE0000000 to the locked cache
 void jit_set_gather_buffer(Jit* j, u8* buf, u32* len);
 void jit_set_linking(Jit* j, bool on);  // off: every block returns to the dispatcher (for comparison); drops all code
 bool jit_linking(const Jit* j);
@@ -167,7 +171,7 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
-extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short
+extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off
 u32 jit_run_one_block(Jit* j);
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with

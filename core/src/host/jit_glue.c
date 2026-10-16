@@ -74,6 +74,7 @@ bool host_jit_enable(System* s) {
     jit_attach(g_hostJit);
     s->icbiHook = on_icbi;
     jit_set_gather(g_hostJit, gp_wgp_put, s, GP_WGP_EA);
+    jit_set_locked_cache(g_hostJit, s->lockedCache);
     jit_set_gather_buffer(g_hostJit, s->gx.wgp, &s->gx.wgpLen);
     if (getenv("GC3DS_JIT_NOLINK")) jit_set_linking(g_hostJit, false);  // comparison runs
     if (getenv("GC3DS_JIT_NOTRACE")) jit_set_traces(g_hostJit, false);

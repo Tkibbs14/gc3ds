@@ -248,6 +248,26 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   13.46% (270, with the split's ~1% overhead on): +10.5%**, cutscene 21.4% in all three (no ShdwDraw there). Separate
   runs, not an in-run A/B; the later stretch's run-to-run spread is ±1.5-3.5%.
 
+## How much compiled code core 0's time is spread over (job 271, `--profile on`, device)
+
+New `# code footprint 10s` line (jitsample.c, jit_footprint): the sampler's block hits sorted by count, and the fewest
+blocks that cover each share of core 0's time in compiled code, with their host bytes (a block's bytes run to the next
+block's start, exit stubs included). The profiled run is slower, so its sections sit later (cutscene to ~245 s, later
+stretch ~250-445 s, movie from ~455 s). Typical 10 s report:
+
+| Section | 50% of time | 80% | 90% | 99% | all sampled |
+|---|---|---|---|---|---|
+| Cutscene | 100-180 blocks, **46-73 KB** | 875-1,285 blocks, 209-284 KB | 2,100-2,850, 400-505 KB | ~6,000-7,000, 840-970 KB | ~7,000, ~1 MB |
+| Later stretch | **14 blocks, 8 KB** (ShdwDraw) | ~300, ~100 KB | ~1,000, ~230 KB | ~4,750, ~705 KB | ~5,500, ~790 KB |
+| Movie | **4 blocks, 12 KB** (the psq_st fallback loop) | ~28, ~40 KB | ~140, ~80 KB | ~2,000, ~350 KB | ~3,000, ~470 KB |
+
+- **The cutscene's hot code is about 4x the 16 KB L1 I-cache for half its time, and ~16x for 80%.** No layout puts it
+  in L1; every guest instruction streams its host code from L2 (~28 cycles a line). With the straight-line probe (code
+  past 16 KB: 4.4 vs 1.3 cycles per guest instruction), this makes fetch a structural cost of the cutscene: it falls
+  with host bytes executed per guest instruction (code density), not with placement.
+- The later stretch and the movie are each dominated by one small piece of code (ShdwDraw; the psq_st fallbacks),
+  which stand-ins and JIT fixes can remove.
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also
