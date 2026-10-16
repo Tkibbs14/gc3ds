@@ -92,16 +92,17 @@ void pica_set_steal(bool on);
 bool pica_steal(void);
 extern u64 g_vwStolen, g_vwStealEmpty, g_vwStealKind;
 #ifdef GC3DS_NATIVE
-// Native shapes (pica.c): models' indexed draws converted once into PICA vertex buffers (default on; off: every draw
-// on the vertex path, for comparison). pica_native_store: memory the game flushed (Aurora's DCStoreRange and kin),
-// callable from any thread. g_nsStats: the counters described in pica.c. pica_native_bytes: linear memory in use.
+// pica_native_store: memory the game flushed (Aurora's DCStoreRange and kin), callable from any thread.
+void pica_native_store(const void* p, u32 len);
+#endif
+// Converted shapes (pica.c): models' draws converted once into PICA vertex buffers (native mode: indexed commands; the
+// emulator: runs of draws in display lists). On by default; off: every draw on the vertex path, for comparison.
+// g_nsStats: the counters described in pica.c. pica_native_bytes: linear memory in use.
 void pica_set_native_shapes(bool on);
 void pica_set_native_opts(u32 opts);  // bisection: 1 no PICA fixed attributes, 2 lit draws on the old path (pica.c NSO_*)
 bool pica_native_shapes(void);
-void pica_native_store(const void* p, u32 len);
 u32 pica_native_bytes(u32* live);
 extern u64 g_nsStats[16];
-#endif
 void pica_describe(u32 draws);
 const char* pica_take_description(void);
 void pica_description_taken(void);

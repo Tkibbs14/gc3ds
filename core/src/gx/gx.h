@@ -84,6 +84,9 @@ struct GXBackend {
     // address there (stable while the list lives), so the backend may keep the draw converted. False: not taken.
     bool (*draw_native)(void* ctx, System* s, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
                         const u8* idx, u32 ni);
+    // Optional (the emulator): a run of draws of format `vat` inside a display list in guest memory, [cmd, cmd + len)
+    // (draws and NOPs only), so the backend may keep it converted. False: not taken; fifo.c runs the draws one by one.
+    bool (*draw_list)(void* ctx, System* s, u32 vat, const u8* cmd, u32 len);
 };
 // True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
 extern bool g_gxMergeOpen;

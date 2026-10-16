@@ -27,7 +27,7 @@
 #include "../../sys/system.h"
 #include "../tev_pica.h"
 #include "../vfast.h"
-#include "gxpass_shbin.h"
+#include "gxpass_native_shbin.h"  // the emulator's shader plus the converted-shape path (gen_gxpass.sh native)
 #include "pica.h"
 #include "../../../host3ds/crashlog.h"
 
@@ -127,16 +127,14 @@ static struct {
     u32 palGen[PAL_SLOTS], lastSlot, lastGen;
     float lastRaw[12], lastOrigin[3];
     bool lastValid;
-#ifdef GC3DS_NATIVE
-    // Native shapes (below): the attribute layout is a native shape's (attrs_regular restores the arena's); the shader's
-    // nat and lcount uniforms; palette rows 0-38 as native draws uploaded them (natRowValid: bit per row).
+    // Converted shapes (below): the attribute layout is a converted shape's (attrs_regular restores the arena's); the
+    // shader's nat and lcount uniforms; palette rows 0-38 as converted draws uploaded them (natRowValid: bit per row).
     bool natAttr;
     s8 uNat, uLcount;
     u64 natRowValid;
     float natRow[39][4];
-    u32 natProjVer;  // xfRegVersion of the projection in g.proj (native draws)
+    u32 natProjVer;  // xfRegVersion of the projection in g.proj (converted draws)
     bool natProjOk;
-#endif
 } g;
 
 PicaStats g_picaStats;
@@ -203,8 +201,7 @@ static void attrs_arena(void) {
     AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);  // eye-space normal
 }
 
-#ifdef GC3DS_NATIVE
-// After native shapes (their own buffers and attribute layout, the shader's native path): the arena's again.
+// After converted shapes (their own buffers and attribute layout, the shader's native path): the arena's again.
 static void attrs_regular(void) {
     if (!g.natAttr) return;
     g.natAttr = false;
@@ -214,9 +211,6 @@ static void attrs_regular(void) {
     BufInfo_Add(bi, g.arena + g.vbase, sizeof(PVert), 7, 0x6543210);
     C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 0, 0, 0, 0);
 }
-#else
-static inline void attrs_regular(void) {}
-#endif
 
 static void draw_arrays(u32 first, u32 n) {
     attrs_regular();
@@ -253,9 +247,7 @@ static void flush_arena(void) {
     g.idxFlushed = g.idxUsed;
 }
 
-#ifdef GC3DS_NATIVE
-static void ns_grave_free(void);  // native shapes (below)
-#endif
+static void ns_grave_free(void);  // converted shapes (below)
 
 static void free_all_textures(void) {
     for (u32 i = 0; i < MAX_TEX; i++)
@@ -275,11 +267,9 @@ static void begin_frame(void) {
     for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
     g.nGrave = 0;
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
-#ifdef GC3DS_NATIVE
-    ns_grave_free();  // native shapes retired before the previous submit, which the GPU has finished
+    ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
     g.natAttr = false;
     if (g.uNat >= 0) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 0, 0, 0, 0);
-#endif
     C3D_BindProgram(&g.prog);
     attrs_arena();
     C3D_BufInfo* bi = C3D_GetBufInfo();
@@ -895,9 +885,7 @@ static void flush_sub(void) {
 }
 
 static void pal_upload(u32 k, const float* m) {
-#ifdef GC3DS_NATIVE
-    g.natRowValid &= ~(7ull << (3 * k));  // rows a native draw may have left there
-#endif
+    g.natRowValid &= ~(7ull << (3 * k));  // rows a converted draw may have left there
     memcpy(g.pal[k], m, sizeof g.pal[k]);
     C3D_FVec* u = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, g.uPal + 3 * (int)k, 3);
     for (int r = 0; r < 3; r++) u[r] = FVec4_New(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
@@ -2011,8 +1999,7 @@ static bool pica_draw_indexed(void* ctx, System* s, u32 vat, const u8* verts, u3
     return true;
 }
 
-#ifdef GC3DS_NATIVE
-// ---- native shapes (native mode; docs/research/NATIVE_PORT_PLAN.md, "Converted shapes") ----
+// ---- converted shapes (docs/research/NATIVE_PORT_PLAN.md, "Converted shapes") ----
 // Dusklight's models reach the stream as display lists called by reference, each shape's geometry one
 // GX_AURORA_DRAW_INDEXED (Aurora's optimizer: unique vertices as GameCube attribute indices, u16 triangles). The vertex
 // path gathered and transformed ~73,000 such vertices a frame on cores 2-3 (title demo, 5-7 fps). Here each command is
@@ -2024,6 +2011,10 @@ static bool pica_draw_indexed(void* ctx, System* s, u32 vat, const u8* verts, u3
 // (DCStoreRange after CPU skinning, vertex colour animation, display-list rewrites), which Aurora's OSCache passes
 // here (pica_native_store); a shape seen changing three times stays on the old path (CPU-deformed geometry). A few
 // shapes a frame are checked against a hash of their sources, which counts any change the flushes missed.
+//   The emulator converts the same way runs of draws inside the game's own display lists (fifo.c run_list: consecutive
+// draws of one vertex format, pica_draw_list), keyed by the run's address in guest memory. It watches the memory a shape
+// was made from with the page stamps of the guest's cache flushes (dcbf / dcbst / dcbz, gx.h MemStamps; the GPU reads
+// memory only after them, the hardware's rule): a page stamped since the shape was made makes it again.
 #define NS_SLOTS 4096                // power of two
 #define NS_PROBE 16
 #define NS_BUDGET (8u << 20)         // linear memory for converted shapes
@@ -2040,7 +2031,9 @@ typedef struct {
     float origin[3];                 // subtracted from every position; folded into the matrices' translations
     bool pnDirect;
     u8 nr;
-    u32 r0[NS_RANGES], r1[NS_RANGES], lo, hi;  // the bytes it was made from, [r0, r1), and their hull
+    u32 r0[NS_RANGES], r1[NS_RANGES], lo, hi;  // the bytes it was made from, [r0, r1), and their hull (emulator: guest
+                                               // physical addresses)
+    u32 stamp;                       // emulator: g_memStamps.now when it was made
 } NShape;
 static NShape* g_ns;
 static u32* g_nsLive;   // slots in use, packed (NShape.live: the position here)
@@ -2057,6 +2050,7 @@ void pica_set_native_shapes(bool on) { g_nsWant = on; }
 bool pica_native_shapes(void) { return g_nsWant; }
 u32 pica_native_bytes(u32* live) { if (live) *live = g_nsLiveN; return g_nsBytes; }
 
+#ifdef GC3DS_NATIVE
 // Which memory converted shapes were made from: a bit per 256 bytes of the heap window (the game's heaps are there; a
 // shape with anything outside is not converted). Flushes on marked memory go into a ring the GX thread reads.
 #define NW_BASE 0x08000000u
@@ -2093,6 +2087,18 @@ void pica_native_store(const void* p, u32 len) {
     }
     __sync_lock_release(&g_ndLock);
 }
+static inline const u8* ns_host(u32 a) { return (const u8*)(uintptr_t)a; }  // ranges are host addresses
+#else
+static const u8* g_nsMem;  // MEM1's host copy: ranges are guest physical addresses
+static inline const u8* ns_host(u32 a) { return g_nsMem + a; }
+// A page the shape was made from stamped since it was made.
+static bool ns_stale(const NShape* e) {
+    for (u32 r = 0; r < e->nr; r++)
+        for (u32 pg = e->r0[r] >> 12; pg <= (e->r1[r] - 1) >> 12; pg++)
+            if ((s32)(g_memStamps.page[pg] - e->stamp) > 0) return true;
+    return false;
+}
+#endif
 
 static inline u32 ns_hash_ptr(const void* p) { u32 h = (u32)(uintptr_t)p * 2654435761u; return h ^ (h >> 15); }
 
@@ -2125,6 +2131,7 @@ static void ns_kill(NShape* e) {
     e->mem = NULL;
 }
 
+#ifdef GC3DS_NATIVE
 // Flushed memory since the last look: the shapes made from it go.
 static void ns_dirty(void) {
     u32 h = g_ndHead;
@@ -2153,12 +2160,13 @@ static void ns_dirty(void) {
         }
     }
 }
+#endif
 
 static u32 ns_sources_hash(const NShape* e) {
     u32 h = 2166136261u;
     for (u32 r = 0; r < e->nr; r++) {
         u32 lo = e->r0[r] & ~3u;
-        h = (h ^ hash_words((const u8*)(uintptr_t)lo, e->r1[r] - lo)) * 16777619u;
+        h = (h ^ hash_words(ns_host(lo), e->r1[r] - lo)) * 16777619u;
     }
     return h;
 }
@@ -2183,7 +2191,7 @@ static void ns_key(const GXCore* gx, u32 vat, u32* k) {
     u32 modes = ((lo >> 9) & 0xFF) | (hi << 8);  // two bits per attribute: position, normal, colours, coordinates
     for (u32 i = 0; i < 12; i++)
         if (((modes >> (2 * i)) & 3) >= 2) { used |= 1u << i; k[n++] = gx->cp[0xA0 + i]; k[n++] = gx->cp[0xB0 + i]; }
-    k[n++] = gx->arrayLE & used;
+    k[n++] = GX_ARRAY_LE(gx) & used;
     while (n < NS_KEY) k[n++] = 0;
 }
 
@@ -2208,17 +2216,93 @@ static u8* ns_alloc(u32 bytes) {
 
 static bool ns_range(NShape* e, u32 lo, u32 hi) {
     if (lo >= hi) return true;
+#ifdef GC3DS_NATIVE
     if (lo - NW_BASE >= NW_SPAN || hi - NW_BASE > NW_SPAN || e->nr == NS_RANGES) return false;
+#else
+    if (hi > 0x01800000u || e->nr == NS_RANGES) return false;
+#endif
     e->r0[e->nr] = lo; e->r1[e->nr] = hi; e->nr++;
     if (lo < e->lo) e->lo = lo;
     if (hi > e->hi) e->hi = hi;
     return true;
 }
 
-static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
-                        const u8* idx, u32 ni, const u32* key, NShape* e) {
+// What a converted draw is made from: native mode's indexed command (verts, nv unique vertices and ni u16 indices), or
+// in the emulator a run of draws inside a display list (list: [cmd, cmd + len) holds draws of format vat and NOPs).
+typedef struct { u32 vat; const u8* cmd; u32 len; const u8* verts; u32 nv, vsize; const u8* idx; u32 ni; bool list; } NsReq;
+
+// A run's vertices and indices; false for a primitive the conversion does not take (lines, points) or a malformed run.
+static bool ns_list_count(const NsReq* q, u32* nv, u32* ni) {
+    u32 v = 0, t = 0;
+    for (u32 off = 0; off < q->len;) {
+        u8 op = q->cmd[off];
+        if (op == 0x00) { off++; continue; }
+        if (op < 0x80 || op >= 0xC0 || (op & 7) != q->vat || off + 3 > q->len) return false;
+        u32 prim = (op >> 3) & 7, n = ((u32)q->cmd[off + 1] << 8) | q->cmd[off + 2];
+        if (prim > PRIM_FAN) return false;
+        v += n;
+        t += tri_verts(prim, n);
+        off += 3 + n * q->vsize;
+        if (off > q->len) return false;
+    }
+    *nv = v;
+    *ni = t;
+    return true;
+}
+
+// Decodes a run's draws one after another into the shape's streams and builds its triangles (the regular path's
+// order and winding, vw_assemble_idx); merges the array ranges they read into inf.
+static void ns_list_fill(const GXCore* gx, const NsReq* q, VNatInfo* inf, float (*pos)[4], float (*nrm)[3], u8 (*col[2])[4],
+                         float (*tex[8])[2], u16* ix) {
+    u32 at = 0, k = 0;
+    for (u32 r = 0; r < 12; r++) inf->lo[r] = inf->hi[r] = 0;
+    for (u32 off = 0; off < q->len;) {
+        const u8* c = q->cmd + off;
+        if (c[0] == 0x00) { off++; continue; }
+        u32 prim = (c[0] >> 3) & 7, n = ((u32)c[1] << 8) | c[2];
+        VNatInfo d = *inf;
+        u8 (*c2[2])[4] = { col[0] ? col[0] + at : NULL, col[1] ? col[1] + at : NULL };
+        float (*t8[8])[2];
+        for (u32 i = 0; i < 8; i++) t8[i] = tex[i] ? tex[i] + at : NULL;
+        vfast_native_decode(gx, q->vat, c + 3, n, q->vsize, &d, pos + at, nrm ? nrm + at : NULL, c2, t8);
+        for (u32 r = 0; r < 12; r++) {
+            if (d.lo[r] == d.hi[r]) continue;
+            if (inf->lo[r] == inf->hi[r]) { inf->lo[r] = d.lo[r]; inf->hi[r] = d.hi[r]; continue; }
+            if (d.lo[r] < inf->lo[r]) inf->lo[r] = d.lo[r];
+            if (d.hi[r] > inf->hi[r]) inf->hi[r] = d.hi[r];
+        }
+        switch (prim) {
+        case PRIM_QUADS: case PRIM_QUADS2:
+            for (u32 i = 0; i + 3 < n; i += 4) {
+                u16 a = (u16)(at + i);
+                ix[k++] = a; ix[k++] = a + 1; ix[k++] = a + 2;
+                ix[k++] = a; ix[k++] = a + 2; ix[k++] = a + 3;
+            }
+            break;
+        case PRIM_TRIS: for (u32 i = 0; i + 2 < n; i += 3) { ix[k++] = (u16)(at + i); ix[k++] = (u16)(at + i + 1); ix[k++] = (u16)(at + i + 2); } break;
+        case PRIM_STRIP:
+            for (u32 i = 0; i + 2 < n; i++) {
+                if (i & 1) { ix[k++] = (u16)(at + i + 1); ix[k++] = (u16)(at + i); }
+                else { ix[k++] = (u16)(at + i); ix[k++] = (u16)(at + i + 1); }
+                ix[k++] = (u16)(at + i + 2);
+            }
+            break;
+        case PRIM_FAN: for (u32 i = 1; i + 1 < n; i++) { ix[k++] = (u16)at; ix[k++] = (u16)(at + i); ix[k++] = (u16)(at + i + 1); } break;
+        default: break;
+        }
+        at += n;
+        off += 3 + n * q->vsize;
+    }
+}
+
+static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape* e) {
     VNatInfo inf;
+    u32 vat = q->vat, nv = q->nv, ni = q->ni;
+    const u8* cmd = q->cmd;
+    u32 len = q->len;
     if (!vfast_native_info(gx, vat, &inf)) { g_nsStats[4]++; return NULL; }
+    if (q->list && !ns_list_count(q, &nv, &ni)) { g_nsStats[4]++; return NULL; }
+    if (!nv || nv > 0xFFFF || ni < 3) { g_nsStats[4]++; return NULL; }
     u32 off[NO_N], at = 0;
     static const u8 kSize[NO_IDX] = { 16, 12, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8 };
     for (u32 k = 0; k < NO_IDX; k++) {
@@ -2233,13 +2317,18 @@ static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const
     u8* mem = ns_alloc(bytes);
     if (!mem) { g_nsStats[5]++; return NULL; }
     u64 t0 = g_profClock ? g_profClock() : 0;
+#ifndef GC3DS_NATIVE
+    u32 stamp = g_memStamps.now;  // read first: a change while decoding makes the shape stale at once
+#endif
     float (*pos)[4] = (float (*)[4])(void*)(mem + off[NO_POS]);
     float (*nrm)[3] = off[NO_NRM] != ~0u ? (float (*)[3])(void*)(mem + off[NO_NRM]) : NULL;
     u8 (*col[2])[4] = { off[NO_COL0] != ~0u ? (u8 (*)[4])(mem + off[NO_COL0]) : NULL,
                         off[NO_COL1] != ~0u ? (u8 (*)[4])(mem + off[NO_COL1]) : NULL };
     float (*tex[8])[2];
     for (u32 i = 0; i < 8; i++) tex[i] = off[NO_TEX0 + i] != ~0u ? (float (*)[2])(void*)(mem + off[NO_TEX0 + i]) : NULL;
-    vfast_native_decode(gx, vat, verts, nv, vsize, &inf, pos, nrm, col, tex);
+    u16* ix = (u16*)(void*)(mem + off[NO_IDX]);
+    if (q->list) ns_list_fill(gx, q, &inf, pos, nrm, col, tex, ix);
+    else { vfast_native_decode(gx, vat, q->verts, nv, q->vsize, &inf, pos, nrm, col, tex); memcpy(ix, q->idx, ni * 2); }
     // Matrix rows (each vertex's own, or the draw's default: row 0 here, loaded per draw) and the origin.
     u32 rows = 0;
     float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
@@ -2258,14 +2347,16 @@ static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const
     float o[3];
     for (int c = 0; c < 3; c++) o[c] = nv ? 0.5f * (mn[c] + mx[c]) : 0;
     for (u32 i = 0; i < nv; i++) for (int c = 0; c < 3; c++) pos[i][c] -= o[c];
-    u16* ix = (u16*)(void*)(mem + off[NO_IDX]);
-    memcpy(ix, idx, ni * 2);
     for (u32 t = 0; t + 2 < ni; t += 3)  // a bad index makes its triangle degenerate (as vw_do_indexed)
         if (ix[t] >= nv || ix[t + 1] >= nv || ix[t + 2] >= nv) ix[t] = ix[t + 1] = ix[t + 2] = 0;
     e->nr = 0;
     e->lo = 0xFFFFFFFFu;
     e->hi = 0;
+#ifdef GC3DS_NATIVE
     u32 c0 = (u32)(uintptr_t)cmd;
+#else
+    u32 c0 = (u32)(cmd - g_nsMem);
+#endif
     ok = ok && ns_range(e, c0, c0 + len);
     for (u32 k = 0; k < 12 && ok; k++) ok = ns_range(e, inf.lo[k], inf.hi[k]);
     if (!ok) {
@@ -2282,9 +2373,13 @@ static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const
     memcpy(e->off, off, sizeof off);
     memcpy(e->origin, o, sizeof o);
     e->hash = ns_sources_hash(e);
+#ifdef GC3DS_NATIVE
     for (u32 r = 0; r < e->nr; r++)
         for (u32 i = (e->r0[r] - NW_BASE) >> NW_SHIFT; i <= (e->r1[r] - 1 - NW_BASE) >> NW_SHIFT; i++)
             g_nwBits[i >> 5] |= 1u << (i & 31);
+#else
+    e->stamp = stamp;
+#endif
     e->live = g_nsLiveN;
     g_nsLive[g_nsLiveN++] = (u32)(e - g_ns);
     g_nsBytes += bytes;
@@ -2295,17 +2390,29 @@ static NShape* ns_build(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const
 }
 
 // The shape for this command and key, converted if it is not yet; NULL: the old path draws it.
-static NShape* ns_get(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize, const u8* idx,
-                      u32 ni) {
+static NShape* ns_get(const GXCore* gx, const NsReq* q) {
     u32 key[NS_KEY];
-    ns_key(gx, vat, key);
+    const u8* cmd = q->cmd;
+    u32 len = q->len;
+    ns_key(gx, q->vat, key);
     u32 h = ns_hash_ptr(cmd);
     NShape* freeSlot = NULL;
     NShape* oldest = NULL;
     for (u32 p = 0; p < NS_PROBE; p++) {
         NShape* e = &g_ns[(h + p) & (NS_SLOTS - 1)];
         if (!e->cmd) { if (!freeSlot) freeSlot = e; continue; }
-        if (e->cmd == cmd && e->len == len && !memcmp(e->key, key, sizeof key)) return e;
+        if (e->cmd == cmd && e->len == len && !memcmp(e->key, key, sizeof key)) {
+#ifndef GC3DS_NATIVE
+            if (ns_stale(e)) {  // made from memory the guest has changed since: made again (or left to the old path)
+                ns_dyn_note(cmd);
+                ns_kill(e);
+                g_nsStats[6]++;
+                if (ns_dynamic(cmd)) { g_nsStats[10]++; return NULL; }
+                return ns_build(gx, q, key, e);
+            }
+#endif
+            return e;
+        }
         if (!oldest || e->lastFrame < oldest->lastFrame) oldest = e;
     }
     if (!freeSlot) {  // the probe window is full: its least recently drawn shape goes, if not drawn this frame or the last
@@ -2314,7 +2421,7 @@ static NShape* ns_get(const GXCore* gx, u32 vat, const u8* cmd, u32 len, const u
         g_nsStats[9]++;
         freeSlot = oldest;
     }
-    return ns_build(gx, vat, cmd, len, verts, nv, vsize, idx, ni, key, freeSlot);
+    return ns_build(gx, q, key, freeSlot);
 }
 
 // Palette rows dst..dst+2 = XF rows src..src+2 (a 3x4 matrix) with `o` folded into the translation; uploaded only when
@@ -2393,19 +2500,20 @@ static bool ns_state_ok(const GXCore* gx, const PicaTev* t, bool fill) {
     return true;
 }
 
-static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
-                             const u8* idx, u32 ni) {
-    (void)ctx;
-    if (!g_nsWant || !g_ns || g.uNat < 0 || g.uLcount < 0 || nv > 0xFFFF || nv == 0 || ni < 3) return false;
+static bool ns_draw(System* s, const NsReq* q) {
+    if (!g_nsWant || !g_ns || g.uNat < 0 || g.uLcount < 0) return false;
+    if (!q->list && (q->nv > 0xFFFF || q->nv == 0 || q->ni < 3)) return false;
     if (g_fskipNow) { g_fskipDraws++; return true; }
-    if (ns_dynamic(cmd)) { g_nsStats[10]++; return false; }
+    if (ns_dynamic(q->cmd)) { g_nsStats[10]++; return false; }
     u64 t0 = g_profClock ? g_profClock() : 0;
     GXCore* gx = &s->gx.core;
     if (g_gxMergeOpen) merge_issue(s);
     vw_apply();
     begin_frame();
     if (C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+#ifdef GC3DS_NATIVE
     ns_dirty();
+#endif
     u32 cull = (gx->bp[0x00] >> 14) & 3;
     if (cull == 3) { g_nsStats[0]++; return true; }  // every triangle culled
     u32 zop;
@@ -2428,7 +2536,7 @@ static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 l
         if (!ns_state_ok(gx, t, false)) { g_nsStats[3]++; return false; }
     }
     u32 frameBefore = g.frameNo;
-    NShape* e = ns_get(gx, vat, cmd, len, verts, nv, vsize, idx, ni);
+    NShape* e = ns_get(gx, q);
     if (!e) return false;
     if (g.frameNo != frameBefore) same = false;  // a retired shape ended the frame: state is applied again
     for (int attempt = 0; !same && attempt < 3; attempt++) {
@@ -2557,12 +2665,29 @@ static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 l
     if (t0) g_nsStats[12] += g_profClock() - t0;
     return true;
 }
+
+#ifdef GC3DS_NATIVE
+static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 len, const u8* verts, u32 nv, u32 vsize,
+                             const u8* idx, u32 ni) {
+    (void)ctx;
+    NsReq q = { vat, cmd, len, verts, nv, vsize, idx, ni, false };
+    return ns_draw(s, &q);
+}
+#else
+// The emulator's display-list runs (GXBackend.draw_list).
+static bool pica_draw_list(void* ctx, System* s, u32 vat, const u8* cmd, u32 len) {
+    (void)ctx;
+    g_nsMem = s->mem1;
+    vfast_native_mem(s->mem1);
+    NsReq q = { vat, cmd, len, NULL, 0, gx_vertex_size(&s->gx.core, vat), NULL, 0, true };
+    return ns_draw(s, &q);
+}
 #endif
 
 #ifdef GC3DS_NATIVE
-static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, pica_draw_native };
+static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, pica_draw_native, NULL };
 #else
-static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed };
+static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, NULL, pica_draw_list };
 #endif
 
 // ---- present ----
@@ -2637,14 +2762,10 @@ static void cap_write(void) {
     g_capState = 3;  // the writer thread takes it from here
 }
 
-#ifdef GC3DS_NATIVE
 static void ns_verify(void);
-#endif
 bool pica_present(System* s, u32 xfbAddr) {
     pica_merge_flush(s, false);
-#ifdef GC3DS_NATIVE
     if (g.frame) ns_verify();
-#endif
     if (g_capState == 2) cap_write();  // the copy was queued with the previous present
     PXfb* show = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) {
@@ -2728,7 +2849,7 @@ bool pica_attach(System* s) {
                 g_morton[y * 8 + x] = (u8)((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3));
         if (!C3D_Init(CMDBUF_BYTES)) return false;
         find_c3d_queue();
-        g.dvlb = DVLB_ParseFile((u32*)gxpass_shbin, gxpass_shbin_size);
+        g.dvlb = DVLB_ParseFile((u32*)gxpass_native_shbin, gxpass_native_shbin_size);
         if (!g.dvlb) return false;
         shaderProgramInit(&g.prog);
         shaderProgramSetVsh(&g.prog, &g.dvlb->DVLE[0]);
@@ -2748,7 +2869,6 @@ bool pica_attach(System* s) {
         g.palSerial = 1;
         emu_log(LOG_GX, "pica: position transform %s (uniforms %d %d)\n", g.gpuPos ? "in the shader" : "on the CPU only",
                 g.uProj, g.uPal);
-#ifdef GC3DS_NATIVE
         g.uNat = shaderInstanceGetUniformLocation(vs, "nat");
         g.uLcount = shaderInstanceGetUniformLocation(vs, "lcount");
         g_ns = calloc(NS_SLOTS, sizeof *g_ns);
@@ -2758,9 +2878,8 @@ bool pica_attach(System* s) {
         g_nsWhite = linearAlloc(65536 * 4);
         if (g_nsZero) { memset(g_nsZero, 0, 65536 * 4); svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)g_nsZero, 65536 * 4); }
         if (g_nsWhite) { memset(g_nsWhite, 0xFF, 65536 * 4); svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)g_nsWhite, 65536 * 4); }
-        emu_log(LOG_GX, "pica: native shapes %s (uniforms %d %d)\n", g_ns && g.uNat >= 0 && g.uLcount >= 0 ? "on" : "unavailable",
+        emu_log(LOG_GX, "pica: converted shapes %s (uniforms %d %d)\n", g_ns && g.uNat >= 0 && g.uLcount >= 0 ? "on" : "unavailable",
                 g.uNat, g.uLcount);
-#endif
         g.arena = linearAlloc(ARENA_VERTS * sizeof(PVert));
         if (!g.arena) return false;
         g.idx = linearAlloc(IDX_MAX * sizeof(u16));

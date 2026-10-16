@@ -10,7 +10,7 @@
 #   bash core/tools/relay.sh send FILE SDPATH | cat SDPATH   a file onto the SD card / a text file from it into a log
 #   bash core/tools/relay.sh native SECONDS [PRESS]   a native-mode run, logs back in the job (no hands)
 #   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
-#        set opt|sched|merge|vtrim|pld|splitopen|vwmem VALUE, stop (host3ds/main.c apply_cmd)
+#        set opt|sched|merge|vtrim|pld|splitopen|vwmem|dlcache|shapes VALUE, stop (host3ds/main.c apply_cmd)
 #   bash core/tools/relay.sh frames JOB              the job's frames so far into core/out/frames_JOB/ (BMP, + PNG)
 # Settings: core/host3ds/relay.txt ("url <base>", "token <secret>"; never committed). Copy the same file to
 # sdmc:/gc3ds/relay.txt on the card, adding "auto 1" there to start Remote runs at launch.

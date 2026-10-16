@@ -107,9 +107,9 @@ bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u);
 // The shader's colour computation in C (the PC checks it against the reference): RGBA 0..255.
 void vfast_gpu_light_model(const VLightUniforms* u, const PVert* v, float out[4]);
 
-#ifdef GC3DS_NATIVE
-// Native mode's converted shapes (pica.c): a model's GX_AURORA_DRAW_INDEXED decoded once into vertex buffers the PICA
-// reads, drawn each frame with only the matrices and state of the moment.
+// Converted shapes (pica.c): a model's geometry (native mode: its GX_AURORA_DRAW_INDEXED; the emulator: a run of draws
+// in a display list) decoded once into vertex buffers the PICA reads, drawn each frame with only the matrices and state
+// of the moment.
 void vfast_proj(const GXCore* gx, const VFold* f, float P[16]);  // projection x viewport x fold (as the GPU transform)
 enum { VN_POS = 1, VN_NRM = 2, VN_COL0 = 4, VN_COL1 = 8, VN_TEX0 = 16 };
 typedef struct {
@@ -130,4 +130,6 @@ void vfast_native_decode(const GXCore* gx, u32 vat, const u8* raw, u32 count, u3
 // register). colSrc: the vertex colour that feeds it (0, 1; 2: none present, white). False for what the shader does not
 // do: specular attenuation, an alpha half lit unlike the colour half, texture coordinates from a colour.
 bool vfast_native_light(const GXCore* gx, const VSel* sel, u32 present, VLightUniforms* u, u32* nLights, u32* colSrc, bool* lit);
-#endif
+// Where array elements are read from: the host address of guest physical 0 (NULL in native mode, MEM1's copy in the
+// emulator); ranges in VNatInfo are guest physical (host in native mode).
+void vfast_native_mem(const u8* mem1);

@@ -1379,8 +1379,8 @@ bool vfast_gpu_light(const GXCore* gx, const VSel* sel, VLightUniforms* u) {
     return true;
 }
 
-#ifdef GC3DS_NATIVE
-// ---- native mode's converted shapes (pica.c, docs/research/NATIVE_PORT_PLAN.md "Converted shapes") ----
+// ---- converted shapes (pica.c; native mode's, docs/research/NATIVE_PORT_PLAN.md "Converted shapes", and the
+// emulator's display-list shapes) ----
 void vfast_proj(const GXCore* gx, const VFold* f, float P[16]) { proj_fold(gx, f, P); }
 
 // The decode layout of vertex format `vat` with each attribute's array, as setup_compute and attr_array set it.
@@ -1425,6 +1425,11 @@ bool vfast_native_info(const GXCore* gx, u32 vat, VNatInfo* ni) {
     return true;
 }
 
+// The host address of guest physical 0 for array elements: NULL in native mode (arrays are host memory), MEM1's copy in
+// the emulator. Set by vfast_native_decode's caller.
+static const u8* g_natMem;
+void vfast_native_mem(const u8* mem1) { g_natMem = mem1; }
+
 // An attribute's element: from the stream (direct) or its array; for an indexed one the index widens [*lo, *hi).
 // elem: the bytes one element occupies in its array (the range covers exactly those: a dynamic buffer next to an array
 // must not count as part of it).
@@ -1435,7 +1440,7 @@ static inline const u8* nat_fetch(const VAttr* a, const u8** p, u32 direct, u32 
     u32 pa = a->base + idx * a->stride;
     if (pa < *lo) *lo = pa;
     if (pa + elem > *hi) *hi = pa + elem;
-    return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? (const u8*)(uintptr_t)pa : kZero;
+    return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? (const u8*)((uintptr_t)g_natMem + pa) : kZero;
 }
 
 void vfast_native_decode(const GXCore* gx, u32 vat, const u8* raw, u32 count, u32 vsize, VNatInfo* ni, float (*pos)[4],
@@ -1544,7 +1549,6 @@ bool vfast_native_light(const GXCore* gx, const VSel* sel, u32 present, VLightUn
     *nLights = n;
     return true;
 }
-#endif
 
 static float dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 

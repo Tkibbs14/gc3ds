@@ -584,22 +584,43 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
 u64 g_dlRun[11];
 
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
-    u32 off = 0, runDraws = 0, runVerts = 0, runVat = 0;
+    u32 off = 0, stop = 0;  // stop: the end of the run of draws being executed one by one
     while (off < len) {
         u8 op = p[off];
-        if (op >= 0x80 && op < 0xC0 && len - off >= 3) {
-            u32 vat = op & 7, nv = rd16(p + off + 1);
-            if (runDraws && vat != runVat) { g_dlRun[9]++; runDraws = 0; }
-            if (!runDraws) { g_dlRun[1]++; runVerts = 0; runVat = vat; }
-            if (++runDraws == 2) { g_dlRun[2]++; g_dlRun[4] += runVerts; }
-            if (runDraws >= 2) g_dlRun[4] += nv;
-            runVerts += nv;
-            g_dlRun[0]++;
-            g_dlRun[3] += nv;
-            if (((op >> 3) & 7) >= 5) g_dlRun[5]++;
-        } else if (op != 0x00 && runDraws) {
-            g_dlRun[op == 0x08 ? 6 : op == 0x10 || (op >= 0x20 && op <= 0x38) ? 7 : op == 0x61 ? 8 : 10]++;
-            runDraws = 0;
+        if (op >= 0x80 && op < 0xC0 && len - off >= 3 && off >= stop) {
+            // A run: this draw and the draws (and NOPs) right after it in the same vertex format.
+            u32 vat = op & 7, vsize = gx_vertex_size(gx, vat), end = off, draws = 0, verts = 0, cmds = 0;
+            bool other = false;  // lines or points: not converted
+            while (end < len) {
+                u8 o = p[end];
+                if (o == 0x00) { end++; cmds++; continue; }
+                if (o < 0x80 || o >= 0xC0 || (o & 7) != vat || len - end < 3) break;
+                u32 n = rd16(p + end + 1);
+                if (3 + n * vsize > len - end) break;
+                if (((o >> 3) & 7) >= 5) other = true;
+                draws++; cmds++; verts += n;
+                end += 3 + n * vsize;
+            }
+            g_dlRun[0] += draws; g_dlRun[1]++; g_dlRun[3] += verts;
+            if (draws >= 2) { g_dlRun[2]++; g_dlRun[4] += verts; }
+            if (other) g_dlRun[5]++;
+            if (end < len) {
+                u8 o = p[end];
+                g_dlRun[o >= 0x80 && o < 0xC0 ? 9 : o == 0x08 ? 6 : o == 0x10 || (o >= 0x20 && o <= 0x38) ? 7 : o == 0x61 ? 8 : 10]++;
+            }
+            if (draws && inList && !other && gx->backend && gx->backend->draw_list &&
+                gx->backend->draw_list(gx->backendCtx, s, vat, p + off, end - off)) {
+                for (u32 q = off; q < end;) {  // the statistics draw() keeps
+                    if (p[q] == 0x00) { q++; continue; }
+                    u32 n = rd16(p + q + 1);
+                    gx->draws++; g_dlStats[1]++; gx->vertices += n; gx->primCount[(p[q] >> 3) & 7]++;
+                    q += 3 + n * vsize;
+                }
+                gx->commands += cmds;
+                off = end;
+                continue;
+            }
+            stop = end;
         }
         u32 n = exec_one(s, gx, p + off, len - off, inList);
         if (!n) { emu_log(LOG_GX, "display list ends mid-command\n"); return; }

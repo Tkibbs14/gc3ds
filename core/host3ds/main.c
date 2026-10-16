@@ -361,6 +361,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
     bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
@@ -421,7 +422,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); }
+        else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -516,7 +518,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -568,6 +570,7 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "merge") && g_pica) pica_set_merge(v != 0);
         else if (!strcmp(name, "vtrim")) pica_set_vw_trim(v != 0);
         else if (!strcmp(name, "dlcache")) g_vcacheOn = v != 0;
+        else if (!strcmp(name, "shapes") && g_pica) pica_set_native_shapes(v != 0);
         else if (!strcmp(name, "vw2") && g_pica) pica_set_worker2(v != 0);
         else if (!strcmp(name, "fskip") && g_pica) pica_set_fskip(v != 0);
         else if (!strcmp(name, "aot") && g_jit) { aot_set_enabled(v != 0); jit_invalidate_all(g_jit); }
@@ -832,6 +835,7 @@ static const char* run(const char* path) {
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
+        if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
@@ -980,6 +984,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_steal() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_relayoutOn ? 1 : 0);
                 fprintf(g_perf, ",%d", g_vinCompact ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_native_shapes() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1014,6 +1019,7 @@ static const char* run(const char* path) {
                                         g_relayoutOn ? "on" : "off", (double)(now - t0) / SYSCLOCK_ARM11, (unsigned long)nHot,
                                         (unsigned long)made, (double)(svcGetSystemTick() - tc) * 1000.0 / SYSCLOCK_ARM11);
                 }
+                if (g_opt.abShapes && g_pica && perfRows % AB_SECS == 0) pica_set_native_shapes(!pica_native_shapes());
                 if (g_opt.abHlegd && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_gd_set_enabled(!hle_gd_enabled());
                     jit_invalidate_all(g_jit);
@@ -1139,6 +1145,24 @@ static const char* run(const char* path) {
                                     (unsigned long long)(r[7] - lastR[7]), (unsigned long long)(r[8] - lastR[8]),
                                     (unsigned long long)(r[9] - lastR[9]), (unsigned long long)(r[10] - lastR[10]));
                             memcpy(lastR, r, sizeof r);
+                        }
+                        if (g_pica) {  // converted shapes (pica.c g_nsStats): display-list runs drawn from GPU-resident buffers
+                            static u64 lastN[16];
+                            u64 ns[16];
+                            memcpy(ns, g_nsStats, sizeof ns);
+                            u32 live, kb = pica_native_bytes(&live) >> 10;
+                            fprintf(g_perf, "# shapes 10s: %s; drawn converted %llu, conversions %llu (%llu vertices); old path for "
+                                    "state %llu, layout %llu, memory %llu; made again after a stamp %llu, left as changing %llu; "
+                                    "hash checks %llu, changed %llu; evictions %llu; ms converting %.0f, drawing %.0f; %lu shapes, %lu KB\n",
+                                    pica_native_shapes() ? "on" : "off",
+                                    (unsigned long long)(ns[0] - lastN[0]), (unsigned long long)(ns[1] - lastN[1]),
+                                    (unsigned long long)(ns[2] - lastN[2]), (unsigned long long)(ns[3] - lastN[3]),
+                                    (unsigned long long)(ns[4] - lastN[4]), (unsigned long long)(ns[5] - lastN[5]),
+                                    (unsigned long long)(ns[6] - lastN[6]), (unsigned long long)(ns[10] - lastN[10]),
+                                    (unsigned long long)(ns[7] - lastN[7]), (unsigned long long)(ns[8] - lastN[8]),
+                                    (unsigned long long)(ns[9] - lastN[9]), (double)(ns[11] - lastN[11]) * 1000.0 / SYSCLOCK_ARM11,
+                                    (double)(ns[12] - lastN[12]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long)live, (unsigned long)kb);
+                            memcpy(lastN, ns, sizeof ns);
                         }
                         {  // the vertex worker's job ring (pica.c g_vwStats)
                             static u64 lastV[5];
