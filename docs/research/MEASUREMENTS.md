@@ -271,6 +271,15 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   27.20 +- 0.22% speed (+29%)** (n 80 / 82), core 0's own speed 25.83 -> 27.84 (+8%: less GX-side traffic too; phase
   pairs +11.2 +- 13.4, 5 pairs); later stretch 13.23 +- 0.21 -> 13.46 +- 0.31 (within noise; it never waited on GX);
   I-cache misses 5.68 -> 7.24 M/s in the cutscene (more guest code run per second). **Adopted: on by default.**
+- **Sections by emulated time from now on.** A faster build reaches each section sooner in real time, so the old real
+  windows (30-250 / 265-475 / 510-600 s) mix sections. Their emulated equivalents (job 272): **cutscene 19-66 s,
+  later stretch 69-97 s, movie 99-110 s** (scratchpad emu.py; ab_split.py still splits by real time).
+- **Baseline with shapes on (job 277, 743076e + default on) against job 272, emulated windows:** cutscene **21.32 ->
+  27.38%** (GX thread 82.7 -> 50.4% busy, core 0's GX wait 19.1 -> 2.1%, vertex worker 63.5 -> 10.8%); later stretch
+  **13.66 -> 14.39%** (GX thread 48.4 -> 23.1%); movie **4.10 -> 8.65%** (job 273's fix). Shapes never made (ns_never):
+  ~270-280 per 10 s, all for their vertex layout (texture matrix indices in the vertices); left on the old path as
+  changing or never made ~4.7-7.7k draws per 10 s; ~80-90 shapes made again after a stamp per 10 s; hash checks 0
+  changed; 81-134 shapes, 1.9-2.2 MB.
 
 ## Movie: psq_st to the locked cache compiled (jobs 266, 272, 273, device)
 
