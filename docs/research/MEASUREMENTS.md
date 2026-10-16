@@ -203,6 +203,24 @@ later +0.77% (+-1.45). Real speed in the cutscene ~+2-3%. **Adopted** (positive 
 **Lesson:** 7.7% of guest instructions were ~2-5% of core-0 time: straight-line stores are cheap per instruction on
 the 2DS. Rank HLE targets by device cycles per function (the sampler, `--profile on`, job 266), not instruction counts.
 
+## Where core 0's cycles go by guest function, on the device (job 266, --profile on)
+
+The block sampler (host3ds/jitsample.c, 54 reports of 10 s, ~100k samples each) grouped by function with the zeldaret
+symbol map (core/tools/hot_funcs.py; /root/tp_symbols/symbols.txt outside the repo). Whole run: ShdwDraw 15.46%,
+unmapped 11.51%, psdRealCallBack 0.67%, calcWeightEnvelopeMtx 0.64%, J3DFifoLoadPosMtxImm 0.60%, GetTriPla 0.56%,
+getPolyCode 0.37%, SetupNP 0.33%, JASCalc::pow2 0.31%; the new J3DGD stand-ins' entries 0.1% each; outside compiled
+code 11.1%. **By section (share of core-0 samples per 10 s report):**
+
+| Section | Dominant guest code |
+|---|---|
+| Cutscene, 0-250 s | none: spread over hundreds of functions (plus the GX wall) |
+| Later stretch, 250-460 s | **dBgWKCol::ShdwDraw 36-40%** (the shadow projection; its scan loop is already a stand-in, the per-triangle part is guest code) |
+| Movie, 470-540 s | **one region, 0x80CE0000-0x80CEFFFF, 75-79%** (code loaded at run time, not in the map: the THP movie decoder, by its timing) |
+
+**Consequences:** a full ShdwDraw stand-in could take up to ~40% of core 0 off the later stretch (~1.5x there); a native
+THP decoder (Dolphin SDK motion JPEG, used by many games' movies) up to ~78% off movie playback (now 4.1% speed). The
+cutscene has no single target: it needs the GPU port and the general JIT levers.
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also
