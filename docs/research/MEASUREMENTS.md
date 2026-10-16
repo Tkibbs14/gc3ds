@@ -181,7 +181,15 @@ a 12-24-byte vertex with a short shader runs at 49.7-49.8 ns. At TP's ~750k vert
 light shader (~180-300 ns) would take ~15-25% of the GPU; eight lights ~51%. A converted vertex should carry only the
 attributes it uses.
 
-## A/B verdicts re-scored with phase pairs (2026-10-16)
+## Converted shapes run (native mode, job 263, device)
+
+The native converted-shapes path (d7a9948) hung at frame 241 in jobs 242 and 244. Cause: texgen from the position loaded
+a 3-float attribute from the 16-byte position buffer, a loader narrower than its buffer's stride, which hung the GPU in
+probe job 177 too. Loading all four floats (the shader reads xyz) fixed it: **job 263 ran 90 s to frame 1,054 with no
+hang.** Title demo, steady: **9-12 fps** (5.6-7.5 on the CPU vertex path, jobs 229-240): 65,385 converted draws from 86
+conversions; the vertex worker 112 ms/s (was 300-700); the GX thread ~1,060 ms/s busy of which **~500 ms/s waiting for
+the GPU** (GXSYNC): with models on the GPU, the GPU (transform, lighting at ~72 ns per light per vertex, fill,
+textures) is now the wall.
 
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
