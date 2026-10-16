@@ -396,6 +396,7 @@ static void opts_default(RunOpts* o) {
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
+    o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
     o->hle = true;     // shadow-scan stand-in: Link / Epona stretch 10.6% -> 12.4%, cutscene within noise (job 145)
     // Fewer dispatcher round trips, together (--ab stack, job 151): core 0 cutscene +2.2%, Link / Epona stretch +4.2%;
     // alone: retstub +0.8 / +1.6% (job 148), syscall +1.8 / +2.0% (149), hlelink +0.2 / +2.8% (150) (ab_split.py).

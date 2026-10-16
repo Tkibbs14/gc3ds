@@ -267,6 +267,11 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
 | 66-117 | **on** | **28.3%** | **49.0%** | **2.3%** | **10.4%** |
 | 120-170 | off | 23.0% | 81.9% | 14.4% | 63.3% |
 
+- **A/B (job 276, `--ab shapes`, 600 s, 20 s phases; ab_split.py --split 250 --end 476):** cutscene **21.09 +- 0.24 ->
+  27.20 +- 0.22% speed (+29%)** (n 80 / 82), core 0's own speed 25.83 -> 27.84 (+8%: less GX-side traffic too; phase
+  pairs +11.2 +- 13.4, 5 pairs); later stretch 13.23 +- 0.21 -> 13.46 +- 0.31 (within noise; it never waited on GX);
+  I-cache misses 5.68 -> 7.24 M/s in the cutscene (more guest code run per second). **Adopted: on by default.**
+
 ## Movie: psq_st to the locked cache compiled (jobs 266, 272, 273, device)
 
 - **Cause (job 272, `# psq_st fallbacks 10s`):** in TP's movie (510-600 s) all ~3.1-3.7M interpreted psq_st per 10 s
