@@ -206,7 +206,7 @@ static void run_blocks(FILE* f, u32 k, u32 m) {
     double cmin = cyc[0] < cyc[1] ? cyc[0] : cyc[1];
     if (cyc[2] < cmin) cmin = cyc[2];
     fprintf(f, "# jitbench blocks K %lu M %lu: cyc %.2f per guest instruction (%.1f per block) inst %.2f stall_inst %.2f "
-            "stall_data %.2f icmiss %.4f dcrmiss %.4f (%lu runs; JIT code %.0f%% of its buffer)\n", (unsigned long)k,
+            "stall_data %.2f icmiss %.4f dcrmiss %.4f (%lu runs; %.1f host words per guest instruction compiled)\n", (unsigned long)k,
             (unsigned long)m, cmin, cmin * k, ev[0][0], ev[1][0], ev[1][1], ev[2][0], ev[2][1], (unsigned long)calls,
             jit_words_per_insn(g_j));
     fflush(f);
