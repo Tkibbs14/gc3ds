@@ -325,6 +325,11 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   Store-buffer drains fell 259k -> 163k/s (their share rose: 84%). Next lever there: keep the descent path between
   neighbouring cells (most share their upper levels).
 
+- **Descent cache (job 299, not adopted):** keep the octree path of the previous cell and descend from the deepest
+  level the next cell shares. PC HLE_CHECK: 6,122 calls, 0 differed. Device: cutscene 27.94%, later stretch **15.41%**
+  (against 15.11-15.4% without it); the stand-in still takes ~29.5% of core 0 (2,948 ms per 10 s, ~10.8 us a call).
+  Within noise, so left out (C19).
+
 ### Core 0 by library family (job 289, `--profile on`, 1,500 blocks a report at 0.001%; hot_funcs.py --families)
 
 | Family | Cutscene (listed 25.2%) | Later stretch (66.4%) | Movie (88.1%) |

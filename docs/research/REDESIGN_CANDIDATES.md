@@ -248,3 +248,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   decode, the disc and ARAM, and the HLE hooks. The PC checker's byte-identical frames must keep holding.
 - **Re-evaluate when:** a frame's counters price the rev share (guest word loads per frame x 2 cycles) against the
   frame, or the JIT's other levers are spent.
+
+## C19. ShdwDraw descent cache (keep the octree path between cells)
+
+- **Status:** rejected 2026-10-16 (job 299); exact on the PC (HLE_CHECK 6,122 calls, 0 differed), not committed.
+- **What:** the ShdwDraw stand-in descends the collision octree from the root for every cell (~3.6 levels); keep the
+  previous cell's path and its header reads, and start from the deepest level the next cell shares.
+- **Result:** later stretch 15.41% against 15.11-15.4% without it; the stand-in's time per call did not move
+  (~10.8 us). The descent was not where the call's cost sits: job 288 puts ~25 of ~420 ARM instructions a cell per
+  level, and the store-buffer drains and head work dominate.
+- **Re-evaluate when:** a `--pmu-split hle` profile shows the descent's levels as a real share of the call.
