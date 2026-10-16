@@ -19,6 +19,7 @@
 #include "gpuprobe_shbin.h"
 #include "gpuprobe_n32_shbin.h"
 #include "gpuprobe_n64_shbin.h"
+#include "gxpass_shbin.h"  // the emulator's own vertex shader (gxpass_case)
 
 static char g_buf[16 << 10];
 static size_t g_len;
@@ -151,6 +152,60 @@ static void draw_many(void* c) {
     }
 }
 
+// The emulator's own vertex shader (src/gx/pica/gxpass.v.pica) with the backend's vertex (vfast.h PVert, 68 bytes,
+// seven attributes as pica.c loads them), over zero-area triangles: what moving TP's vertex work onto the GPU would
+// cost per vertex (MEASUREMENTS.md gap: the GX lighting shader at 44-79k vertices a frame). Modes by the lon uniform:
+// clip position from the CPU; transform in the shader; transform plus the eight-light lighting path.
+typedef struct { float pos[4]; u8 col[4]; float tc[3][2]; float eye[3], nrm[3]; } ProbePVert;
+static void gxpass_case(VCtx* vc, int nverts) {
+    DVLB_s* d = DVLB_ParseFile((u32*)gxpass_shbin, gxpass_shbin_size);
+    ProbePVert* v = linearAlloc(sizeof(ProbePVert) * (size_t)nverts);
+    if (!d || !v) { out("# gpu gxpass: cannot load the shader or the vertices\n"); if (d) DVLB_Free(d); if (v) linearFree(v); return; }
+    for (int i = 0; i < nverts; i++) {
+        float x = (float)((i / 3) % 200) / 100.0f - 1.0f;
+        v[i] = (ProbePVert){{x, 0.0f, -0.5f, 0.0f}, {255, 255, 255, 255}, {{0, 0}, {0, 0}, {0, 0}}, {x, 0.0f, -0.5f}, {0.0f, 0.0f, 1.0f}};
+    }
+    GSPGPU_FlushDataCache(v, sizeof(ProbePVert) * (size_t)nverts);
+    shaderProgram_s sp;
+    shaderProgramInit(&sp);
+    shaderProgramSetVsh(&sp, &d->DVLE[0]);
+    C3D_BindProgram(&sp);
+    shaderInstance_s* vs = sp.vertexShader;
+    int uOn = shaderInstanceGetUniformLocation(vs, "lon"), uProj = shaderInstanceGetUniformLocation(vs, "proj");
+    int uPal = shaderInstanceGetUniformLocation(vs, "pal"), uLights = shaderInstanceGetUniformLocation(vs, "lights");
+    int uSel = shaderInstanceGetUniformLocation(vs, "lsel");
+    C3D_AttrInfo* ai = C3D_GetAttrInfo();
+    AttrInfo_Init(ai);
+    AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
+    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);
+    AttrInfo_AddLoader(ai, 6, GPU_FLOAT, 3);
+    C3D_BufInfo* bi = C3D_GetBufInfo();
+    BufInfo_Init(bi);
+    BufInfo_Add(bi, v, sizeof(ProbePVert), 7, 0x6543210);
+    for (int r = 0; uProj >= 0 && r < 4; r++)  // identity projection and palette slot 0
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, uProj + r, r == 0, r == 1, r == 2, r == 3);
+    for (int r = 0; uPal >= 0 && r < 3; r++) C3D_FVUnifSet(GPU_VERTEX_SHADER, uPal + r, r == 0, r == 1, r == 2, 0);
+    for (int r = 0; uLights >= 0 && r < 40; r++) C3D_FVUnifSet(GPU_VERTEX_SHADER, uLights + r, 0.5f, 0.5f, 0.5f, 1.0f);
+    for (int r = 0; uSel >= 0 && r < 4; r++) C3D_FVUnifSet(GPU_VERTEX_SHADER, uSel + r, 1, 1, 1, 1);  // every light selected
+    static const struct { const char* name; float on[4]; } kM[] = {
+        {"clip position from the CPU", {0, 0, 0, 0}}, {"transform in the shader", {0, 0, 0, 1}},
+        {"transform + lighting, 8 lights selected", {1, 0, 1, 1}}};
+    for (int k = 0; uOn >= 0 && k < 3; k++) {
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, uOn, kM[k].on[0], kM[k].on[1], kM[k].on[2], kM[k].on[3]);
+        float ms = frames(draw_tris, vc, NULL);
+        out("# gpu gxpass %s (68-byte PVert, 7 attributes): %.2f ns per vertex (%.2f ms for %d)\n", kM[k].name,
+            ms * 1e6f / (float)nverts, ms, nverts);
+    }
+    C3D_BindProgram(&g_prog);  // frames() ended on a finished frame: the GPU no longer reads sp or v
+    shaderProgramFree(&sp);
+    DVLB_Free(d);
+    linearFree(v);
+}
+
 const char* gpu_probe(void) {
     g_len = 0;
     g_buf[0] = 0;
@@ -223,6 +278,7 @@ const char* gpu_probe(void) {
             }
             linearFree(packed);
         }
+        gxpass_case(&vc, kVerts);
         C3D_AttrInfo* ai = C3D_GetAttrInfo();
         AttrInfo_Init(ai);
         AttrInfo_AddLoader(ai, 0, GPU_SHORT, 4);

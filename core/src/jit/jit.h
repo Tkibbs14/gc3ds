@@ -90,6 +90,7 @@ bool jit_fault_mem(const Jit* j);
 // The code buffer past the shared stubs, emptied, as scratch for host measurements (call jit_invalidate_all after).
 u32* jit_scratch(Jit* j, u32* words);
 bool jit_fault(u32 hostPc, u32* resume);
+extern bool jit_fault_fixed_data;  // 3DS (host3ds/jit_3ds.c): the kernel writes fault data to a fixed buffer (--faultdata fixed)
 extern bool jit_fault_nosync;  // fault patches get no cache maintenance (a stale copy just faults again)
 // Code scheduled against ARM11 interlocks (tools/arm11_sched.py), for A/B: SCHED_STUBS, memory stubs whose range check
 // reads r0 and whose loads leave the byte swap to the site; SCHED_CONST, constants added in two immediates instead of
@@ -133,7 +134,10 @@ u32 jit_sched(const Jit* j);
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
-       OPT_ICBI = 8192, OPT_ALL = 16383 };
+       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_ALL = 32767 };
+// OPT_INLMEM: checked integer loads and stores check and access inline (6 words, the fast path takes no branch) instead
+// of calling the shared memory stub (3 words, but a call and a return: two taken branches, ~3 cycles each on the 2DS).
+// Taken branches cost ~11-13% of core 0 (MEASUREMENTS.md, jobs 247 and 251); the stubs were adopted for footprint.
 void jit_set_opt(Jit* j, u32 mask);
 // dcbst / dcbf / dcbz on MEM1 stamp their 4 KB page in `stamps` ({ u32 now; u32 page[]; }, gx.h MemStamps), for the
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.

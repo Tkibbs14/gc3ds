@@ -142,6 +142,47 @@ Yes for choosing a direction, no for predicting what a given redesign will gain.
   131-134 every fcache run is +0.3 to +2.7%, never negative: C11's rejection is wrong; fcache is a small gain (~1-2%),
   below a single run's resolution.
 
+## Fault mode on the 2DS, 2026-10-16 (jobs 252-258)
+
+- **Speed (job 252, --ab faultmem --faultsync off, 600 s, device):** core 0 **+7.20% (95% CI +-4.90)** in the cutscene,
+  **+5.14% (+-2.41)** in the later stretch. Overall speed: cutscene 21.33% -> 20.88% (no gain: core 0 waits longer for
+  GX, which is near its limit there), later stretch 12.53% -> 13.01% (**+3.8%**, core-0-bound). Fault mode only pays
+  where core 0 is the wall until the GX side gets cheaper.
+- **Stability:** job 252 ran 600 s, 10,909 faults, no crash (with job 168: two clean 600 s runs). Job 253 crashed the
+  console at 145 s / 2,762 faults; job 254 within ~20 s of starting. Earlier: 685-6,166 faults (jobs 86-90, 167).
+- **The crash is in the kernel, in Luma3DS's exception delivery** (Luma ARM11 dump crash_dump_00000011, reported in job
+  255): CPU mode 0x13 (SVC), pc fffffffe, lr ffff0260 (the exception vector page), DFSR 0x805 (translation fault,
+  write), FAR 541ab000, r9 0x94. A user exception handler on a retail kernel works only because Luma enables it
+  (libctru thread.h: UNITINFO / svcKernelSetState 6), so the code that delivers each fault to jit_3ds.c's handler is
+  Luma's. The cache sync is not the cause (crashes with --faultsync on and off); Luma's ranged cache SVCs 0x91/0x93
+  are ruled out separately (2026-10-10: they reached a core running gsp). Per-fault crash odds look like ~1 in a few
+  thousand.
+- **Test of the delivery path (job 256, --faultmem on full-time, --faultsync off, --faultdata fixed):** the kernel wrote
+  each fault's data to a fixed buffer instead of the handler's stack. **Crashed 12.7 s in, after 909 faults**: the buffer
+  is not the cause (257-258 cancelled). Three of the last four crashes came early in a run (12.7 s, ~20 s, 145 s), when
+  faults come in bursts (~70/s while code is compiled): the odds look tied to the fault rate. Open: Luma's exception
+  delivery under rapid exceptions; the installed Luma version (ask James); a handler on the faulting stack.
+
+## Inline memory access vs the shared stubs (jobs 259-260, OPT_INLMEM, device)
+
+`--ab inlmem`: checked integer loads/stores check and access inline (6 words, no taken branch on the fast path) instead of
+`bl` to the shared stub and `bx lr` back (3 words, two taken branches). JIT fuzzer (checked mode, today's options +/-
+the bit): 40,000 cases, 0 differences. Core 0, inline vs stub: job 259 cutscene +1.84% (95% CI +-3.57), later +0.26%
+(+-1.62); job 260 (arm order flipped) +1.31% (+-3.62), +0.53% (+-1.96). Pooled about **+1.6% (+-2.5) cutscene, +0.4%
+(+-1.3) later: a consistent small gain inside the noise; not the default.** The two taken branches saved and the three
+extra words per access nearly cancel: removing the call pays only when the access stays small (fault mode's two words).
+
+## The emulator's vertex shader on the PICA (probe job 261, device)
+
+`gxpass.v.pica` with the backend's 68-byte vertex (vfast.h PVert, 7 attributes), 60,000 vertices, zero-area triangles:
+**108.0 ns per vertex** with the CPU's clip position, **107.5 ns** with the transform in the shader (free: attribute
+fetch, not arithmetic, sets the cost), **684.7 ns** with the eight-light lighting path (~72 ns per light). For comparison
+a 12-24-byte vertex with a short shader runs at 49.7-49.8 ns. At TP's ~750k vertices/s (25k per field, 30 fps) a 1-3
+light shader (~180-300 ns) would take ~15-25% of the GPU; eight lights ~51%. A converted vertex should carry only the
+attributes it uses.
+
+## A/B verdicts re-scored with phase pairs (2026-10-16)
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also

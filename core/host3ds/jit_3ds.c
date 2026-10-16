@@ -79,8 +79,15 @@ void host_mem1_free(u8* mem1, u32 size, u32 guard) {
     free(p);
 }
 
+// Where the kernel puts each fault's data. Exception delivery to a user handler is Luma3DS's (libctru thread.h: retail
+// kernels need UNITINFO / svcKernelSetState 6), and its kernel crashed in fault mode every few thousand faults (Luma
+// ARM11 dump 11, 2026-10-16: SVC mode, lr ffff0260 in the exception page, data abort at 541ab000; relay 253-254).
+// --faultdata fixed: a fixed buffer instead of the handler's stack, another path through that code (the test).
+bool jit_fault_fixed_data;
+static ERRF_ExceptionData g_faultData __attribute__((aligned(8)));
+
 bool jit_host_fault_init(const u8* ram) {
     if ((u32)ram + 0x01800000u > 0x40000000u) return false;
-    threadOnException(on_fault, g_faultStack + sizeof g_faultStack, WRITE_DATA_TO_HANDLER_STACK);
+    threadOnException(on_fault, g_faultStack + sizeof g_faultStack, jit_fault_fixed_data ? &g_faultData : WRITE_DATA_TO_HANDLER_STACK);
     return true;
 }

@@ -1642,7 +1642,7 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
     }
     u32 slow[2];
     int ri = ms_reg(dreg);
-    if (c->j->memStubs && ri >= 0) {  // the shared stub: two words here instead of the check and access inline
+    if (c->j->memStubs && ri >= 0 && !(c->j->opt & OPT_INLMEM)) {  // the shared stub: two words here instead of the check and access inline
         int k = size == 4 ? MS_L32 : size == 2 ? (sign ? MS_L16S : MS_L16U) : MS_L8;
         bool v2 = (c->j->sched & SCHED_STUBS) != 0;
         branch_abs(e, C_AL, true, c->j->code + (v2 ? c->j->memStub2[k][ri] : c->j->memStub[k][ri]));
@@ -1743,7 +1743,7 @@ static void emit_store(Cg* c, u32 size, int vreg) {
     }
     u32 slow[2];
     int ri = ms_reg(vreg);
-    if (c->j->memStubs && ri >= 0) {
+    if (c->j->memStubs && ri >= 0 && !(c->j->opt & OPT_INLMEM)) {
         int k = size == 4 ? MS_S32 : size == 2 ? MS_S16 : MS_S8;
         branch_abs(e, C_AL, true, c->j->code + ((c->j->sched & SCHED_STUBS) ? c->j->memStub2[k][ri] : c->j->memStub[k][ri]));
         slow[0] = branch_c(e, C_CS, 0);

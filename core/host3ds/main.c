@@ -360,6 +360,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
     bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
@@ -418,7 +419,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); }
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
@@ -435,6 +436,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--probe-risky")) g_probeRisky = !strcmp(v, "on");  // timingprobe.c: the DMA engine too
         else if (!strcmp(a, "--faultmem")) o->faultMem = !strcmp(v, "on");
         else if (!strcmp(a, "--faultsync")) jit_fault_nosync = !strcmp(v, "off");
+        else if (!strcmp(a, "--faultdata")) jit_fault_fixed_data = !strcmp(v, "fixed");
         else if (!strcmp(a, "--luma-dumps")) snprintf(o->lumaDumps, sizeof o->lumaDumps, "%s", v);
         else if (!strcmp(a, "--sched")) o->sched = !strcmp(v, "on");
         else if (!strcmp(a, "--opt")) o->opt = !strcmp(v, "on");
@@ -796,16 +798,17 @@ static const char* run(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
-                           (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0));  // or on with --ab-flip
+                           (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.abFlip && g_opt.abInlmem ? OPT_INLMEM : 0));  // or on with --ab-flip
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         g_vinCompact = g_opt.vin && !g_opt.abVin;  // --ab vin starts off
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off
         aot_set_switches(g_opt.aotCall >= 0 ? (u32)g_opt.aotCall : 40u, g_opt.aotAbi != 0, g_opt.aotPipe != 0);
         if (g_perf) fprintf(g_perf, "# aot: translated code %s in this build (lookup tables %s), %s\n", aot_available() ? "present" : "absent",
                             g_aotTables ? "built" : "did not fit", aot_enabled() ? "on" : g_opt.abAot ? "A/B" : "off");
-        if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s; patch sync %s\n", jit_fault_mem(g_jit) ? "on" : "off",
+        if (g_perf) fprintf(g_perf, "# fault mode %s (A/B %s); MEM1 at %08lx, guard regions: %s; patch sync %s; exception data %s\n", jit_fault_mem(g_jit) ? "on" : "off",
                             g_opt.abFault ? "on" : "off", (unsigned long)(u32)g_sys.mem1, g_mem1Guard,
-                            jit_fault_nosync ? "none (--faultsync off)" : "outside the handler");
+                            jit_fault_nosync ? "none (--faultsync off)" : "outside the handler",
+                            jit_fault_fixed_data ? "fixed buffer (--faultdata fixed)" : "handler stack");
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
@@ -1020,6 +1023,7 @@ static const char* run(const char* path) {
                 if (g_opt.abBefloat && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_BEFLOAT);
                 if (g_opt.abLatch && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_LATCH);
                 if (g_opt.abIcbi && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_ICBI);
+                if (g_opt.abInlmem && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_INLMEM);
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
                 if (g_opt.abVtrim && perfRows % AB_SECS == 0) pica_set_vw_trim(!pica_vw_trim());
