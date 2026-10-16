@@ -143,21 +143,34 @@ static u32 zelda_read(DSPHle* h) {
     return v;
 }
 
-// Voice census per rendered frame (no mixing yet): the voice parameter blocks as the game left them. Layout as Dolphin's
-// DSPHLE/UCodes/Zelda.cpp VPB (read for reference): 0xC0 big-endian words a voice; word 0x00 enabled, 0x01 done,
-// 0x3A-0x3B remaining samples, 0x80 source type, 0x81 looping, 0x85 end requested. g_dspVoices: frames, then summed
-// over frames: voices enabled and not done, of them sample voices (PCM8 / PCM16 / AFC, types 5 8 9 16 33), of those
-// with no samples left (a real DSP would have set done), looping ones, ones asked to end.
+// Voice lifetime per rendered frame (no mixing). A real DSP walks each voice through its samples and sets VPB[1] done
+// when a one-shot voice runs out (or when the game asks it to end), which is how JAudio learns to free the channel.
+// Without it every voice the game started stayed alive (2DS relay 297: ~30 enabled voices every frame, none ever done)
+// and JAudio updated them all, every frame. Layout and rules as Dolphin's DSPHLE/UCodes/Zelda.cpp (read for reference):
+// 0xC0 big-endian words a voice, 0x180 bytes apart from the base in command 0x01; a voice is processed when its bit is
+// set in its 16-voice group's mask (the sync mails); 0x00 enabled, 0x01 done, 0x02 resampling ratio (4.12), 0x04 reset,
+// 0x05 end reached, 0x06 constant sample, 0x08 + 4 n channel n (id, target volume, current volume), 0x2A / 0x2B Dolby
+// current / target volume, 0x2C Dolby on, 0x30 position fraction (0.12), 0x34-0x35 position, 0x3A-0x3B samples left,
+// 0x80 source type, 0x81 looping, 0x85 end requested, 0x88-0x89 loop address, 0x8A-0x8B loop start position (the end).
+// A frame takes (fraction + 0x50 * ratio) >> 12 raw samples. AFC sources count samples, not whole 16-sample blocks: their
+// end may come up to a frame early or late (timing only). g_dspVoices: frames, voices processed (enabled, not done) summed
+// over frames, sample voices among them, voices ended by running out, by an end request.
 u64 g_dspVoices[6];
-// The voice blocks' base from command 0x01. Kept out of System (a save state holds System whole and refuses another
-// size); after a state load it is 0 until the game sends 0x01 again, which it does only at boot, so for Twilight
-// Princess's microcode it is read from JAudio's own pointer to them, JASDsp::CH_BUF (zeldaret/tp symbols: 0x804512E8).
-static u32 g_vpbBase;
+bool g_dspVoiceLife = true;  // --voices off: the old behaviour (nothing ever done); --ab voices
+static u32 g_vpbBase;        // command 0x01's base; kept out of System, whose size a save state checks
+static u16 g_voiceMask[16];  // per 16-voice group, the voices the last sync mail released (bit 15 - v % 16)
 static u32 vpb_base(System* s) {
     if (g_vpbBase) return g_vpbBase;
+    // After a state load it is 0 until the game sends 0x01 again (only at boot); Twilight Princess's JAudio keeps it in
+    // JASDsp::CH_BUF (zeldaret/tp symbols: 0x804512E8).
     if (s->dsp.hle.ucodeHash == 0x6CA33A6Du) return mem1_read32(s, 0x004512E8u);
     return 0;
 }
+static inline u32 vw(const u8* p, u32 i) { return (u32)p[2 * i] << 8 | p[2 * i + 1]; }
+static inline void vset(u8* p, u32 i, u32 v) { p[2 * i] = (u8)(v >> 8); p[2 * i + 1] = (u8)v; }
+static inline u32 v32(const u8* p, u32 i) { return vw(p, i) << 16 | vw(p, i + 1); }
+static inline void vset32(u8* p, u32 i, u32 v) { vset(p, i, v >> 16); vset(p, i + 1, v & 0xFFFF); }
+
 static void zelda_render_frame(System* s) {
     DSPHle* h = &s->dsp.hle;
     u32 base = vpb_base(s) & 0x01FFFFFFu, n = h->zVoicesPerFrame;
@@ -165,19 +178,53 @@ static void zelda_render_frame(System* s) {
     if (n > 256) n = 256;
     if (!base || base + n * 0x180 > PA_MEM1_END) return;
     for (u32 v = 0; v < n; v++) {
-        const u8* p = s->mem1 + base + v * 0x180;
-        #define W(i) ((u32)p[2 * (i)] << 8 | p[2 * (i) + 1])
-        if (!W(0x00) || W(0x01)) continue;
+        if (!((g_voiceMask[v >> 4 & 15] >> (15 - (v & 15))) & 1)) continue;
+        u8* p = s->mem1 + base + v * 0x180;
+        if (!vw(p, 0x00) || vw(p, 0x01)) continue;
         g_dspVoices[1]++;
-        u32 type = W(0x80);
+        u32 type = vw(p, 0x80);
         bool sampled = type == 5 || type == 8 || type == 9 || type == 16 || type == 33;
-        if (sampled) {
-            g_dspVoices[2]++;
-            if (!(W(0x3A) << 16 | W(0x3B))) g_dspVoices[3]++;
+        if (sampled) g_dspVoices[2]++;
+        if (!g_dspVoiceLife) continue;
+        if (vw(p, 0x85)) {  // end requested: the volumes halve each frame; done once all reach zero
+            bool mute = true;
+            if (vw(p, 0x2C)) {
+                u32 cur = (u32)((s32)(s16)vw(p, 0x2A) / 2) & 0xFFFF;
+                vset(p, 0x2A, cur); vset(p, 0x2B, cur);
+                mute = !cur;
+            } else {
+                for (u32 c = 0; c < 6; c++) {
+                    if (!vw(p, 0x08 + 4 * c)) continue;
+                    u32 cur = (u32)((s32)(s16)vw(p, 0x0A + 4 * c) / 2) & 0xFFFF;
+                    vset(p, 0x09 + 4 * c, cur); vset(p, 0x0A + 4 * c, cur);
+                    if (cur) mute = false;
+                }
+            }
+            if (mute) { vset(p, 0x01, 1); g_dspVoices[5]++; continue; }
         }
-        if (W(0x81)) g_dspVoices[4]++;
-        if (W(0x85)) g_dspVoices[5]++;
-        #undef W
+        if (sampled) {
+            u32 pos = v32(p, 0x34), left = v32(p, 0x3A), loopAt = v32(p, 0x88), end = v32(p, 0x8A);
+            if (vw(p, 0x04)) left = end - pos;  // reset: from the position to the end
+            u32 step = vw(p, 0x30) + 0x50u * vw(p, 0x02), need = step >> 12;
+            vset(p, 0x30, step & 0xFFF);
+            bool ended = false, done = false;
+            while (need) {
+                if (ended) {
+                    ended = false;
+                    if (!vw(p, 0x81)) { done = true; break; }
+                    pos = loopAt;
+                    left = end - pos;
+                }
+                u32 take = left < need ? left : need;
+                left -= take; pos += take; need -= take;
+                if (!left) ended = true;
+            }
+            vset32(p, 0x34, pos);
+            vset32(p, 0x3A, left);
+            vset(p, 0x05, ended ? 1 : 0);
+            if (done) { vset(p, 0x01, 1); g_dspVoices[3]++; }
+        }
+        if (vw(p, 0x04) && !vw(p, 0x06)) vset(p, 0x04, 0);
     }
 }
 
@@ -265,6 +312,7 @@ static void zelda_mail(System* s, u32 mail) {
     case Z_RENDERING: {
         u32 group = (mail >> 16) & 0xF;
         h->zSyncMax = (group + 1) << 4;
+        g_voiceMask[group] = (u16)mail;  // the voices of this group to process (zelda_render_frame)
         h->zState = Z_WAITING;
         zelda_render(s);
         if (!h->zRendering) zelda_run_commands(s);

@@ -364,6 +364,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool noVoices, abVoices;  // --voices off: DSP voices never end (the old behaviour); --ab voices: lifetime on and off (voices column; starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
@@ -426,7 +427,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); }
+        else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
@@ -523,7 +525,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -842,6 +844,7 @@ static const char* run(const char* path) {
         hle_set_enabled(g_opt.hle || g_opt.abHle);
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
+        { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_opt.noVoices && !g_opt.abVoices; }  // --ab voices starts off
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
@@ -997,6 +1000,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_relayoutOn ? 1 : 0);
                 fprintf(g_perf, ",%d", g_vinCompact ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_native_shapes() ? 1 : 0);
+                { extern bool g_dspVoiceLife; fprintf(g_perf, ",%d", g_dspVoiceLife ? 1 : 0); }
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1032,6 +1036,7 @@ static const char* run(const char* path) {
                                         (unsigned long)made, (double)(svcGetSystemTick() - tc) * 1000.0 / SYSCLOCK_ARM11);
                 }
                 if (g_opt.abShapes && g_pica && perfRows % AB_SECS == 0) pica_set_native_shapes(!pica_native_shapes());
+                if (g_opt.abVoices && perfRows % AB_SECS == 0) { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_dspVoiceLife; }
                 if (g_opt.abHlegd && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_gd_set_enabled(!hle_gd_enabled());
                     jit_invalidate_all(g_jit);
@@ -1109,15 +1114,15 @@ static const char* run(const char* path) {
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
                         {  // the DSP's voices per rendered frame (dsp_hle.c g_dspVoices)
                             extern u64 g_dspVoices[6];
+                            extern bool g_dspVoiceLife;
                             static u64 lastV[6];
                             u64 v[6];
                             memcpy(v, g_dspVoices, sizeof v);
                             double fr = (double)(v[0] - lastV[0]);
-                            fprintf(g_perf, "# dsp voices 10s: %.0f frames; per frame enabled and not done %.1f, sample voices %.1f, "
-                                    "of them out of samples %.1f, looping %.1f, asked to end %.1f\n", fr,
+                            fprintf(g_perf, "# dsp voices 10s (%s): %.0f frames; per frame processed (enabled, not done) %.1f, sample voices %.1f; "
+                                    "ended per 10 s: out of samples %.0f, on request %.0f\n", g_dspVoiceLife ? "lifetime on" : "lifetime off", fr,
                                     fr > 0 ? (double)(v[1] - lastV[1]) / fr : 0.0, fr > 0 ? (double)(v[2] - lastV[2]) / fr : 0.0,
-                                    fr > 0 ? (double)(v[3] - lastV[3]) / fr : 0.0, fr > 0 ? (double)(v[4] - lastV[4]) / fr : 0.0,
-                                    fr > 0 ? (double)(v[5] - lastV[5]) / fr : 0.0);
+                                    (double)(v[3] - lastV[3]), (double)(v[5] - lastV[5]));
                             memcpy(lastV, v, sizeof lastV);
                         }
                         {  // ShdwDraw's cell walk (hle_tp.c g_shdwWalk)
