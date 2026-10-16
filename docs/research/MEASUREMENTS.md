@@ -341,6 +341,15 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   is JAudio (updateDSPChannel 1.09%, updateEffectorParam 0.98%, updateSeq 0.77%, pow2 0.74%, updateAutoMixer 0.56%;
   the guest's audio engine, whose output dsp_hle discards). Only general JIT work moves the cutscene much.
 
+### DSP voices and JAudio (jobs 297-298)
+
+- **Census (job 297):** the mail-level Zelda microcode never marked a voice done: **~30 voices enabled and not done in
+  every frame** (~5 looping), all with 0 samples left (the counter a real DSP sets on a voice's reset).
+- **Voice lifetime (job 298, `--ab voices`, Dolphin's Zelda.cpp rules, no mixing):** voices end (~90-110 per 10 s out
+  of samples), live voices per frame **~30 -> ~13**. **Speed: no effect** (cutscene 27.93 +- 0.19 off / 27.64 +- 0.27
+  on; later medians 15.65 / 15.77; phase pairs within noise). JAudio's cost is its own per-frame sequence and channel
+  work, not the number of live DSP voices. Kept on by default (closer to the hardware; a mixer needs it).
+
 ### Fault delivery on the 2DS kernel (fault probe, jobs 293-295)
 
 - **Job 293:** 20,000 faults on MEM1's guard page (user space, no access) were all delivered (1,660 ns each); then
