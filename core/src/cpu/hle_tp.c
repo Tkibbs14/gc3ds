@@ -28,6 +28,10 @@ u64 g_hleRuns, g_hleInsns;
 // ShdwDraw stand-in costs (device profile job 266: ~34% of core 0 in the later stretch sits in it): calls, triangles the
 // fast loop skipped, guest instructions counted outside that loop, and ticks inside scan (g_profClock; 0 when off).
 u64 g_shdwStats[4];
+// The cell walk's shape (for a native rewrite): cells entered, tree levels descended, cells whose leaf the previous row
+// already took (to 0x8007feb0), cells with a new leaf (its triangle list scanned), empty leaves, triangles checked one by
+// one (0x8007fcb0).
+u64 g_shdwWalk[6];
 void (*hle_shdw_begin_hook)(void);
 void (*hle_shdw_end_hook)(void);
 static u8* g_mem;
@@ -88,7 +92,7 @@ static u32 scan(Gekko* g, u32 budget) {
     // The guest registers as locals (not an array): the compiler keeps the hot ones in ARM registers; the array
     // version spent ~7 cycles per guest instruction (2DS job 267: 38% of core 0 in the later stretch).
     u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r6 = g->gpr[6], r7 = g->gpr[7], r8 = g->gpr[8], r14 = g->gpr[14], r15 = g->gpr[15], r16 = g->gpr[16], r17 = g->gpr[17], r18 = g->gpr[18], r19 = g->gpr[19], r20 = g->gpr[20], r21 = g->gpr[21], r22 = g->gpr[22], r23 = g->gpr[23], r24 = g->gpr[24], r25 = g->gpr[25], r26 = g->gpr[26], r27 = g->gpr[27], r28 = g->gpr[28], r29 = g->gpr[29], r30 = g->gpr[30];
-    u32 pc = g->pc, n = 0, crA = 0, crB = 0, crK = 0;  // CR0: the last compare's operands, kind 1 signed / 2 unsigned
+    u32 pc = g->pc, n = 0, crA = 0, crB = 0, crK = 0, wCell = 0, wLevel = 0, wSame = 0, wNew = 0, wEmpty = 0, wTri = 0;  // CR0: the last compare's operands, kind 1 signed / 2 unsigned
     bool caClear = false;
     // Guest memory: only MEM1 through the cached mapping (0x80000000) is read here; any other address (including the
     // uncached mirror) stops the stand-in before that instruction, for guest code to run it. The base and limits are
@@ -116,6 +120,7 @@ L_fb54:
     r17 = r30; n++;                              // or r17,r30,r30
 L_fb70:
     if (n >= budget) { pc = 0x8007FB70u; goto out; }  // slice used up: guest code goes on from the loop head
+    wCell++;
     RD32(r8, r15 + 24, 0x8007FB70u); n++;        // lwz r8,24(r15)
     RD32(r3, r8 + 12, 0x8007FB74u); n++;         // lwz r3,12(r8)
     RD32(r4, r8 + 44, 0x8007FB78u); n++;         // lwz r4,44(r8)
@@ -132,6 +137,7 @@ L_fb70:
     n++;                                             // b 0x8007fbcc
     goto L_fbcc;
 L_fba8:
+    wLevel++;
     r3 = r0 + r5; n++;                         // add r3,r0,r5
     r4 = r4 - 1; n++;                            // addi r4,r4,-1
     r6 = shr(r17, r4); n++;                    // srw r6,r17,r4
@@ -169,7 +175,7 @@ L_fbcc:
     RD16(r0, r16 + 2, 0x8007FC28u); n++;         // lhz r0,2(r16)
     CRU(r0, 0); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 12,eq,0x8007fc84
-    if (r0 == 0) goto L_fc84;
+    if (r0 == 0) { wEmpty++; goto L_fc84; }
     CRS(r4, r23); n++;                      // cmp cr0,0,r4,r23
     n++;                                             // bc 4,gt,0x8007fc84
     if ((s32)r4 <= (s32)r23) goto L_fc84;
@@ -209,7 +215,7 @@ L_fc84:
     RD32(r0, r1 + 2212, 0x8007FC9Cu); n++;       // lwz r0,2212(r1)
     CRU(r16, r0); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 4,eq,0x8007fea4
-    if (r16 != r0) goto L_fea4;
+    if (r16 != r0) { wNew++; goto L_fea4; }
     n++;                                             // b 0x8007feb0
     goto L_feb0;
 L_fea4:
@@ -270,6 +276,7 @@ L_feb0:
     pc = PC_EXIT;
     goto out;
 L_fcb0:
+    wTri++;
     r3 = 1; n++;                                   // addi r3,0,1
     RD16(r4, r16, 0x8007FCB4u); n++;             // lhz r4,0(r16)
     r0 = r4 & 31u; n++;                          // rlwinm r0,r4,0,27,31
@@ -286,6 +293,9 @@ L_fcb0:
     WR32(r3 + r4, r0, 0x8007FCE0u); n++;       // stwx r0,r3,r4
     pc = PC_TRI;
 out:
+    g_shdwWalk[0] += wCell; g_shdwWalk[1] += wLevel; g_shdwWalk[3] += wNew; g_shdwWalk[4] += wEmpty; g_shdwWalk[5] += wTri;
+    g_shdwWalk[2] += wCell - wNew;  // the rest went to 0x8007feb0 (a leaf the previous row took) or stopped in the cell
+    (void)wSame;
 #undef RD32
 #undef RD16
 #undef WR32

@@ -1105,6 +1105,15 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
                                 (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
+                        {  // ShdwDraw's cell walk (hle_tp.c g_shdwWalk)
+                            static u64 lastW[6];
+                            u64 w[6];
+                            memcpy(w, g_shdwWalk, sizeof w);
+                            fprintf(g_perf, "# shdw walk 10s: cells %llu, levels %llu, same leaf %llu, new leaf %llu, empty %llu, triangles checked %llu\n",
+                                    (unsigned long long)(w[0] - lastW[0]), (unsigned long long)(w[1] - lastW[1]), (unsigned long long)(w[2] - lastW[2]),
+                                    (unsigned long long)(w[3] - lastW[3]), (unsigned long long)(w[4] - lastW[4]), (unsigned long long)(w[5] - lastW[5]));
+                            memcpy(lastW, w, sizeof lastW);
+                        }
                         lastHleRuns = g_hleRuns;
                         lastHleInsns = g_hleInsns;
                         static u64 lastTevC, lastTevK;
