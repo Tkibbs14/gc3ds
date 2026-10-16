@@ -94,8 +94,10 @@ static void measure(const char* name, const char* param, Kernel k, void* ctx, do
     }
     n = (u32)((double)n * 20e6 / (double)(cyc ? cyc : 1));
     if (n < 1) n = 1;
-    double c[5], ev[5][2];
-    for (unsigned p = 0; p < 5; p++) {
+    // All nine PMU pairs (pmu.c): the last four (unpredicted branches, software PC changes, D-cache reads, folded
+    // branches, micro-TLB misses, external requests, store-buffer drains) say what those events count in known loops.
+    double c[9], ev[9][2];
+    for (unsigned p = 0; p < 9; p++) {
         sel(p);
         k(ctx, n);
         rd(&cyc, &e0, &e1);
@@ -105,11 +107,13 @@ static void measure(const char* name, const char* param, Kernel k, void* ctx, do
         ev[p][1] = (double)e1 / ops;
     }
     double cmin = c[0];
-    for (int p = 1; p < 5; p++) if (c[p] < cmin) cmin = c[p];
+    for (int p = 1; p < 9; p++) if (c[p] < cmin) cmin = c[p];
     out("# timing %s %s: cyc %.3f (max %.3f) inst %.3f brmiss %.4f icmiss %.4f dcrmiss %.4f stall_inst %.3f stall_data %.3f "
-        "dcwmiss %.4f tlbmiss %.4f branch %.3f stall_lsu %.3f\n", name, param, cmin,
+        "dcwmiss %.4f tlbmiss %.4f branch %.3f stall_lsu %.3f brnopred %.3f pcchg %.3f dcread %.3f folded %.3f imtlb %.4f "
+        "dmtlb %.4f extreq %.4f sbdrain %.4f\n", name, param, cmin,
         c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]), ev[0][0], ev[0][1], ev[1][0], ev[1][1],
-        ev[2][0], ev[2][1], ev[3][0], ev[3][1], ev[4][0], ev[4][1]);
+        ev[2][0], ev[2][1], ev[3][0], ev[3][1], ev[4][0], ev[4][1], ev[5][0], ev[5][1], ev[6][0], ev[6][1], ev[7][0],
+        ev[7][1], ev[8][0], ev[8][1]);
     g_badRun = g_disagreed ? g_badRun + 1 : 0;
     if (g_pmuOk && g_badRun >= 3) {
         out("# timing: three measurements in a row disagreed: the tick from here on\n");

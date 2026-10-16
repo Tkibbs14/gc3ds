@@ -110,6 +110,38 @@ Yes for choosing a direction, no for predicting what a given redesign will gain.
 - icbi's 3.8% of modelled cycles comes from a one-off boot/state-load burst (622,595 in every run from the 850 state), not gameplay. The model share is inflated.
 - The workload lens's 'ShdwDraw ~70% of later-stretch instructions' rests on unverified counter semantics; the sampler says 12.5% and the measured gain is only +16%. Unresolved.
 
+## 2026-10-16 device runs (jobs 245-251): baseline, the missing cycles, noise floor
+
+- **Job 245** failed: tp850.state would not load after the native commits added fields to GXCore (now native-only, 187b0f1).
+- **Baseline at HEAD (job 246, tp850, 600 s, no A/B), device:** cutscene (30-250 s) speed 21.4%, 36.2 core-0 cycles and
+  11.8 host instructions per guest instruction (IPC 0.33), fetch stall 22.4%, data stall 23.3%; later stretch (265-475 s)
+  12.5%, 13.2 cycles (blended, see below), fetch 14.7%, data 18.8%; movie (510-600 s) 4.1%, 64.1 cycles. Matches job 184
+  (20.5%, fetch 21%, data 22%) within noise: the native commits did not slow the emulator.
+- **The later stretch's 13.3 cycles per guest instruction is a blend** (jit.c: a stand-in's instruction count is taken
+  off the block budget, so it lands in ins_k). Job 157, later stretch: 60.2 M guest instructions/s of which 44.2 M (73%)
+  are the ShdwDraw HLE stand-in; the remaining JIT code costs **~39-47 cycles per guest instruction** (stand-in at 1-4
+  cycles each), about the cutscene's 35-36. Core 0 costs ~35-45 cycles per real guest instruction in every section.
+- **What the PMU events count (probe job 251, device):** `pcchg` (PC changed by software, event 0x0F) counts every taken
+  branch, folded or not (predictable loop branch 1.06 per iteration; random branch 0.56). Folded branches (`folded`,
+  0x09) cost nothing (3.44 cycles for 3.3 instructions). A taken branch that is not folded costs **~3 cycles** (BTAC
+  loop: 4.0 cycles per 1-instruction iteration, `brnopred` 1.0). A call plus return is 2 PC changes, ~10 cycles beyond its
+  instructions with 2-4 of them stack data stalls; an indirect jump ~19 cycles beyond. Dependent results: vadd/vmul
+  single and double 8 cycles, vmul.f64 9, vdiv/vsqrt 19, integer mul 5, ldr 4, vmov to core 10, with **stall_data ~0**
+  (invisible to every stall event).
+- **Where the missing ~20% of core-0 cycles goes (job 247, new event pairs, device):** cutscene 803 Mcycles/s = 259
+  instructions + 183 fetch stall + 188 data stall + 16 LSU-full + **157 unattributed (19.6%)**; later 137 (17.1%); movie
+  128 (16.2%). Cutscene branch events per second: 38.0 M branches, 34.7 M PC changes, 4.9 M folded, 12.2 M not predicted,
+  0.54 M mispredicted; 54.2 M D-cache reads. **Unfolded taken branches (~29.8 M/s x ~3 cycles) explain ~11-13% of core
+  0, mispredicts ~0.5%, and the remaining ~6-7% fits float / multiply result latency.** 1.6 taken PC changes per guest
+  instruction: every guest load and store (~40% of guest instructions) is a `bl` to a shared memory stub and a `bx lr`
+  back (jit.c emit_load / emit_mem_stubs), plus block links and conditional branches. This is the mechanism behind fault
+  mode's +7-9%: it inlines the access with no call.
+- **Noise floor, A/A (job 248, --ab icbi, an inert option):** core 0 +0.24% (95% CI +-3.15) cutscene, +0.35% (+-1.72) later:
+  a clean null; one 600 s run resolves ~+-3% cutscene, ~+-1.7% later.
+- **fcache with the arm order swapped (job 249, --ab-flip on):** +1.22% (+-2.58) cutscene, +1.12% (+-1.73) later. With jobs
+  131-134 every fcache run is +0.3 to +2.7%, never negative: C11's rejection is wrong; fcache is a small gain (~1-2%),
+  below a single run's resolution.
+
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 
 Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also
