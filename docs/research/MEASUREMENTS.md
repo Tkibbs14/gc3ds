@@ -341,6 +341,31 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   is JAudio (updateDSPChannel 1.09%, updateEffectorParam 0.98%, updateSeq 0.77%, pow2 0.74%, updateAutoMixer 0.56%;
   the guest's audio engine, whose output dsp_hle discards). Only general JIT work moves the cutscene much.
 
+### Core-0 switches re-tested with the GX wall gone (jobs 290-292, `--ab`, 600 s, ab_split --split 200 --end 403)
+
+The cutscene no longer waits on GX (converted shapes), so switches judged "within noise" behind that wall were run
+again. **None helps:**
+
+| A/B | Cutscene speed (arm that starts / the other) | Later stretch medians |
+|---|---|---|
+| fcache (OPT_FCACHE, float lanes) | off 27.86 +- 0.12 (n 48) / on 27.24 +- 0.27 (n 65) | 15.40 / 15.62 |
+| inlmem (OPT_INLMEM) | off 27.87 +- 0.13 (n 48) / on 27.20 +- 0.27 (n 65) | 15.41 / 15.57 |
+| kstore (OPT_KSTORE) | off 27.79 +- 0.15 (n 48) / on 26.93 +- 0.27 (n 65) | 15.26 / 15.41 |
+
+In all three the starting arm has fewer cutscene rows and reads faster: phase alignment over the window (the ab_split
+scene trap), not an effect. Phase pairs (3-4 per window) are within noise everywhere.
+
+### What full speed needs on core 0 (2026-10-16 synthesis)
+
+- Cutscene with shapes on: ~37 M guest instructions/s on ~800 M core-0 cycles: **~21.6 cycles per guest instruction**
+  (everything on core 0 included). Full speed needs ~103.7 M per emulated second: **~7.7 cycles**.
+- The JIT's code for TP's mix costs **~11 cycles in cache** (job 279); the other ~10 are footprint, data and block
+  boundaries (jobs 281 / 283). Perfect layout alone would stop near ~50% speed in the cutscene: full speed needs both
+  far denser code and cheaper code per class. The in-cache gaps that matter, by weight in TP's mix: register-cache
+  pressure (5 host slots: addi 3.4 host instructions with 8 guest registers vs 1.5 with one), CR updates (cmpwi 6.2
+  host instructions), loads / stores through the stubs (stw 7.6 cycles), single-precision floats and paired singles
+  (30-80 cycles), calls (~34 cycles per bl / blr).
+
 ## Converted shapes in the emulator (jobs 272, 274-276, device)
 
 - **Why (job 272):** in the cutscene core 0 waits **gxwait_pct ~19%** for the GX thread (gxthread_pct ~83%, vertex
