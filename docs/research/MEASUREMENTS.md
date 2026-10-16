@@ -248,6 +248,38 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   13.46% (270, with the split's ~1% overhead on): +10.5%**, cutscene 21.4% in all three (no ShdwDraw there). Separate
   runs, not an in-run A/B; the later stretch's run-to-run spread is ±1.5-3.5%.
 
+## Device cost of each guest instruction class through the real JIT (job 279, `--jit-bench only`)
+
+host3ds/jitbench.c: loops of 32 copies of one guest instruction (+ addic. / bne), compiled with the run's JIT options
+(opt 0x1273), code and data in L1, one run of 2 M guest instructions per PMU pair (job 278 was void: the loaded
+state's pending interrupt ended every run after one block). Per guest instruction, loop overhead included:
+
+| Class | Cycles | Host instructions | Note |
+|---|---|---|---|
+| addi, one register (dependent chain) | 1.74 | 1.53 | |
+| addi / or, 8 registers rotated | 5.38 / 5.41 | 3.36 / 3.38 | **register-cache pressure: 2x the one-register case**, stall_data 2.0 |
+| rlwinm / mullw / cmpwi | 7.27 / 10.13 / 8.22 | 4.30 / 4.33 / 6.18 | cmpwi: the CR update |
+| divw | 32.73 | 18.45 | helper call (pcchg 3.8) |
+| lwz / lbz / lhz | 4.88 / 3.94 / 7.72 | 4.47 / 3.53 / 4.47 | |
+| stw / stb / sth | 7.63 / 5.74 / 7.63 | 4.47 / 3.53 / 4.47 | |
+| lfs / lfd | 22.82 / 16.22 | 9.22 / 10.16 | shared stubs (pcchg ~2) |
+| **stfs** / stfd | **39.75** / 19.91 | 12.05 / 10.16 | |
+| psq_l float / u8 | 31.30 / 53.53 | 17.69 / 24.11 | |
+| **psq_st float / u8** | **76.52 / 86.50** | 27.12 / 28.83 | |
+| **fadds / fmuls / fmadds** (single) | **39.98 / 41.10 / 44.96** | 7.13 / 11.84 / 12.78 | **~2x the double forms**; the stalls are VFP latency (no PMU event) |
+| fadd / fmadd (double) | 23.02 / 17.63 | 4.30 / 5.24 | |
+| frsp / fctiwz | 29.68 / 28.00 | 5.25 / 12.78 | |
+| ps_add / ps_mul / ps_madd | 31.77 / 51.55 / 59.09 | 11.84 / 21.26 / 23.14 | |
+| bl + blr (per guest instruction; 33.7 per call) | 16.85 | 8.52 | |
+| b +4 (taken) / bc not taken | 2.56 / 4.44 | 2.41 / 3.36 | |
+
+- **Weighted by TP's dynamic mix (PC interpreter, 1.04 G instructions): ~11 cycles per guest instruction in cache.**
+  The cutscene measures ~35, so **about two thirds of core 0's cost is what real code at scale adds**: instruction
+  fetch from L2 (footprint ~16x L1), data stalls, and block boundaries (TP's blocks average 5.9 guest instructions with
+  ~4.5 register loads / stores each; these loops are one 34-instruction block).
+- Single-precision arithmetic, stfs and psq_st are the classes far above their double / integer counterparts: the
+  rounding to single (vcvt pairs) and the store conversions. Weighted, the float classes are ~3-4 of the ~11 cycles.
+
 ## Converted shapes in the emulator (jobs 272, 274-276, device)
 
 - **Why (job 272):** in the cutscene core 0 waits **gxwait_pct ~19%** for the GX thread (gxthread_pct ~83%, vertex
