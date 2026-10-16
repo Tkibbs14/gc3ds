@@ -88,6 +88,7 @@ struct GXBackend {
 // True while the backend holds a draw open to append the next draws to (set and cleared by the backend).
 extern bool g_gxMergeOpen;
 extern u64 g_dlStats[7];  // display-list statistics (fifo.c dl_note)
+extern u64 g_dlRun[11];   // runs of draws inside display lists (fifo.c run_list)
 
 // Guest RAM pages (4 KB) changed behind the CPU's cache: by the game's cache flushes (dcbf, dcbst, dcbz) and by DMA
 // (disc, ARAM, EXI, locked cache). The GPU of a GameCube reads vertex arrays and display lists

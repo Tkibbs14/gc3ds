@@ -577,9 +577,30 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
     return 1;
 }
 
+// Runs of draw commands inside display lists (could a list's draws be converted once into one GPU-resident shape?):
+// [0] draws in lists, [1] runs (consecutive draws, NOPs between them allowed, one VAT), [2] runs of 2+ draws, [3]
+// vertices in lists, [4] vertices in runs of 2+ draws, [5] draws of lines or points; what ended a run: [6] a CP write,
+// [7] an XF write or indexed XF load, [8] a BP write, [9] another VAT, [10] anything else.
+u64 g_dlRun[11];
+
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
-    u32 off = 0;
+    u32 off = 0, runDraws = 0, runVerts = 0, runVat = 0;
     while (off < len) {
+        u8 op = p[off];
+        if (op >= 0x80 && op < 0xC0 && len - off >= 3) {
+            u32 vat = op & 7, nv = rd16(p + off + 1);
+            if (runDraws && vat != runVat) { g_dlRun[9]++; runDraws = 0; }
+            if (!runDraws) { g_dlRun[1]++; runVerts = 0; runVat = vat; }
+            if (++runDraws == 2) { g_dlRun[2]++; g_dlRun[4] += runVerts; }
+            if (runDraws >= 2) g_dlRun[4] += nv;
+            runVerts += nv;
+            g_dlRun[0]++;
+            g_dlRun[3] += nv;
+            if (((op >> 3) & 7) >= 5) g_dlRun[5]++;
+        } else if (op != 0x00 && runDraws) {
+            g_dlRun[op == 0x08 ? 6 : op == 0x10 || (op >= 0x20 && op <= 0x38) ? 7 : op == 0x61 ? 8 : 10]++;
+            runDraws = 0;
+        }
         u32 n = exec_one(s, gx, p + off, len - off, inList);
         if (!n) { emu_log(LOG_GX, "display list ends mid-command\n"); return; }
         gx->commands++;

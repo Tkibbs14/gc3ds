@@ -1126,6 +1126,20 @@ static const char* run(const char* path) {
                                     smp > 0 ? 100.0 * (double)(d[4] - lastD[4]) / smp : 0.0, smp > 0 ? 100.0 * (double)(d[5] - lastD[5]) / smp : 0.0);
                             memcpy(lastD, d, sizeof d);
                         }
+                        {  // runs of draws inside display lists (fifo.c g_dlRun): what a converted list shape would merge
+                            static u64 lastR[11];
+                            u64 r[11];
+                            memcpy(r, g_dlRun, sizeof r);
+                            double dr = (double)(r[0] - lastR[0]), rn = (double)(r[1] - lastR[1]), vt = (double)(r[3] - lastR[3]);
+                            fprintf(g_perf, "# dl runs 10s: %.0f draws/s in lists in %.0f runs/s (%.2f draws each), %.1f%% of runs 2+ draws "
+                                    "holding %.1f%% of list vertices (%.0f vertices/s); lines/points %llu; runs ended by CP %llu, XF %llu, "
+                                    "BP %llu, VAT %llu, other %llu\n", dr / 10.0, rn / 10.0, rn > 0 ? dr / rn : 0.0,
+                                    rn > 0 ? 100.0 * (double)(r[2] - lastR[2]) / rn : 0.0, vt > 0 ? 100.0 * (double)(r[4] - lastR[4]) / vt : 0.0,
+                                    vt / 10.0, (unsigned long long)(r[5] - lastR[5]), (unsigned long long)(r[6] - lastR[6]),
+                                    (unsigned long long)(r[7] - lastR[7]), (unsigned long long)(r[8] - lastR[8]),
+                                    (unsigned long long)(r[9] - lastR[9]), (unsigned long long)(r[10] - lastR[10]));
+                            memcpy(lastR, r, sizeof r);
+                        }
                         {  // the vertex worker's job ring (pica.c g_vwStats)
                             static u64 lastV[5];
                             u64 v[5];
