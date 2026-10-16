@@ -248,6 +248,25 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   13.46% (270, with the split's ~1% overhead on): +10.5%**, cutscene 21.4% in all three (no ShdwDraw there). Separate
   runs, not an in-run A/B; the later stretch's run-to-run spread is ±1.5-3.5%.
 
+## Converted shapes in the emulator (jobs 272, 274-276, device)
+
+- **Why (job 272):** in the cutscene core 0 waits **gxwait_pct ~19%** for the GX thread (gxthread_pct ~83%, vertex
+  worker ~64% busy, waiting ~27% of the time itself); in the later stretch the wait is 0.8%.
+- **Runs of draws inside lists (job 274, `# dl runs 10s`, cutscene):** 64-71k draws/s inside lists in 1.26-1.61k runs/s,
+  **43-54 draws per run**; runs of 2+ draws hold **99.3-99.9% of list vertices** (320-354k vertices/s); no run ended by
+  a CP, XF, BP or VAT command (each list is one run of one vertex format); no lines or points.
+- **First run (job 275, ab57c1b, `set shapes 1` live for ~54 s of the cutscene):** 11-15k runs per 10 s drawn
+  converted, ~70 shapes (~1.8 MB linear), 2-5 conversions per 10 s once warm; ~4.4k runs per 10 s on the old path for
+  their layout (retried at every draw: fixed in the next build, ns_never) and ~710 left as changing; source hash checks
+  178-192 per 10 s, **0 changed** (the page stamps missed nothing). Screenshots with shapes on (shots 9-12: Epona and
+  Link, the cliffs, the wolf at the twilight wall) render as with them off. Adjacent windows, not an A/B:
+
+| Window (real s) | Shapes | Speed | GX thread busy | Core 0 waits on GX | Vertex worker busy |
+|---|---|---|---|---|---|
+| 30-63 | off | 18.8% | 86.5% | 24.0% | 62.1% |
+| 66-117 | **on** | **28.3%** | **49.0%** | **2.3%** | **10.4%** |
+| 120-170 | off | 23.0% | 81.9% | 14.4% | 63.3% |
+
 ## Movie: psq_st to the locked cache compiled (jobs 266, 272, 273, device)
 
 - **Cause (job 272, `# psq_st fallbacks 10s`):** in TP's movie (510-600 s) all ~3.1-3.7M interpreted psq_st per 10 s

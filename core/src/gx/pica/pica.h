@@ -103,6 +103,7 @@ void pica_set_native_opts(u32 opts);  // bisection: 1 no PICA fixed attributes, 
 bool pica_native_shapes(void);
 u32 pica_native_bytes(u32* live);
 extern u64 g_nsStats[16];
+extern u64 g_nsWhy[5];  // shapes left to the old path, by cause (pica.c ns_never)
 void pica_describe(u32 draws);
 const char* pica_take_description(void);
 void pica_description_taken(void);

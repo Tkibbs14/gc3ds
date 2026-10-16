@@ -2114,6 +2114,17 @@ static bool ns_dynamic(const u8* cmd) {
     u32 i = ns_hash_ptr(cmd) & (NS_DYN - 1);
     return g_nsDyn[i].cmd == cmd && g_nsDyn[i].kills >= 3;
 }
+// A shape that cannot be made (its layout, a matrix row past 27, memory outside the window): left to the old path
+// without decoding it again at every draw (the emulator drew ~440 such runs a second, job 275).
+// g_nsWhy: [0] texture matrix indices in the vertices or no position, [1] a malformed run or a primitive not taken,
+// [2] vertex / index limits, [3] a matrix row past 27, [4] memory outside the window or too many ranges.
+u64 g_nsWhy[5];
+static void ns_never(const u8* cmd, u32 why) {
+    u32 i = ns_hash_ptr(cmd) & (NS_DYN - 1);
+    g_nsDyn[i].cmd = cmd;
+    g_nsDyn[i].kills = 3;
+    g_nsWhy[why]++;
+}
 
 static void ns_grave_free(void) {
     for (u32 i = 0; i < g_nsGraveN; i++) linearFree(g_nsGrave[i]);
@@ -2300,9 +2311,9 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     u32 vat = q->vat, nv = q->nv, ni = q->ni;
     const u8* cmd = q->cmd;
     u32 len = q->len;
-    if (!vfast_native_info(gx, vat, &inf)) { g_nsStats[4]++; return NULL; }
-    if (q->list && !ns_list_count(q, &nv, &ni)) { g_nsStats[4]++; return NULL; }
-    if (!nv || nv > 0xFFFF || ni < 3) { g_nsStats[4]++; return NULL; }
+    if (!vfast_native_info(gx, vat, &inf)) { g_nsStats[4]++; ns_never(cmd, 0); return NULL; }
+    if (q->list && !ns_list_count(q, &nv, &ni)) { g_nsStats[4]++; ns_never(cmd, 1); return NULL; }
+    if (!nv || nv > 0xFFFF || ni < 3) { g_nsStats[4]++; ns_never(cmd, 2); return NULL; }
     u32 off[NO_N], at = 0;
     static const u8 kSize[NO_IDX] = { 16, 12, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8 };
     for (u32 k = 0; k < NO_IDX; k++) {
@@ -2332,12 +2343,12 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     // Matrix rows (each vertex's own, or the draw's default: row 0 here, loaded per draw) and the origin.
     u32 rows = 0;
     float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
-    bool ok = true;
+    bool ok = true, rowsOk = true;
     for (u32 i = 0; i < nv; i++) {
         float* p = pos[i];
         if (inf.pnDirect) {
             u32 pn = (u32)p[3];
-            if (pn > 27) ok = false;
+            if (pn > 27) ok = rowsOk = false;
             else rows |= 1u << pn;
         } else {
             p[3] = 0;
@@ -2362,6 +2373,7 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     if (!ok) {
         linearFree(mem);  // never handed to the GPU
         g_nsStats[4]++;
+        ns_never(cmd, rowsOk ? 4 : 3);
         return NULL;
     }
     svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)mem, bytes);

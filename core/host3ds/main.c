@@ -1163,6 +1163,12 @@ static const char* run(const char* path) {
                                     (unsigned long long)(ns[9] - lastN[9]), (double)(ns[11] - lastN[11]) * 1000.0 / SYSCLOCK_ARM11,
                                     (double)(ns[12] - lastN[12]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long)live, (unsigned long)kb);
                             memcpy(lastN, ns, sizeof ns);
+                            static u64 lastW[5];
+                            fprintf(g_perf, "# shapes never made 10s: vertex layout %llu, run %llu, limits %llu, matrix row past 27 %llu, memory %llu\n",
+                                    (unsigned long long)(g_nsWhy[0] - lastW[0]), (unsigned long long)(g_nsWhy[1] - lastW[1]),
+                                    (unsigned long long)(g_nsWhy[2] - lastW[2]), (unsigned long long)(g_nsWhy[3] - lastW[3]),
+                                    (unsigned long long)(g_nsWhy[4] - lastW[4]));
+                            memcpy(lastW, g_nsWhy, sizeof lastW);
                         }
                         {  // the vertex worker's job ring (pica.c g_vwStats)
                             static u64 lastV[5];
