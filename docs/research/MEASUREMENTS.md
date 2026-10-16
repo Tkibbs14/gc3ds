@@ -280,6 +280,36 @@ state's pending interrupt ended every run after one block). Per guest instructio
 - Single-precision arithmetic, stfs and psq_st are the classes far above their double / integer counterparts: the
   rounding to single (vcvt pairs) and the store conversions. Weighted, the float classes are ~3-4 of the ~11 cycles.
 
+### Block boundaries and footprint through the JIT (job 283, jitbench rings; job 281 for the in-L1 rows)
+
+Rings of M blocks of K guest instructions (K - 1 addi over r3-r6, then a taken bne to the next block, 64 B apart),
+cycles per guest instruction (per block). Job 283's "JIT code N% of its buffer" field is the build's host words per
+guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)**.
+
+| K | M 16 (L1) | M 256 | M 1024 | M 4096 | I-misses per guest instruction at M 4096 |
+|---|---|---|---|---|---|
+| 2 | 5.00 (10.0) | 10.79 (21.6) | 19.55 (39.1) | 19.55 (39.1) | 0.50 |
+| 6 | 4.46 (26.7) | 7.61 (45.7) | 11.20 (67.2) | 11.20 (67.2) | 0.38 |
+| 12 | 2.68 (32.2) | 7.50 (90.0) | 8.02 (96.3) | 8.02 (96.3) | 0.25 |
+
+- **A block boundary costs ~20 cycles with four live guest registers** (K 6 / K 12 at M 16: ~1 cycle per addi, ~21
+  per block: written back at the exit, loaded again at the next entry), ~9 with one.
+- **Out of L1 the cost per guest instruction grows 2.5-3.9x, in proportion to code bytes:** ~21 cycles per I-miss, one
+  miss per 32-byte line of compiled code. Halving host bytes per guest instruction would halve fetch stalls.
+
+### Where core 0's time goes by guest function with converted shapes on (job 284, `--profile on`, emulated windows)
+
+- **Cutscene (19-66 s): flat.** The listed blocks cover 12.1% of samples; top functions 0.2-0.8% each. About half of
+  the named ones are the game's audio engine (JASChannel::updateEffectorParam 0.78%, JASCalc::pow2 0.77%,
+  JASTrack::updateSeq 0.67%, updateDSPChannel 0.66%, updateAutoMixer 0.41%, ...; the PC family profile put JAS audio at
+  15.6% of guest instructions), then J3DUClipper::clip 0.71%, cBgS::GroundCross 0.56%.
+- **Later stretch (69-97 s):** ShdwDraw **35.2%**; the SDK vector / matrix library next: PSVECDotProduct 2.18%,
+  PSMTXConcat 1.90%, PSVECCrossProduct 1.53%, PSVECAdd 1.38%, PSVECScale 1.11%, PSMTXMultVec 0.40% (~8.5%);
+  psdRealCallBack 2.07%, GetTriPla 1.62%, J3DFifoLoadPosMtxImm 1.55%, calcWeightEnvelopeMtx 1.37%.
+- **Movie (99-110 s):** runtime-loaded code (THP decoder) 45.5%, Read 3.3%.
+- Job 280 (and 282) listed host addresses / nothing: the sampler's work arrays failed to allocate with shapes' smaller
+  heap (fixed: one allocation at sampler start).
+
 ## Converted shapes in the emulator (jobs 272, 274-276, device)
 
 - **Why (job 272):** in the cutscene core 0 waits **gxwait_pct ~19%** for the GX thread (gxthread_pct ~83%, vertex
