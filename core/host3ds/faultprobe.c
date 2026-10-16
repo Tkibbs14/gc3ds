@@ -100,6 +100,33 @@ void fault_probe(FILE* f, const u8* mem1) {
     u32 v3 = fp_load((u32)(buf + 3));
     fprintf(f, "# fault probe: unaligned ldr +1 -> %08lx, +3 -> %08lx (want 05040302, 07060504), faults %lu\n",
             (unsigned long)v, (unsigned long)v3, (unsigned long)(g_hits - h0));
+    // Stress (2026-10-16): fault mode crashed the kernel every few hundred to few thousand faults, a data abort in
+    // Luma's exception page at the faulting guest address (541ab000: above 0x40000000, outside user space). Is it the
+    // address? First faults on MEM1's guard page (user space, no access), then the same number above 0x40000000. The
+    // count goes to the log every 1,000, so a crash shows how far each got.
+    extern const char* g_mem1Guard;
+    static const struct { const char* name; u32 base, span; } kStress[] = {
+        { "guard page (user space, no access)", 0, 0 },
+        { "above 0x40000000 (as fault mode's non-MEM1 sites)", 0x50000000u, 0x00400000u },
+    };
+    for (u32 s = 0; s < 2; s++) {
+        u32 base = kStress[s].base, span = kStress[s].span;
+        if (s == 0) {
+            if (strcmp(g_mem1Guard, "no access")) { fprintf(f, "# fault probe stress: guard pages %s, skipped\n", g_mem1Guard); continue; }
+            base = (u32)mem1 - 4096; span = 4096;  // the guard below MEM1
+        }
+        fprintf(f, "# fault probe stress: %s at %08lx, 20000 faults\n", kStress[s].name, (unsigned long)base);
+        fflush(f);
+        h0 = g_hits;
+        t0 = svcGetSystemTick();
+        for (u32 i = 0; i < 20000; i++) {
+            fp_load(base + ((i * 2654435761u) % span & ~3u));
+            if ((i + 1) % 1000 == 0) { fprintf(f, "# fault probe stress: %lu\n", (unsigned long)(i + 1)); fflush(f); }
+        }
+        fprintf(f, "# fault probe stress: %s survived, hits +%lu, %.0f ns each\n", kStress[s].name,
+                (unsigned long)(g_hits - h0), ns_since(t0) / 20000);
+        fflush(f);
+    }
     threadOnException(NULL, NULL, NULL);
     fprintf(f, "# fault probe: done, handler removed\n");
     fflush(f);
