@@ -101,7 +101,7 @@ static void attr_array(const GXCore* gx, VAttr* a, u32 arr) {
     if (a->mode < 2) return;
     a->base = gx->cp[CP_ARRAY_BASE + arr] & GX_ARRAY_MASK;
     a->stride = gx->cp[CP_ARRAY_STRIDE + arr] & 0xFF;
-    a->fmt = (u8)((a->fmt & 7) | ((gx->arrayLE >> arr) & 1) << 3);  // per draw: the array's byte order (read_comp)
+    a->fmt = (u8)((a->fmt & 7) | ((GX_ARRAY_LE(gx) >> arr) & 1) << 3);  // per draw: the array's byte order (read_comp)
 }
 
 static void attr_init(const GXCore* gx, VAttr* a, u32 mode, u32 arr, u32 fmt, u32 n, u32 cs, float scale) {

@@ -42,8 +42,9 @@ typedef struct {
     // Incremented when a register of the kind changes value (BP, CP, XF registers 0x1000-): backends skip work that
     // depends only on registers that have not changed since they last did it.
     u32 bpVersion, cpVersion, xfRegVersion;
-    // Native mode (core/native, Aurora's GX stream): addresses too wide for the BP registers. Zero in the emulator,
-    // where the registers are used.
+#ifdef GC3DS_NATIVE
+    // Native mode only (core/native, Aurora's GX stream): addresses too wide for the BP registers. Not in the
+    // emulator's GXCore, whose layout save states depend on (tp850 failed to load with them, relay job 245).
     u32 texAddr[8];      // texture map data (GX_AURORA_LOAD_TEXOBJ)
     u32 copyDest;        // EFB -> texture copy destination (GX_AURORA_LOAD_COPY_DEST)
     u32 copyCtl;         // BP 0x52 format, intensity and box-filter bits from GX_AURORA_LOAD_COPY_DST
@@ -51,12 +52,20 @@ typedef struct {
     u32 arrayLE;         // bit per CP array the stream declared little-endian (not decoded yet: counted)
     u64 aurora[8];       // Aurora commands seen: arrays, LE arrays, textures, palettes, copies, sized / indexed draws,
                          // ignored (viewport / scissor render, projection, offscreen, polygon offset)
+#endif
 } GXCore;
 
+#ifdef GC3DS_NATIVE
+#define GX_ARRAY_LE(gx) ((gx)->arrayLE)
 static inline u32 gx_tex_addr(const GXCore* gx, u32 map, u32 img3) {
     return gx->texAddr[map & 7] ? gx->texAddr[map & 7] : (img3 & 0xFFFFFF) << 5;
 }
 static inline u32 gx_copy_dest(const GXCore* gx) { return gx->copyDest ? gx->copyDest : (gx->bp[0x4B] & 0xFFFFFF) << 5; }
+#else
+#define GX_ARRAY_LE(gx) 0u  // the emulator's arrays are the GameCube's: big-endian
+static inline u32 gx_tex_addr(const GXCore* gx, u32 map, u32 img3) { (void)gx; (void)map; return (img3 & 0xFFFFFF) << 5; }
+static inline u32 gx_copy_dest(const GXCore* gx) { return (gx->bp[0x4B] & 0xFFFFFF) << 5; }
+#endif
 
 // Draw a primitive: `verts` is the raw vertex data (big-endian, as streamed), `vtxSize` bytes each.
 struct GXBackend {

@@ -81,6 +81,55 @@ def main():
                      if num(r, "speed_pct") is not None and num(r, "gxwait_pct") is not None]
             print(f"  {col}={v}: speed {stat([num(r, 'speed_pct') for r in g])}  core0 {stat(core0)}")
             print(f"  {' ' * len(col)}  icmiss_k {stat([num(r, 'icmiss_k') for r in g])}  stall_inst_m {stat([num(r, 'stall_inst_m') for r in g])}")
+        print("  " + pairs(part, col))
 
 
-main()
+def core0_of(r):
+    s, g = num(r, "speed_pct"), num(r, "gxwait_pct")
+    return None if s is None or g is None else s / max(1e-6, 1 - g / 100)
+
+
+def phase_pairs(part, col, key=core0_of):
+    """Each A/B phase (a run of rows with one value) as one sample, then adjacent phases paired: rows next to each other
+    are strongly correlated (lag-1 0.74 in the cutscene, MEASUREMENTS.md), so row-level standard errors are 2-3x too
+    small; phase pairs are close to independent. Returns (arms, [(first arm, second arm, diff second-first)])."""
+    phases, cur, last = [], [], None
+    for r in part:
+        v = r[col]
+        if v != last and cur:
+            phases.append((last, cur))
+            cur = []
+        last = v
+        x = key(r)
+        if x is not None:
+            cur.append(x)
+    if cur:
+        phases.append((last, cur))
+    means = [(v, sum(xs) / len(xs)) for v, xs in phases if xs]
+    arms = sorted({v for v, _ in means})
+    out = []
+    for i in range(0, len(means) - 1, 2):  # non-overlapping pairs
+        (va, ma), (vb, mb) = means[i], means[i + 1]
+        if va != vb:
+            out.append((va, vb, ma, mb))
+    return arms, out
+
+
+def pairs(part, col):
+    arms, ps = phase_pairs(part, col)
+    if len(arms) != 2 or len(ps) < 3:
+        return f"phase pairs: {len(ps)} (need 2 arms and 3+ pairs)"
+    a, b = arms
+    rel = [((mb - ma) if vb == b else (ma - mb)) / ((ma + mb) / 2) * 100 for va, vb, ma, mb in ps]
+    n = len(rel)
+    m = sum(rel) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in rel) / (n - 1))
+    t = {3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57, 7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26, 12: 2.20, 15: 2.14, 20: 2.09}
+    tv = next((t[k] for k in sorted(t) if k >= n), 2.0)  # keyed by number of pairs (dof n-1)
+    half = tv * sd / math.sqrt(n)
+    verdict = "resolved" if abs(m) > half else "within noise"
+    return f"phase pairs: core0 {col}={b} vs {a}: {m:+.2f}% (95% CI +-{half:.2f}, {n} pairs) {verdict}"
+
+
+if __name__ == "__main__":
+    main()

@@ -77,7 +77,7 @@ void gx_decode_vertex(System* s, const GXCore* gx, u32 vat, const u8* p, GXVerte
         u32 fmt = (a >> 1) & 7, n = (a & 1) ? 3 : 2;
         float scale = fmt == 4 ? 1.0f : 1.0f / (float)(1u << ((a >> 4) & 31));
         const u8* src = attr_src(s, gx, pos, ARR_POS, &p, n * comp_size(fmt));
-        u32 rf = fmt | (pos >= 2 && (gx->arrayLE >> ARR_POS) & 1 ? 8 : 0);  // read_comp: a little-endian array
+        u32 rf = fmt | (pos >= 2 && (GX_ARRAY_LE(gx) >> ARR_POS) & 1 ? 8 : 0);  // read_comp: a little-endian array
         for (u32 k = 0; k < n; k++) v->pos[k] = read_comp(src + k * comp_size(fmt), rf, scale);
     }
     u32 nrm = (lo >> 11) & 3;
@@ -86,7 +86,7 @@ void gx_decode_vertex(System* s, const GXCore* gx, u32 vat, const u8* p, GXVerte
         bool nbt = (a >> 9) & 1, index3 = (a >> 31) & 1;
         static const u8 shift[5] = { 7, 6, 15, 14, 0 };
         float scale = fmt >= 4 ? 1.0f : 1.0f / (float)(1u << shift[fmt]);
-        u32 vecs = nbt ? 3 : 1, cs = comp_size(fmt), rf = fmt | (nrm >= 2 && (gx->arrayLE >> ARR_NRM) & 1 ? 8 : 0);
+        u32 vecs = nbt ? 3 : 1, cs = comp_size(fmt), rf = fmt | (nrm >= 2 && (GX_ARRAY_LE(gx) >> ARR_NRM) & 1 ? 8 : 0);
         if (nrm != 1 && nbt && index3) {
             // Three separate indices: normal, binormal and tangent, each into the normal array.
             for (u32 k = 0; k < 3; k++) {
@@ -103,7 +103,7 @@ void gx_decode_vertex(System* s, const GXCore* gx, u32 vat, const u8* p, GXVerte
         u32 fmt = (a >> (14 + 4 * i)) & 7;
         if (!mode) { v->color[i] = 0xFFFFFFFFu; continue; }
         const u8* src = attr_src(s, gx, mode, ARR_COL0 + i, &p, color_size(fmt));
-        v->color[i] = read_color(src, fmt | (mode >= 2 && (gx->arrayLE >> (ARR_COL0 + i)) & 1 ? 8 : 0));
+        v->color[i] = read_color(src, fmt | (mode >= 2 && (GX_ARRAY_LE(gx) >> (ARR_COL0 + i)) & 1 ? 8 : 0));
         v->hasColor |= 1u << i;
     }
     u32 tcnt[8] = { (a >> 21) & 1, b & 1, (b >> 9) & 1, (b >> 18) & 1, (b >> 27) & 1, (c >> 5) & 1, (c >> 14) & 1, (c >> 23) & 1 };
@@ -115,7 +115,7 @@ void gx_decode_vertex(System* s, const GXCore* gx, u32 vat, const u8* p, GXVerte
         u32 n = tcnt[i] ? 2 : 1, fmt = tfmt[i];
         float scale = fmt == 4 ? 1.0f : 1.0f / (float)(1u << tsh[i]);
         const u8* src = attr_src(s, gx, mode, ARR_TEX0 + i, &p, n * comp_size(fmt));
-        u32 rf = fmt | (mode >= 2 && (gx->arrayLE >> (ARR_TEX0 + i)) & 1 ? 8 : 0);
+        u32 rf = fmt | (mode >= 2 && (GX_ARRAY_LE(gx) >> (ARR_TEX0 + i)) & 1 ? 8 : 0);
         for (u32 k = 0; k < n; k++) v->tex[i][k] = read_comp(src + k * comp_size(fmt), rf, scale);
         v->hasTex |= 1u << i;
     }

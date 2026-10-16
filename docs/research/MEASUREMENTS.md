@@ -110,6 +110,39 @@ Yes for choosing a direction, no for predicting what a given redesign will gain.
 - icbi's 3.8% of modelled cycles comes from a one-off boot/state-load burst (622,595 in every run from the 850 state), not gameplay. The model share is inflated.
 - The workload lens's 'ShdwDraw ~70% of later-stretch instructions' rests on unverified counter semantics; the sampler says 12.5% and the measured gain is only +16%. Unresolved.
 
+## A/B verdicts re-scored with phase pairs (2026-10-16)
+
+Row-level standard errors understate the cutscene noise 2-3x (rows are autocorrelated). `core/tools/ab_split.py` now also
+prints a **phase-pair** line per section: each A/B phase is one sample, non-overlapping adjacent phases are paired, and a
+t interval (95%) is taken over the pairs' relative core-0 differences. Calibration on six runs with no A/B (101, 130, 157,
+184, 191, 193) under imposed 20 s schedules, five offsets each: **0 of 45 null intervals exclude zero** (honest, slightly
+conservative). Null half-widths: cutscene +-1.3-2.9% (6 pairs), later stretch +-0.8-1.0% (5 pairs). Real A/B runs are
+wider (each switch recompiles): **one 600 s run resolves only effects above ~+-3-5% in the cutscene and ~+-1.5-3.5% in
+the later stretch.** Smaller effects need replicates pooled by pairs.
+
+Sections used for re-scoring: cutscene 29-250 s, later 311-475 s of real time (inside the section for both JIT- and
+GX-toggle runs); duplicate rows dropped; the A/B column found from the data. Core 0 = speed / (1 - gxwait). Device data.
+
+| Job | A/B | Cutscene (95% CI) | Later (95% CI) | Re-scored verdict |
+|---|---|---|---|---|
+| 117 | opt 1 vs 0 (check hoisting) | +4.83% +-3.34 | +2.30% +-1.53 | **stands** (gain) |
+| 167, 168 | faultmem 1 vs 0 | +7.52 +-3.95; +7.41 +-4.79 | 168: +3.83 +-2.53 | **stands** (gain; kernel stability open) |
+| 163 | opt 627 vs 515 | +3.55 +-3.70 | +5.61 +-1.53 | later **resolved** gain |
+| 151 | opt 3 vs 115 | -3.20 +-3.62 | -3.60 +-0.58 | 115 better, later **resolved** |
+| 148 | opt 3 vs 19 | -1.81 +-4.06 | -2.29 +-2.10 | 19 better, later resolved (marginal) |
+| 149 | opt 35 vs 3 | +2.98 +-3.98 | +1.87 +-1.69 | later resolved (marginal) |
+| 122, 147, 154 | traces 1 vs 0 | -5.61 +-2.93; -1.22 +-3.15; -4.89 +-4.93 | 154: -1.18 +-2.07 | loss in 122; others within noise |
+| 195 | relayout 1 vs 0 | -0.40 +-3.18 | -4.47 +-3.25 | later **resolved** loss |
+| 144 | aot 1 vs 0 | -43.97 +-1.07 | -33.6 +-46.5 | **stands** (loss) |
+| 125, 126, 127 | vw2 1 vs 0 | -8.34 +-5.47; -9.10 +-9.08; -8.40 +-5.82 | - | **stands** (loss) |
+| 116, 118, 119 | dlcache 1 vs 0 | -5.26 +-4.67; -4.49 +-4.25; -4.63 +-4.34 | - | **stands** (loss); 113-115 within noise |
+| 164 | steal 1 vs 0 | -3.81 +-6.31 | -2.28 +-1.49 | later **resolved** loss |
+| 128 | fskip 1 vs 0 | +10.78 +-7.39 | - | resolved (frame skip, not a speed-up of the work) |
+| 131-134 | opt 7 vs 3 (fcache) | +0.33..+2.65, each +-3.7-4.3 | +0.35..+1.77, each +-2.5-4.2 | **unresolved** (C11's rejection and today's gain both within noise) |
+| 120, 121, 123, 124, 129, 145, 146, 150, 155, 156, 160-162, 166, 169-171, 190 | pld, merge, sched, splitopen, opt bits, hle, vin | all within +-3-5% | all within +-1-5% | **unresolved** |
+
+Re-score: `python3 core/tools/ab_split.py core/out/relay_<job>.csv --col <A/B column>` (phase-pair line), sections as above.
+
 ## Full inventory by area
 
 Each entry: metric: value (conditions) [trust; when] source. Caveats and supersessions follow in italics. Entries are

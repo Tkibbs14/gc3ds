@@ -360,6 +360,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool ind2, abInd2;        // --ind2 on|off (off), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
     bool native2, abNative2;  // --native2 on|off (on), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
@@ -453,6 +454,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--befloat")) o->befloat = !strcmp(v, "on");
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
+        else if (!strcmp(a, "--ab-flip")) o->abFlip = !strcmp(v, "on");
         else if (!strcmp(a, "--relayout")) o->relayout = !strcmp(v, "on");
         else if (!strcmp(a, "--vin")) o->vin = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
@@ -792,7 +794,9 @@ static const char* run(const char* path) {
                            (g_opt.ind2 && !g_opt.abInd2 ? OPT_IND2 : 0) |
                            (g_opt.befloat && !g_opt.abBefloat ? OPT_BEFLOAT : 0) |
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
-                           (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0));  // A/Bs start off
+                           (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
+                           (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
+                           (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0));  // or on with --ab-flip
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
         g_vinCompact = g_opt.vin && !g_opt.abVin;  // --ab vin starts off
         aot_set_enabled(g_opt.aot && !g_opt.abAot);  // --ab aot starts off

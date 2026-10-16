@@ -308,7 +308,7 @@ static void load_indexed(System* s, GXCore* gx, u32 which, u32 v) {
     u32 index = v >> 16, size = ((v >> 12) & 0xF) + 1, addr = v & 0xFFF;
     u32 base = gx->cp[CP_ARRAY_BASE + 12 + which] & GX_ARRAY_MASK, stride = gx->cp[CP_ARRAY_STRIDE + 12 + which] & 0xFFF;
     u32 pa = base + index * stride;
-    bool le = (gx->arrayLE >> (12 + which)) & 1;  // native mode: a little-endian matrix array
+    bool le = (GX_ARRAY_LE(gx) >> (12 + which)) & 1;  // native mode: a little-endian matrix array
     for (u32 i = 0; i < size && pa >= PA_MEM1_BEGIN && pa + 4 * i + 4 <= PA_MEM1_END; i++) {
         u32 v = mem1_read32(s, pa + 4 * i);
         xf_write(s, gx, addr + i, le ? bswap32(v) : v);

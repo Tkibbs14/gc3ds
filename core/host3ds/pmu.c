@@ -13,6 +13,14 @@ static const Ev kPairs[][2] = {
     { { PERFCOUNTEREVT_CORE_STALL_BY_LACK_OF_INST, "stall_inst_m", 1e6 }, { PERFCOUNTEREVT_CORE_STALL_BY_DATA_HAZARD, "stall_data_m", 1e6 } },
     { { PERFCOUNTEREVT_CORE_DATA_CACHE_WRITE_MISS, "dcwmiss_k", 1e3 }, { PERFCOUNTEREVT_CORE_MAIN_TLB_MISS, "tlbmiss_k", 1e3 } },
     { { PERFCOUNTEREVT_CORE_BRANCH_INST, "branch_m", 1e6 }, { PERFCOUNTEREVT_CORE_STALL_BY_LSU_FULL, "stall_lsu_m", 1e6 } },
+    // For the ~21% of cycles no event above explains (MEASUREMENTS.md): branches with no prediction (the BTAC had no
+    // entry: a fetch bubble each) and PC writes by software (returns, indirect jumps); D-cache reads (load-use waits
+    // per access) and folded branches; micro-TLB misses; external requests and store-buffer drains. ARM11 MPCore TRM
+    // events 0x06, 0x0F, 0x0A, 0x09, 0x03, 0x04, 0x11, 0x13. The VFP has no stall event: its latency is what remains.
+    { { PERFCOUNTEREVT_CORE_BRANCH_NOT_PREDICTED, "brnopred_m", 1e6 }, { PERFCOUNTEREVT_CORE_PC_CHANGED, "pcchg_m", 1e6 } },
+    { { PERFCOUNTEREVT_CORE_DATA_CACHE_READ, "dcread_m", 1e6 }, { PERFCOUNTEREVT_CORE_FOLDED_INST_EXECUTED, "folded_m", 1e6 } },
+    { { PERFCOUNTEREVT_CORE_INST_MICRO_TLB_MISS, "imtlb_k", 1e3 }, { PERFCOUNTEREVT_CORE_DATA_MICRO_TLB_MISS, "dmtlb_k", 1e3 } },
+    { { PERFCOUNTEREVT_CORE_EXTERNAL_REQUEST, "extreq_k", 1e3 }, { PERFCOUNTEREVT_CORE_STORE_BUFFER_DRAIN, "sbdrain_k", 1e3 } },
 };
 #define NPAIRS (sizeof kPairs / sizeof kPairs[0])
 // The SCU counters, fixed: line fills from cores 0 and 2 that missed in every L1 (they go to the L2 / memory), and
