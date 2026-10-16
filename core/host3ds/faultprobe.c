@@ -58,19 +58,24 @@ void fault_probe(FILE* f, const u8* mem1) {
     fprintf(f, "# fault probe: mem1 at %08lx; first fault next (a crash here: no delivery)\n", (unsigned long)(u32)mem1);
     fflush(f);
     threadOnException(handler, g_hstack + sizeof g_hstack, WRITE_DATA_TO_HANDLER_STACK);
-    u32 v = fp_load(0x50000000u);
-    fprintf(f, "# fault probe: load 50000000 -> %08lx, hits %lu, type %lu, far %08lx, fsr %08lx, pc %+ld from the ldr\n",
+    // Every fault here lands in user space: faults above 0x40000000 crash the kernel at random, after ~220 (relay 294)
+    // to ~13,000 (relay 293). The probe faults on the guard page below MEM1 (sys/system.c: no access when the kernel
+    // allowed it, g_mem1Guard; else on the bit-30-cleared MMIO address, user space and free when fault mode would run).
+    extern const char* g_mem1Guard;
+    const u32 bad = !strcmp(g_mem1Guard, "no access") ? (u32)mem1 - 4096 : (u32)mem1 - 0x80000000u + 0x8C000000u;
+    u32 v = fp_load(bad);
+    fprintf(f, "# fault probe: load (user-space test page) -> %08lx, hits %lu, type %lu, far %08lx, fsr %08lx, pc %+ld from the ldr\n",
             (unsigned long)v, (unsigned long)g_hits, (unsigned long)g_type, (unsigned long)g_far, (unsigned long)g_fsr,
             (long)(g_pc - (u32)fp_load_insn));
     u32 h0 = g_hits;
-    v = fp_store(0x50000000u, 0x12345678u);
-    fprintf(f, "# fault probe: store 50000000 -> %08lx, hits +%lu, far %08lx, fsr %08lx, pc %+ld from the str\n",
+    v = fp_store(bad, 0x12345678u);
+    fprintf(f, "# fault probe: store (user-space test page) -> %08lx, hits +%lu, far %08lx, fsr %08lx, pc %+ld from the str\n",
             (unsigned long)v, (unsigned long)(g_hits - h0), (unsigned long)g_far, (unsigned long)g_fsr,
             (long)(g_pc - (u32)fp_store_insn));
     // Cost of a fault taken and resumed.
     h0 = g_hits;
     u64 t0 = svcGetSystemTick();
-    for (int i = 0; i < 200; i++) fp_load(0x50000000u + 64u * (u32)i);
+    for (int i = 0; i < 200; i++) fp_load(bad + 4u * (u32)(i % 64));
     double ns = ns_since(t0);
     fprintf(f, "# fault probe: 200 faults %.0f ns each (hits +%lu)\n", ns / 200, (unsigned long)(g_hits - h0));
     // Cost of the patch's cache maintenance (data cache flush of a word, whole instruction cache invalidation).
@@ -88,6 +93,7 @@ void fault_probe(FILE* f, const u8* mem1) {
     fprintf(f, "# fault probe: regions (guest ea -> host):");
     for (u32 i = 0; i < sizeof kEa / sizeof kEa[0]; i++) {
         u32 host = (u32)mem1 - 0x80000000u + kEa[i].ea;
+        if (host >= 0x40000000u) { fprintf(f, " %s %08lx not touched (above 0x40000000);", kEa[i].name, (unsigned long)host); continue; }
         h0 = g_hits;
         fp_load(host);
         fprintf(f, " %s %08lx %s;", kEa[i].name, (unsigned long)host, g_hits != h0 ? "faults" : "MAPPED");
