@@ -5617,6 +5617,51 @@ u32 jit_hot_blocks(const Jit* j, const u32* addrs, u32 n, u32* pcs, u32 max) {
     return nh;
 }
 
+// The sampled code footprint: blocks by samples, most first, and the fewest that cover each share of the samples in
+// compiled code, with their host bytes (a block runs to the next block's start, its exit stubs included; capped at
+// BLOCK_MAX_WORDS). out[k] = {blocks, bytes} for 50, 80, 90, 99 and 100%.
+static const u32* g_fpCount;
+static int by_fp(const void* a, const void* b) {
+    u32 x = g_fpCount[*(const u32*)a], y = g_fpCount[*(const u32*)b];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]) {
+    static u32 *order, *count, *hit;
+    memset(out, 0, 5 * 2 * sizeof(u32));
+    if (!order) order = malloc(MAX_ENTRIES * sizeof *order);
+    if (!count) count = malloc(MAX_ENTRIES * sizeof *count);
+    if (!hit) hit = malloc(MAX_ENTRIES * sizeof *hit);
+    if (!order || !count || !hit || !n) return;
+    u32 m = j->nEntries, in = 0, nh = 0;
+    for (u32 i = 0; i < m; i++) { order[i] = i; count[i] = 0; }
+    g_sortEntries = j->table;
+    qsort(order, m, sizeof *order, by_fn);
+    for (u32 k = 0; k < n; k++) {
+        u32 a = hostAddrs[k], lo = 0, hi = m, best = NO_ENTRY;
+        while (lo < hi) {
+            u32 mid = (lo + hi) / 2;
+            if ((u32)(uintptr_t)j->table[order[mid]].fn <= a) { best = mid; lo = mid + 1; } else hi = mid;
+        }
+        if (best != NO_ENTRY) { count[best]++; in++; }
+    }
+    for (u32 p = 0; p < m; p++)
+        if (count[p]) hit[nh++] = p;
+    g_fpCount = count;
+    qsort(hit, nh, sizeof *hit, by_fp);
+    static const u32 kPct[5] = { 50, 80, 90, 99, 100 };
+    u32 acc = 0, bytes = 0, k = 0;
+    for (u32 i = 0; i < nh && k < 5; i++) {
+        u32 p = hit[i], start = (u32)(uintptr_t)j->table[order[p]].fn, size = BLOCK_MAX_WORDS * 4;
+        if (p + 1 < m) {
+            u32 next = (u32)(uintptr_t)j->table[order[p + 1]].fn - start;
+            if (next < size) size = next;
+        }
+        acc += count[p];
+        bytes += size;
+        while (k < 5 && (u64)acc * 100 >= (u64)in * kPct[k]) { out[k][0] = i + 1; out[k][1] = bytes; k++; }
+    }
+}
+
 u32 jit_precompile(Jit* j, const u32* pcs, u32 n) {
     u32 key = block_key(j->g), gen = j->gen, made = 0;
     for (u32 i = 0; i < n; i++) {

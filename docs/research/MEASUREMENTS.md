@@ -235,8 +235,18 @@ Per 10 s of the later stretch (steady reports 265-475 s; ms inside from g_profCl
   loop's 13 each; 804 MHz).
 - ~1,400 other guest instructions per call: each call walks ~20 grid cells (octree descent + the leaf checks) before
   it reaches an unvisited triangle and returns to guest code.
-- Next measurement: `--pmu-split hle` (job 269) splits cycles, cache misses and stalls to the stand-in, to tell memory
-  latency from instruction cost before the cell walk is rewritten natively.
+- **Where the stand-in's time goes (job 269, `--pmu-split hle`, later stretch, runs sampled 1/8; share of core 0's
+  totals):** cycles 34-35%, ARM instructions ~51% (~189M/s of 371M/s), branch mispredicts ~77% (of 1.17M/s), data
+  stalls ~35% (of 159M cycles/s), D-micro-TLB misses ~36%, store-buffer drains ~48%, but D-cache read misses only ~10%
+  (of 866k/s), I-cache misses ~10%, main TLB 1%. **Instruction-bound, not memory-bound:** ~4.3 ARM instructions per
+  guest instruction. Mispredicts (~0.9M/s) and D-misses (~87k/s) explain only a few percent of its ~277M cycles/s.
+- **Tighter stand-in (job 270, PC HLE_CHECK 6,122 calls 0 differed):** guest memory through locals (base and limits no
+  longer reloaded after every store; 0x80000000 mapping only, anything else stops it for guest code), CR0 computed once
+  at the end, branch-free srw/slw, visited bits tested on one byte. ShdwDraw **~3,045 ms per 10 s while doing 6% more
+  work** (231k calls, 323.6M other instructions): 9.4 ms per million against 11.3 (job 268) and 12.7 (job 267), **26%
+  cheaper than at the start**; ~30-32% of core 0 (pmu split). **Later stretch speed 12.18% (267) -> 12.72% (268) ->
+  13.46% (270, with the split's ~1% overhead on): +10.5%**, cutscene 21.4% in all three (no ShdwDraw there). Separate
+  runs, not an in-run A/B; the later stretch's run-to-run spread is ±1.5-3.5%.
 
 ## A/B verdicts re-scored with phase pairs (2026-10-16)
 

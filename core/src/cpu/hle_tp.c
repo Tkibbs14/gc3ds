@@ -70,32 +70,16 @@ bool hle_is_hook(Gekko* g, u32 pc) {
     return known();
 }
 
-// Guest memory through the standard BAT mappings (0x80000000 cached, 0xC0000000 uncached, both physical 0).
-static inline bool rd32(u32 a, u32* v) {
-    u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
-    if ((top != 0x8 && top != 0xC) || (a & 3) || pa + 4 > g_memSize) return false;
-    u32 w;
-    memcpy(&w, g_mem + pa, 4);
-    *v = __builtin_bswap32(w);
-    return true;
-}
-static inline bool rd16(u32 a, u32* v) {
-    u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
-    if ((top != 0x8 && top != 0xC) || (a & 1) || pa + 2 > g_memSize) return false;
-    u16 h;
-    memcpy(&h, g_mem + pa, 2);
-    *v = __builtin_bswap16(h);
-    return true;
-}
-static inline bool wr32(u32 a, u32 v) {
-    u32 top = a >> 28, pa = a & 0x0FFFFFFFu;
-    if ((top != 0x8 && top != 0xC) || (a & 3) || pa + 4 > g_memSize) return false;
-    v = __builtin_bswap32(v);
-    memcpy(g_mem + pa, &v, 4);
-    return true;
-}
+#ifdef __3DS__
+// ARM shifts by a register use its low byte and give 0 from 32 up: srw/slw (shift amount mod 64) without a branch.
+static inline u32 shr(u32 v, u32 s) { u32 r; __asm__("lsr %0, %1, %2" : "=r"(r) : "r"(v), "r"(s & 63)); return r; }
+static inline u32 shl(u32 v, u32 s) { u32 r; __asm__("lsl %0, %1, %2" : "=r"(r) : "r"(v), "r"(s & 63)); return r; }
+#else
 static inline u32 shr(u32 v, u32 s) { return (s & 0x20) ? 0 : v >> (s & 31); }  // srw
 static inline u32 shl(u32 v, u32 s) { return (s & 0x20) ? 0 : v << (s & 31); }  // slw
+#endif
+static inline u32 ld32(const u8* h) { u32 w; memcpy(&w, h, 4); return __builtin_bswap32(w); }
+static inline u32 ld16(const u8* h) { return (u32)h[0] << 8 | h[1]; }
 static inline u32 rotl(u32 v, u32 n) { return n ? (v << n) | (v >> (32 - n)) : v; }
 static inline u32 cmps(u32 a, u32 b) { return (s32)a < (s32)b ? 8u : (s32)a > (s32)b ? 4u : 2u; }  // CR field LT GT EQ
 static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
@@ -104,13 +88,18 @@ static u32 scan(Gekko* g, u32 budget) {
     // The guest registers as locals (not an array): the compiler keeps the hot ones in ARM registers; the array
     // version spent ~7 cycles per guest instruction (2DS job 267: 38% of core 0 in the later stretch).
     u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r6 = g->gpr[6], r7 = g->gpr[7], r8 = g->gpr[8], r14 = g->gpr[14], r15 = g->gpr[15], r16 = g->gpr[16], r17 = g->gpr[17], r18 = g->gpr[18], r19 = g->gpr[19], r20 = g->gpr[20], r21 = g->gpr[21], r22 = g->gpr[22], r23 = g->gpr[23], r24 = g->gpr[24], r25 = g->gpr[25], r26 = g->gpr[26], r27 = g->gpr[27], r28 = g->gpr[28], r29 = g->gpr[29], r30 = g->gpr[30];
-    u32 pc = g->pc, n = 0, cr0 = 0, t;
-    bool crSet = false, caClear = false;
-// A guest access that fails stops the stand-in before that instruction, for guest code to run it.
-#define RD32(dst, addr, at) do { if (!rd32((addr), &t)) { pc = (at); goto out; } (dst) = t; } while (0)
-#define RD16(dst, addr, at) do { if (!rd16((addr), &t)) { pc = (at); goto out; } (dst) = t; } while (0)
-#define WR32(addr, v, at) do { if (!wr32((addr), (v))) { pc = (at); goto out; } } while (0)
-#define CR(v) do { cr0 = (v); crSet = true; } while (0)
+    u32 pc = g->pc, n = 0, crA = 0, crB = 0, crK = 0;  // CR0: the last compare's operands, kind 1 signed / 2 unsigned
+    bool caClear = false;
+    // Guest memory: only MEM1 through the cached mapping (0x80000000) is read here; any other address (including the
+    // uncached mirror) stops the stand-in before that instruction, for guest code to run it. The base and limits are
+    // locals: through the globals, every store into guest memory made the compiler reload them.
+    u8* const m = g_mem;
+    const u32 size = g_memSize, lim4 = size - 4, lim2 = size - 2;
+#define RD32(dst, addr, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } (dst) = ld32(m + a_); } while (0)
+#define RD16(dst, addr, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim2) | (a_ & 1), 0)) { pc = (at); goto out; } (dst) = ld16(m + a_); } while (0)
+#define WR32(addr, v, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } u32 w_ = __builtin_bswap32(v); memcpy(m + a_, &w_, 4); } while (0)
+#define CRS(a, b) do { crA = (a); crB = (b); crK = 1; } while (0)
+#define CRU(a, b) do { crA = (a); crB = (b); crK = 2; } while (0)
     if (pc == PC_NEXT) goto L_fea4;
     if (pc != PC_ENTRY) return 0;
 L_fb48:
@@ -155,7 +144,7 @@ L_fba8:
 L_fbcc:
     r0 = r3; n++;                                // or r0,r3,r3
     RD32(r5, r3 + r5, 0x8007FBD0u); n++;       // lwzx r5,r3,r5
-    CR(cmps(r5, 0)); n++;                          // cmpi cr0,0,r5,0
+    CRS(r5, 0); n++;                          // cmpi cr0,0,r5,0
     n++;                                             // bc 4,lt,0x8007fba8
     if ((s32)r5 >= 0) goto L_fba8;
     r0 = r5 & 0x7FFFFFFFu; n++;                  // rlwinm r0,r5,0,1,31
@@ -170,24 +159,24 @@ L_fbcc:
     r4 = r3 - r0; n++;                         // subf r4,r0,r3
     r0 = r19 & r5; n++;                        // and r0,r19,r5
     r0 = r3 - r0; n++;                         // subf r0,r0,r3
-    CR(cmps(r0, r14)); n++;                      // cmp cr0,0,r0,r14
+    CRS(r0, r14); n++;                      // cmp cr0,0,r0,r14
     n++;                                             // bc 4,lt,0x8007fc18
     if ((s32)r0 < (s32)r14) { r14 = r0; n++; }  // or r14,r0,r0
     RD32(r0, r1 + 2224, 0x8007FC18u); n++;       // lwz r0,2224(r1)
-    CR(cmps(r4, r0)); n++;                       // cmp cr0,0,r4,r0
+    CRS(r4, r0); n++;                       // cmp cr0,0,r4,r0
     n++;                                             // bc 4,lt,0x8007fc28
     if ((s32)r4 < (s32)r0) { WR32(r1 + 2224, r4, 0x8007FC24u); n++; }  // stw r4,2224(r1)
     RD16(r0, r16 + 2, 0x8007FC28u); n++;         // lhz r0,2(r16)
-    CR(cmpu(r0, 0)); n++;                          // cmpli cr0,0,r0,0
+    CRU(r0, 0); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 12,eq,0x8007fc84
     if (r0 == 0) goto L_fc84;
-    CR(cmps(r4, r23)); n++;                      // cmp cr0,0,r4,r23
+    CRS(r4, r23); n++;                      // cmp cr0,0,r4,r23
     n++;                                             // bc 4,gt,0x8007fc84
     if ((s32)r4 <= (s32)r23) goto L_fc84;
-    CR(cmps(r4, r24)); n++;                      // cmp cr0,0,r4,r24
+    CRS(r4, r24); n++;                      // cmp cr0,0,r4,r24
     n++;                                             // bc 4,gt,0x8007fc7c
     if ((s32)r4 <= (s32)r24) goto L_fc7c;
-    CR(cmps(r4, r25)); n++;                      // cmp cr0,0,r4,r25
+    CRS(r4, r25); n++;                      // cmp cr0,0,r4,r25
     n++;                                             // bc 4,gt,0x8007fc68
     if ((s32)r4 <= (s32)r25) goto L_fc68;
     r23 = r24; n++;                              // or r23,r24,r24
@@ -210,15 +199,15 @@ L_fc7c:
     r20 = r16; n++;                              // or r20,r16,r16
 L_fc84:
     RD32(r0, r1 + 2220, 0x8007FC84u); n++;       // lwz r0,2220(r1)
-    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
+    CRU(r16, r0); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 12,eq,0x8007feb0
     if (r16 == r0) goto L_feb0;
     RD32(r0, r1 + 2216, 0x8007FC90u); n++;       // lwz r0,2216(r1)
-    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
+    CRU(r16, r0); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 12,eq,0x8007feb0
     if (r16 == r0) goto L_feb0;
     RD32(r0, r1 + 2212, 0x8007FC9Cu); n++;       // lwz r0,2212(r1)
-    CR(cmpu(r16, r0)); n++;                      // cmpl cr0,0,r16,r0
+    CRU(r16, r0); n++;                      // cmpl cr0,0,r16,r0
     n++;                                             // bc 4,eq,0x8007fea4
     if (r16 != r0) goto L_fea4;
     n++;                                             // b 0x8007feb0
@@ -229,35 +218,41 @@ L_fea4:
         // then 0x8007fcb0..0x8007fcd0 back here) that leave only r16 and the count changed and r0 / r3 / r4 / r5 / CR0 /
         // XER[CA] as the last one set them, which is rebuilt below. The list's end, an unvisited triangle and any address
         // the loop cannot read go through the instruction-by-instruction code from where it stopped.
-        u32 p = r16, skipped = 0, lastT = 0, lastW = 0, vis = r1 + 156;
-        for (;;) {
-            u32 a = p + 2, tt, wa, w;
-            if (!rd16(a, &tt) || !tt) break;
-            wa = vis + ((tt >> 5) << 2);
-            if (!rd32(wa, &w) || !(w & (1u << (tt & 31)))) break;
-            skipped++; lastT = tt; lastW = w; p = a;
-        }
-        if (skipped) {
-            g_shdwStats[1] += skipped;
-            r16 = p;
-            n += 13 * skipped;
-            r3 = lastW;
-            r4 = (lastT >> 5) << 2;
-            r5 = 1u << (lastT & 31);
-            r0 = r3 & r5;
-            CR(cmps(r0, 0));
-            caClear = true;
+        // The visited bit of triangle tt is bit tt&31 of the big-endian word tt>>5: byte (tt>>3)^3, bit tt&7.
+        u32 p = r16, skipped = 0, va = r1 + 156 - 0x80000000u;
+        if (va <= lim4 && !(va & 3)) {
+            const u8* vb = m + va;
+            const u32 vWords = (size - va) >> 2;  // bitset words inside MEM1
+            for (;;) {
+                u32 a = p + 2 - 0x80000000u, tt;
+                if ((a > lim2) | (a & 1)) break;
+                tt = ld16(m + a);
+                if (!tt || (tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) break;
+                skipped++; p += 2;
+            }
+            if (skipped) {
+                u32 lastT = ld16(m + (p - 0x80000000u));
+                g_shdwStats[1] += skipped;
+                r16 = p;
+                n += 13 * skipped;
+                r3 = ld32(vb + ((lastT >> 5) << 2));
+                r4 = (lastT >> 5) << 2;
+                r5 = 1u << (lastT & 31);
+                r0 = r3 & r5;
+                CRS(r0, 0);
+                caClear = true;
+            }
         }
     }
     RD16(r0, r16 + 2, 0x8007FEA4u);              // lhzu r0,2(r16)
     r16 += 2; n++;
-    CR(cmpu(r0, 0)); n++;                          // cmpli cr0,0,r0,0
+    CRU(r0, 0); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 4,eq,0x8007fcb0
     if (r0 != 0) goto L_fcb0;
 L_feb0:
     RD32(r0, r1 + 2228, 0x8007FEB0u); n++;       // lwz r0,2228(r1)
     r17 = r17 + r0; n++;                       // add r17,r17,r0
-    CR(cmpu(r17, r29)); n++;                     // cmpl cr0,0,r17,r29
+    CRU(r17, r29); n++;                     // cmpl cr0,0,r17,r29
     n++;                                             // bc 4,gt,0x8007fb70
     if (r17 <= r29) goto L_fb70;
     WR32(r1 + 2220, r22, 0x8007FEC0u); n++;      // stw r22,2220(r1)
@@ -265,11 +260,11 @@ L_feb0:
     WR32(r1 + 2212, r20, 0x8007FEC8u); n++;      // stw r20,2212(r1)
     RD32(r0, r1 + 2224, 0x8007FECCu); n++;       // lwz r0,2224(r1)
     r18 = r18 + r0; n++;                       // add r18,r18,r0
-    CR(cmpu(r18, r27)); n++;                     // cmpl cr0,0,r18,r27
+    CRU(r18, r27); n++;                     // cmpl cr0,0,r18,r27
     n++;                                             // bc 4,gt,0x8007fb54
     if (r18 <= r27) goto L_fb54;
     r19 = r19 + r14; n++;                      // add r19,r19,r14
-    CR(cmpu(r19, r26)); n++;                     // cmpl cr0,0,r19,r26
+    CRU(r19, r26); n++;                     // cmpl cr0,0,r19,r26
     n++;                                             // bc 4,gt,0x8007fb48
     if (r19 <= r26) goto L_fb48;
     pc = PC_EXIT;
@@ -283,7 +278,7 @@ L_fcb0:
     r4 = r0 << 2; n++;                           // rlwinm r4,r0,2,0,29
     r3 = r1 + 156; n++;                          // addi r3,r1,156
     RD32(r3, r3 + r4, 0x8007FCCCu); n++;       // lwzx r3,r3,r4
-    r0 = r3 & r5; CR(cmps(r0, 0)); n++;      // and. r0,r3,r5
+    r0 = r3 & r5; CRS(r0, 0); n++;      // and. r0,r3,r5
     n++;                                             // bc 4,eq,0x8007fea4
     if (r0 != 0) goto L_fea4;
     r0 = r3 | r5; n++;                         // or r0,r3,r5
@@ -294,10 +289,11 @@ out:
 #undef RD32
 #undef RD16
 #undef WR32
-#undef CR
+#undef CRS
+#undef CRU
     if (!n) return 0;
     g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; g->gpr[14] = r14; g->gpr[15] = r15; g->gpr[16] = r16; g->gpr[17] = r17; g->gpr[18] = r18; g->gpr[19] = r19; g->gpr[20] = r20; g->gpr[21] = r21; g->gpr[22] = r22; g->gpr[23] = r23; g->gpr[24] = r24; g->gpr[25] = r25; g->gpr[26] = r26; g->gpr[27] = r27; g->gpr[28] = r28; g->gpr[29] = r29; g->gpr[30] = r30;
-    if (crSet) g->cr = (g->cr & 0x0FFFFFFFu) | ((cr0 | ((g->xer & XER_SO) ? 1u : 0u)) << 28);
+    if (crK) g->cr = (g->cr & 0x0FFFFFFFu) | (((crK == 1 ? cmps(crA, crB) : cmpu(crA, crB)) | ((g->xer & XER_SO) ? 1u : 0u)) << 28);
     if (caClear) g->xer &= ~XER_CA;
     g->pc = pc;
     return n;

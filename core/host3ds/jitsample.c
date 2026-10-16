@@ -61,6 +61,14 @@ u32 jitsample_hot(const Jit* j, u32* pcs, u32 max) {
 void jitsample_report(FILE* f, const Jit* j) {
     if (!g_thread || !f) return;
     u32 n = g_n, outside = g_outside;
+    {  // how much compiled code core 0's time is spread over (before the samples are mapped to guest PCs)
+        u32 fp[5][2];
+        jit_footprint(j, g_samples, n, fp);
+        fprintf(f, "# code footprint 10s (blocks, host KB covering this share of time in compiled code): 50%% %u %.1f, "
+                "80%% %u %.1f, 90%% %u %.1f, 99%% %u %.1f, all sampled %u %.1f\n", (unsigned)fp[0][0], fp[0][1] / 1024.0,
+                (unsigned)fp[1][0], fp[1][1] / 1024.0, (unsigned)fp[2][0], fp[2][1] / 1024.0, (unsigned)fp[3][0],
+                fp[3][1] / 1024.0, (unsigned)fp[4][0], fp[4][1] / 1024.0);
+    }
     jit_map_hosts(j, g_samples, n);
     qsort(g_samples, n, sizeof *g_samples, by_value);
     // (pc, count) pairs, then the most frequent.
