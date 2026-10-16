@@ -134,12 +134,20 @@ static void run_case(FILE* f, const Case* c) {
     u32 words = setup(c);
     u32 perRound = words;  // guest instructions per round (bl_blr also runs a blr per call)
     if (c->kind == K_BL) perRound += REPS;
+    Gekko* g = &g_s->cpu;
+    // A run stops at once while an interrupt or stop request is pending (the loaded state leaves an external interrupt
+    // raised): clear them, and keep calling until the instructions have run (calls: how many runs it took).
+    #define QUIET() do { g->extIrq = false; GKP(g)->brk = false; GKP(g)->stopReq = false; g->msr &= ~MSR_EE; } while (0)
+    QUIET();
     jit_run(g_j, 200000);  // warm-up: compiles the loop and fills the caches
     static const unsigned kPairs[4] = { 0, 2, 1, 5 };  // inst+brmiss, stall_inst+stall_data, icmiss+dcrmiss, brnopred+pcchg
     double cyc[4], ev[4][2];
+    u32 calls = 0;
     for (int p = 0; p < 4; p++) {
         pmu_select(kPairs[p]);
-        u32 ran = jit_run(g_j, 2000000);
+        u32 ran = 0;
+        calls = 0;
+        while (ran < 2000000 && calls < 100000) { QUIET(); ran += jit_run(g_j, 2000000 - ran); calls++; }
         unsigned long long cy, e0, e1;
         pmu_read(&cy, &e0, &e1);
         cyc[p] = ran ? (double)cy / ran : 0;
@@ -150,8 +158,8 @@ static void run_case(FILE* f, const Case* c) {
     for (int p = 1; p < 4; p++) if (cyc[p] < cmin) cmin = cyc[p];
     // Per guest instruction of the loop (the addic. / bne pair is 2 of the round's guest instructions; reported raw).
     fprintf(f, "# jitbench %s: cyc %.2f inst %.2f brmiss %.4f stall_inst %.2f stall_data %.2f icmiss %.4f dcrmiss %.4f "
-            "brnopred %.3f pcchg %.3f (round %lu guest instructions)\n", c->name, cmin, ev[0][0], ev[0][1], ev[1][0], ev[1][1],
-            ev[2][0], ev[2][1], ev[3][0], ev[3][1], (unsigned long)perRound);
+            "brnopred %.3f pcchg %.3f (round %lu guest instructions, %lu runs)\n", c->name, cmin, ev[0][0], ev[0][1], ev[1][0], ev[1][1],
+            ev[2][0], ev[2][1], ev[3][0], ev[3][1], (unsigned long)perRound, (unsigned long)calls);
     fflush(f);
 }
 
