@@ -143,8 +143,42 @@ static u32 zelda_read(DSPHle* h) {
     return v;
 }
 
+// Voice census per rendered frame (no mixing yet): the voice parameter blocks as the game left them. Layout as Dolphin's
+// DSPHLE/UCodes/Zelda.cpp VPB (read for reference): 0xC0 big-endian words a voice; word 0x00 enabled, 0x01 done,
+// 0x3A-0x3B remaining samples, 0x80 source type, 0x81 looping, 0x85 end requested. g_dspVoices: frames, then summed
+// over frames: voices enabled and not done, of them sample voices (PCM8 / PCM16 / AFC, types 5 8 9 16 33), of those
+// with no samples left (a real DSP would have set done), looping ones, ones asked to end.
+u64 g_dspVoices[6];
+// The voice blocks' base from command 0x01. Kept out of System (a save state holds System whole and refuses another
+// size); after a state load it is 0 until the game sends 0x01 again, which it does only at boot, so for Twilight
+// Princess's microcode it is read from JAudio's own pointer to them, JASDsp::CH_BUF (zeldaret/tp symbols: 0x804512E8).
+static u32 g_vpbBase;
+static u32 vpb_base(System* s) {
+    if (g_vpbBase) return g_vpbBase;
+    if (s->dsp.hle.ucodeHash == 0x6CA33A6Du) return mem1_read32(s, 0x004512E8u);
+    return 0;
+}
 static void zelda_render_frame(System* s) {
-    (void)s;  // a mixer reads the voice parameter blocks here and writes the output buffers
+    DSPHle* h = &s->dsp.hle;
+    u32 base = vpb_base(s) & 0x01FFFFFFu, n = h->zVoicesPerFrame;
+    g_dspVoices[0]++;
+    if (n > 256) n = 256;
+    if (!base || base + n * 0x180 > PA_MEM1_END) return;
+    for (u32 v = 0; v < n; v++) {
+        const u8* p = s->mem1 + base + v * 0x180;
+        #define W(i) ((u32)p[2 * (i)] << 8 | p[2 * (i) + 1])
+        if (!W(0x00) || W(0x01)) continue;
+        g_dspVoices[1]++;
+        u32 type = W(0x80);
+        bool sampled = type == 5 || type == 8 || type == 9 || type == 16 || type == 33;
+        if (sampled) {
+            g_dspVoices[2]++;
+            if (!(W(0x3A) << 16 | W(0x3B))) g_dspVoices[3]++;
+        }
+        if (W(0x81)) g_dspVoices[4]++;
+        if (W(0x85)) g_dspVoices[5]++;
+        #undef W
+    }
 }
 
 // Renders requested frames as far as the voice syncs received allow (the CPU releases voices in groups of 16).
@@ -180,7 +214,8 @@ static void zelda_run_commands(System* s) {
             break;
         case 0x01:  // voices per frame; voice block base, coefficient tables, AFC coefficients, reverb blocks
             h->zVoicesPerFrame = extra;
-            for (int i = 0; i < 4; i++) zelda_read(h);
+            g_vpbBase = zelda_read(h);
+            for (int i = 0; i < 3; i++) zelda_read(h);
             zelda_ack(s, sync);
             break;
         case 0x02:  // render: frames in bits 16-23, output volume; left and right buffers, then two more words

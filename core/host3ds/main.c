@@ -1107,6 +1107,19 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
                                 (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
+                        {  // the DSP's voices per rendered frame (dsp_hle.c g_dspVoices)
+                            extern u64 g_dspVoices[6];
+                            static u64 lastV[6];
+                            u64 v[6];
+                            memcpy(v, g_dspVoices, sizeof v);
+                            double fr = (double)(v[0] - lastV[0]);
+                            fprintf(g_perf, "# dsp voices 10s: %.0f frames; per frame enabled and not done %.1f, sample voices %.1f, "
+                                    "of them out of samples %.1f, looping %.1f, asked to end %.1f\n", fr,
+                                    fr > 0 ? (double)(v[1] - lastV[1]) / fr : 0.0, fr > 0 ? (double)(v[2] - lastV[2]) / fr : 0.0,
+                                    fr > 0 ? (double)(v[3] - lastV[3]) / fr : 0.0, fr > 0 ? (double)(v[4] - lastV[4]) / fr : 0.0,
+                                    fr > 0 ? (double)(v[5] - lastV[5]) / fr : 0.0);
+                            memcpy(lastV, v, sizeof lastV);
+                        }
                         {  // ShdwDraw's cell walk (hle_tp.c g_shdwWalk)
                             static u64 lastW[10];
                             u64 w[10];
