@@ -20,20 +20,7 @@
 #include "gekko_internal.h"
 #include "hle.h"
 
-typedef struct { float p0, p1; } P;  // ps0, ps1
-static inline P PS(float v) { P p = { v, v }; return p; }
-#define PADD(x, y) ((P){ (x).p0 + (y).p0, (x).p1 + (y).p1 })
-#define PSUB(x, y) ((P){ (x).p0 - (y).p0, (x).p1 - (y).p1 })
-#define PMUL(x, c) ((P){ (x).p0 * (c).p0, (x).p1 * (c).p1 })
-static inline float madd1(float a, float c, float b) { return (float)((double)a * (double)c + (double)b); }
-static inline float msub1(float a, float c, float b) { return (float)((double)a * (double)c - (double)b); }
-#define PMADD(a, c, b) ((P){ madd1((a).p0, (c).p0, (b).p0), madd1((a).p1, (c).p1, (b).p1) })
-#define PMSUB(a, c, b) ((P){ msub1((a).p0, (c).p0, (b).p0), msub1((a).p1, (c).p1, (b).p1) })
-#define PNMSUB(a, c, b) ((P){ -msub1((a).p0, (c).p0, (b).p0), -msub1((a).p1, (c).p1, (b).p1) })
-#define PMERGE00(x, y) ((P){ (x).p0, (y).p0 })
-#define PMERGE01(x, y) ((P){ (x).p0, (y).p1 })
-#define PMERGE10(x, y) ((P){ (x).p1, (y).p0 })
-#define PMERGE11(x, y) ((P){ (x).p1, (y).p1 })
+#include "hle_psops.h"
 
 static u8* g_m;      // MEM1
 static u32 g_size;
@@ -41,23 +28,26 @@ static u8* g_lc;     // the locked cache (16 KB at 0xE0000000)
 
 // Guest addresses, already checked (thp_run): MEM1 through either mapping, or the locked cache.
 static inline u8* hp(u32 ea) { return (ea >> 24) == 0xE0 ? g_lc + (ea & 0x3FFF) : g_m + (ea & 0x01FFFFFF); }
-static inline u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
+// Word and halfword accesses (the guest's are aligned: floats to 4, s16 to 2) with one byte swap each.
+static inline u32 be32(const u8* p) { u32 w; memcpy(&w, p, 4); return __builtin_bswap32(w); }
+static inline u32 be16(const u8* p) { u16 h; memcpy(&h, p, 2); return __builtin_bswap16(h); }
 #define LD32(a) be32(hp(a))
-#define LD16(a) ((u32)hp(a)[0] << 8 | hp(a)[1])
-static inline float ldf(u32 ea) { u32 w = LD32(ea); float f; memcpy(&f, &w, 4); return f; }
-static inline void stf(u32 ea, float f) { u32 w; memcpy(&w, &f, 4); u8* p = hp(ea); p[0] = (u8)(w >> 24); p[1] = (u8)(w >> 16); p[2] = (u8)(w >> 8); p[3] = (u8)w; }
-static inline float lds16(u32 ea) { return (float)(s16)LD16(ea); }
+#define LD16(a) be16(hp(a))
+static inline float hf(const u8* p) { u32 w = be32(p); float f; memcpy(&f, &w, 4); return f; }
+static inline void sf(u8* p, float f) { u32 w; memcpy(&w, &f, 4); w = __builtin_bswap32(w); memcpy(p, &w, 4); }
+static inline float ldf(u32 ea) { return hf(hp(ea)); }
 static inline u8 qu8(float v) {  // GQR6's store: u8, scale -3 (the interpreter's quantize: truncate toward zero, saturate)
-    double x = (double)v * 0.125;
-    if (x != x) return 0;
-    if (x <= 0.0) return 0;
-    if (x >= 255.0) return 255;
+    float x = v * 0.125f;  // exact (a power of two; a value this small truncates to 0 either way)
+    if (!(x > 0.0f)) return 0;  // (NaN too)
+    if (x >= 255.0f) return 255;
     return (u8)(u32)x;
 }
-#define LDF2(a) ((P){ ldf(a), ldf((a) + 4) })
-#define LDS16X2(a) ((P){ lds16(a), lds16((a) + 2) })
-#define STF2(a, v) do { u32 a_ = (a); P v_ = (v); stf(a_, v_.p0); stf(a_ + 4, v_.p1); } while (0)
-#define STU8X2(a, v) do { u32 a_ = (a); P v_ = (v); u8* p_ = hp(a_); p_[0] = qu8(v_.p0); p_[1] = qu8(v_.p1); } while (0)
+static inline P ldf2(u32 ea) { const u8* p = hp(ea); P r = { hf(p), hf(p + 4) }; return r; }
+static inline P lds2(u32 ea) { const u8* p = hp(ea); P r = { (float)(s16)be16(p), (float)(s16)be16(p + 2) }; return r; }
+#define LDF2(a) ldf2(a)
+#define LDS16X2(a) lds2(a)
+#define STF2(a, v) do { u8* p_ = hp(a); P v_ = (v); sf(p_, v_.p0); sf(p_ + 4, v_.p1); } while (0)
+#define STU8X2(a, v) do { u8* p_ = hp(a); P v_ = (v); p_[0] = qu8(v_.p0); p_[1] = qu8(v_.p1); } while (0)
 
 #include "hle_thp_idct.inc"
 
