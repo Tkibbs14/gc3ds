@@ -153,6 +153,7 @@ struct Jit {
     u8* lcHost;                 // jit_set_locked_cache: the locked cache's host copy (quantized psq accesses reach it)
     u8* gatherBuf;              // jit_set_gather_buffer: the pipe's partial burst and its length, appended to inline
     u32* gatherLen;
+    u32* volatile psqPipeLen;  // gatherLen while OPT_PIPEPS is on, else NULL (jit_fill_fns; the psq_st stubs read it)
     bool slowInline;            // jit_set_slow_inline: the old per-site slow paths instead of the shared stubs (A/B)
     bool soExact;               // jit_set_so_exact: CR updates include XER[SO] (set once XER[SO] has been seen set)
     bool profile;               // jit_set_profile: blocks store their start in Gekko.hostPc
@@ -4467,6 +4468,34 @@ static void fs_flush_denormal(Emit* e, int r) {
     dp_imm_c(e, C_EQ, AND, 0, r, r, IMM(0x80000000u));
 }
 
+// psq_st stubs (OPT_PIPEPS): an address outside MEM1 that is the write-gather pipe's, with room for the element(s) before
+// the 32-byte burst completes, is appended to the pipe's buffer here, as pipeStub does, and the stub returns done (carry
+// clear); anything else goes to failOut, whose site then runs jit_gather per element in cold code. The SDK's matrix
+// loads (GXLoadPosMtxImm and its kin: six psq_st each) made ~127,000 jit_gather calls a second in gameplay (job 370).
+// r2 / r3 hold the converted elements in host order; `at` is the stub's branch here.
+static void emit_psq_pipe_try(Jit* j, Emit* e, u32 at, u32 w, u32 failOut) {
+    patch_branch(e, at, e->n);
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_EA));
+    dp_reg(e, CMP, 1, 0, R0, R1);
+    branch_c(e, C_NE, failOut);
+    load_const(e, R1, (u32)(uintptr_t)&j->psqPipeLen);
+    ldr_imm(e, R1, R1, 0);
+    dp_imm(e, CMP, 1, 0, R1, 0);
+    branch_c(e, C_EQ, failOut);  // off, or no buffer
+    ldr_imm(e, R12, R1, 0);
+    dp_imm(e, ADD, 0, R12, R12, w ? 4 : 8);
+    dp_imm(e, CMP, 1, 0, R12, 32);
+    branch_c(e, C_CS, failOut);  // the burst would complete: the GP must see it (jit_gather)
+    str_imm(e, R12, R1, 0);
+    dp_imm(e, SUB, 0, R12, R12, w ? 4 : 8);
+    ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_BUF));
+    dp_reg(e, ADD, 0, R1, R1, R12);
+    rev(e, R2, R2);
+    str_imm(e, R2, R1, 0);
+    if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+    bx_reg_c(e, C_AL, LR);  // carry clear from the compare
+}
+
 static void emit_float_stubs(Jit* j, Emit* e) {
     u32 cut1 = e->n;
     fs_cut(e, R2, 1);
@@ -4528,7 +4557,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
             dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
             dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
-            branch_c(e, C_CS, failOut);
+            u32 toPipe = branch_c(e, C_CS, 0);
             if (!w) {
                 dp_imm(e, ADD, 0, R12, R12, 4);
                 dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
@@ -4539,6 +4568,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             if (w) str_imm(e, R2, R1, 0);
             else { grev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
             bx_reg_c(e, C_AL, LR);
+            emit_psq_pipe_try(j, e, toPipe, w, failOut);
         }
     // stfs
     j->stfsStub = (u16)e->n;
@@ -4657,7 +4687,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_imm(e, BIC, 0, R1, R0, IMM(0x40000000u));
             dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
             dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
-            branch_c(e, C_CS, failOut);
+            u32 toPipeK = branch_c(e, C_CS, 0);
             if (!w) {
                 dp_imm(e, ADD, 0, R12, R12, 4);
                 dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
@@ -4668,6 +4698,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             if (w) str_imm(e, R2, R1, 0);
             else { grev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
             bx_reg_c(e, C_AL, LR);
+            emit_psq_pipe_try(j, e, toPipeK, w, failOut);
             j->psqUStK[q][w] = (u16)e->n;  // as psqUStub[1]
             fs_gqr(j, e, q);
             dp_imm(e, TST, 1, 0, R1, 7);
@@ -5413,6 +5444,7 @@ static void jit_fill_fns(Jit* j) {
     g->jitFn[JF_GATHER_LEN] = (u32)(uintptr_t)j->gatherLen;
     g->jitFn[JF_GATHER_BUF] = (u32)(uintptr_t)j->gatherBuf;
     g->jitFn[JF_MEMSTAMPS] = (u32)(uintptr_t)j->memStamps;
+    j->psqPipeLen = (j->opt & OPT_PIPEPS) && j->gatherBuf ? j->gatherLen : NULL;  // (not a jitFn slot: Gekko's size is the save states')
 }
 
 static void fault_sync(Jit* j);

@@ -149,7 +149,10 @@ extern int jit_fc_min;
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
-       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_ALL = 131071 };
+       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_PIPEPS = 131072, OPT_ALL = 262143 };
+// OPT_PIPEPS: the shared psq_st stubs (plain float and known singles) append to the write-gather pipe's buffer themselves
+// when the address is the pipe's and the burst has room (GXLoadPosMtxImm and its kin), instead of failing to the site's
+// cold path and a jit_gather call per element. Sites are unchanged (a per-site version lost 2.3%: job 371).
 // OPT_PIPEK: a D-form store (stw sth stb stfs) whose address the block knows (a constant from lis / li / addi / ori)
 // and lies in the write-gather pipe appends to the pipe's burst through a shared stub instead of the RAM check and the
 // slow path: the SDK's GX functions write the graphics commands this way.

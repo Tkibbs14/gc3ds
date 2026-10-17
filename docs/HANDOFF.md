@@ -1192,3 +1192,18 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   means (the first, different scene always falls in the off arm). OPT_PIPEK re-checked in one run: +6.6% (job 369).
 - **Lean state hung the GPU** with all bits on (jobs 361-362; `gx at 6`: waiting in C3D_FrameBegin). It stays off; the
   watchdog lines now name where the GX thread is (`pica_watch`, GW_* in pica.h).
+
+## 2026-10-17 (late): core 0 in gameplay, and the next session's plan
+
+- **Profile with the new defaults (job 370):** GX SDK 23%, J3D 14%, J2D / JUT 13%, flat (top function 3.5%). psq_st
+  to the pipe through the shared stubs (OPT_PIPEPS, C27) cut ~45,000 jit_gather calls a second for +0.3% (not kept);
+  the per-site version lost 2.3%. Targeted GX-side fixes are now worth <= 1% each.
+- **Full speed needs ~7.7 cycles per guest instruction against ~22 (MEASUREMENTS "What full speed needs on core 0").**
+  The two levers James approved on 10-17 that are large enough (memory notes gc3ds-jit-three-levers,
+  gc3ds-relaxed-float-approved):
+  1. **Relaxed floats as an option first** (default stays exact; the PC checks count how often results differ):
+     no round-to-single pairs, no 25-bit frC cut, plain conversions on stores. Cheap to build, and it measures the
+     ceiling of float work on the device.
+  2. **Then C8, single precision in the JIT** (REDESIGN_CANDIDATES C8: Dolphin's fprIsSingle analysis, fadds / fsubs /
+     fdivs exact in single on known singles, fmuls only on known-single frC, fmadds last) if (1) shows the ceiling is
+     worth it. Gate every step with the JIT fuzzer and an in-run A/B scored with `core/tools/ab_phases.py LOG opt 60 ON`.

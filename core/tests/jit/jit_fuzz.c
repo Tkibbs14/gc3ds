@@ -838,21 +838,32 @@ int main(int argc, char** argv) {
             // lis x,0xCC01 (the SDK's form), sometimes moved with ori / addi (still known) or mulli x,x,1 (the value
             // stays, the compiler loses it: the generic path), then stw / sth / stb / stfs at -0x8000 + 0..35 (inside
             // the pipe's 32 bytes, or just past them: the MMIO path).
+            // With addi x,x,-0x8000 first (GXLoadPosMtxImm's form) the displacements are 0..35, and psq_st joins: plain
+            // float or quantized GQRs (the compiled path checks the type at run time), one element or two, the second
+            // sometimes past the pipe's 32 bytes.
             u32 x = 1 + rnd() % 31;
             seq[0] = (15u << 26) | (x << 21) | 0xCC01u;
             len = 1;
+            bool addiForm = rnd() % 3 == 0;
+            if (addiForm) seq[len++] = (14u << 26) | (x << 21) | (x << 16) | 0x8000u;
             if (rnd() % 4 == 0) seq[len++] = (24u << 26) | (x << 21) | (x << 16) | (4u * (rnd() % 4));
             u32 n = 1 + rnd() % 10;
             for (u32 k = 0; k < n && len < 40; k++) {
-                static const u32 ops[] = { 36, 44, 38, 52, 36, 38 };
+                static const u32 ops[] = { 36, 44, 38, 52, 36, 38 }, opsAddi[] = { 36, 44, 38, 52, 60, 60 };
                 u32 r = rbits(5);
                 if (rnd() % 10 == 0) { seq[len++] = (14u << 26) | (x << 21) | (x << 16) | (rnd() % 4); continue; }
                 if (rnd() % 14 == 0) { seq[len++] = (7u << 26) | (x << 21) | (x << 16) | 1u; continue; }
-                u32 op = ops[rnd() % 6];
+                u32 op = addiForm ? opsAddi[rnd() % 6] : ops[rnd() % 6];
                 if (op == 52)  // stfs: a moderate normal double (tiny values convert differently by design)
                     st.fpr[r][0] = ((u64)(rnd() & 1) << 63) | ((u64)(1013 + rnd() % 20) << 52) |
                                    (((u64)rnd() << 32 | rnd()) & 0x000FFFFFFFFFFFFFull);
-                u32 d = (u32)(-0x8000 + (s32)(rnd() % 36)) & 0xFFFFu;
+                u32 d = addiForm ? rnd() % 36 : (u32)(-0x8000 + (s32)(rnd() % 36)) & 0xFFFFu;
+                if (op == 60) {  // psq_st frS, d(x), W, I
+                    st.fpr[r][0] = fval_st();
+                    st.fpr[r][1] = fval_st();
+                    seq[len++] = (60u << 26) | (r << 21) | (x << 16) | ((rnd() & 1) << 15) | (rbits(3) << 12) | d;
+                    continue;
+                }
                 seq[len++] = (op << 26) | (r << 21) | (x << 16) | d;
             }
         } else if (traceCase) {

@@ -397,3 +397,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   writes misses; prefetch the next 1 KB after each call.
 - **Result:** 8.2 -> 7.85 us a call, speed -0.6% (-0.134 +- 0.021 points, 10 phase pairs).
 - **Re-evaluate when:** never on its own; the misses are a small part of the call.
+
+## C27. psq_st to the write-gather pipe without a jit_gather call per element (OPT_PIPEPS)
+
+- **Status:** built 2026-10-17, off (`--pipeps on`): neutral (jobs 371-372).
+- **What:** the SDK's matrix loads (GXLoadPosMtxImm and its kin) psq_st to a known pipe address, which OPT_PIPEK did
+  not cover: the stub failed and the site's cold path called jit_gather per element (~127,000 calls/s in gameplay).
+- **Result:** inlined at each site, -2.3% (job 371: code growth); appended inside the shared psq_st stubs (sites
+  unchanged), +0.3% at 1.9 SE (job 372) with the calls down by ~45,000/s: a C call costs core 0 only ~50 cycles.
+- **Re-evaluate when:** something makes the remaining pipe traffic expensive again (e.g. a pipe flush per burst), or
+  together with other changes to the stubs; the code stays behind the switch.

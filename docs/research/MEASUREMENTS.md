@@ -623,6 +623,27 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   the villager (draws varied 6,300-7,600/s), so the walk's end is not fixed either: compare runs only within a run.
   New defaults on the device: 614 draw calls compared with citro3d, 560 with raw state, 0 differed; 5.3 us a call.
 
+### Core 0 in gameplay after raw state, and psq_st to the pipe (jobs 370-372, device, 2026-10-17)
+
+- **Profile (job 370, new defaults, `--profile on`, hot_funcs.py over 27 reports, 76% of samples listed):** GX SDK
+  **23.2%**, J3D 14.0%, J2D / JUT (the HUD and the villager's dialog text) 12.9%, game code and the rest 16.1%,
+  __save_gpr / __restore_gpr 2.7%, vector / matrix 2.9%, collision 2.9%, JAudio 1.2%. Flat: the top function is
+  J2DPane::draw at 3.5%, then loadMtxConcatView 2.5%, GXLoadPosMtxImm 2.2%, __GXSendFlushPrim 1.5%,
+  GXLoadTexObjPreLoaded 1.3%.
+- **psq_st to the pipe:** GXLoadPosMtxImm / GXLoadTexMtxImm / GXLoadNrmMtxImm send their matrices with six psq_st to
+  lis + addi 0xCC008000, which OPT_PIPEK did not cover: the psq_st stub fails (outside MEM1) and the site's cold path
+  calls jit_gather once per element. The `# jit code` line's "pipe stores" counts those calls (JitStats.gatherStores):
+  **~127,000 a second** in this frame (job 370).
+- **Per-site version (job 371, rejected):** each element converted inline and appended through the pipe stub: C calls
+  -40,000/s but **speed -0.458 +- 0.052 points (-2.3%)**: two inline conversions and a cold path per site cost more
+  fetch than the calls saved.
+- **In the shared stubs (job 372, `--ab pipeps`, OPT_PIPEPS, off):** the psq_st stubs (plain float and known singles)
+  append to the pipe's buffer themselves when the address is the pipe's and the burst has room; sites unchanged. C calls
+  ~120,000 -> ~73,000/s, **speed +0.065 +- 0.035 points (+0.3%, 1.9 SE)**: a jit_gather call costs ~50 cycles of core 0,
+  not the 100+ assumed. Not a clear gain: off. JIT fuzzer (new cases: lis + addi -0x8000, then psq_st with random GQRs,
+  one or two elements, some past the pipe's 32 bytes): 0 fails at masks 201331, 70259, 4723, 7, fault mode off, seeds
+  1 and 3; planted bugs caught.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

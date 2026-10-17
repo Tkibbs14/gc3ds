@@ -413,6 +413,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool pipeps, abPipeps;    // --pipeps on|off, --ab pipeps: psq_st to known pipe addresses through the pipe stub (OPT_PIPEPS, with OPT_PIPEK)
     bool pipek, abPipek;      // --pipek on|off, --ab pipek: pipe stores at known addresses straight to the pipe (OPT_PIPEK)
     bool noVoices, abVoices;  // --voices off: DSP voices never end (the old behaviour); --ab voices: lifetime on and off (voices column; starts off)
     bool rawstate, abRawstate;  // --rawstate on|off, --ab rawstate: with raw draws, the batch's state blocks written without C3Di_UpdateContext (pica.c; rawstate column; --ab starts off)
@@ -488,7 +489,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -535,6 +536,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
         else if (!strcmp(a, "--pipek")) o->pipek = !strcmp(v, "on");
+        else if (!strcmp(a, "--pipeps")) o->pipeps = !strcmp(v, "on");
         else if (!strcmp(a, "--lean")) o->lean = !strcmp(v, "on") ? LEAN_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--rawdraw")) o->rawdraw = !strcmp(v, "on");
         else if (!strcmp(a, "--cmdpld")) o->cmdpld = !strcmp(v, "on");
@@ -928,6 +930,7 @@ static const char* run(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
+                           (g_opt.pipeps && !g_opt.abPipeps ? OPT_PIPEPS : 0) |
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
                            (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.abFlip && g_opt.abInlmem ? OPT_INLMEM : 0));  // or on with --ab-flip
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
@@ -1204,6 +1207,7 @@ static const char* run(const char* path) {
                 if (g_opt.abLatch && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_LATCH);
                 if (g_opt.abIcbi && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_ICBI);
                 if (g_opt.abPipek && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_PIPEK);
+                if (g_opt.abPipeps && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_PIPEPS);
                 if (g_opt.abInlmem && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_INLMEM);
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));
