@@ -137,6 +137,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Unknown:** how much TP waits in the heavy scenes (the JIT profile was flat, D3, which argues for little).
   **Measure first:** count blocks that branch to themselves without changing state, from the JIT's block profile.
 - **Re-evaluate when:** the measurement says waiting is a large share of core 0.
+- **2026-10-17:** not a lever for TP's heavy stretches. The later stretch already runs 486.0 M guest instructions per
+  emulated second (Gekko's clock: the guest never idles, job 97), and its profile is real work (job 336: ShdwDraw
+  38%, its triangle callees ~10%, J3D; no spin loop among the top functions), so an underclock only gives the game
+  fewer cycles per frame. The cutscene's waits are already skipped (~1.7 M instructions a field).
 
 ## C11. Float lanes: exact singles kept in VFP registers within a block (OPT_FCACHE)
 
@@ -152,6 +156,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Lesson:** the model leaves out instruction fetch, and on the 2DS core 0 loses ~9.7 cycles per guest instruction to
   fetch stalls (OPT_JIT_PLAN). The lanes made hot code ~2-3% larger (and exit stubs bigger); TP's blocks are short, so
   values seldom live long in lanes. **Judge JIT changes by hot words per guest instruction as well as by the model.**
+- **2026-10-17, gated (job 335):** lanes only in blocks with >= 8 float instructions before the first branch
+  (`--fc-min`): cutscene and later stretch both within noise, I-cache misses +4-5%. The gate does not change the
+  verdict.
 - **Re-evaluate when:** blocks get longer (region compilation or traces that pay), or code size per guest instruction
   drops elsewhere so the lanes' extra words matter less.
 
@@ -248,6 +255,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   decode, the disc and ARAM, and the HLE hooks. The PC checker's byte-identical frames must keep holding.
 - **Re-evaluate when:** a frame's counters price the rev share (guest word loads per frame x 2 cycles) against the
   frame, or the JIT's other levers are spent.
+- **2026-10-17: started (James: "whatever makes gains").** The JIT's other levers measured 1-5% or neutral this day
+  (float lanes, relaxed floats, compares, registers: C11, C22), so this is the next one. Expected core 0 +3-6%, plus
+  core 3's attribute gathers and every stand-in's loads. Plan, one compile-time switch (`GC_SWAPRAM`) so both layouts
+  build and the PC can compare them: guest RAM held as host-order 32-bit words; 32-bit accesses plain; 16-bit at
+  ea ^ 2, 8-bit at ea ^ 3; 64-bit as two words. Sites (survey 2026-10-17): the bus and CPU helpers (system.c
+  bus_*, gekko_internal.h gk_ld/st and the inline fast paths, gekko_mem.c byte paths); the JIT's load / store
+  emitters, memory and float stubs, instruction fetch; bulk copies that must swap per word (disc and DI DMA, ARAM
+  DMA, DOL / apploader loads, locked-cache DMA, TMEM / TLUT loads, EXI); the GX FIFO and display-list parser
+  (fifo.c rd16 / rd32), the vertex loaders (vertex.c, vfast.c), texture decode (texture.c), EFB copies; DSP HLE;
+  every stand-in's big-endian helpers; the XFB present path; save states (kept big-endian on disk, converted at load
+  and save). **Gate:** the same frames, byte for byte, from the same states in both layouts on the PC (last.png and a
+  layout-independent RAM hash), the PC HLE_CHECK, the JIT fuzzer; then the 2DS.
 
 ## C19. ShdwDraw descent cache (keep the octree path between cells)
 
@@ -258,6 +277,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   (~10.8 us). The descent was not where the call's cost sits: job 288 puts ~25 of ~420 ARM instructions a cell per
   level, and the store-buffer drains and head work dominate.
 - **Re-evaluate when:** a `--pmu-split hle` profile shows the descent's levels as a real share of the call.
+- **2026-10-17, retried in the lean fast cells (job 339, on top of the leaf memo):** later stretch 17.48% against 17.47%
+  (job 337), the stand-in 2,390-2,530 ms per 10 s against 2,539: flat again. Removed. The descent's loads are L1 hits on
+  a short dependent chain; skipping some of them does not show.
 
 ## C20. __save_gpr / __restore_gpr as in-place stand-ins
 
@@ -281,3 +303,32 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   (job 323: cutscene 21.8%): quadratic log reads, one pointer reload per byte.
 - **Re-evaluate when:** the translator can prove a computed address stays within a range checked at entry (e.g.
   __GXData + small index), so these run without the log; or when calls get cheaper (C20).
+
+## C22. Cheaper compares and more register-cache slots (lever 3 of 2026-10-17)
+
+- **Status:** evaluated 2026-10-17, not built: the ceiling is small.
+- **Compares:** cmpli / cmpi / cmpl are ~8% of executed hot words (6.4-7.1 words each, qemu JIT_REGSTAT 950-962);
+  building the CR field is 4 of them (BIC + three conditional ORR). Shrinking those through shared stubs was neutral on
+  the 2DS (OPT_CRSTUB, job 155); a compare ends its block with the branch that reads it, so the field must reach guest
+  state at the exit anyway, and the stores the model can prove dead are ~0.3% of hot words (C13 candidate 1). A flags
+  representation of CR fields would have to be understood by every CR reader (mfcr, CR logic ops, record forms, fcmp,
+  the interpreter, exceptions, stand-ins): large for at most the ~5% of hot words those four instructions are.
+- **Register slots:** the cache uses every free host register (r4-r8); r9-r11 hold the downcount, the RAM base and
+  the guest state, and r0-r3, r12 and lr are scratch for every memory access and stub call. Moving the downcount to
+  memory costs ~2 words at every block entry (~0.33 per guest instruction, ~7% of hot words), more than a sixth slot
+  would save: block-boundary traffic (~4.5 loads and stores per block) does not shrink with more slots.
+- **Re-evaluate when:** blocks get longer (more compares consumed inside a block), or a cheaper CR encoding falls out
+  of another change.
+
+## C23. Call-heavy game code as native stand-ins (ShdwDraw's triangle path, J3D animation)
+
+- **Status:** rejected 2026-10-17 (jobs 341-345); exact on the PC (4.7M calls, and 345k forced stops, 0 differed).
+- **What:** translator v4 (calls between stand-ins, regions, stops before anything unsupported) applied to ShdwDraw's
+  per-triangle code and its callees (GetTriPla, SetupNP, psdRealCallBack, dDlst_shadowPoly_c::set, getPolyCode, ...)
+  and 13 hot J3D functions.
+- **Result:** later stretch 17.47 -> 14.41% once the region always ran (job 345), cutscene 28.75 -> 27.9%. A native
+  function's entry and exit move every GPR it uses through guest state, and each nested call adds a lookup and state
+  checks: more than the JIT spends on small functions it runs inline. Functions whose callees have no stand-in stop on
+  every call and pay the exit as well.
+- **Re-evaluate when:** the translator can inline its callees (one C function for a call tree, registers kept in
+  locals across the calls), or the JIT can enter compiled native code without going through guest state.

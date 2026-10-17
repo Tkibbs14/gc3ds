@@ -126,6 +126,7 @@ void hle_ps_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ct
 // mapping through the locals xm / xsz); anything else stops the function before that instruction (`goto stop`, spc its
 // address), which writes every register back with g->pc there and sets g_psMid, for guest code to go on from it.
 static bool g_psMid;
+static bool g_psNested;  // a stand-in runs called in place by another (ps_icall): static ones write their volatile GPRs back
 #ifndef __3DS__
 // HLE_STOP_EVERY=N (PC, with HLE_CHECK): every Nth checked access fails, so the stops (rare in play) are compared too.
 static u32 g_xEvery, g_xCount;
@@ -135,15 +136,56 @@ static u32 g_xEvery, g_xCount;
 #endif
 #define XH(EA, SZ, AT) ({ u32 xa_ = (EA) - 0x80000000u; if (__builtin_expect((xa_ > xsz - (SZ)) | XFORCE(), 0)) { spc = (AT); goto stop; } xm + xa_; })
 static inline u64 DBITS(double d) { u64 w; memcpy(&w, &d, 8); return w; }
+// The FP state FP stand-ins assume: the FPU and paired singles on, round to nearest, GQR0 float (direct mode checks it at
+// its first FP instruction; the others at entry, in ps_call).
+#define FPOK() ((g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN) && \
+                (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) == (HID2_PSE | HID2_LSQE) && !(g->spr[SPR_GQR0] & 0x00070007u))
+// stfs of a double held by a direct-mode stand-in (lfd's): as the interpreter rounds it.
+#define D2S(x) sf_double_to_single(DBITS(x), (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0)
+// fctiwz: toward zero, saturating (NaN 0x80000000), in the low word; the upper word as the interpreter writes it
+// (0xFFF80000, plus 1 for a negative value that became 0).
+static inline u64 FCTIWZ(double x) {
+    u32 v;
+    bool nz = false;
+    if (x != x) v = 0x80000000u;
+    else if (x >= 2147483648.0) v = 0x7FFFFFFFu;
+    else if (x <= -2147483649.0) v = 0x80000000u;
+    else { s64 t = (s64)x; v = (u32)t; nz = t == 0 && __builtin_signbit(x); }
+    return ((u64)(0xFFF80000u | (nz ? 1u : 0u)) << 32) | v;
+}
+// psq_l through a GQR's load half at run time (q: the GQR; types 0-3 float, 4 u8, 5 u16, 6 s8, 7 s16; scale 6-bit
+// signed): int times 2^-scale, exact in a float (16-bit integers, scales -32..31), as the interpreter's qload.
+static inline u32 QSZ(u32 q) { u32 t = (q >> 16) & 7; return t == 4 || t == 6 ? 1 : t == 5 || t == 7 ? 2 : 4; }
+static inline float QLD(const u8* h, u32 q) {
+    u32 t = (q >> 16) & 7, sc = (q >> 24) & 0x3F;
+    int s = (sc & 0x20) ? (int)sc - 64 : (int)sc;
+    s32 v;
+    switch (t) {
+    case 4: v = h[0]; break;
+    case 5: v = (s32)((u32)h[0] << 8 | h[1]); break;
+    case 6: v = (s8)h[0]; break;
+    case 7: v = (s16)((u32)h[0] << 8 | h[1]); break;
+    default: { u32 w; memcpy(&w, h, 4); w = __builtin_bswap32(w); float f; memcpy(&f, &w, 4); return f; }
+    }
+    u32 e = (u32)(127 - s) << 23;  // 2^-s as a float (|s| <= 32: a normal exponent)
+    float p2; memcpy(&p2, &e, 4);
+    return (float)v * p2;
+}
 static inline double BITSD(u64 w) { double d; memcpy(&d, &w, 8); return d; }
 
+// A direct-mode stand-in's call (bl, bctrl, blrl): the stand-in at the target, run in place on guest state; 0 when there
+// is none or it refuses (the caller then stops at the call, for guest code to make it).
+static u32 ps_icall(Gekko* g, u32 target);
+
 // pipe: writes the gather pipe; gprs: writes r14-r31; fpu: has FP instructions (needs the FPU and paired singles on).
-typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); bool pipe, gprs, fpu; } PsDef;
+// direct: direct mode (loops, calls, stops inside), also an entry hook on the 3DS (reached through bctrl, or a region).
+typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); bool pipe, gprs, fpu, direct; } PsDef;
 #include "hle_ps_gen.inc"
 #define NDEF (sizeof g_psDefs / sizeof g_psDefs[0])
 
 u64 g_psCalls[NDEF + 1], g_psRefused;  // per function (and all, last), and calls refused
-u64 g_psRefusedBy[NDEF], g_psStops[NDEF];  // per function: refused, and pipe stops (the caller left after the call)
+u64 g_psRefusedBy[NDEF], g_psStops[NDEF];
+u64 g_psWhy[6];  // refusals by reason: data translation off, FPU off, rounding mode, HID2, GQR0, the stand-in itself  // per function: refused, and pipe stops (the caller left after the call)
 // What was found at each PC asked about (a stand-in's index, or KNOT: none), open addressing, kept under half full
 // (when it fills, it starts over: the answers are found again). The PC's interpreter asks at every instruction.
 #define KN 1024
@@ -244,8 +286,11 @@ static int find(u32 pc) {
 // stretch 14% slower with hooks, ~230k calls/s). Elsewhere (the PC's interpreter, HLE_CHECK) they are entry hooks.
 bool hle_ps_is_hook(u32 pc) {
 #ifdef __3DS__
-    (void)pc;
-    return false;
+    // Direct-mode stand-ins are entry hooks too: they are reached through bctrl (callbacks) and as regions of a function,
+    // where no bl is there to call them in place, and they do enough work to pay for the exit.
+    if (!g_on) return false;
+    int d = find(pc);
+    return d >= 0 && g_psDefs[d].direct;
 #else
     return g_on && find(pc) >= 0;
 #endif
@@ -271,6 +316,17 @@ static u32 ps_native(Gekko* g) {
 // Called by compiled code in place of `bl` (LR already set): the guest instructions it ran (0: refused, nothing
 // changed), with bit 31 set when its pipe bytes made the GP ask the CPU to stop (the caller leaves after the call), and
 // bit 30 when a direct-mode function stopped inside (the caller leaves for g->pc).
+static bool g_psCalled;  // (HLE_CHECK) a stand-in called another in place during this call
+static u32 ps_icall(Gekko* g, u32 target) {
+    int d = find(target);
+    bool nest0 = g_psNested;
+    g_psNested = true;
+    u32 n = d < 0 ? 0 : ps_call(g, d);
+    g_psNested = nest0;
+    if (n) g_psCalled = true;
+    return n;
+}
+
 u32 hle_ps_inline_call(Gekko* g, u32 d) {
     u32 n = ps_call(g, (int)d);
     if (!n) return 0;
@@ -283,7 +339,7 @@ static u32 ps_call(Gekko* g, int d) {
     // The state the C assumes: data translation on; for FP code, the FPU and paired singles on, round to nearest, GQR0
     // float in both directions (psq with I=0). (TP runs with FPSCR[NI]: denormals flush, as the 2DS host does.)
     const PsDef* df = &g_psDefs[d];
-    if (!(g->msr & MSR_DR) || (df->fpu && ((g->msr & MSR_FP) == 0 || (g->fpscr & FPSCR_RN) ||
+    if (!(g->msr & MSR_DR) || (df->fpu && !df->direct && ((g->msr & MSR_FP) == 0 || (g->fpscr & FPSCR_RN) ||
         (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) != (HID2_PSE | HID2_LSQE) || (g->spr[SPR_GQR0] & 0x00070007u)))) {
 #ifndef __3DS__
         if (getenv("HLE_CHECK") && g_psRefused < 5)
@@ -291,11 +347,13 @@ static u32 ps_call(Gekko* g, int d) {
                     g->spr[SPR_HID2], g->spr[SPR_GQR0]);
 #endif
         g_psRefused++; g_psRefusedBy[d]++;
+        g_psWhy[!(g->msr & MSR_DR) ? 0 : !(g->msr & MSR_FP) ? 1 : (g->fpscr & FPSCR_RN) ? 2 :
+                (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) != (HID2_PSE | HID2_LSQE) ? 3 : 4]++;
         return 0;
     }
     g_psStop = g_psMid = false;
     u32 n = g_psDefs[d].fn(g);
-    if (!n) { g_psRefused++; g_psRefusedBy[d]++; return 0; }
+    if (!n) { g_psRefused++; g_psRefusedBy[d]++; g_psWhy[5]++; return 0; }
     g_psCalls[d]++;
     g_psCalls[NDEF]++;
     return n;
@@ -335,6 +393,7 @@ static u32 ps_checked(Gekko* g) {
     if (pipe) { gp_capture = cap_put; g_capSel = 0; g_capN[0] = g_capN[1] = 0; }
     Gekko g0 = *g;
     g_nscap = 0; g_scapFull = false; g_scapOn = true;
+    g_psCalled = false;
     u32 n = ps_native(g);
     g_scapOn = false;
     if (!n) { gp_capture = NULL; return 0; }
@@ -367,9 +426,14 @@ static u32 ps_checked(Gekko* g) {
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) &&
                 !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (gn.cr & 0x00FFF000u) && mem;
-    // Stopped inside the function (direct mode): guest code goes on from there, so everything must match.
-    if (mid) same = same && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && !memcmp(g->fpr, gn.fpr, sizeof g->fpr) && g->cr == gn.cr &&
-                    (g->xer & XER_CA) == (gn.xer & XER_CA);
+    // Stopped inside the function (direct mode): guest code goes on from there, so everything must match, except the
+    // volatile FPRs (f0, f2-f13) after a call to another stand-in: those leave them as dead state (the ABI), and code
+    // after a call writes them before it reads them.
+    if (mid) {
+        same = same && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && g->cr == gn.cr && (g->xer & XER_CA) == (gn.xer & XER_CA) &&
+               g->ctr == gn.ctr && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) && !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR));
+        if (!g_psCalled) same = same && !memcmp(&g->fpr[0], &gn.fpr[0], sizeof(FPR)) && !memcmp(&g->fpr[2], &gn.fpr[2], 12 * sizeof(FPR));
+    }
     if (mid) g_pchk.mid++;
     if (!same && g_pchk.bad++ < 20) {
         fprintf(stderr, "HLE_CHECK %s call %llu: native %u insns to %08x, interpreter %u to %08x%s\n", g_psDefs[d].name,
@@ -391,6 +455,14 @@ static u32 ps_checked(Gekko* g) {
         if (g_scapFull) fprintf(stderr, "  (more stores than the capture holds)\n");
         fprintf(stderr, "  in: r3 %08x r4 %08x r5 %08x f1 %.9g/%.9g f2 %.9g f3 %.9g fpscr %08x\n", g0.gpr[3], g0.gpr[4], g0.gpr[5],
                 g0.fpr[1].ps0, g0.fpr[1].ps1, g0.fpr[2].ps0, g0.fpr[3].ps0, g0.fpscr);
+        for (int k = 0; k < 32; k++)
+            if (g->gpr[k] != gn.gpr[k]) fprintf(stderr, "  r%d native %08x interpreter %08x\n", k, gn.gpr[k], g->gpr[k]);
+        if (g->cr != gn.cr) fprintf(stderr, "  cr native %08x interpreter %08x\n", gn.cr, g->cr);
+        if (g->lr != gn.lr || g->ctr != gn.ctr || g->xer != gn.xer)
+            fprintf(stderr, "  lr %08x/%08x ctr %08x/%08x xer %08x/%08x (native/interpreter)\n", gn.lr, g->lr, gn.ctr, g->ctr, gn.xer, g->xer);
+        for (int k = 0; k < 32; k++)
+            if ((k == 0 || (k >= 2 && k < 14)) && memcmp(&g->fpr[k], &gn.fpr[k], sizeof(FPR)))
+                fprintf(stderr, "  f%d native %.9g/%.9g interpreter %.9g/%.9g\n", k, gn.fpr[k].ps0, gn.fpr[k].ps1, g->fpr[k].ps0, g->fpr[k].ps1);
         for (int k = 1; k < 32; k++)
             if ((k == 1 || k >= 14) && memcmp(&g->fpr[k], &gn.fpr[k], sizeof(FPR)))
                 fprintf(stderr, "  f%d native %.9g/%.9g interpreter %.9g/%.9g\n", k, gn.fpr[k].ps0, gn.fpr[k].ps1, g->fpr[k].ps0, g->fpr[k].ps1);

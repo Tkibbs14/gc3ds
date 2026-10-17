@@ -489,6 +489,64 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   triangle scan, the walk's diagnostic counters are PC-only. Stack accesses in the function 161 -> 64. The stand-in
   **3,030 -> 2,680 ms per 10 s**; later stretch 16.30 -> **16.55%**, cutscene 28.64 -> 28.61% (job 329 -> 334).
 
+- **Leaf memo (job 337):** within one ShdwDraw call the visited bitset only gains bits, so a leaf whose triangles were
+  all found visited stays so; a 256-entry table (leaf address, the call's generation and its triangle count) skips the
+  rescan when the walk reaches the leaf again from another row or slice. **Later stretch 16.69 -> 17.47% (+4.7%)**,
+  cutscene 28.75%; the stand-in ~324k calls / 10 s (from ~285k) in 2,539 ms (from 2,680): 7.8 us a call (from 9.4).
+  PC HLE_CHECK fields 900-2100: 5,814 calls, 0 differed.
+- **Descent cache on top (job 339, C19 retried):** later stretch 17.48% (job 337: 17.47%), cutscene 28.79%: flat.
+  Removed.
+- **Function profile after these (job 336, `--profile on`):** later stretch ShdwDraw 38.2% of samples (the stand-in's
+  hook block), psdRealCallBack 3.3%, GetTriPla 2.7%, SetupNP 2.2%, getPolyCode 1.1%, dDlst_shadowPoly_c::set 0.6%:
+  the shadow system ~48%. Cutscene flat: GXFinishInterruptHandler 4.3%, loadMtxConcatView_PNGP 2.5%,
+  GXLoadLightObjImm 1.6%, __save_gpr + __restore_gpr 2.4%, calcWeightEnvelopeMtx 1.4%, loadNrmMtx 1.4%.
+- **Executed hot words by opcode now (qemu JIT_REGSTAT, tp_arm_950 950-962, opt 4723):** 4.53 hot words per guest
+  instruction; bc 16.8% (6.3 each), lwz 9.8% (4.2), stw 6.7% (4.2), addi 6.2% (1.7), b 5.5% (6.3), cmpli 4.2% (6.4),
+  lfs 3.7% (5.7), rlwinm 3.2%, cmpi 3.1% (6.5), bclr 2.8% (3.9), fmuls 2.4% (10.3), fcmpo 1.8% (15.1). Branches and
+  compares are about a third of executed hot code; float loads and stores now go through shared stubs (psq_l 7.9
+  words, stfs 3.8). This window still runs icbi loops (3% of instructions, interpreted).
+
+### Translator v4: calls, regions, stops for anything unsupported; the shadow path and J3D (jobs 340-346)
+
+- **What it adds (ps_translate.py direct mode):** `bl` / `bctrl` / `blrl` to any stand-in, called in place through
+  ps_icall (state synced: before a call only the GPRs and CR fields written since the last sync, after it only the
+  volatile registers); a region (`NAME.dis^END!`: a stretch of a function left at END with everything in guest state:
+  ShdwDraw's triangle code, 0x8007fce4-0x8007fea4); CTR loops; scalar single ops, fcmpo / fcmpu, fneg / fabs / fmr,
+  fctiwz; lfd values held as doubles; quantized psq_l through the GQR at run time; CR bit ops; ps_cmp*; and any
+  instruction it does not handle becomes a stop before it. Direct-mode stand-ins are entry hooks on the 3DS too.
+- **Exact (PC HLE_CHECK, 42 stand-ins, fields 900-2100):** 4,715,437 calls, 0 differed; with `HLE_STOP_EVERY=37`
+  (900-1300) 1,844,530 calls, 345,474 stopped inside, 0 differed. Defects the checks found on the way: a direct-mode
+  function did not write r3 (its result) back; volatile registers a callee leaves were compared after a stop (static
+  stand-ins now write them back when another stand-in called them); two-word stores were checked a word at a time.
+- **Device: a loss.** Shadow triangle path (job 341): later stretch 17.47 -> 16.34%. Plus 13 J3D functions (342):
+  cutscene 28.75 -> 27.83%. Lean sync (343): 27.96 / 16.09. The region was refused ~199k times per 10 s (job 344, a
+  per-reason counter): **the FPU was off** (the OS turns it on lazily; most triangles never reach an FP instruction,
+  ChkShdwDrawThrough filters them first). With the FP state checked at the first FP instruction instead of at entry
+  (job 345) it always runs, and the later stretch falls to **14.41%**: the native triangle path is slower than the
+  JIT's code for it.
+- **Why:** every native function loads the GPRs it uses from guest state at entry and writes them back at its end,
+  and each in-place call adds a lookup and the state checks: tens of ARM instructions a call. The triangle path makes
+  ~15 nested calls, several into 6-11 instruction functions (getCode, setCode, ChkShdwDrawThrough), which the JIT runs
+  inline in a few words each. kankyo_color_ratio_set, recursiveCalc and dKy_GlobalLight_set stopped on every call
+  (a callee with no stand-in). **Translation pays for large self-contained loop functions (calcWeightEnvelopeMtx,
+  ShdwDraw's walk), not for call-heavy small ones.**
+
+- **J3D functions alone (job 346, `--psoff` the shadow path and the three that always stopped):** cutscene 28.34%
+  against 28.75% (job 337): still a loss. **Back to the 19 stand-ins (job 347): 28.66 / 17.50 / 11.86**, as job 337.
+
+### GXLoadLightObjImm had never run; relaxed stand-in floats (jobs 348-349)
+
+- **A translator bug (job 344's per-reason counter: refusals by the stand-in itself, ~8-17k / 10 s):** GXLoadLightObjImm
+  writes paired singles to the gather pipe with psq_st, whose second word lands at 0xCC008004; only 0xCC008000 itself
+  was taken as the pipe, so that word became a store to RAM outside MEM1 and every call refused (on the PC too). The
+  pipe now takes any address in its 32 bytes. PC HLE_CHECK fields 900-2100: 111,185 calls of it, 5,007,286 in all,
+  0 differed. **Job 349: cutscene 28.66 -> 28.84% (+0.6%)**, later 17.47%. (MEASUREMENTS' earlier note that its
+  refusals were the lazy FPU was wrong.)
+- **Relaxed floats in the stand-ins (job 348, owner-approved):** the paired multiply-adds in single precision (two
+  roundings; hle_psops.h HLE_FASTFLOAT): **cutscene 28.66 -> 28.89 (+0.8%), later 17.50 -> 17.71 (+1.2%), movie
+  11.86 -> 12.15 (+2.4%)** (the IDCT uses them too). On by default on the 3DS; the PC build stays exact so its
+  HLE_CHECK keeps comparing the logic bit for bit. (In the JIT the same idea did nothing, job 338.)
+
 ### Translator direct mode: calcWeightEnvelopeMtx (jobs 333-334, device; PC HLE_CHECK)
 
 - **Exact:** fields 900-1400, 1,500 calls, 0 refused, 0 differed; with `HLE_STOP_EVERY=37` (every 37th access fails,
@@ -503,6 +561,15 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   multiply-accumulate and a narrowing (134 vcvt.f64.f32, 52 vcvt.f32.f64, 42 vmla.f64). The JIT pays much the same
   VFP work, so translating FP-heavy code gains little; integer and control-heavy code (ShdwDraw, the dispatch around
   small functions) is where native C wins.
+- **Relaxed floats (job 338, `--ab fastfloat`, 600 s, owner-approved experiment):** single and paired-single results
+  not rounded to single, frC not cut to 25 bits, stores converted by the hardware. Cutscene core 0 30.64 exact vs 29.11
+  relaxed (medians; phase pairs -2% +-20), later stretch 14.28 vs 13.79 (+0.7% +-12.6): **no gain**, I-cache misses
+  +5% with it on. VFP rounding latency is not what limits core 0; option kept, off. The fuzzer with it on shows the
+  expected differences (lfs / psq_l / fdivs cases with double inputs); exact by default, clean.
+- **Float lanes only in float-dense blocks (job 335, `--ab fcache --fc-min 8`, 600 s, ab_split --col opt):** cutscene
+  core 0 30.70 off vs 29.69 on (medians; phase pairs +7% +-20, within noise), later stretch 14.85 vs 14.52 (+1.0%
+  +-2.5, within noise); I-cache misses +4-5% with lanes. Gating by float density does not rescue C11: the lanes' extra
+  words cost what their cheaper arithmetic saves, on a core bound by instruction fetch. Not kept as a default.
 - JIT fuzzer gate for the mid-function exit (`_fuzz.sh midstop 4723`): 0 fails except default-mode seed 11, case 5393
   (`stfs f24,-32(r1)`: f30.ps1 a single denormal in the interpreter, 0 in the JIT), **the same on the committed HEAD**:
   the known denormal flush (host RunFast; TP runs with FPSCR[NI]) in a case the generator let a denormal into.

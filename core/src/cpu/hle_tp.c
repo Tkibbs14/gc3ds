@@ -98,7 +98,14 @@ static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
 // A cell computes into temporaries and commits only when it went through whole, so the cell a run stops at is left for
 // the exact code from its head with nothing changed.
 typedef struct { u32 r14, r16, r17, r20, r21, r22, r23, r24, r25, f2224, f2228, n, k, cells, levels, empty, fresh; } ShdwRun;
-typedef struct { const u8* m; const u8* vb; u32 lim4, lim2, vWords, r18, r19, r29, budget, cur, lev, s52, s48, f2212, f2216, f2220; } ShdwGrid;
+// Leaves whose triangles were all found visited, this ShdwDraw call: the visited bitset only gains bits within a call
+// (the guest clears it in the prologue, before 0x8007fb48), so such a leaf stays so, and the walk reaches the same leaf
+// again from other rows and slices. Tag: the call's generation << 12 | the leaf's triangle count (k < 4096).
+typedef struct { u32 leaf, tag; } ShMemo;
+#define SHMEMO 256
+static ShMemo g_shMemo[SHMEMO];
+static u32 g_shGen, g_shFrame;
+typedef struct { const u8* m; const u8* vb; ShMemo* memo; u32 gen, lim4, lim2, vWords, r18, r19, r29, budget, cur, lev, s52, s48, f2212, f2216, f2220; } ShdwGrid;
 enum { SHDW_BUDGET = 1, SHDW_TRI, SHDW_ROW, SHDW_ADDR };
 
 static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
@@ -141,16 +148,23 @@ static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
         } else if (leaf == gr->f2212) {
             nn += 7;
         } else {  // its triangles: all visited (13 each) up to the list's end (3), else the exact code takes the cell
-            const u8* const vb = gr->vb;
-            const u32 vWords = gr->vWords, lim2 = gr->lim2;
-            for (;;) {
-                a = p + 2 - 0x80000000u;
-                if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
-                u32 tt = ld16(m + a);
-                p += 2;
-                if (!tt) break;
-                if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
-                k++;
+            ShMemo* const me = &gr->memo[((leaf >> 1) ^ (leaf >> 9)) & (SHMEMO - 1)];
+            if (me->leaf == leaf && (me->tag >> 12) == gr->gen) {  // found all visited before, this call
+                k = me->tag & 0xFFFu;
+                p = leaf + 2 * k + 2;
+            } else {
+                const u8* const vb = gr->vb;
+                const u32 vWords = gr->vWords, lim2 = gr->lim2;
+                for (;;) {
+                    a = p + 2 - 0x80000000u;
+                    if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
+                    u32 tt = ld16(m + a);
+                    p += 2;
+                    if (!tt) break;
+                    if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
+                    k++;
+                }
+                if (k < 4096) { me->leaf = leaf; me->tag = gr->gen << 12 | k; }
             }
             nn += 6 + 13 * k + 3;
 #ifndef __3DS__
@@ -212,7 +226,12 @@ static u32 scan(Gekko* g, u32 budget) {
     const bool fastOk = size >= 2232 && fa <= size - 2232 && !(fa & 3);
     u8* const fr = m + (fastOk ? fa : 0);
     bool hOk = false;
-    ShdwGrid gr = { m, fr + 156, lim4, lim2, fastOk ? (size - fa - 156) >> 2 : 0, 0, 0, 0, budget, 0, 0, 0, 0, 0, 0, 0 };
+    // A new ShdwDraw call (or another frame): a new generation for the leaf memo.
+    if (pc == PC_ENTRY || r1 != g_shFrame) {
+        g_shFrame = r1;
+        if (++g_shGen >= (1u << 20)) { g_shGen = 1; memset(g_shMemo, 0, sizeof g_shMemo); }
+    }
+    ShdwGrid gr = { m, fr + 156, g_shMemo, g_shGen, lim4, lim2, fastOk ? (size - fa - 156) >> 2 : 0, 0, 0, 0, budget, 0, 0, 0, 0, 0, 0, 0 };
 #define FBAD4(a) (__builtin_expect(((a) > lim4) | ((a) & 3), 0))
 #define FWR32(off, v) do { u32 w_ = __builtin_bswap32(v); memcpy(fr + (off), &w_, 4); } while (0)
     if (pc == PC_NEXT) goto L_fea4;

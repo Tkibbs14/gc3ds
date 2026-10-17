@@ -148,7 +148,10 @@ extern int jit_fc_min;
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
-       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_ALL = 32767 };
+       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_ALL = 65535 };
+// OPT_FASTFLOAT (owner-approved experiment, 2026-10-17): single-precision and paired-single results are not rounded to
+// single, frC is not cut to 25 bits, and stores convert with the hardware's rounding: results may differ from Gekko's
+// in the last bits (exact by default).
 // OPT_INLMEM: checked integer loads and stores check and access inline (6 words, the fast path takes no branch) instead
 // of calling the shared memory stub (3 words, but a call and a return: two taken branches, ~3 cycles each on the 2DS).
 // Taken branches cost ~11-13% of core 0 (MEASUREMENTS.md, jobs 247 and 251); the stubs were adopted for footprint.

@@ -2660,9 +2660,18 @@ static void st_fpr(Cg* c, int d, u32 fr, u32 lane) {
 }
 
 // d = d rounded to single precision (still held as a double). Two registers at once so the conversions overlap.
-static void round_pair(Cg* c, int d0, int d1) {
+static void round_pair_always(Cg* c, int d0, int d1) {
     Emit* e = &c->e;
     if (jit_debug_plant == 1) return;
+    vcvt_f32_f64(e, 2 * d0, d0);
+    if (d1 >= 0) vcvt_f32_f64(e, 2 * d1, d1);
+    vcvt_f64_f32(e, d0, 2 * d0);
+    if (d1 >= 0) vcvt_f64_f32(e, d1, 2 * d1);
+}
+// The same for arithmetic results, which OPT_FASTFLOAT leaves in double (frsp and fres keep rounding).
+static void round_pair(Cg* c, int d0, int d1) {
+    Emit* e = &c->e;
+    if (jit_debug_plant == 1 || (c->j->opt & OPT_FASTFLOAT)) return;
     vcvt_f32_f64(e, 2 * d0, d0);
     if (d1 >= 0) vcvt_f32_f64(e, 2 * d1, d1);
     vcvt_f64_f32(e, d0, 2 * d0);
@@ -2673,8 +2682,8 @@ static void round_pair(Cg* c, int d0, int d1) {
 // (x + 2^27) & ~(2^28 - 1) on the 64-bit pattern (the interpreter's sf_round25; identity for exact singles). Uses r0, r1.
 static void ld_c25(Cg* c, int d, u32 fr, u32 lane) {
     Emit* e = &c->e;
-    // An exact single (a float lane always is): the cut changes nothing.
-    if (((c->single >> (2 * fr + lane)) & 1) || fc_find(&c->rc, fr, lane) >= 0) { ld_fpr(c, d, fr, lane); return; }
+    // An exact single (a float lane always is): the cut changes nothing. OPT_FASTFLOAT: no cut.
+    if (((c->single >> (2 * fr + lane)) & 1) || fc_find(&c->rc, fr, lane) >= 0 || (c->j->opt & OPT_FASTFLOAT)) { ld_fpr(c, d, fr, lane); return; }
     ldr_imm(e, R0, RG, OFF_FPR(fr) + 8u * lane);
     ldr_imm(e, R1, RG, OFF_FPR(fr) + 8u * lane + 4);
     dp_imm(e, ADD, 1, R0, R0, IMM(0x08000000u));
@@ -2717,6 +2726,12 @@ static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2)
         return;
     }
     if (c->inCold) { cut_single_bits(c, dst, o, t1, t2); return; }  // no cold code inside cold code
+    if (c->j->opt & OPT_FASTFLOAT) {  // the hardware's conversion, whatever the value
+        vldr_d(e, 7, RG, o);
+        vcvt_f32_f64(e, 12, 7);
+        vmov_r_s(e, dst, 12);
+        return;
+    }
     vldr_d(e, 7, RG, o);
     vcvt_f32_f64(e, 12, 7);  // s12 (in d6)
     vcvt_f64_f32(e, 5, 12);
@@ -3632,7 +3647,7 @@ static bool compile_float(Cg* c, u32 inst) {
             default: goto arith;
             }
             switch (xo) {
-            case 12: ld_fpr(c, 0, rb, 0); round_pair(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); break;  // frsp
+            case 12: ld_fpr(c, 0, rb, 0); round_pair_always(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); break;  // frsp
             case 14: case 15: emit_fctiw(c, frd, rb, xo == 15); break;
             case 72: ld_fpr(c, 0, rb, 0); st_fpr(c, 0, frd, 0); break;                                              // fmr
             default:  // fneg, fabs: the sign bit only
@@ -3649,7 +3664,7 @@ static bool compile_float(Cg* c, u32 inst) {
         if (inst & 1) return false;
         if ((single && xo5 == 24) || (!single && xo5 == 26)) {  // fres (single result in both lanes) / frsqrte (ps0)
             emit_estimate(c, 0, rb, 0, xo5 == 26);
-            if (single) { round_pair(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); }
+            if (single) { round_pair_always(c, 0, -1); st_fpr(c, 0, frd, 0); st_fpr(c, 0, frd, 1); }
             else st_fpr(c, 0, frd, 0);
             return true;
         }

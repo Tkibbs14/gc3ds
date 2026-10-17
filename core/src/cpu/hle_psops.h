@@ -11,8 +11,19 @@ static inline P PS(float v) { P p = { v, v }; return p; }
 #define PMUL(x, c) ((P){ (x).p0 * (c).p0, (x).p1 * (c).p1 })
 #define PMULS0(x, c) ((P){ (x).p0 * (c).p0, (x).p1 * (c).p0 })
 #define PMULS1(x, c) ((P){ (x).p0 * (c).p1, (x).p1 * (c).p1 })
+#if defined(__3DS__) && !defined(HLE_EXACTFLOAT)
+#define HLE_FASTFLOAT
+#endif
+#ifdef HLE_FASTFLOAT
+// Relaxed (owner-approved, 2026-10-17; on the 3DS by default: 2DS job 348, cutscene +0.8%, later +1.2%, movie +2.4%):
+// the multiply-adds in single precision, two roundings instead of one; results may differ from Gekko's in the last
+// bit. The PC build stays exact, so its HLE_CHECK still compares the stand-ins' logic bit for bit.
+static inline float madd1(float a, float c, float b) { return a * c + b; }
+static inline float msub1(float a, float c, float b) { return a * c - b; }
+#else
 static inline float madd1(float a, float c, float b) { return (float)((double)a * (double)c + (double)b); }
 static inline float msub1(float a, float c, float b) { return (float)((double)a * (double)c - (double)b); }
+#endif
 #define PMADD(a, c, b) ((P){ madd1((a).p0, (c).p0, (b).p0), madd1((a).p1, (c).p1, (b).p1) })
 #define PMADDS0(a, c, b) ((P){ madd1((a).p0, (c).p0, (b).p0), madd1((a).p1, (c).p0, (b).p1) })
 #define PMADDS1(a, c, b) ((P){ madd1((a).p0, (c).p1, (b).p0), madd1((a).p1, (c).p1, (b).p1) })

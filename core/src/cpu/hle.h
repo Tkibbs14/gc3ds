@@ -56,7 +56,8 @@ u32 hle_ps_run(Gekko* g);
 u32 hle_ps_count(void);            // functions in the table
 const char* hle_ps_name(u32 k);
 extern u64 g_psCalls[], g_psRefused;  // calls per function (index hle_ps_count(): all), refused calls
-extern u64 g_psRefusedBy[], g_psStops[];  // per function: in-place calls refused, and pipe stops
+extern u64 g_psRefusedBy[], g_psStops[];
+extern u64 g_psWhy[6];  // refusals by reason (hle_ps.c ps_call)  // per function: in-place calls refused, and pipe stops
 // The JIT's in-place call (hle_ps.c): the function at target, or -1 (*gprs: it writes r14-r31); then the call itself
 // (LR set by the caller).
 int hle_ps_inline(u32 target, bool* gprs, u32* size);
