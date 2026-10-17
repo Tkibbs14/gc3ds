@@ -371,6 +371,36 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Fix (relay.c):** a 384 KB ballast taken at startup and freed at the first failed request, taken back between jobs;
   the sockets service and curl handle restarted after 3 failures in a row; `# relay network resets` lines with the
   2DS's address. main.c's watchdog notes where core 0 is when rows stop for 20 s inside a run.
+- **The cause (job 310 still died 6.7 s in):** libctru gives the linear heap min(total - 24 MB, 32 MB); TP left
+  7.7-11.4 MB of it unused while malloc started with a largest block of 2.4 MB. `__ctru_linear_heap_size` = 28 MB
+  (job 311): largest malloc block **5.9 MB**, malloc free a steady 2.4-2.5 MB all run, linear free never under 4.7 MB;
+  no relay failures in 640 s with --profile on. heap_free_mb now reads malloc's real headroom (it read 0.0 always).
+
+### Profiles were missing their high addresses (fixed, job 311)
+
+- The sampler's report built (PC, count) pairs in PC order and stopped at 4,096 distinct blocks; TP samples 4,600-7,300
+  a report, so the highest addresses (the runtime-loaded modules first) were dropped silently. Earlier family tables
+  (job 289: "listed 25.2%" in the cutscene) are short by that much. With room for 16,384 (job 311, emulated windows):
+
+| Family | Cutscene (listed 79.1%) | Later stretch (89.1%) | Movie (84.7%) |
+|---|---|---|---|
+| J3D | **23.25%** | 12.32% | (not split) |
+| GX SDK | **18.77%** | 7.79% | |
+| vector / matrix (PSMTX, PSVEC, mDoMtx, cM3d) | 9.49% | **18.24%** | |
+| game code and the rest | 9.78% | 6.47% | |
+| OS / DVD / AI / DSP SDK | 7.21% | 4.83% | |
+| JAudio | 5.06% | 1.35% | |
+| collision | 3.35% | **36.64%** (ShdwDraw 32.3%) | |
+| runtime-loaded (THP decoder) | 1.11% | 1.01% | **39.86%** |
+
+- **Cutscene top functions:** PSMTXConcat 4.00%, GXFinishInterruptHandler 2.87%, J3DFifoLoadPosMtxImm 2.81%,
+  calcWeightEnvelopeMtx 2.36%, __save_gpr + __restore_gpr 2.50%, GXLoadLightObjImm 1.45%, PSMTXMultVec 1.32%,
+  GXSetArray 1.18%, J3DFifoLoadNrmMtxImm / 3x3 1.16% each, GXLoadTexObjPreLoaded 1.16%, DCFlushRange 1.07%.
+- **Later stretch:** after ShdwDraw, the SDK's vector library: PSVECDotProduct 4.06%, PSVECCrossProduct 2.77%,
+  PSMTXConcat 2.15%, PSVECAdd 1.98%, PSVECScale 1.64%.
+- **Movie (module at 0x80CE9D2C):** the IDCT stand-ins 27.9% (NoYPos 18.3, Y8 9.6: a stand-in's samples count to
+  its hook block), Huffman decoding 10.3% (__THPHuffDecodeDCTCompY 7.2%). The native IDCT is ~9,700 cycles a call
+  (~23k calls/s at 28% of ~800 M cycles): only ~1.6x the guest code.
 
 ### DSP voices and JAudio (jobs 297-298)
 

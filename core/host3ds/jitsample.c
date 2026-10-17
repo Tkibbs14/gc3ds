@@ -78,9 +78,12 @@ void jitsample_report(FILE* f, const Jit* j) {
     }
     qsort(g_samples, n, sizeof *g_samples, by_value);
     // (pc, count) pairs, then the most frequent.
-    static u32 pairs[2 * 4096];
-    u32 np = 0;
-    for (u32 i = 0; i < n && np < 4096;) {
+    // Room for every block a report samples (4,600-7,300 distinct in TP, job 309): with 4,096 the pairs, built in PC
+    // order, dropped the highest addresses, runtime-loaded modules first (the movie's decoder read 0% instead of ~10%).
+    enum { MAX_PAIRS = 16384 };
+    static u32 pairs[2 * MAX_PAIRS];
+    u32 np = 0, i = 0;
+    while (i < n && np < MAX_PAIRS) {
         u32 k = i;
         while (k < n && g_samples[k] == g_samples[i]) k++;
         pairs[2 * np] = g_samples[i];
@@ -88,6 +91,7 @@ void jitsample_report(FILE* f, const Jit* j) {
         np++;
         i = k;
     }
+    if (i < n) fprintf(f, "# hot guest code 10s: %u samples past %u distinct blocks not listed\n", (unsigned)(n - i), (unsigned)MAX_PAIRS);
     qsort(pairs, np, 8, by_count);
     double tot = (double)(n + outside);
     fprintf(f, "# hot guest code 10s (%u samples): outside compiled code %.1f%%;", (unsigned)(n + outside),

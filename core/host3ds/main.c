@@ -4,11 +4,13 @@
 #include <citro3d.h>
 #define GC3DS_HOST_TYPES
 #include <dirent.h>
+#include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "../src/cpu/aot.h"
 #include "../src/cpu/hle.h"
 #include "../src/boot/boot.h"
@@ -209,6 +211,19 @@ static void watchdog(void* arg) {
         relay_flush();
         told++;
     }
+}
+
+// The heaps' split (libctru reads this at startup): by default the linear heap gets min(total - 24 MB, 32 MB) and malloc
+// the rest. TP left 7.7-11.4 MB of linear memory unused all run while malloc started with a largest block of 2.4 MB and
+// ran dry, which took the relay down ("Out of memory", jobs 301-310). 28 MB moves 4 MB to malloc.
+u32 __ctru_linear_heap_size = 28u << 20;
+
+// malloc's free memory: what it holds free plus what the heap has not handed it yet (osGetMemRegionFree reads 0 once
+// libctru took the heap; the old heap_free_mb column read 0.0 in every run).
+static u32 heap_free(void) {
+    extern char* fake_heap_end;
+    struct mallinfo mi = mallinfo();
+    return (u32)(fake_heap_end - (char*)sbrk(0)) + (u32)mi.fordblks;
 }
 
 static void probe_cores(void) {
@@ -1001,7 +1016,7 @@ static const char* run(const char* path) {
                         (ps->efbCopies - pLast.efbCopies) / secs, (ps->xfbCopies - pLast.xfbCopies) / secs,
                         (ps->clears - pLast.clears) / secs);
                 fprintf(g_perf, ",%.2f,%.2f,%.1f,%.1f,%.0f", g_pica ? C3D_GetProcessingTime() : 0.0f,
-                        g_pica ? C3D_GetDrawingTime() : 0.0f, osGetMemRegionFree(MEMREGION_APPLICATION) / 1048576.0,
+                        g_pica ? C3D_GetDrawingTime() : 0.0f, heap_free() / 1048576.0,
                         linearSpaceFree() / 1048576.0, vramSpaceFree() / 1024.0);
                 u64 links = g_jit ? jit_stats(g_jit)->links : 0;
                 fprintf(g_perf, ",%d,%.0f,%d", g_jit && jit_linking(g_jit) ? 1 : 0, (links - linksLast) / secs,
