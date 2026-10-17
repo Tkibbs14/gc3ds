@@ -64,7 +64,10 @@ static void gp_burst(System* s, const u8* data) {
 // CPU stores to the write-gather pipe. As on the hardware, the GP sees them only in whole 32-byte bursts; programs
 // end a command batch with GXFlush, which pads the last burst. (Feeding every 1-4 byte store separately cost a
 // parse attempt and two clock reads each, tens of thousands per field in Twilight Princess.)
+// gp_capture: when set (HLE_CHECK on the PC, hle_ps.c), the CPU's pipe bytes go there instead of to the GP.
+void (*gp_capture)(const u8* data, u32 len);
 void gp_fifo_write(System* s, const u8* data, u32 len) {
+    if (gp_capture) { gp_capture(data, len); return; }
     GXState* gx = &s->gx;
     for (u32 i = 0; i < len; i++) {
         gx->wgp[gx->wgpLen++] = data[i];

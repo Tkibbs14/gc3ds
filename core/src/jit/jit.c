@@ -1836,6 +1836,12 @@ static void emit_ps_call(Cg* c, u32 target, u32 d) {
     // FPRs it may write in guest state: the float cache forgets them.
     if (!c->inCold) for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
 }
+// After the call's instructions are counted (emit_ps_call's caller): 2 = its gather-pipe bytes made the GP ask the CPU
+// to stop: leave after it (at the return address), as compiled pipe stores do (stop_tail).
+static void emit_ps_stop(Cg* c) {
+    dp_imm(&c->e, CMP, 1, 0, R0, 2);
+    exit_snap(c, C_EQ, true, c->pc + 4, NULL);
+}
 
 // ---- branches (end the block) ----
 // Taken: to `target` (constant) or, when `indirect`, to the address in r2. Not taken: pc + 4. Uses r0, r3.
@@ -3951,6 +3957,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 emit_ps_call(c, target, (u32)d);
                 c->countExtra += n;  // (Entry.count is a byte: hence the 200)
                 c->count += n;
+                emit_ps_stop(c);
                 j->codePages[tpa >> 12] = j->codePages[(tpa + 4 * n - 1) >> 12] = 1;  // an icbi there drops this block
                 j->stats.instrsNative++;
                 j->stats.instrsCompiled += n;

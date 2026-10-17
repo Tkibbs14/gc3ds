@@ -56,4 +56,6 @@ extern u64 g_psCalls[], g_psRefused;  // calls per function (index hle_ps_count(
 // The JIT's in-place call (hle_ps.c): the function at target and its instruction count, or -1; then the call itself
 // (LR set by the caller): 1 when the stand-in ran, 0 when it refused.
 int hle_ps_inline(u32 target, u32* n);
-u32 hle_ps_inline_call(Gekko* g, u32 d);
+u32 hle_ps_inline_call(Gekko* g, u32 d);  // also 2: it ran and the GP asked the CPU to stop (leave after it)
+// Where the stand-ins' gather-pipe bytes go (the system's gp_fifo_write).
+void hle_ps_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx);

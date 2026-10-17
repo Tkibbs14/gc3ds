@@ -421,6 +421,21 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   28.61%, later stretch 15.1-15.5 -> 16.20%, movie 11.73 (314) -> 11.95%.** JIT fuzzer gate: 0 failures (the known
   seed-11 stfs denormal gap aside).
 
+### FIFO writers added to the in-place stand-ins (job 318) and the PE wait (job 319)
+
+- **What:** J3DFifoLoadPosMtxImm, J3DFifoLoadNrmMtxImm, J3DFifoLoadNrmMtxImm3x3 and GXLoadLightObjImm (2.81 +
+  1.16 + 1.16 + 1.45% of the cutscene, job 311): ps_translate.py now takes integer instructions (decoded from the
+  words), stores to the gather pipe (collected in order, to gp_fifo_write once; a GP stop request makes the caller
+  leave after the call) and a pointer loaded from the small-data area (fetched and checked at entry).
+- **PC HLE_CHECK** (each run's pipe bytes captured and compared, then fed once): 5,925,523 calls, **0 differed**;
+  the runs' GX byte totals equal the earlier runs' to the byte.
+- **2DS (job 318, plain) against job 317:** cutscene 28.61 -> **28.98%**, later stretch 16.20 -> **16.35%**, movie
+  11.95 -> 11.86 (noise); core 0's GX wait in the cutscene 5.65 -> 7.25%. ~68k FIFO-writer calls/s in the cutscene.
+- **GXFinishInterruptHandler's 2.9% (not adopted):** its first instruction reads PE register 0x0A, and every PE read
+  waits for the GX thread to drain (gxAsync->sync). Job 319 (`--ab pesync`, the 0x0A read taking only the posted
+  signals): cutscene +3.6 +- 10.8%, later -3.0 +- 5.7% (phase pairs): no effect; reverted. The handler's share is
+  something else (it also switches OS contexts twice).
+
 ### DSP voices and JAudio (jobs 297-298)
 
 - **Census (job 297):** the mail-level Zelda microcode never marked a voice done: **~30 voices enabled and not done in

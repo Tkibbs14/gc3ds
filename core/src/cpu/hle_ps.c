@@ -40,8 +40,33 @@ static inline bool fexact(const Gekko* g, int k) {
     return (double)(float)a == a && (double)(float)b == b;
 }
 #define FIN(k) ((P){ (float)g->fpr[k].ps0, (float)g->fpr[k].ps1 })
+// Integer work and big-endian memory (guest accesses through checked host pointers).
+#define ROTL(v, n) ((n) ? ((v) << (n)) | ((v) >> (32 - (n))) : (v))
+#define CLZ(v) ((v) ? (u32)__builtin_clz(v) : 32u)
+static inline u32 BE32(const u8* p) { u32 w; memcpy(&w, p, 4); return __builtin_bswap32(w); }
+static inline u32 BE16(const u8* p) { u16 h; memcpy(&h, p, 2); return __builtin_bswap16(h); }
+static inline void SBE32(u8* p, u32 v) { v = __builtin_bswap32(v); memcpy(p, &v, 4); }
+static inline void SBE16(u8* p, u32 v) { u16 h = __builtin_bswap16((u16)v); memcpy(p, &h, 2); }
+// The write-gather pipe (0xCC008000): a function's bytes in order, to the GP once at its end (as gp_fifo_write takes
+// the CPU's stores); g_psStop: the GP asked the CPU to stop (an interrupt), for the caller to leave after the call.
+#define PIPE_MAX 256
+#define PIPE8(v) (pb[pn++] = (u8)(v))
+#define PIPE16(v) do { u32 v_ = (v); pb[pn] = (u8)(v_ >> 8); pb[pn + 1] = (u8)v_; pn += 2; } while (0)
+#define PIPE32(v) do { SBE32(pb + pn, (v)); pn += 4; } while (0)
+#define PIPEF1(f) do { stf(pb + pn, (f).p0); pn += 4; } while (0)
+#define PIPEF2(f) do { P f_ = (f); stf(pb + pn, f_.p0); stf(pb + pn + 4, f_.p1); pn += 8; } while (0)
+#define PIPE_OUT() pipe_out(g, pb, pn)
+static void (*g_pipeWrite)(void* ctx, const u8* data, u32 len);
+static void* g_pipeCtx;
+static bool g_psStop;
+static void pipe_out(Gekko* g, const u8* data, u32 len) {
+    if (!len || !g_pipeWrite) return;
+    g_pipeWrite(g_pipeCtx, data, len);
+    if (GKP(g)->brk || GKP(g)->stopReq) g_psStop = true;
+}
+void hle_ps_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx) { g_pipeWrite = write; g_pipeCtx = ctx; }
 
-typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); } PsDef;
+typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); bool pipe; } PsDef;  // pipe: writes the gather pipe
 #include "hle_ps_gen.inc"
 #define NDEF (sizeof g_psDefs / sizeof g_psDefs[0])
 
@@ -66,6 +91,7 @@ u32 hle_ps_count(void) { return (u32)NDEF; }
 const char* hle_ps_name(u32 k) { return k < NDEF ? g_psDefs[k].name : "all"; }
 
 static inline u32 rdw(u32 pa) { u32 w; memcpy(&w, g_m + pa, 4); return __builtin_bswap32(w); }
+static inline u32 be32p(const u8* p) { return BE32(p); }
 
 static int find(u32 pc) {
     for (u32 k = 0; k < g_nknown; k++) if (g_known[k].pc == pc) return g_known[k].def;
@@ -122,8 +148,9 @@ static u32 ps_native(Gekko* g) {
     if (n) g->pc = g->lr;
     return n;
 }
-// Called by compiled code in place of `bl` (LR already set): 1 when it ran, 0 when refused (nothing changed).
-u32 hle_ps_inline_call(Gekko* g, u32 d) { return ps_call(g, (int)d) != 0; }
+// Called by compiled code in place of `bl` (LR already set): 1 when it ran, 2 when it ran and its pipe bytes made the
+// GP ask the CPU to stop (the caller leaves after the call), 0 when refused (nothing changed).
+u32 hle_ps_inline_call(Gekko* g, u32 d) { return ps_call(g, (int)d) ? (g_psStop ? 2u : 1u) : 0u; }
 
 static u32 ps_call(Gekko* g, int d) {
     // The state the C assumes: the FPU and paired singles on, round to nearest, GQR0 float in both
@@ -138,6 +165,7 @@ static u32 ps_call(Gekko* g, int d) {
         g_psRefused++;
         return 0;
     }
+    g_psStop = false;
     u32 n = g_psDefs[d].fn(g);
     if (!n) { g_psRefused++; return 0; }
     g_psCalls[d]++;
@@ -154,22 +182,33 @@ static void pchk_report(void) {
     fprintf(stderr, "HLE_CHECK (PS library): %llu stand-in calls compared with the interpreter, %llu differed\n",
             (unsigned long long)g_pchk.calls, (unsigned long long)g_pchk.bad);
 }
+// The gather pipe's bytes while checking (hw/gx.c gp_capture): each run's go to a buffer, compared, then to the GP once.
+static u8 g_cap[2][PIPE_MAX * 2];
+static u32 g_capN[2], g_capSel;
+static void cap_put(const u8* data, u32 len) {
+    for (u32 i = 0; i < len && g_capN[g_capSel] < sizeof g_cap[0]; i++) g_cap[g_capSel][g_capN[g_capSel]++] = data[i];
+}
 static u32 ps_checked(Gekko* g) {
     int d = find(g->pc);
     if (d < 0) return 0;
-    u8* w[3];
-    static u8 before[3][64], native[3][64];
-    for (int k = 0; k < 3; k++) {
-        w[k] = region(g->gpr[3 + k], 64);
-        if (w[k]) memcpy(before[k], w[k], 64);
-    }
+    enum { NW = 4 };
+    u8* w[NW];
+    static u8 before[NW][64], native[NW][64];
+    for (int k = 0; k < 3; k++) w[k] = region(g->gpr[3 + k], 64);
+    u8* sda = region(g->gpr[2] - 13440u, 4);  // the GX SDK's __GXData pointer (GXLoadLightObjImm writes there)
+    w[3] = sda ? region(be32p(sda), 64) : NULL;
+    for (int k = 0; k < NW; k++) if (w[k]) memcpy(before[k], w[k], 64);
+    extern void (*gp_capture)(const u8* data, u32 len);
+    bool pipe = g_psDefs[d].pipe;
+    if (pipe) { gp_capture = cap_put; g_capSel = 0; g_capN[0] = g_capN[1] = 0; }
     Gekko g0 = *g;
     u32 n = ps_native(g);
-    if (!n) return 0;
+    if (!n) { gp_capture = NULL; return 0; }
     Gekko gn = *g;
-    for (int k = 0; k < 3; k++) if (w[k]) { memcpy(native[k], w[k], 64); }
+    for (int k = 0; k < NW; k++) if (w[k]) { memcpy(native[k], w[k], 64); }
     *g = g0;
-    for (int k = 2; k >= 0; k--) if (w[k]) memcpy(w[k], before[k], 64);  // (overlapping windows: restored in reverse)
+    for (int k = NW - 1; k >= 0; k--) if (w[k]) memcpy(w[k], before[k], 64);  // (overlapping windows: restored in reverse)
+    g_capSel = 1;
     u32 steps = 0;
     while (steps < n) {
         u32 pa = g->pc & 0x0FFFFFFFu;
@@ -178,9 +217,14 @@ static u32 ps_checked(Gekko* g) {
         g->pc = gekko_interp_one(g, g->pc, rdw(pa), &stop);
         steps++;
     }
+    bool pipeSame = !pipe || (g_capN[0] == g_capN[1] && !memcmp(g_cap[0], g_cap[1], g_capN[0]));
+    if (pipe) {
+        gp_capture = NULL;
+        g_pipeWrite(g_pipeCtx, g_cap[1], g_capN[1]);  // the interpreter's bytes, once
+    }
     if (!g_pchk.calls++) atexit(pchk_report);
-    bool mem = true;
-    for (int k = 0; k < 3; k++) if (w[k] && memcmp(w[k], native[k], 64)) mem = false;
+    bool mem = pipeSame;
+    for (int k = 0; k < NW; k++) if (w[k] && memcmp(w[k], native[k], 64)) mem = false;
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) &&
                 !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) && g->cr == gn.cr && mem;

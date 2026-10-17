@@ -175,6 +175,8 @@ static u8* bus_host_ptr(void* ctx, u32 pa, u32 len) {
     if (in_lc(pa, len)) return S->lockedCache + pa - PA_LOCKED_CACHE;
     return NULL;
 }
+// The SDK stand-ins' gather-pipe bytes (hle_ps.c), as the CPU's stores to 0xCC008000 reach the GP.
+static void ps_pipe_write(void* ctx, const u8* data, u32 len) { gp_fifo_write(ctx, data, len); }
 static void bus_dcbz(void* ctx, u32 pa) {
     u8* p = bus_host_ptr(ctx, pa & ~31u, 32);
     if (p) memset(p, 0, 32);
@@ -304,6 +306,7 @@ bool sys_init(System* s) {
     hle_set_memory(s->mem1, MEM1_SIZE);
     hle_thp_set_memory(s->mem1, MEM1_SIZE, s->lockedCache);
     hle_ps_set_memory(s->mem1, MEM1_SIZE, s->lockedCache);
+    hle_ps_set_pipe(ps_pipe_write, s);
     aot_set_memory(s->mem1);
     s->bus = (GekkoBus){
         .ctx = s,
