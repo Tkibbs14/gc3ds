@@ -36,6 +36,33 @@ typedef struct { u64 drawCalls, submits, splits, texDecodes, texDecodeBytes, efb
                  tevChanges, tevCompiles,
                  texFails; } PicaStats;  // texFails: textures not decoded for want of memory (drawn untextured)
 extern PicaStats g_picaStats;
+// Lean state (off by default until measured): citro3d setters whose result is the state citro3d already holds are
+// skipped, so its draw calls upload only what changed. Off when citro3d's context layout is not the expected one.
+// One bit per kind of skipped setter (bisection on the 2DS): cull mode, texture binds, combiner stages, the combiner
+// buffer, the effect block's dirty bit after apply_frag, float uniforms.
+enum { LEAN_CULL = 1, LEAN_TEX = 2, LEAN_STAGES = 4, LEAN_TEVBUF = 8, LEAN_EFFECT = 16, LEAN_UNIF = 32, LEAN_ALL = 63 };
+void pica_set_lean(u32 mask);
+u32 pica_lean(void);
+// Raw draw calls (off by default until measured): a batch's draw call as citro3d's register words copied in one block,
+// and C3Di_UpdateContext only when citro3d has state to upload. Off for good once a compared draw differed.
+void pica_set_rawdraw(bool on);
+bool pica_rawdraw(void);
+// Command buffer prefetch (off by default until measured): after each batch's draw call, the next lines of citro3d's
+// command buffer are prefetched so the following calls do not miss to FCRAM.
+void pica_set_cmdpld(bool on);
+bool pica_cmdpld(void);
+// Raw state (off by default until measured; with raw draws): the blocks a batch changes (effect, texture units,
+// combiner stages and buffer, vertex-shader float uniforms) written as citro3d would, without C3Di_UpdateContext.
+void pica_set_rawstate(bool on);
+bool pica_rawstate(void);
+void pica_set_rawplant(bool on);  // the raw draw comparison's self-test: the next compared state differs
+// Where the GX thread is (one byte it sets at each wait and in the draw call), for the watchdog: a stalled run says
+// whether the GX thread waits for the GPU (frame begin / end / split), the vertex worker, or is in a draw.
+enum { GW_RING, GW_DRAW, GW_DRAWCALL, GW_VWWAIT, GW_VWALLOC, GW_SPLITWAIT, GW_FRAMEBEGIN, GW_FRAMEEND, GW_SPLIT,
+       GW_TEX, GW_COPY, GW_SHAPES, GW_N };
+extern volatile u8 g_gxWhere;
+// The GX thread's state as text for a watchdog line: its position, draw calls made, the vertex worker's queue.
+void pica_watch(char* buf, u32 size);
 // The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work
 // runs there; off does it all on the GX thread (comparison).
 void pica_set_vertex_worker(bool on);

@@ -205,11 +205,12 @@ static void watchdog(void* arg) {
         svcSleepThread(1000000000LL);
         if (!g_wdArmed || g_wdRows != last) { last = g_wdRows; still = 0; told = 0; continue; }
         if (++still % 20 || told >= 6) continue;
-        char line[256];
+        char line[448], gw[160] = "";
+        if (g_pica) pica_watch(gw, sizeof gw);
         snprintf(line, sizeof line, "# watchdog: no row for %lu s; core 0 at %u (common.h WH_), in compiled code %lu, guest pc %08lx lr %08lx, "
-                 "block host %08lx, cycles %llu, field %lu, gx draws %llu\n", (unsigned long)still, (unsigned)g_where,
+                 "block host %08lx, cycles %llu, field %lu, gx draws %llu; %s\n", (unsigned long)still, (unsigned)g_where,
                  (unsigned long)jit_in_run, (unsigned long)g_sys.cpu.pc, (unsigned long)g_sys.cpu.lr, (unsigned long)g_sys.cpu.hostPc,
-                 (unsigned long long)g_sys.cpu.cycles, (unsigned long)g_sys.vi.field, (unsigned long long)g_sys.gx.core.draws);
+                 (unsigned long long)g_sys.cpu.cycles, (unsigned long)g_sys.vi.field, (unsigned long long)g_sys.gx.core.draws, gw);
         relay_ring_note(line);
         relay_flush();
         told++;
@@ -414,6 +415,10 @@ typedef struct {
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
     bool pipek, abPipek;      // --pipek on|off, --ab pipek: pipe stores at known addresses straight to the pipe (OPT_PIPEK)
     bool noVoices, abVoices;  // --voices off: DSP voices never end (the old behaviour); --ab voices: lifetime on and off (voices column; starts off)
+    bool rawstate, abRawstate;  // --rawstate on|off, --ab rawstate: with raw draws, the batch's state blocks written without C3Di_UpdateContext (pica.c; rawstate column; --ab starts off)
+    bool cmdpld, abCmdpld;    // --cmdpld on|off, --ab cmdpld: prefetch the GPU command buffer's next lines after each draw call (pica.c; cmdpld column; --ab starts off)
+    bool rawdraw, abRawdraw;  // --rawdraw on|off, --ab rawdraw: batches' draw calls as raw command words (pica.c; rawdraw column; --ab starts off)
+    u32 lean; bool abLean;    // --lean on|off|MASK (LEAN_* bits), --ab lean (all bits and none): citro3d setters that would upload unchanged state are skipped (pica.c lean state; lean column; --ab starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool noThp;               // --thp off: the THP stand-ins never recognised
@@ -453,6 +458,8 @@ static void opts_default(RunOpts* o) {
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
     o->pipek = true;   // pipe stores at known addresses straight to the pipe: Ordon gameplay +7.0% (jobs 358-359)
+    o->rawdraw = true;   // batches' draw calls as raw words: Ordon +0.2% (job 364, phases after 40 s), 0 of 481 compared differed
+    o->rawstate = true;  // and their state blocks without C3Di_UpdateContext: call 8.1 -> 5.3 us, Ordon +0.73% (job 367)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
     o->hle = true;     // shadow-scan stand-in: Link / Epona stretch 10.6% -> 12.4%, cutscene within noise (job 145)
@@ -481,7 +488,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -528,6 +535,11 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
         else if (!strcmp(a, "--pipek")) o->pipek = !strcmp(v, "on");
+        else if (!strcmp(a, "--lean")) o->lean = !strcmp(v, "on") ? LEAN_ALL : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--rawdraw")) o->rawdraw = !strcmp(v, "on");
+        else if (!strcmp(a, "--cmdpld")) o->cmdpld = !strcmp(v, "on");
+        else if (!strcmp(a, "--rawstate")) o->rawstate = !strcmp(v, "on");
+        else if (!strcmp(a, "--rawplant") && !strcmp(v, "on")) pica_set_rawplant(true);  // self-test of the raw draw comparison
         else if (!strcmp(a, "--ab-flip")) o->abFlip = !strcmp(v, "on");
         else if (!strcmp(a, "--relayout")) o->relayout = !strcmp(v, "on");
         else if (!strcmp(a, "--vin")) o->vin = !strcmp(v, "on");
@@ -587,7 +599,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -656,6 +668,10 @@ static void apply_cmd(const char* cmd, double realS, double emuS) {
         else if (!strcmp(name, "vtrim")) pica_set_vw_trim(v != 0);
         else if (!strcmp(name, "dlcache")) g_vcacheOn = v != 0;
         else if (!strcmp(name, "shapes") && g_pica) pica_set_native_shapes(v != 0);
+        else if (!strcmp(name, "lean") && g_pica) pica_set_lean(v);
+        else if (!strcmp(name, "rawdraw") && g_pica) pica_set_rawdraw(v != 0);
+        else if (!strcmp(name, "cmdpld") && g_pica) pica_set_cmdpld(v != 0);
+        else if (!strcmp(name, "rawstate") && g_pica) pica_set_rawstate(v != 0);
         else if (!strcmp(name, "vw2") && g_pica) pica_set_worker2(v != 0);
         else if (!strcmp(name, "fskip") && g_pica) pica_set_fskip(v != 0);
         else if (!strcmp(name, "aot") && g_jit) { aot_set_enabled(v != 0); jit_invalidate_all(g_jit); }
@@ -933,6 +949,10 @@ static const char* run(const char* path) {
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
+        if (g_pica) pica_set_lean(g_opt.abLean ? 0 : g_opt.lean);  // --ab lean starts off
+        if (g_pica) pica_set_rawdraw(g_opt.rawdraw && !g_opt.abRawdraw);  // --ab rawdraw starts off
+        if (g_pica) pica_set_cmdpld(g_opt.cmdpld && !g_opt.abCmdpld);  // --ab cmdpld starts off
+        if (g_pica) pica_set_rawstate(g_opt.rawstate && !g_opt.abRawstate);  // --ab rawstate starts off
         { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_opt.noVoices && !g_opt.abVoices; }  // --ab voices starts off
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
@@ -1097,6 +1117,10 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_vinCompact ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_native_shapes() ? 1 : 0);
                 { extern bool g_dspVoiceLife; fprintf(g_perf, ",%d", g_dspVoiceLife ? 1 : 0); }
+                fprintf(g_perf, ",%u", g_pica ? (unsigned)pica_lean() : 0u);
+                fprintf(g_perf, ",%d", g_pica && pica_rawdraw() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_cmdpld() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_rawstate() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1132,6 +1156,10 @@ static const char* run(const char* path) {
                                         (unsigned long)made, (double)(svcGetSystemTick() - tc) * 1000.0 / SYSCLOCK_ARM11);
                 }
                 if (g_opt.abShapes && g_pica && perfRows % AB_SECS == 0) pica_set_native_shapes(!pica_native_shapes());
+                if (g_opt.abLean && g_pica && perfRows % AB_SECS == 0) pica_set_lean(pica_lean() ? 0 : (g_opt.lean ? g_opt.lean : LEAN_ALL));
+                if (g_opt.abRawdraw && g_pica && perfRows % AB_SECS == 0) pica_set_rawdraw(!pica_rawdraw());
+                if (g_opt.abCmdpld && g_pica && perfRows % AB_SECS == 0) pica_set_cmdpld(!pica_cmdpld());
+                if (g_opt.abRawstate && g_pica && perfRows % AB_SECS == 0) pica_set_rawstate(!pica_rawstate());
                 if (g_opt.abVoices && perfRows % AB_SECS == 0) { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_dspVoiceLife; }
                 if (g_opt.abHlegd && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_gd_set_enabled(!hle_gd_enabled());
@@ -1219,6 +1247,27 @@ static const char* run(const char* path) {
                         last[q] = g_picaStateT[q];
                     }
                     fprintf(g_perf, "\n");
+                }
+                {  // what the batches' draw calls uploaded (pica.c g_picaDc), per call over the last 10 s
+                    extern u64 g_picaDc[12], g_rawStats[3], g_rawStateStats[3];
+                    static u64 last[12], lastRaw[3], lastRs[3];
+                    u64 d[12];
+                    for (int q = 0; q < 12; q++) { d[q] = g_picaDc[q] - last[q]; last[q] = g_picaDc[q]; }
+                    double n = d[0] ? (double)d[0] : 1.0, nt = d[3] ? (double)d[3] : 1.0;
+                    double us = 1e6 / SYSCLOCK_ARM11;
+                    fprintf(g_perf, "# gx draw call 10s: %.0f/s, %.1f words, %.2f us in the call (%.1f ms/s), sync %.1f ms/s; "
+                            "per call: effect %.2f, tex units %.2f, combiner stages %.2f, combiner buffer %.2f, other %.2f, "
+                            "float uniforms %.1f in %.2f runs; lean %u; raw %.0f/s, compared %llu, differed %llu; "
+                            "raw state %.0f/s, to citro3d %.0f/s, compared %llu\n",
+                            (double)d[0] / 10.0, (double)d[1] / n, (double)d[2] / 8.0 / nt * us,
+                            (double)d[2] * 1000.0 / SYSCLOCK_ARM11 / 10.0, (double)d[11] * 1000.0 / SYSCLOCK_ARM11 / 10.0,
+                            (double)d[4] / n, (double)d[5] / n, (double)d[6] / n, (double)d[7] / n, (double)d[8] / n,
+                            (double)d[9] / n, (double)d[10] / n, g_pica ? (unsigned)pica_lean() : 0u,
+                            (double)(g_rawStats[0] - lastRaw[0]) / 10.0, (unsigned long long)g_rawStats[1],
+                            (unsigned long long)g_rawStats[2], (double)(g_rawStateStats[0] - lastRs[0]) / 10.0,
+                            (double)(g_rawStateStats[1] - lastRs[1]) / 10.0, (unsigned long long)g_rawStateStats[2]);
+                    memcpy(lastRaw, g_rawStats, sizeof lastRaw);
+                    memcpy(lastRs, g_rawStateStats, sizeof lastRs);
                 }
                         static u64 lastHleRuns, lastHleInsns;
                         static u64 lastShdw[4];

@@ -363,3 +363,37 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   every call and pay the exit as well.
 - **Re-evaluate when:** the translator can inline its callees (one C function for a call tree, registers kept in
   locals across the calls), or the JIT can enter compiled native code without going through guest state.
+
+## C24. Lean state: skip citro3d setters that would upload what the GPU holds
+
+- **Status:** rejected 2026-10-17 (jobs 361-363); off behind `--lean MASK` (bits: 1 cull, 2 texture binds, 4 combiner
+  stages, 8 combiner buffer, 16 effect dirty bit after apply_frag, 32 float uniforms).
+- **What:** citro3d uploads every block whose dirty bit is set, changed or not; a setter whose result equals citro3d's
+  own copy is skipped (or its dirty bit dropped again), compared against citro3d's context (layout of 1.7.1 mirrored and
+  checked at start).
+- **Result:** the uploads fell (texture units 0.6 -> 0.17 a call, combiner stages 3.0 -> 0.6, words 110 -> 95) but the
+  draw call only went 8.9 -> 8.2-8.5 us: what a batch uploads is not what the call costs (C25). **All bits at once hung
+  the GPU** within a few fields (jobs 361, 362: the GX thread waiting in C3D_FrameBegin); bits 2, 4, 16 and 32 alone ran
+  75 s each without a hang (job 363); bits 1 and 8 were never run alone. Cause not found.
+- **Re-evaluate when:** the draw call's fixed cost is gone and uploads dominate it; then find the hang first (bits 1 and
+  8 alone, then pairs) before measuring anything.
+
+## C25. Raw draw calls and raw state (the batch's draw call without citro3d's per-call code)
+
+- **Status:** built 2026-10-17, default on (`--rawdraw`, `--rawstate`; jobs 364, 366-368).
+- **What:** the draw's registers as one block of citro3d 1.7.1's words; the dirty effect, texture-unit, combiner and
+  vertex-shader float-uniform blocks written by pica.c in C3Di_UpdateContext's order and words; citro3d only for
+  anything else dirty (~5% of calls). The first 256 calls and one in 4,096 after go through citro3d and are compared
+  word for word, state included; one difference turns both off for the run (self-test `--rawplant on`, job 368).
+- **Result:** a call 8.15 -> 5.3 us, flush_batch 61 -> 41 ms/s, Ordon static frame +0.73% (rawstate, job 367) on top
+  of +0.2% (rawdraw, job 364). citro3d's code, not its stores, was the cost: cold in core 2's I-cache between draws.
+- **Next steps if the GX thread becomes the limit again:** the remaining 5.3 us (c3d_dirty and raw_state themselves,
+  the vertex worker sync), and update_tev (~28 ms/s: the 72-word TEV key built and compared per batch).
+
+## C26. Prefetching citro3d's command buffer after each draw call
+
+- **Status:** rejected 2026-10-17 (job 365); off behind `--cmdpld`.
+- **What:** each frame rewrites the command buffer from its start after the submit cleaned it, so every line a call
+  writes misses; prefetch the next 1 KB after each call.
+- **Result:** 8.2 -> 7.85 us a call, speed -0.6% (-0.134 +- 0.021 points, 10 phase pairs).
+- **Re-evaluate when:** never on its own; the misses are a small part of the call.

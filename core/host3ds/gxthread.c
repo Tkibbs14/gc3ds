@@ -89,6 +89,7 @@ static void gx_main(void* arg) {
             tail += 4 + ((len + 3) & ~3u);
         }
         prof_end(PROF_GXTHREAD, t0);
+        g_gxWhere = GW_RING;
         dmb();
         g_tail = tail;
     }
@@ -163,8 +164,13 @@ static void wait_drained(void) {
     u64 t0 = prof_begin();
     u64 limit = svcGetSystemTick() + 2 * SYSCLOCK_ARM11;
     while (!drained()) {
-        if (svcGetSystemTick() > limit) { emu_error("GX thread: no progress for 2 s (head %08lx tail %08lx)\n",
-                                                    (unsigned long)g_head, (unsigned long)g_tail); break; }
+        if (svcGetSystemTick() > limit) {
+            char w[160];
+            pica_watch(w, sizeof w);
+            emu_error("GX thread: no progress for 2 s (head %08lx tail %08lx; %s)\n", (unsigned long)g_head,
+                      (unsigned long)g_tail, w);
+            break;
+        }
     }
     prof_end(PROF_GXWAIT, t0);
 }

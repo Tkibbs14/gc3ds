@@ -1177,3 +1177,18 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   laying hot blocks out first raised misses, as traces did (job 154). The key filter (blocks of the key at the perf
   loop's moment only) kept the list short; not worth pursuing given the direction.
 - **Denser indirect table (FAST_BITS=13, --ind2), job 193: neutral** (TIMING_MODEL_PLAN.md).
+
+## 2026-10-17 (night): the batch's draw call, raw draws and raw state (jobs 361-369)
+
+- **Measured first:** a batch's citro3d draw call wrote ~111 command words and cost ~9 us; uploading less (lean state,
+  C24) barely changed that, so the cost was citro3d's per-call code, cold in core 2's I-cache. **Raw draws + raw state
+  (C25, default on):** the draw block and the dirty state blocks written by pica.c in citro3d's exact words (compared
+  with citro3d on the first 256 calls and one in 4,096, self-test `--rawplant on`): 8.15 -> 5.3 us a call, flush_batch
+  61 -> 41 ms/s, Ordon +0.73% (+0.2% for the draw block before it). Command buffer prefetch: -0.6% (C26).
+- **Core 0 is the limit again:** in the Ordon frame core 0 waits for the GX thread only ~0.65% of its time now, with
+  the GX thread ~87% busy. GX-thread work buys at most that until core 0 gets faster.
+- **The walk benchmark:** after ~60 s the square walk usually parks Link at a villager (one static frame, 7,618
+  draws/s), but not in every run (job 369). Score A/B runs with `core/tools/ab_phases.py LOG COL 60 [ON]`, never pooled
+  means (the first, different scene always falls in the off arm). OPT_PIPEK re-checked in one run: +6.6% (job 369).
+- **Lean state hung the GPU** with all bits on (jobs 361-362; `gx at 6`: waiting in C3D_FrameBegin). It stays off; the
+  watchdog lines now name where the GX thread is (`pica_watch`, GW_* in pica.h).

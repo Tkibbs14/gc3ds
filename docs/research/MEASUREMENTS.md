@@ -567,7 +567,8 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   fuzzer (new sequences: lis + stores in and just past the pipe's 32 bytes, with the pipe's buffer set): 0 fails at
   masks 70259 and 4723, ~2,200 known-address pipe stores compiled per seed. Default on (`--pipek off` to compare).
 
-- **The GX thread is now the limit in gameplay (job 360, after OPT_PIPEK):** busy 88.6%; vertex work (gxvtx) 21.6%,
+- **The GX thread is now the limit in gameplay (job 360, after OPT_PIPEK; superseded by job 367 below: core 0 waits
+  for it only ~1.3% of the time, so core 0 is the limit):** busy 88.6%; vertex work (gxvtx) 21.6%,
   of which vfast_prepare 13.5%; state work (gxstate) 20.6% with the split's timers (17.1% without). **State split, ms
   per second:** the previous batch's draw call (flush_batch) **57**, update_tev **28**, the batch key 8.5, apply_frag 5,
   light uniforms 4, split_early 3.4, texture binds 3; textures (gxtex) 5.6%. 88% of ~7,600 draws/s start a new batch
@@ -576,6 +577,51 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   C3D_DrawArrays at 3.25 us of CPU against 0.74 us for a raw register sequence (HANDOFF item 6). **Next:** what the
   draw call uploads per batch (uniform counts, dirty flags), then raw command-buffer writes for the per-batch state
   that changes, and longer batches; the vertex worker on core 3 is only ~16% busy.
+
+### What a batch's draw call costs, and raw draw calls (jobs 361-369, device, 2026-10-17)
+
+- **The walk benchmark is a static frame after ~60 s.** Since job 359 the square walk takes Link into a villager
+  ("Speak A" prompt) and he stays there: every 10 s report from ~60 s on shows exactly 7,618 draws/s (jobs 359, 360,
+  364, 367; 7,125 draw calls/s). Job 358 (OPT_PIPEK off) took a different path and kept moving. So the walk is
+  gameplay for its first ~60 s and then one repeated, GX-heavy Ordon frame: good for an A/B within a run and for
+  comparing runs from 60 s on, but **358 against 359 (OPT_PIPEK's +7.0%) compared different content** (re-checked in
+  job 369 below). Score A/B runs per 20 s phase, each phase against the mean of its neighbours, from 60 s
+  (core/tools/ab_phases.py; perf_heavy's pooled means put the first phase, a different scene, in the off arm: jobs 364
+  and 365 both read +3% that phase pairing turned into +0.2% and -0.6%).
+- **What the draw call uploads (job 361, counters `# gx draw call 10s`):** ~6,500-7,100 calls/s, **111 command words**
+  per call, **8.96 us in the call** (58.6 of flush_batch's 61 ms/s; the wait for the vertex worker 2.5 ms/s). Per call:
+  the effect block 0.95 (the cull mode is set every batch), 3.1 combiner stages, 0.6 texture units, 0.5 combiner
+  buffer blocks, 3.6 float uniform vectors in 1.24 runs (palette rows).
+- **Uploading less does not make the call cheaper (lean state, jobs 361-363).** Skipping citro3d setters whose result
+  equals citro3d's copy (one bit per kind, live `set lean N`): texture binds 0.6 -> 0.17 units per call, combiner
+  stages 3.0 -> 0.6, uniforms 3.6 -> 3.1, words 110 -> 95, but the call went only 8.9 -> 8.2-8.5 us. **All six kinds
+  on at once hung the GPU** (jobs 361 and 362: the GX thread waits in C3D_FrameBegin for a submit that never finishes,
+  `gx at 6`, 3 fields after the state load in 362); each of texture binds, the effect guard, uniforms and combiner
+  stages alone ran 75 s cleanly (job 363); the combiner buffer and cull bits were not tested alone. Off, not pursued
+  (REDESIGN_CANDIDATES C24).
+- **Raw draw calls (job 364, `--ab rawdraw`):** the draw's own registers as one block of citro3d's words and
+  C3Di_UpdateContext only when something is dirty: 8.8 -> 8.25 us a call, **speed +0.045 +- 0.018 points (+0.2%)**
+  over 10 phase pairs after 40 s. The first 256 calls and one in 4,096 after are also issued through citro3d and
+  compared: 0 of 481 differed.
+- **Command buffer prefetch (job 365, `--ab cmdpld`):** prefetching the next 1 KB of the command buffer after each
+  call (each frame rewrites it from the start after the submit cleaned it): 8.2 -> 7.85 us a call, **speed -0.134 +-
+  0.021 points (-0.6%)**. Rejected (C26): the misses are not the cost.
+- **Raw state (jobs 366-367, `--ab rawstate`):** the blocks a batch changes (effect, texture units, combiner stages
+  and buffer, vertex-shader float uniforms) written by pica.c in citro3d's order and words, without
+  C3Di_UpdateContext (~95% of calls; the rest, e.g. after a vertex-buffer move, go through citro3d). **8.15 -> 5.3 us a
+  call, flush_batch 61 -> 41 ms/s, speed +0.157 +- 0.022 points (+0.73%)** over 9 phase pairs from 60 s (job 367;
+  job 366, with James playing, +1.17 +- 0.71). Compared with citro3d state included: 0 of 220 differed (366);
+  planted-difference self-test (job 368, `--rawplant on`): caught at the first compared state, raw draws then off.
+  A bare C3D_DrawArrays is 3.25 us on an idle 2DS (gcbench 4) and ~8 us inside TP whatever it uploads, so the cost is
+  citro3d's code itself, cold in core 2's 16 KB I-cache between draws, more than its stores. Default on with raw draws.
+- **Core 0 is the limit in this frame, not the GX thread (job 367, from 60 s):** core 0's wait for the GX thread was
+  **1.27% -> 0.65%** of its time (rawstate off -> on), the GX thread 89.8 -> 87.4% busy. Freeing 20 ms/s of the GX
+  thread bought 0.73%: work removed from the GX thread is now capped by that remaining ~0.65% wait. The next speed has
+  to come from core 0.
+- **OPT_PIPEK re-checked in one run (job 369, new defaults, `--ab pipek`):** **+1.257 +- 0.073 points (+6.6%)** over 8
+  phase pairs from 60 s (19.9-20.2% on, 18.7-18.8% off). Jobs 358/359's +7.0% stands. In this run Link did not stop at
+  the villager (draws varied 6,300-7,600/s), so the walk's end is not fixed either: compare runs only within a run.
+  New defaults on the device: 614 draw calls compared with citro3d, 560 with raw state, 0 differed; 5.3 us a call.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
