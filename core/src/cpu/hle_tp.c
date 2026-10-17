@@ -102,56 +102,47 @@ typedef struct { const u8* m; const u8* vb; u32 lim4, lim2, vWords, r18, r19, r2
 enum { SHDW_BUDGET = 1, SHDW_TRI, SHDW_ROW, SHDW_ADDR };
 
 static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
+    // Live across cells: only the position (r17), the instruction count and the counters. The rest of what carries
+    // (r14, r16, r20-r25, the frame's step words) stays in *s and is read and written at a cell's commit alone; the
+    // grid's constants are read from *gr where they are needed. (Held in locals, GCC spilled ~70 loads a cell: job 331.)
     const u8* const m = gr->m;
-    const u8* const vb = gr->vb;
-    const u32 lim4 = gr->lim4, lim2 = gr->lim2, vWords = gr->vWords, r18 = gr->r18, r19 = gr->r19, r29 = gr->r29;
-    const u32 budget = gr->budget, hCur = gr->cur, hLev = gr->lev, f2212 = gr->f2212, f2216 = gr->f2216, f2220 = gr->f2220;
+    const u32 lim4 = gr->lim4, r18 = gr->r18, r19 = gr->r19, hLev = gr->lev;
     // The first level's offset ORs r17's bits with r18's and r19's, which do not change within a run.
     const u32 yz0 = shl(shr(r19, hLev), gr->s52) | shl(shr(r18, hLev), gr->s48);
-    u32 r14 = s->r14, r16 = s->r16, r17 = s->r17, r20 = s->r20, r21 = s->r21, r22 = s->r22, r23 = s->r23, r24 = s->r24, r25 = s->r25;
-    u32 f2224 = s->f2224, f2228 = s->f2228, n = s->n, kAll = 0, cells = 0, levels = 0, empty = 0, fresh = 0, why;
+    u32 r17 = s->r17, n = s->n, cells = 0, kAll = 0, why;
+#ifndef __3DS__
+    u32 levels = 0, empty = 0, fresh = 0;
+#endif
     for (;;) {
-        if (n >= budget) { why = SHDW_BUDGET; break; }
-        u32 nn = n + 14, a, w, lev = hLev, cur = hCur, lv = 0;  // 0x8007fb70 .. the b to 0x8007fbcc
+        if (n >= gr->budget) { why = SHDW_BUDGET; break; }
+        u32 a, w, lev = hLev, cur = gr->cur, lv = 0;
         u32 off = (shr(r17, lev) | yz0) << 2;
-        for (;; lv++) {
-            nn += 4;  // or, lwzx, cmpi, bc at 0x8007fbcc
+        for (;; lv++) {  // the descent (or, lwzx, cmpi, bc at 0x8007fbcc; 0x8007fba8 .. 0x8007fbc8 for each level down)
             a = cur + off - 0x80000000u;
             if (__builtin_expect((a > lim4) | (a & 3), 0)) { why = SHDW_ADDR; goto stop; }
             w = ld32(m + a);
             if ((s32)w < 0) break;
-            nn += 9;  // 0x8007fba8 .. 0x8007fbc8
             cur += w;
             lev -= 1;
             off = ((shr(r17, lev) & 1u) | ((shr(r18, lev) & 1u) << 1) | ((shr(r19, lev) & 1u) << 2)) << 2;
         }
-        u32 leaf = cur + (w & 0x7FFFFFFFu), sz = shl(1, lev), mask = sz - 1;
-        u32 step = sz - (r17 & mask), r4p = sz - (r18 & mask), t = sz - (r19 & mask);
-        nn += 14 + 3 + 3;  // 0x8007fbd8 .. the bc at 0x8007fc14; to 0x8007fc24; lhz, cmpli, bc
-        u32 n14 = r14, n2224 = f2224;
-        if ((s32)t < (s32)n14) { n14 = t; nn++; }
-        if ((s32)r4p < (s32)n2224) { n2224 = r4p; nn++; }
+        const u32 leaf = cur + (w & 0x7FFFFFFFu), sz = shl(1, lev), mask = sz - 1, step = sz - (r17 & mask);
+        // (Any reason to stop takes the cell to the exact code from its head, so the checks' order is free: the row's
+        // end first, before its triangles are scanned.)
+        if (r17 + step > gr->r29) { why = SHDW_ROW; goto stop; }  // the row's end: the exact code writes the row words
         a = leaf + 2 - 0x80000000u;
-        if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
-        u32 cnt = ld16(m + a);
-        // The leaf history (r20-r25) changes only for a non-empty leaf further along than r23: rarely, so it is applied
-        // at the commit from a small case number instead of six temporaries.
-        u32 hist = 0;
-        if (cnt) {
-            nn += 2;
-            if ((s32)r4p > (s32)r23) {
-                nn += 2;
-                if ((s32)r4p <= (s32)r24) { hist = 1; nn += 2; }
-                else { nn += 2; if ((s32)r4p <= (s32)r25) { hist = 2; nn += 5; } else { hist = 3; nn += 7; } }
-            }
-        }
-        u32 n16 = leaf, k = 0;
-        nn += 3;  // the first of the previous row's leaves
-        bool same = leaf == f2220;
-        if (!same) { nn += 3; same = leaf == f2216; }
-        if (!same) { nn += 3; same = leaf == f2212; if (same) nn++; }
-        if (!same) {  // its triangles: all visited (13 each) up to the list's end (3), else the exact code takes the cell
-            u32 p = leaf;
+        if (__builtin_expect((a > gr->lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
+        const u32 cnt = ld16(m + a);
+        // 0x8007fb70 .. the descent, 0x8007fbd8 .. 0x8007fc28, the first of the previous row's leaves, 0x8007feb0's 4.
+        u32 nn = n + 45 + 13 * lv, p = leaf, k = 0;
+        if (leaf == gr->f2220) {
+        } else if (leaf == gr->f2216) {
+            nn += 3;
+        } else if (leaf == gr->f2212) {
+            nn += 7;
+        } else {  // its triangles: all visited (13 each) up to the list's end (3), else the exact code takes the cell
+            const u8* const vb = gr->vb;
+            const u32 vWords = gr->vWords, lim2 = gr->lim2;
             for (;;) {
                 a = p + 2 - 0x80000000u;
                 if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
@@ -161,23 +152,41 @@ static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
                 if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
                 k++;
             }
-            nn += 13 * k + 3;
-            n16 = p;
+            nn += 6 + 13 * k + 3;
+#ifndef __3DS__
+            fresh++;
+#endif
         }
-        nn += 4;  // lwz, add, cmpl, bc at 0x8007feb0
-        if (r17 + step > r29) { why = SHDW_ROW; goto stop; }  // the row's end: the exact code (it writes the frame's row words)
-        // The whole cell went through: commit it.
-        if (hist == 1) { r23 = r4p; r20 = leaf; }
-        else if (hist == 2) { r23 = r24; r24 = r4p; r20 = r21; r21 = leaf; }
-        else if (hist == 3) { r23 = r24; r24 = r25; r25 = r4p; r20 = r21; r21 = r22; r22 = leaf; }
-        r14 = n14; f2228 = step; f2224 = n2224; r16 = n16;
+        // The whole cell went through: commit it (the guest's order: r14, 2228, 2224, the leaf history, r16).
+        const u32 r4p = sz - (r18 & mask), t = sz - (r19 & mask);
+        if ((s32)t < (s32)s->r14) { s->r14 = t; nn++; }
+        s->f2228 = step;
+        if ((s32)r4p < (s32)s->f2224) { s->f2224 = r4p; nn++; }
+        if (cnt) {
+            nn += 2;
+            if ((s32)r4p > (s32)s->r23) {
+                nn += 2;
+                if ((s32)r4p <= (s32)s->r24) { s->r23 = r4p; s->r20 = leaf; nn += 2; }
+                else if (nn += 2, (s32)r4p <= (s32)s->r25) { s->r23 = s->r24; s->r24 = r4p; s->r20 = s->r21; s->r21 = leaf; nn += 5; }
+                else { s->r23 = s->r24; s->r24 = s->r25; s->r25 = r4p; s->r20 = s->r21; s->r21 = s->r22; s->r22 = leaf; nn += 7; }
+            }
+        }
+#ifndef __3DS__
+        else empty++;
+        levels += lv;
+#endif
+        s->r16 = p;
         r17 += step;
         n = nn;
-        kAll += k; cells++; levels += lv; empty += !cnt; fresh += !same;
+        kAll += k; cells++;
     }
 stop:
-    s->r14 = r14; s->r16 = r16; s->r17 = r17; s->r20 = r20; s->r21 = r21; s->r22 = r22; s->r23 = r23; s->r24 = r24; s->r25 = r25;
-    s->f2224 = f2224; s->f2228 = f2228; s->n = n; s->k = kAll; s->cells = cells; s->levels = levels; s->empty = empty; s->fresh = fresh;
+    s->r17 = r17; s->n = n; s->k = kAll; s->cells = cells;
+#ifndef __3DS__
+    s->levels = levels; s->empty = empty; s->fresh = fresh;
+#else
+    s->levels = s->empty = s->fresh = 0;  // (not counted here: three more live values a cell)
+#endif
     return why;
 }
 

@@ -422,6 +422,7 @@ typedef struct {
     u32 count;       // guest instructions compiled so far, including the current one
     bool fastmem;
     bool fp;            // MSR[FP] set and FPSCR[RN] = 0 (round to nearest): float instructions compile natively
+    bool fcOn;          // OPT_FCACHE, and this block has enough float work for its lanes to pay (fc_gate)
     bool ps;            // ... and HID2[PSE]: paired-single instructions too
     bool lsq;           // HID2[LSQE]: psq_l / psq_st (D forms) are legal
     bool pendingStop;   // a slow memory path was emitted: after the instruction, leave if it reported status 2
@@ -1822,7 +1823,7 @@ static void emit_fallback(Cg* c, u32 inst) {
 // to the count). Refused (the FPU off, a GQR or pointer it does not take): leaves for the function, as the bl would.
 // The function's instructions come off RDC as it reports them (its branches make the count vary). Bit 31 of the result:
 // its gather-pipe bytes made the GP ask the CPU to stop: leave after it (at the return address), as compiled pipe
-// stores do (stop_tail).
+// stores do (stop_tail). Bit 30: it stopped inside (direct mode): leave for g->pc.
 static void emit_ps_call(Cg* c, u32 target, u32 d, bool gprs) {
     Emit* e = &c->e;
     c->single = 0;  // it writes FPRs in guest state
@@ -1835,8 +1836,12 @@ static void emit_ps_call(Cg* c, u32 target, u32 d, bool gprs) {
     call(c, (const void*)hle_ps_inline_call);
     dp_imm(e, CMP, 1, 0, R0, 0);
     exit_snap(c, C_EQ, true, target, &clean);
-    dp_imm(e, BIC, 0, R1, R0, IMM(0x80000000u));
+    dp_imm(e, BIC, 0, R1, R0, IMM(0xC0000000u));
     dp_reg(e, SUB, 0, RDC, RDC, R1);
+    // Bit 30: a direct-mode function stopped inside (an access it does not take), every register in guest state and
+    // g->pc there: leave for it, writing back nothing (the flush above left the cache clean).
+    dp_imm(e, TST, 1, 0, R0, IMM(0x40000000u));
+    exit_snap(c, C_NE, false, 0, &clean);
     // The GPRs, CR and XER the common ones never write: their slots (callee-saved host registers, clean after the
     // flush) stay. FPRs it may write in guest state: the float cache forgets them; GPRs too after __restore_gpr's kind.
     if (gprs) rc_after_interp(c);
@@ -3581,12 +3586,29 @@ static int fc_compile(Cg* c, u32 inst) {
     return -1;
 }
 
+// Float lanes pay where float work is dense (C11: +3.5% in the cutscene) and lose where it is sparse, by the code they
+// add (-3.5% in the later stretch): a block takes them only when its straight run up to the first branch has at least
+// jit_fc_min float loads, stores and arithmetic instructions.
+int jit_fc_min = 8;
+static bool fc_gate(Jit* j, u32 pa) {
+    u32 n = 0;
+    for (u32 i = 0; i < 64; i++, pa += 4) {
+        if (pa + 4 > j->ramSize || (i && !(pa & 0xFFF))) break;
+        u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+        u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
+        if (op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528)) || op == 17) break;
+        if ((op >= 48 && op <= 61 && op != 58) || op == 4 || op == 63) n++;
+        else if (op == 31 && xo >= 535 && xo <= 759 && !((xo - 535) % 32)) n++;
+    }
+    return (int)n >= jit_fc_min;
+}
+
 static bool compile_float(Cg* c, u32 inst) {
     Emit* e = &c->e;
     u32 op = inst >> 26, frd = (inst >> 21) & 31, ra = (inst >> 16) & 31, rb = (inst >> 11) & 31, frc = (inst >> 6) & 31;
     u32 xo = (inst >> 1) & 0x3FF, xo5 = xo & 31, simm = (u32)(s32)(s16)(inst & 0xFFFF);
     if (!c->fp) return false;
-    if ((c->j->opt & OPT_FCACHE) && !c->inCold) {
+    if (c->fcOn && !c->inCold) {
         int r = fc_compile(c, inst);
         if (r >= 0) return r != 0;
     }
@@ -3817,6 +3839,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
     c->faultMem = c->fastmem && j->faultMem;
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
+    c->fcOn = c->fp && (j->opt & OPT_FCACHE) && fc_gate(j, pa);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     c->pr = (g->msr & MSR_PR) != 0;

@@ -116,6 +116,8 @@ u32 jit_sched(const Jit* j);
 // Has no effect in fault mode (accesses are unchecked there already).
 // OPT_KSTORE: stfs / psq_st of values the block knows are exact singles convert without the round-trip check.
 // OPT_FCACHE: exact-single FPR lanes live in VFP registers as singles within a block (jit.c "float lanes").
+// Only in blocks with at least jit_fc_min float instructions before their first branch (jit.c fc_gate).
+extern int jit_fc_min;
 // OPT_CALLS: traces follow bl into the callee (LR written as usual) and a blr while LR still holds that return address
 // back to it, so small functions (TP's PSVEC*, J3DFifoLoad*) cost no block exit and no indirect-table lookup.
 // OPT_RETSTUB: blr / bctr (and bctrl, conditional forms too) branch to shared stubs that read LR / CTR and look the target up,

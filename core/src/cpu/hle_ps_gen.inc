@@ -701,6 +701,238 @@ static u32 ps_GXLoadLightObjImm(Gekko* g) {  // 31 instructions
     PIPE_OUT();
     return n;
 }
+static u32 ps_calcWeightEnvelopeMtx(Gekko* g) {  // 126 instructions (direct: stops where an access is not in MEM1)
+    if (!fexact(g, 31)) return 0;
+    if (!fexact(g, 30)) return 0;
+    if (!fexact(g, 29)) return 0;
+    if (!fexact(g, 28)) return 0;
+    if (!fexact(g, 27)) return 0;
+    u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r6 = g->gpr[6], r7 = g->gpr[7], r8 = g->gpr[8], r9 = g->gpr[9], r10 = g->gpr[10], r11 = g->gpr[11], r12 = g->gpr[12], r13 = g->gpr[13], r29 = g->gpr[29], r30 = g->gpr[30], r31 = g->gpr[31];
+    u32 lr = g->lr;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)
+    const u32 xsz = g_size;
+    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, frs = 0;
+    P f0 = (P){ 0, 0 };
+    P f1 = (P){ 0, 0 };
+    P f2 = (P){ 0, 0 };
+    P f3 = (P){ 0, 0 };
+    P f4 = (P){ 0, 0 };
+    P f5 = (P){ 0, 0 };
+    P f6 = (P){ 0, 0 };
+    P f7 = (P){ 0, 0 };
+    P f8 = (P){ 0, 0 };
+    P f9 = (P){ 0, 0 };
+    P f10 = (P){ 0, 0 };
+    P f11 = (P){ 0, 0 };
+    P f12 = (P){ 0, 0 };
+    P f13 = (P){ 0, 0 };
+    P f27 = FIN(27);
+    P f28 = FIN(28);
+    P f29 = FIN(29);
+    P f30 = FIN(30);
+    P f31 = FIN(31);
+    u64 d27 = 0;
+    u64 d28 = 0;
+    u64 d29 = 0;
+    u64 d30 = 0;
+    u64 d31 = 0;
+    (void)r0; (void)r1; (void)r3; (void)r4; (void)r5; (void)r6; (void)r7; (void)r8; (void)r9; (void)r10; (void)r11; (void)r12; (void)r13; (void)r29; (void)r30; (void)r31; (void)cr0; (void)ca; (void)spc; (void)fw; (void)frs;
+    n++; { u32 ea_ = r1 + 0xffffff90u; STW32(XH(ea_, 4, 0x803268d4u), r1); r1 = ea_; }
+    n++; r0 = lr;
+    n++; STW32(XH(r1 + 0x74u, 4, 0x803268dcu), r0);
+    n++; { u64 d_ = DBITS(g->fpr[31].ps0); u32 ea_ = r1 + 0x60u; STW32(XH(ea_, 4, 0x803268e0u), (u32)(d_ >> 32)); STW32(XH(ea_ + 4u, 4, 0x803268e0u), (u32)d_); }
+    n++; STW32(XH(r1 + 0x68u, 4, 0x803268e4u), PSTF(f31.p0)); STW32(XH(r1 + 0x6cu, 4, 0x803268e4u), PSTF(f31.p1));
+    n++; { u64 d_ = DBITS(g->fpr[30].ps0); u32 ea_ = r1 + 0x50u; STW32(XH(ea_, 4, 0x803268e8u), (u32)(d_ >> 32)); STW32(XH(ea_ + 4u, 4, 0x803268e8u), (u32)d_); }
+    n++; STW32(XH(r1 + 0x58u, 4, 0x803268ecu), PSTF(f30.p0)); STW32(XH(r1 + 0x5cu, 4, 0x803268ecu), PSTF(f30.p1));
+    n++; { u64 d_ = DBITS(g->fpr[29].ps0); u32 ea_ = r1 + 0x40u; STW32(XH(ea_, 4, 0x803268f0u), (u32)(d_ >> 32)); STW32(XH(ea_ + 4u, 4, 0x803268f0u), (u32)d_); }
+    n++; STW32(XH(r1 + 0x48u, 4, 0x803268f4u), PSTF(f29.p0)); STW32(XH(r1 + 0x4cu, 4, 0x803268f4u), PSTF(f29.p1));
+    n++; { u64 d_ = DBITS(g->fpr[28].ps0); u32 ea_ = r1 + 0x30u; STW32(XH(ea_, 4, 0x803268f8u), (u32)(d_ >> 32)); STW32(XH(ea_ + 4u, 4, 0x803268f8u), (u32)d_); }
+    n++; STW32(XH(r1 + 0x38u, 4, 0x803268fcu), PSTF(f28.p0)); STW32(XH(r1 + 0x3cu, 4, 0x803268fcu), PSTF(f28.p1));
+    n++; { u64 d_ = DBITS(g->fpr[27].ps0); u32 ea_ = r1 + 0x20u; STW32(XH(ea_, 4, 0x80326900u), (u32)(d_ >> 32)); STW32(XH(ea_ + 4u, 4, 0x80326900u), (u32)d_); }
+    n++; STW32(XH(r1 + 0x28u, 4, 0x80326904u), PSTF(f27.p0)); STW32(XH(r1 + 0x2cu, 4, 0x80326904u), PSTF(f27.p1));
+    n++; r11 = r1 + 0x20u;
+    n++; { u8* h_ = XH(r11 - 12u, 12, 0x8032690cu); STW32(h_ + 0, r29); STW32(h_ + 4, r30); STW32(h_ + 8, r31); } lr = 0x80326910u; n += 4;
+    n++; r7 = r13 + 0xffff83f8u;
+    n++; r31 = 0xffffffffu;
+    n++; r4 = 0xffffffd0u;
+    n++; r6 = BE32(XH(r3 + 0x0u, 4, 0x8032691cu));
+    n++; r8 = BE16(XH(r6 + 0x1eu, 2, 0x80326920u));
+    n++; r5 = BE32(XH(r6 + 0x24u, 4, 0x80326924u));
+    n++; r30 = r5 + 0xfffffffeu;
+    n++; r5 = BE32(XH(r6 + 0x28u, 4, 0x8032692cu));
+    n++; r29 = r5 + 0xfffffffcu;
+    n++; f27 = (P){ U2F(BE32(XH(r7 + 0x0u, 4, 0x80326934u))), U2F(BE32(XH(r7 + 0x4u, 4, 0x80326934u))) }; fw |= 1u << 27;
+    n++; f10 = PMERGE00(f27, f27); fw |= 1u << 10;
+    n++; f12 = PMERGE00(f27, f27); fw |= 1u << 12;
+    n++; f31 = PMERGE00(f27, f27); fw |= 1u << 31;
+    n++; goto L_80326a7c;
+L_80326948:;
+    n++; r7 = BE32(XH(r3 + 0x8u, 4, 0x80326948u));
+    n++; r0 = 0x1u;
+    n++; STW8(XH(r7 + r31, 1, 0x80326950u), r0);
+    n++; r0 = BE32(XH(r3 + 0x10u, 4, 0x80326954u));
+    n++; r10 = r0 + r4;
+    n++; f9 = PMERGE00(f27, f27); fw |= 1u << 9;
+    n++; f11 = PMERGE00(f27, f27); fw |= 1u << 11;
+    n++; f13 = PMERGE00(f27, f27); fw |= 1u << 13;
+    n++; r12 = 0x0u;
+    n++; r5 = BE32(XH(r3 + 0x0u, 4, 0x8032696cu));
+    n++; r5 = BE32(XH(r5 + 0x20u, 4, 0x80326970u));
+    n++; r0 = ROTL(r31, 0) & 0x0000ffffu;
+    n++; r9 = *XH(r5 + r0, 1, 0x80326978u);
+L_8032697c:;
+    n++; { u32 ea_ = r30 + 0x2u; r11 = BE16(XH(ea_, 2, 0x8032697cu)); r30 = ea_; }
+    n++; r5 = BE32(XH(r3 + 0x0u, 4, 0x80326980u));
+    n++; r0 = BE32(XH(r5 + 0x2cu, 4, 0x80326984u));
+    n++; r5 = r11 * (u32)48;
+    n++; r6 = r0 + r5;
+    n++; r0 = BE32(XH(r3 + 0xcu, 4, 0x80326990u));
+    n++; r5 = r0 + r5;
+    n++; f2 = (P){ U2F(BE32(XH(r6 + 0x0u, 4, 0x80326998u))), U2F(BE32(XH(r6 + 0x4u, 4, 0x80326998u))) }; fw |= 1u << 2;
+    n++; f1 = (P){ U2F(BE32(XH(r5 + 0x0u, 4, 0x8032699cu))), U2F(BE32(XH(r5 + 0x4u, 4, 0x8032699cu))) }; fw |= 1u << 1;
+    n++; f3 = (P){ U2F(BE32(XH(r5 + 0x10u, 4, 0x803269a0u))), U2F(BE32(XH(r5 + 0x14u, 4, 0x803269a0u))) }; fw |= 1u << 3;
+    n++; f5 = (P){ U2F(BE32(XH(r5 + 0x20u, 4, 0x803269a4u))), U2F(BE32(XH(r5 + 0x24u, 4, 0x803269a4u))) }; fw |= 1u << 5;
+    n++; f8 = PMULS0(f2, f1); fw |= 1u << 8;
+    n++; f6 = (P){ U2F(BE32(XH(r6 + 0x10u, 4, 0x803269acu))), U2F(BE32(XH(r6 + 0x14u, 4, 0x803269acu))) }; fw |= 1u << 6;
+    n++; f30 = PMULS0(f2, f3); fw |= 1u << 30;
+    n++; f29 = PMULS0(f2, f5); fw |= 1u << 29;
+    n++; f7 = (P){ U2F(BE32(XH(r6 + 0x20u, 4, 0x803269b8u))), U2F(BE32(XH(r6 + 0x24u, 4, 0x803269b8u))) }; fw |= 1u << 7;
+    n++; f8 = PMADDS1(f6, f1, f8); fw |= 1u << 8;
+    n++; f2 = (P){ U2F(BE32(XH(r5 + 0x8u, 4, 0x803269c0u))), U2F(BE32(XH(r5 + 0xcu, 4, 0x803269c0u))) }; fw |= 1u << 2;
+    n++; f30 = PMADDS1(f6, f3, f30); fw |= 1u << 30;
+    n++; f4 = (P){ U2F(BE32(XH(r5 + 0x18u, 4, 0x803269c8u))), U2F(BE32(XH(r5 + 0x1cu, 4, 0x803269c8u))) }; fw |= 1u << 4;
+    n++; f29 = PMADDS1(f6, f5, f29); fw |= 1u << 29;
+    n++; f6 = (P){ U2F(BE32(XH(r5 + 0x28u, 4, 0x803269d0u))), U2F(BE32(XH(r5 + 0x2cu, 4, 0x803269d0u))) }; fw |= 1u << 6;
+    n++; f8 = PMADDS0(f7, f2, f8); fw |= 1u << 8;
+    n++; { u32 ea_ = r29 + 0x4u; f0 = PS(U2F(BE32(XH(ea_, 4, 0x803269d8u)))); r29 = ea_; } fw |= 1u << 0;
+    n++; f30 = PMADDS0(f7, f4, f30); fw |= 1u << 30;
+    n++; f29 = PMADDS0(f7, f6, f29); fw |= 1u << 29;
+    n++; f7 = (P){ U2F(BE32(XH(r6 + 0x8u, 4, 0x803269e4u))), U2F(BE32(XH(r6 + 0xcu, 4, 0x803269e4u))) }; fw |= 1u << 7;
+    n++; f9 = PMADDS0(f8, f0, f9); fw |= 1u << 9;
+    n++; f11 = PMADDS0(f30, f0, f11); fw |= 1u << 11;
+    n++; f13 = PMADDS0(f29, f0, f13); fw |= 1u << 13;
+    n++; f8 = (P){ U2F(BE32(XH(r6 + 0x18u, 4, 0x803269f4u))), U2F(BE32(XH(r6 + 0x1cu, 4, 0x803269f4u))) }; fw |= 1u << 8;
+    n++; f30 = PMULS0(f7, f1); fw |= 1u << 30;
+    n++; f29 = PMULS0(f7, f3); fw |= 1u << 29;
+    n++; f28 = PMULS0(f7, f5); fw |= 1u << 28;
+    n++; f7 = (P){ U2F(BE32(XH(r6 + 0x28u, 4, 0x80326a04u))), U2F(BE32(XH(r6 + 0x2cu, 4, 0x80326a04u))) }; fw |= 1u << 7;
+    n++; STW32(XH(r10 + 0x0u, 4, 0x80326a08u), PSTF(f9.p0)); STW32(XH(r10 + 0x4u, 4, 0x80326a08u), PSTF(f9.p1));
+    n++; f30 = PMADDS1(f8, f1, f30); fw |= 1u << 30;
+    n++; f29 = PMADDS1(f8, f3, f29); fw |= 1u << 29;
+    n++; f28 = PMADDS1(f8, f5, f28); fw |= 1u << 28;
+    n++; f30 = PMADDS0(f7, f2, f30); fw |= 1u << 30;
+    n++; f29 = PMADDS0(f7, f4, f29); fw |= 1u << 29;
+    n++; f28 = PMADDS0(f7, f6, f28); fw |= 1u << 28;
+    n++; STW32(XH(r10 + 0x10u, 4, 0x80326a24u), PSTF(f11.p0)); STW32(XH(r10 + 0x14u, 4, 0x80326a24u), PSTF(f11.p1));
+    n++; STW32(XH(r10 + 0x20u, 4, 0x80326a28u), PSTF(f13.p0)); STW32(XH(r10 + 0x24u, 4, 0x80326a28u), PSTF(f13.p1));
+    n++; f30 = PMADD(f27, f2, f30); fw |= 1u << 30;
+    n++; f29 = PMADD(f27, f4, f29); fw |= 1u << 29;
+    n++; f28 = PMADD(f27, f6, f28); fw |= 1u << 28;
+    n++; f10 = PMADDS0(f30, f0, f10); fw |= 1u << 10;
+    n++; f12 = PMADDS0(f29, f0, f12); fw |= 1u << 12;
+    n++; f31 = PMADDS0(f28, f0, f31); fw |= 1u << 31;
+    n++; r6 = *XH(r7 + r31, 1, 0x80326a44u);
+    n++; r5 = BE32(XH(r3 + 0x4u, 4, 0x80326a48u));
+    n++; r0 = *XH(r5 + r11, 1, 0x80326a4cu);
+    n++; r0 = r6 & r0;
+    n++; STW8(XH(r7 + r31, 1, 0x80326a54u), r0);
+    n++; r12 = r12 + 0x1u;
+    n++; cr0 = CMPS(r12, r9) | xso;
+    n++; if ((cr0 & 8)) goto L_8032697c;
+    n++; STW32(XH(r10 + 0x8u, 4, 0x80326a64u), PSTF(f10.p0)); STW32(XH(r10 + 0xcu, 4, 0x80326a64u), PSTF(f10.p1));
+    n++; f10 = PMERGE00(f27, f27); fw |= 1u << 10;
+    n++; STW32(XH(r10 + 0x18u, 4, 0x80326a6cu), PSTF(f12.p0)); STW32(XH(r10 + 0x1cu, 4, 0x80326a6cu), PSTF(f12.p1));
+    n++; f12 = PMERGE00(f27, f27); fw |= 1u << 12;
+    n++; STW32(XH(r10 + 0x28u, 4, 0x80326a74u), PSTF(f31.p0)); STW32(XH(r10 + 0x2cu, 4, 0x80326a74u), PSTF(f31.p1));
+    n++; f31 = PMERGE00(f27, f27); fw |= 1u << 31;
+L_80326a7c:;
+    n++; r31 = r31 + 0x1u;
+    n++; cr0 = CMPS(r31, r8) | xso;
+    n++; r4 = r4 + 0x30u;
+    n++; if ((cr0 & 8)) goto L_80326948;
+    n++; f31 = (P){ U2F(BE32(XH(r1 + 0x68u, 4, 0x80326a8cu))), U2F(BE32(XH(r1 + 0x6cu, 4, 0x80326a8cu))) }; fw |= 1u << 31;
+    n++; { u32 ea_ = r1 + 0x60u; u32 hi_ = BE32(XH(ea_, 4, 0x80326a90u)), lo_ = BE32(XH(ea_ + 4u, 4, 0x80326a90u)); d31 = (u64)hi_ << 32 | lo_; frs |= 1u << 31; }
+    n++; f30 = (P){ U2F(BE32(XH(r1 + 0x58u, 4, 0x80326a94u))), U2F(BE32(XH(r1 + 0x5cu, 4, 0x80326a94u))) }; fw |= 1u << 30;
+    n++; { u32 ea_ = r1 + 0x50u; u32 hi_ = BE32(XH(ea_, 4, 0x80326a98u)), lo_ = BE32(XH(ea_ + 4u, 4, 0x80326a98u)); d30 = (u64)hi_ << 32 | lo_; frs |= 1u << 30; }
+    n++; f29 = (P){ U2F(BE32(XH(r1 + 0x48u, 4, 0x80326a9cu))), U2F(BE32(XH(r1 + 0x4cu, 4, 0x80326a9cu))) }; fw |= 1u << 29;
+    n++; { u32 ea_ = r1 + 0x40u; u32 hi_ = BE32(XH(ea_, 4, 0x80326aa0u)), lo_ = BE32(XH(ea_ + 4u, 4, 0x80326aa0u)); d29 = (u64)hi_ << 32 | lo_; frs |= 1u << 29; }
+    n++; f28 = (P){ U2F(BE32(XH(r1 + 0x38u, 4, 0x80326aa4u))), U2F(BE32(XH(r1 + 0x3cu, 4, 0x80326aa4u))) }; fw |= 1u << 28;
+    n++; { u32 ea_ = r1 + 0x30u; u32 hi_ = BE32(XH(ea_, 4, 0x80326aa8u)), lo_ = BE32(XH(ea_ + 4u, 4, 0x80326aa8u)); d28 = (u64)hi_ << 32 | lo_; frs |= 1u << 28; }
+    n++; f27 = (P){ U2F(BE32(XH(r1 + 0x28u, 4, 0x80326aacu))), U2F(BE32(XH(r1 + 0x2cu, 4, 0x80326aacu))) }; fw |= 1u << 27;
+    n++; { u32 ea_ = r1 + 0x20u; u32 hi_ = BE32(XH(ea_, 4, 0x80326ab0u)), lo_ = BE32(XH(ea_ + 4u, 4, 0x80326ab0u)); d27 = (u64)hi_ << 32 | lo_; frs |= 1u << 27; }
+    n++; r11 = r1 + 0x20u;
+    n++; { u8* h_ = XH(r11 - 12u, 12, 0x80326ab8u); r29 = BE32(h_ + 0); r30 = BE32(h_ + 4); r31 = BE32(h_ + 8); } lr = 0x80326abcu; n += 4;
+    n++; r0 = BE32(XH(r1 + 0x74u, 4, 0x80326abcu));
+    n++; lr = r0;
+    n++; r1 = r1 + 0x70u;
+    n++;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; }
+    if (fw & (1u << 27)) { g->fpr[27].ps0 = (double)f27.p0; g->fpr[27].ps1 = (double)f27.p1; }
+    if (fw & (1u << 28)) { g->fpr[28].ps0 = (double)f28.p0; g->fpr[28].ps1 = (double)f28.p1; }
+    if (fw & (1u << 29)) { g->fpr[29].ps0 = (double)f29.p0; g->fpr[29].ps1 = (double)f29.p1; }
+    if (fw & (1u << 30)) { g->fpr[30].ps0 = (double)f30.p0; g->fpr[30].ps1 = (double)f30.p1; }
+    if (fw & (1u << 31)) { g->fpr[31].ps0 = (double)f31.p0; g->fpr[31].ps1 = (double)f31.p1; }
+    if (frs & (1u << 27)) g->fpr[27].ps0 = BITSD(d27);
+    if (frs & (1u << 28)) g->fpr[28].ps0 = BITSD(d28);
+    if (frs & (1u << 29)) g->fpr[29].ps0 = BITSD(d29);
+    if (frs & (1u << 30)) g->fpr[30].ps0 = BITSD(d30);
+    if (frs & (1u << 31)) g->fpr[31].ps0 = BITSD(d31);
+    g->lr = lr;
+    g->gpr[1] = r1;
+    g->gpr[29] = r29;
+    g->gpr[30] = r30;
+    g->gpr[31] = r31;
+    return n;
+stop:
+    n--;  // (the instruction that stopped did not run)
+    if (!n) return 0;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[6] = r6;
+    g->gpr[7] = r7;
+    g->gpr[8] = r8;
+    g->gpr[9] = r9;
+    g->gpr[10] = r10;
+    g->gpr[11] = r11;
+    g->gpr[12] = r12;
+    g->gpr[29] = r29;
+    g->gpr[30] = r30;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; }
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; }
+    if (fw & (1u << 2)) { g->fpr[2].ps0 = (double)f2.p0; g->fpr[2].ps1 = (double)f2.p1; }
+    if (fw & (1u << 3)) { g->fpr[3].ps0 = (double)f3.p0; g->fpr[3].ps1 = (double)f3.p1; }
+    if (fw & (1u << 4)) { g->fpr[4].ps0 = (double)f4.p0; g->fpr[4].ps1 = (double)f4.p1; }
+    if (fw & (1u << 5)) { g->fpr[5].ps0 = (double)f5.p0; g->fpr[5].ps1 = (double)f5.p1; }
+    if (fw & (1u << 6)) { g->fpr[6].ps0 = (double)f6.p0; g->fpr[6].ps1 = (double)f6.p1; }
+    if (fw & (1u << 7)) { g->fpr[7].ps0 = (double)f7.p0; g->fpr[7].ps1 = (double)f7.p1; }
+    if (fw & (1u << 8)) { g->fpr[8].ps0 = (double)f8.p0; g->fpr[8].ps1 = (double)f8.p1; }
+    if (fw & (1u << 9)) { g->fpr[9].ps0 = (double)f9.p0; g->fpr[9].ps1 = (double)f9.p1; }
+    if (fw & (1u << 10)) { g->fpr[10].ps0 = (double)f10.p0; g->fpr[10].ps1 = (double)f10.p1; }
+    if (fw & (1u << 11)) { g->fpr[11].ps0 = (double)f11.p0; g->fpr[11].ps1 = (double)f11.p1; }
+    if (fw & (1u << 12)) { g->fpr[12].ps0 = (double)f12.p0; g->fpr[12].ps1 = (double)f12.p1; }
+    if (fw & (1u << 13)) { g->fpr[13].ps0 = (double)f13.p0; g->fpr[13].ps1 = (double)f13.p1; }
+    if (fw & (1u << 27)) { g->fpr[27].ps0 = (double)f27.p0; g->fpr[27].ps1 = (double)f27.p1; }
+    if (fw & (1u << 28)) { g->fpr[28].ps0 = (double)f28.p0; g->fpr[28].ps1 = (double)f28.p1; }
+    if (fw & (1u << 29)) { g->fpr[29].ps0 = (double)f29.p0; g->fpr[29].ps1 = (double)f29.p1; }
+    if (fw & (1u << 30)) { g->fpr[30].ps0 = (double)f30.p0; g->fpr[30].ps1 = (double)f30.p1; }
+    if (fw & (1u << 31)) { g->fpr[31].ps0 = (double)f31.p0; g->fpr[31].ps1 = (double)f31.p1; }
+    if (frs & (1u << 27)) g->fpr[27].ps0 = BITSD(d27);
+    if (frs & (1u << 28)) g->fpr[28].ps0 = BITSD(d28);
+    if (frs & (1u << 29)) g->fpr[29].ps0 = BITSD(d29);
+    if (frs & (1u << 30)) g->fpr[30].ps0 = BITSD(d30);
+    if (frs & (1u << 31)) g->fpr[31].ps0 = BITSD(d31);
+    g->cr = (g->cr & 0x0fffffffu) | (cr0 << 28);
+    g->lr = lr;
+    g->pc = spc;
+    g_psMid = true;
+    return n;
+}
 static const PsDef g_psDefs[] = {
     { "PSMTXConcat", 0xcc, 0x9421ffc0u, 0x9395f0d5c0fe75d4ull, ps_PSMTXConcat, false, false, true },
     { "PSMTXCopy", 0x34, 0xe0030000u, 0x077d9e23e845819bull, ps_PSMTXCopy, false, false, true },
@@ -720,4 +952,5 @@ static const PsDef g_psDefs[] = {
     { "J3DFifoLoadNrmMtxImm", 0x6c, 0x38000010u, 0xbbb0d998d784c3c0ull, ps_J3DFifoLoadNrmMtxImm, true, false, false },
     { "J3DFifoLoadNrmMtxImm3x3", 0x6c, 0x38000010u, 0xd10f9cca0222e80cull, ps_J3DFifoLoadNrmMtxImm3x3, true, false, false },
     { "GXLoadLightObjImm", 0x7c, 0x7c800034u, 0xab7271f388ab8c76ull, ps_GXLoadLightObjImm, true, false, true },
+    { "calcWeightEnvelopeMtx", 0x1f8, 0x9421ff90u, 0x8f049fe618934525ull, ps_calcWeightEnvelopeMtx, false, true, true },
 };

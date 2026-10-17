@@ -517,6 +517,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--relayout")) o->relayout = !strcmp(v, "on");
         else if (!strcmp(a, "--vin")) o->vin = !strcmp(v, "on");
         else if (!strcmp(a, "--fcache")) o->fcache = !strcmp(v, "on");
+        else if (!strcmp(a, "--fc-min")) jit_fc_min = atoi(v);  // float lanes only in blocks with this many float instructions
         else if (!strcmp(a, "--aot")) o->aot = !strcmp(v, "on");
         else if (!strcmp(a, "--aotcall")) o->aotCall = atoi(v);
         else if (!strcmp(a, "--aotabi")) o->aotAbi = atoi(v);

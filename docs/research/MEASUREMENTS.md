@@ -479,6 +479,33 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   mispredicts 73-84%, D-micro-TLB misses 41-47%, store-buffer drains 93-110%, D-cache read misses 11%. That reads as
   ~400 ARM instructions a cell, about twice what shdw_fast runs; the bracket's counter reads are system calls inside
   it, so jobs 331-332 measure the fast cells alone and an empty bracket.
+- **Per run, absolute (jobs 331 `--pmu-split fast`, 332 `--pmu-split empty`, later stretch):** an empty bracket costs
+  ~1,140 cycles and ~386 instructions (the counter reads); a run of fast cells ~8,180 cycles, ~5,240 instructions,
+  ~1,800 data-stall cycles, ~39 mispredicts, ~1,110 loads. Less the bracket, with ~13.3 cells a run (3.47M fast cells,
+  ~260k runs / 10 s): **~365 ARM instructions, ~530 cycles, ~74 loads, ~113 data-stall cycles, ~2.8 mispredicts a
+  cell.** Instruction-bound, and the loads were spills: GCC kept ~30 values live through the cell.
+- **Only the walk's position, count and leaf scan live (job 334):** the carried guest values stay in the run's struct
+  and are touched only at a cell's commit, the instruction count is a formula, the row's end is checked before the
+  triangle scan, the walk's diagnostic counters are PC-only. Stack accesses in the function 161 -> 64. The stand-in
+  **3,030 -> 2,680 ms per 10 s**; later stretch 16.30 -> **16.55%**, cutscene 28.64 -> 28.61% (job 329 -> 334).
+
+### Translator direct mode: calcWeightEnvelopeMtx (jobs 333-334, device; PC HLE_CHECK)
+
+- **Exact:** fields 900-1400, 1,500 calls, 0 refused, 0 differed; with `HLE_STOP_EVERY=37` (every 37th access fails,
+  so each call stops somewhere inside and guest code goes on from there) 750 calls, all stopped inside, every GPR, FPR,
+  CR, XER[CA], LR and the stores compared: 0 differed.
+- **Device (job 333 with it, 334 without, same build):** 462 calls / 10 s in the later stretch, 0 refused, 0 stops.
+  **Cutscene 28.61 -> 28.78% (+0.6%)**, later stretch 16.55 -> 16.69%. Cutscene runs repeat within ~0.05 (328, 329,
+  334: 28.59 / 28.64 / 28.61), so the gain is real, but it is small for a function that was 2.36% of the cutscene
+  (job 311): the C runs it only ~1.3x faster than compiled code.
+- **Why (objdump of the 3DS build):** 2,353 ARM instructions, 394 VFP loads and 141 stores (19 FPR pairs live: the
+  VFP's 32 single registers spill), and every exact paired-single multiply-add is three widenings to double, a double
+  multiply-accumulate and a narrowing (134 vcvt.f64.f32, 52 vcvt.f32.f64, 42 vmla.f64). The JIT pays much the same
+  VFP work, so translating FP-heavy code gains little; integer and control-heavy code (ShdwDraw, the dispatch around
+  small functions) is where native C wins.
+- JIT fuzzer gate for the mid-function exit (`_fuzz.sh midstop 4723`): 0 fails except default-mode seed 11, case 5393
+  (`stfs f24,-32(r1)`: f30.ps1 a single denormal in the interpreter, 0 in the JIT), **the same on the committed HEAD**:
+  the known denormal flush (host RunFast; TP runs with FPSCR[NI]) in a case the generator let a denormal into.
 
 ### DSP voices and JAudio (jobs 297-298)
 
