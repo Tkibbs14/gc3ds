@@ -2,6 +2,7 @@
 // Private state and helpers shared by the Gekko interpreter translation units. Nothing here is part of the public
 // interface in gekko.h; the system side must not include this file.
 #include "gekko.h"
+#include "../ramlayout.h"
 #include <string.h>
 
 // ---- Address translation tables ----
@@ -190,28 +191,28 @@ void gk_update_maps(Gekko* g);
 
 static inline bool gk_rd8(Gekko* g, u32 ea, u32* v) {
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
-    if (h) { *v = h[ea & GK_BLK_MASK]; return true; }
+    if (h) { *v = ram_rd8(h, ea & GK_BLK_MASK); return true; }
     u64 t; if (!gk_read_slow(g, ea, 1, &t)) return false;
     *v = (u32)t; return true;
 }
 static inline bool gk_rd16(Gekko* g, u32 ea, u32* v) {
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 2) { *v = gk_ld16(h + o); return true; }
+    if (h && o <= GK_BLK_SIZE - 2) { *v = ram_rd16(h, o); return true; }
     u64 t; if (!gk_read_slow(g, ea, 2, &t)) return false;
     *v = (u32)t; return true;
 }
 static inline bool gk_rd32(Gekko* g, u32 ea, u32* v) {
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 4) { *v = gk_ld32(h + o); return true; }
+    if (h && o <= GK_BLK_SIZE - 4) { *v = ram_rd32(h, o); return true; }
     u64 t; if (!gk_read_slow(g, ea, 4, &t)) return false;
     *v = (u32)t; return true;
 }
 static inline bool gk_rd64(Gekko* g, u32 ea, u64* v) {
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 8) { *v = gk_ld64(h + o); return true; }
+    if (h && o <= GK_BLK_SIZE - 8) { *v = ram_rd64(h, o); return true; }
     return gk_read_slow(g, ea, 8, v);
 }
 #ifndef __3DS__
@@ -223,28 +224,28 @@ extern void (*g_gkStoreHook)(u32 ea, u32 size);  // aot.c's check mode: every st
 static inline bool gk_wr8(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 1);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
-    if (h) { h[ea & GK_BLK_MASK] = (u8)v; return true; }
+    if (h) { ram_wr8(h, ea & GK_BLK_MASK, v); return true; }
     return gk_write_slow(g, ea, 1, v);
 }
 static inline bool gk_wr16(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 2);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 2) { gk_st16(h + o, (u16)v); return true; }
+    if (h && o <= GK_BLK_SIZE - 2) { ram_wr16(h, o, v); return true; }
     return gk_write_slow(g, ea, 2, v);
 }
 static inline bool gk_wr32(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 4);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 4) { gk_st32(h + o, v); return true; }
+    if (h && o <= GK_BLK_SIZE - 4) { ram_wr32(h, o, v); return true; }
     return gk_write_slow(g, ea, 4, v);
 }
 static inline bool gk_wr64(Gekko* g, u32 ea, u64 v) {
     GK_STORE_HOOK(ea, 8);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
-    if (h && o <= GK_BLK_SIZE - 8) { gk_st64(h + o, v); return true; }
+    if (h && o <= GK_BLK_SIZE - 8) { ram_wr64(h, o, v); return true; }
     return gk_write_slow(g, ea, 8, v);
 }
 

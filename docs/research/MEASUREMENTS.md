@@ -547,6 +547,9 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   11.86 -> 12.15 (+2.4%)** (the IDCT uses them too). On by default on the 3DS; the PC build stays exact so its
   HLE_CHECK keeps comparing the logic bit for bit. (In the JIT the same idea did nothing, job 338.)
 
+- **The commit (675acb2) on the 2DS (job 350):** cutscene **29.09%**, later stretch **17.87%**, movie **12.42%**;
+  the day's start (job 327) was 28.57 / 16.12 / 11.72: +1.8% / +10.9% / +6.0%.
+
 ### Translator direct mode: calcWeightEnvelopeMtx (jobs 333-334, device; PC HLE_CHECK)
 
 - **Exact:** fields 900-1400, 1,500 calls, 0 refused, 0 differed; with `HLE_STOP_EVERY=37` (every 37th access fails,

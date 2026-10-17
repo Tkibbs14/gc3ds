@@ -421,7 +421,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                 g->downcount--;
                 break;
             }
-            if (p->fetchHost) inst = gk_ld32(p->fetchHost + (pc & GK_BLK_MASK));
+            if (p->fetchHost) inst = ram_rd32(p->fetchHost, pc & GK_BLK_MASK);
             else inst = g->bus->fetch(g->bus->ctx, p->fetchPa | (pc & GK_BLK_MASK));
             // Idle loop: "b ." with interrupts enabled can only be left by an interrupt, and nothing changes until
             // the next scheduled event or decrementer edge, so time jumps there instead of spinning.

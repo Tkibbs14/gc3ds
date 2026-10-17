@@ -87,6 +87,7 @@ static void cmd_read(System* s, u64 offset, u32 len, bool discId) {
     }
     // The data lands at once; software only looks at it after the transfer-complete interrupt.
     if (!disc_read(s->disc, offset, dst, len)) emu_error("disc read failed at %llx\n", (unsigned long long)offset);
+    ram_fix_be(s->mem1, (u32)(dst - s->mem1), len);  // (the disc's bytes into the RAM layout)
     mem_dirty((u32)(dst - s->mem1), len);
     if (discId) d->state = d->state == DRIVE_ID_NOT_READ ? DRIVE_READY_NO_READS : DRIVE_READY;
     else if (d->state == DRIVE_READY_NO_READS) d->state = DRIVE_READY;

@@ -267,6 +267,25 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   every stand-in's big-endian helpers; the XFB present path; save states (kept big-endian on disk, converted at load
   and save). **Gate:** the same frames, byte for byte, from the same states in both layouts on the PC (last.png and a
   layout-independent RAM hash), the PC HLE_CHECK, the JIT fuzzer; then the 2DS.
+- **Progress (2026-10-17), stage A: every site through the accessors with GC_SWAPRAM 0 (no change in behaviour).**
+  Done: `src/ramlayout.h` (ram_rd8/16/32/64, ram_wr*, ram_from_be / ram_to_be / ram_fix_be, and ramp_* through a
+  host pointer, the XOR applied to the pointer since MEM1 and the locked cache are 4-byte aligned); the CPU
+  (gekko_internal.h gk_rd* / gk_wr*, gekko_mem.c byte and slow paths, gekko.c fetch); the bus (system.c, system.h
+  mem1_read32 / write32); DMA and boot (di.c, dsp.c ARAM, exi.c, boot.c DOL / apploader / disc ID).
+  **Left:** (1) the GX: fifo.c's parser reads the gather pipe's stream and display lists in RAM with the same code,
+  and display lists go by pointer to the backend (pica.c ns_draw keys converted shapes by guest address; the vertex
+  worker reads arrays through mem1 pointers), so a big-endian copy of a list will not do. Plan: store the pipe's
+  bytes in the RAM layout where they enter the GX (gp_burst's RAM mirror, gxcore_feed / the async ring, `pending`
+  with ramp_wr8 and a byte-wise move of the leftover command), then convert every parser read to ramp_* (fifo.c ~24
+  big-endian reads and ~90 byte indexes, vertex.c, vfast.c, the EFB copies, load_indexed); texture decode and TMEM
+  loads through a big-endian bounce buffer (ram_to_be) at their entry points; soft.c / pica.c byte indexes are mostly
+  host buffers: classify each. (2) The stand-ins: hle_tp.c (ld32 / ld16 / WR32 / FWR32, and the visited bitset's
+  byte index `(tt >> 3) ^ 3`, which becomes `tt >> 3` swapped), hle_gd.c, hle_thp.c and hle_thp_idct.inc, hle_ps.c
+  (BE32 / BE16 / SBE32 / SBE16 / STW*, region, wl_read, the cap buffers) and ps_translate.py's output. (3) DSP HLE
+  (dsp_hle.c vw / v32 helpers), the XFB present paths (host3ds/main.c present_field, host/pc_main.c xfb_to_rgb),
+  save states (big-endian on disk). (4) Then flip GC_SWAPRAM and the JIT: emit_load / emit_store / hoist_* drop rev
+  (bytes at ea ^ 3, halfwords at ea ^ 2), emit_load64 / store64, the psq and float paths, emit_mem_stubs /
+  emit_float_stubs, instruction fetch from j->ram (11 sites, assembled big-endian byte by byte).
 
 ## C19. ShdwDraw descent cache (keep the octree path between cells)
 

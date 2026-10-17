@@ -1,6 +1,7 @@
 #pragma once
 // The emulated GameCube: physical memory, hardware blocks, the event scheduler and the run loop around the CPU.
 #include "../common.h"
+#include "../ramlayout.h"
 #include "../cpu/gekko.h"
 #include "../gx/gx.h"
 
@@ -239,6 +240,6 @@ void dsp_raise_int(System* s);                 // the DSP sets DSPCR.DSPINT
 // Top/bottom field framebuffer addresses, pixel width, frame height (both fields) and field line stride in bytes.
 bool vi_get_xfb(System* s, u32* top, u32* bottom, u32* width, u32* height, u32* stride);
 
-// Memory helpers (physical, big-endian RAM).
-static inline u32 mem1_read32(System* s, u32 pa) { u32 v; __builtin_memcpy(&v, s->mem1 + pa, 4); return bswap32(v); }
-static inline void mem1_write32(System* s, u32 pa, u32 v) { v = bswap32(v); __builtin_memcpy(s->mem1 + pa, &v, 4); }
+// Memory helpers (physical; the layout is ramlayout.h's).
+static inline u32 mem1_read32(System* s, u32 pa) { return ram_rd32(s->mem1, pa); }
+static inline void mem1_write32(System* s, u32 pa, u32 v) { ram_wr32(s->mem1, pa, v); }

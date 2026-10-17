@@ -121,7 +121,7 @@ static bool read_bytes(Gekko* g, u32 ea, u32 size, u64* out) {
         GkMap* m = GKP(g)->dmap;
         u32 blk = (ea + i) >> GK_BLK_SHIFT;
         if (!(m->trans[blk] & TR_HOSTQ)) query_host(g, m, blk);
-        u8 b = m->rhost[blk] ? m->rhost[blk][(ea + i) & GK_BLK_MASK] : g->bus->read8(g->bus->ctx, pa);
+        u8 b = m->rhost[blk] ? (u8)ram_rd8(m->rhost[blk], (ea + i) & GK_BLK_MASK) : g->bus->read8(g->bus->ctx, pa);
         v = (v << 8) | b;
     }
     *out = v;
@@ -145,10 +145,10 @@ bool gk_read_slow(Gekko* g, u32 ea, u32 size, u64* out) {
     const u8* h = m->rhost[blk];
     if (h) {
         switch (size) {
-        case 1: *out = h[o]; break;
-        case 2: *out = gk_ld16(h + o); break;
-        case 4: *out = gk_ld32(h + o); break;
-        default: *out = gk_ld64(h + o); break;
+        case 1: *out = ram_rd8(h, o); break;
+        case 2: *out = ram_rd16(h, o); break;
+        case 4: *out = ram_rd32(h, o); break;
+        default: *out = ram_rd64(h, o); break;
         }
         return true;
     }
@@ -171,7 +171,7 @@ static bool write_bytes(Gekko* g, u32 ea, u32 size, u64 v) {
         GkMap* m = GKP(g)->dmap;
         u32 blk = (ea + i) >> GK_BLK_SHIFT;
         if (!(m->trans[blk] & TR_HOSTQ)) query_host(g, m, blk);
-        if (m->whost[blk]) m->whost[blk][(ea + i) & GK_BLK_MASK] = b;
+        if (m->whost[blk]) ram_wr8(m->whost[blk], (ea + i) & GK_BLK_MASK, b);
         else g->bus->write8(g->bus->ctx, pa, b);
     }
     return true;
@@ -192,10 +192,10 @@ bool gk_write_slow(Gekko* g, u32 ea, u32 size, u64 v) {
     u8* h = m->whost[blk];
     if (h) {
         switch (size) {
-        case 1: h[o] = (u8)v; break;
-        case 2: gk_st16(h + o, (u16)v); break;
-        case 4: gk_st32(h + o, (u32)v); break;
-        default: gk_st64(h + o, v); break;
+        case 1: ram_wr8(h, o, (u32)v); break;
+        case 2: ram_wr16(h, o, (u32)v); break;
+        case 4: ram_wr32(h, o, (u32)v); break;
+        default: ram_wr64(h, o, v); break;
         }
         return true;
     }

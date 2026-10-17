@@ -111,24 +111,26 @@ static void mmio_write(System* s, u32 pa, u32 v, int size) {
 #define S ((System*)ctx)
 
 static u8 bus_read8(void* ctx, u32 pa) {
-    if (in_mem1(pa, 1)) return S->mem1[pa];
-    if (in_lc(pa, 1)) return S->lockedCache[pa - PA_LOCKED_CACHE];
+    if (in_mem1(pa, 1)) return (u8)ram_rd8(S->mem1, pa);
+    if (in_lc(pa, 1)) return (u8)ram_rd8(S->lockedCache, pa - PA_LOCKED_CACHE);
     if ((pa & 0xFFFF0000u) == PA_MMIO) return (u8)mmio_read(S, pa, 1);
     unknown_access(S, "read8", pa, 0);
     return 0;
 }
 static u16 bus_read16(void* ctx, u32 pa) {
     u16 v;
-    if (in_mem1(pa, 2)) { memcpy(&v, S->mem1 + pa, 2); return bswap16(v); }
-    if (in_lc(pa, 2)) { memcpy(&v, S->lockedCache + pa - PA_LOCKED_CACHE, 2); return bswap16(v); }
+    (void)v;
+    if (in_mem1(pa, 2)) return (u16)ram_rd16(S->mem1, pa);
+    if (in_lc(pa, 2)) return (u16)ram_rd16(S->lockedCache, pa - PA_LOCKED_CACHE);
     if ((pa & 0xFFFF0000u) == PA_MMIO) return (u16)mmio_read(S, pa, 2);
     unknown_access(S, "read16", pa, 0);
     return 0;
 }
 static u32 bus_read32(void* ctx, u32 pa) {
     u32 v;
-    if (in_mem1(pa, 4)) { memcpy(&v, S->mem1 + pa, 4); return bswap32(v); }
-    if (in_lc(pa, 4)) { memcpy(&v, S->lockedCache + pa - PA_LOCKED_CACHE, 4); return bswap32(v); }
+    (void)v;
+    if (in_mem1(pa, 4)) return ram_rd32(S->mem1, pa);
+    if (in_lc(pa, 4)) return ram_rd32(S->lockedCache, pa - PA_LOCKED_CACHE);
     if ((pa & 0xFFFF0000u) == PA_MMIO) return mmio_read(S, pa, 4);
     if (pa >= PA_EFB && pa < PA_MMIO) return 0;  // EFB peeks: not emulated yet
     unknown_access(S, "read32", pa, 0);
@@ -137,22 +139,20 @@ static u32 bus_read32(void* ctx, u32 pa) {
 static u64 bus_read64(void* ctx, u32 pa) { return ((u64)bus_read32(ctx, pa) << 32) | bus_read32(ctx, pa + 4); }
 
 static void bus_write8(void* ctx, u32 pa, u8 v) {
-    if (in_mem1(pa, 1)) { S->mem1[pa] = v; return; }
-    if (in_lc(pa, 1)) { S->lockedCache[pa - PA_LOCKED_CACHE] = v; return; }
+    if (in_mem1(pa, 1)) { ram_wr8(S->mem1, pa, v); return; }
+    if (in_lc(pa, 1)) { ram_wr8(S->lockedCache, pa - PA_LOCKED_CACHE, v); return; }
     if ((pa & 0xFFFF0000u) == PA_MMIO) { mmio_write(S, pa, v, 1); return; }
     unknown_access(S, "write8", pa, v);
 }
 static void bus_write16(void* ctx, u32 pa, u16 v) {
-    u16 be = bswap16(v);
-    if (in_mem1(pa, 2)) { memcpy(S->mem1 + pa, &be, 2); return; }
-    if (in_lc(pa, 2)) { memcpy(S->lockedCache + pa - PA_LOCKED_CACHE, &be, 2); return; }
+    if (in_mem1(pa, 2)) { ram_wr16(S->mem1, pa, v); return; }
+    if (in_lc(pa, 2)) { ram_wr16(S->lockedCache, pa - PA_LOCKED_CACHE, v); return; }
     if ((pa & 0xFFFF0000u) == PA_MMIO) { mmio_write(S, pa, v, 2); return; }
     unknown_access(S, "write16", pa, v);
 }
 static void bus_write32(void* ctx, u32 pa, u32 v) {
-    u32 be = bswap32(v);
-    if (in_mem1(pa, 4)) { memcpy(S->mem1 + pa, &be, 4); return; }
-    if (in_lc(pa, 4)) { memcpy(S->lockedCache + pa - PA_LOCKED_CACHE, &be, 4); return; }
+    if (in_mem1(pa, 4)) { ram_wr32(S->mem1, pa, v); return; }
+    if (in_lc(pa, 4)) { ram_wr32(S->lockedCache, pa - PA_LOCKED_CACHE, v); return; }
     if ((pa & 0xFFFF0000u) == PA_MMIO) { mmio_write(S, pa, v, 4); return; }
     if (pa >= PA_EFB && pa < PA_MMIO) return;  // EFB pokes: not emulated yet
     unknown_access(S, "write32", pa, v);
@@ -163,8 +163,8 @@ static void bus_write64(void* ctx, u32 pa, u64 v) {
     bus_write32(ctx, (pa & 0xFFFF8000u) == PA_GP_FIFO ? pa : pa + 4, (u32)v);
 }
 static u32 bus_fetch(void* ctx, u32 pa) {
-    if (in_mem1(pa, 4)) { u32 v; memcpy(&v, S->mem1 + pa, 4); return bswap32(v); }
-    if (in_lc(pa, 4)) { u32 v; memcpy(&v, S->lockedCache + pa - PA_LOCKED_CACHE, 4); return bswap32(v); }
+    if (in_mem1(pa, 4)) return ram_rd32(S->mem1, pa);
+    if (in_lc(pa, 4)) return ram_rd32(S->lockedCache, pa - PA_LOCKED_CACHE);
     char msg[64];
     snprintf(msg, sizeof msg, "instruction fetch from unmapped pa %08x", pa);
     gekko_on_fatal(&S->cpu, msg);

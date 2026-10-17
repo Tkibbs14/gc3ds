@@ -18,7 +18,7 @@ static bool load_sections(System* s, const u8* dol, size_t size, char* err, size
             snprintf(err, errLen, "section %d (off %08x addr %08x len %08x) out of range", i, off, addr, len);
             return false;
         }
-        memcpy(s->mem1 + pa, dol + off, len);
+        ram_from_be(s->mem1, pa, dol + off, len);
         emu_log(LOG_BOOT, "%s%d: %08x..%08x\n", i < 7 ? "text" : "data", i < 7 ? i : i - 7, addr, addr + len);
     }
     u32 bss = be32(dol + DOL_BSS_ADDR) & 0x3FFFFFFF, bssLen = be32(dol + DOL_BSS_SIZE);
@@ -31,7 +31,7 @@ static bool load_sections(System* s, const u8* dol, size_t size, char* err, size
                 u32 sa = be32(dol + DOL_ADDRS + 4 * i) & 0x3FFFFFFF, sl = be32(dol + DOL_SIZES + 4 * i);
                 if (sl && a >= sa && a < sa + sl) covered = true;
             }
-            if (!covered) s->mem1[a] = 0;
+            if (!covered) ram_wr8(s->mem1, a, 0);
         }
     }
     return true;
@@ -106,7 +106,7 @@ static u32 rd_guest32(System* s, u32 ea) {
 
 static void guest_str(System* s, u32 ea, char* out, size_t len) {
     size_t i = 0;
-    for (u32 pa = guest_pa(ea); i + 1 < len && pa < PA_MEM1_END && s->mem1[pa]; pa++) out[i++] = (char)s->mem1[pa];
+    for (u32 pa = guest_pa(ea); i + 1 < len && pa < PA_MEM1_END && ram_rd8(s->mem1, pa); pa++) out[i++] = (char)ram_rd8(s->mem1, pa);
     out[i] = 0;
 }
 
@@ -154,6 +154,7 @@ static bool call_guest(System* s, u32 fn, char* err, size_t errLen) {
 static void setup_lowmem_disc(System* s) {
     memset(s->mem1, 0, 0x3100);
     if (!disc_read(s->disc, 0, s->mem1, 0x20)) emu_error("disc ID read failed\n");  // disc ID, as READ DISC ID leaves it
+    ram_fix_be(s->mem1, 0, 0x20);
     mem1_write32(s, 0x20, 0x0D15EA5E);  // boot magic: normal boot (0xE5207C22 would be a JTAG boot)
     mem1_write32(s, 0x24, 1);           // boot info version
     mem1_write32(s, 0x28, MEM1_SIZE);   // physical memory size
@@ -184,6 +185,7 @@ bool boot_disc(System* s, struct Disc* d, char* err, size_t errLen) {
         return false;
     }
     if (!disc_read(d, 0x2460, s->mem1 + guest_pa(AL_LOAD), alSize)) { snprintf(err, errLen, "apploader read failed"); return false; }
+    ram_fix_be(s->mem1, guest_pa(AL_LOAD), alSize);
     emu_log(LOG_BOOT, "apploader %.10s: entry %08x, %x bytes at %08x\n", (const char*)al, alEntry, alSize, AL_LOAD);
     mem1_write32(s, guest_pa(AL_REPORT), 0x48000000);  // b . (intercepted)
     mem1_write32(s, guest_pa(AL_TRAP), 0x48000000);
@@ -208,6 +210,7 @@ bool boot_disc(System* s, struct Disc* d, char* err, size_t errLen) {
         emu_log(LOG_BOOT, "apploader request %d: disc %08x+%x -> %08x\n", n, off, len, dst);
         if (guest_pa(dst) + len > PA_MEM1_END) { snprintf(err, errLen, "apploader request out of range: %08x+%x", dst, len); return false; }
         if (!disc_read(d, off, s->mem1 + guest_pa(dst), len)) { snprintf(err, errLen, "disc read failed at %08x", off); return false; }
+        ram_fix_be(s->mem1, guest_pa(dst), len);
         if (n > 10000) { snprintf(err, errLen, "apploader never finished"); return false; }
     }
     if (!call_guest(s, fClose, err, errLen)) return false;
