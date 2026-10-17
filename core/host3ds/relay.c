@@ -73,6 +73,31 @@ static size_t on_data(char* p, size_t sz, size_t n, void* user) {
     return k;
 }
 
+// Network recovery: once the 2DS's sockets fail, every later request on the same session failed too ("Failed sending
+// HTTP request", retrying every 10 s for good, jobs 301-307), until gc3ds restarted. After NET_FAILS failed requests
+// in a row the sockets service and the curl handle are started again (call with g_curlLock held). g_netIp: the 2DS's
+// address at the last failure (0: no network, so Wi-Fi dropped rather than the sockets service).
+// The ballast: BALLAST_SIZE of heap taken at startup and given up at the first failed request, for the TLS reconnect
+// to allocate in (the emulator leaves the heap nearly empty: "Out of memory" from curl, 2DS 2026-10-16; mbedTLS here
+// cannot take its own allocator); taken back between jobs (relay_next).
+#define NET_FAILS 3
+#define BALLAST_SIZE (384u * 1024)
+static void* g_ballast;
+static u32 g_netFails;
+u32 g_netResets, g_netIp;
+static void net_failed(CURLcode rc) {
+    if (rc == CURLE_OK) { g_netFails = 0; return; }
+    if (g_ballast) { free(g_ballast); g_ballast = NULL; }
+    g_netIp = (u32)gethostid();
+    if (++g_netFails < NET_FAILS) return;
+    g_netFails = 0;
+    g_netResets++;
+    curl_easy_cleanup(g_curl);
+    socExit();
+    socInit(g_socBuf, SOC_BUF_SIZE);
+    g_curl = curl_easy_init();
+}
+
 // One request on the shared handle. Returns the HTTP status (0 when the request failed; err says why).
 static long http(const char* method, const char* path, const void* body, size_t len, Sink* out, long timeout,
                  char* err, size_t en) {
@@ -83,6 +108,7 @@ static long http(const char* method, const char* path, const void* body, size_t 
     h = curl_slist_append(h, "Content-Type: text/plain");
     char ebuf[CURL_ERROR_SIZE] = "";
     LightLock_Lock(&g_curlLock);
+    if (!g_curl && !(g_curl = curl_easy_init())) { LightLock_Unlock(&g_curlLock); curl_slist_free_all(h); if (err) snprintf(err, en, "curl handle lost"); return 0; }
     curl_easy_reset(g_curl);
     curl_easy_setopt(g_curl, CURLOPT_URL, url);
     curl_easy_setopt(g_curl, CURLOPT_HTTPHEADER, h);
@@ -102,9 +128,10 @@ static long http(const char* method, const char* path, const void* body, size_t 
     CURLcode rc = curl_easy_perform(g_curl);
     long status = 0;
     if (rc == CURLE_OK) curl_easy_getinfo(g_curl, CURLINFO_RESPONSE_CODE, &status);
+    net_failed(rc);
     LightLock_Unlock(&g_curlLock);
     curl_slist_free_all(h);
-    if (rc != CURLE_OK && err) snprintf(err, en, "%s", ebuf[0] ? ebuf : curl_easy_strerror(rc));
+    if (rc != CURLE_OK && err) snprintf(err, en, "%s (ip %08lx, network resets %lu)", ebuf[0] ? ebuf : curl_easy_strerror(rc), (unsigned long)g_netIp, (unsigned long)g_netResets);
     else if (status >= 400 && err) snprintf(err, en, "HTTP %ld: %.80s", status, out && out->buf ? out->buf : "");
     return status;
 }
@@ -219,6 +246,7 @@ static void log_thread(void* arg) {
 // build left too little heap afterwards and the relay failed with "socInit failed" (2DS, 2026-10-14).
 void relay_reserve(void) {
     if (relay_configured() && !g_socBuf) g_socBuf = memalign(0x1000, SOC_BUF_SIZE);
+    if (relay_configured() && !g_ballast) g_ballast = malloc(BALLAST_SIZE);
 }
 
 bool relay_start(char* err, size_t n) {
@@ -260,6 +288,7 @@ const char* relay_self_id(const char* selfPath) {
 }
 
 int relay_next(RelayJob* j, char* err, size_t n) {
+    if (!g_ballast) g_ballast = malloc(BALLAST_SIZE);  // between jobs: take the ballast back (net_failed)
     Sink s = { 0 };
     long st = http("GET", "/next", NULL, 0, &s, 30, err, n);
     int r = -1;
@@ -304,6 +333,7 @@ static long download(const char* path, FILE* f, char* err, size_t en) {
     char ebuf[CURL_ERROR_SIZE] = "";
     Sink s = { .file = f };
     LightLock_Lock(&g_curlLock);
+    if (!g_curl) g_curl = curl_easy_init();
     curl_easy_reset(g_curl);
     curl_easy_setopt(g_curl, CURLOPT_URL, url);
     curl_easy_setopt(g_curl, CURLOPT_HTTPHEADER, h);
@@ -324,6 +354,7 @@ static long download(const char* path, FILE* f, char* err, size_t en) {
     CURLcode rc = curl_easy_perform(g_curl);
     long status = 0;
     if (rc == CURLE_OK) curl_easy_getinfo(g_curl, CURLINFO_RESPONSE_CODE, &status);
+    net_failed(rc);
     LightLock_Unlock(&g_curlLock);
     curl_slist_free_all(h);
     printf("\n");
@@ -406,6 +437,7 @@ static int tee_write(void* cookie, const char* p, _READ_WRITE_BUFSIZE_TYPE len) 
     return len;
 }
 static int tee_close(void* cookie) { return cookie ? fclose(cookie) : 0; }
+void relay_ring_note(const char* s) { tee_write(NULL, s, (_READ_WRITE_BUFSIZE_TYPE)strlen(s)); }
 
 FILE* relay_tee(FILE* f) {
     if (!g_started || !g_jobId) return f;

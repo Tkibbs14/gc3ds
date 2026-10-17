@@ -346,6 +346,32 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   is JAudio (updateDSPChannel 1.09%, updateEffectorParam 0.98%, updateSeq 0.77%, pow2 0.74%, updateAutoMixer 0.56%;
   the guest's audio engine, whose output dsp_hle discards). Only general JIT work moves the cutscene much.
 
+### THP movie decoder: the inverse DCTs as a stand-in (job 300, hle_thp.c)
+
+- **What:** __THPInverseDCTY8 and __THPInverseDCTNoYPos (d_a_movie_player.rel, 44% of core 0 in the movie, job 289)
+  as C generated from the module's own code on the disc (core/tools/thp_translate.py), recognised wherever the module
+  loads (only its .rodata / .bss bases are relocated in these functions).
+- **The decompilation's asm is not the shipped code:** a first version generated from it counted other instruction
+  totals on rare paths (PC HLE_CHECK: a few calls in thousands). Generated from the disc's REL instead.
+- **The FPU can be off at entry:** the OS leaves MSR[FP] clear after a thread switch and the first FP instruction
+  traps to load the thread's registers (112 of 957,600 calls). The stand-in refuses then, and unless round to nearest,
+  paired singles on, GQR5 = s16 loads and GQR6 = u8 stores at scale -3.
+- **PC HLE_CHECK (tp_movie.state, fields 6000-6300):** 957,488 calls compared with the interpreter, **0 differed**.
+- **Device (job 300, 640 s, first version):** ~230k calls per 10 s, ~490 guest instructions a call. Movie (emu
+  99-110 s) **8.16-8.65% -> 11.23%** (jobs 277, 290, 291, 298 -> 300; +30%); GX thread 23-24.5 -> 31.8% busy.
+- **Device (job 309, exact version, --profile on):** movie **8.46% (job 289, profile on) -> 10.91%** (+29%); ~90-120
+  calls refused per 10 s (the FPU off), the rest stood in.
+
+### Silent jobs were the relay running out of memory, not crashes (jobs 301-308)
+
+- Jobs went quiet mid-run with no exception and no Luma dump; the 2DS showed "relay error: Failed sending HTTP
+  request", then "Out of memory", every time (James). The emulator leaves the heap nearly empty (heap_free_mb 0.0 in
+  every run; the profiler's ~1 MB of sample buffers made it worse): once the relay's connection dropped, the TLS
+  reconnect could not allocate and every request failed until gc3ds restarted.
+- **Fix (relay.c):** a 384 KB ballast taken at startup and freed at the first failed request, taken back between jobs;
+  the sockets service and curl handle restarted after 3 failures in a row; `# relay network resets` lines with the
+  2DS's address. main.c's watchdog notes where core 0 is when rows stop for 20 s inside a run.
+
 ### DSP voices and JAudio (jobs 297-298)
 
 - **Census (job 297):** the mail-level Zelda microcode never marked a voice done: **~30 voices enabled and not done in

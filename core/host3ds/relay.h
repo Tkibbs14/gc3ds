@@ -23,6 +23,8 @@ bool relay_fetch_build(const char* id, const char* path, char* err, size_t n);
 #define RELAY_RESUME_SEQ 100000
 void relay_job_begin(unsigned id, int firstSeq);
 FILE* relay_tee(FILE* f);           // a FILE writing to f and to the current job's log
+// A line straight into the job's log ring, not through stdio (the watchdog in main.c: core 0 may hold the FILE's lock).
+void relay_ring_note(const char* s);
 void relay_job_end(const char* status);  // sends the rest of the log, then the status (done, failed, stopped)
 void relay_stop(void);
 void relay_flush(void);  // sends what the current job's log holds now (before a restart into a new build)

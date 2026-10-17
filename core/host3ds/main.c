@@ -188,6 +188,29 @@ static void core_spin(void* arg) {
     while (svcGetSystemTick() < end) g_coreCount[c]++;
 }
 
+// Watchdog (core 1): when the per-second rows stop for 20 s, where core 0 is goes straight into the job's log ring
+// (relay_ring_note), every 20 s up to 6 times, so a run that stops making rows says where core 0 stuck (jobs 301-308
+// went silent: that was the relay out of memory, relay.c, but the next silence may not be).
+static volatile u32 g_wdRows;
+static volatile bool g_wdArmed;  // inside a run's per-second loop (rows are expected)
+static void watchdog(void* arg) {
+    (void)arg;
+    u32 last = g_wdRows, still = 0, told = 0;
+    for (;;) {
+        svcSleepThread(1000000000LL);
+        if (!g_wdArmed || g_wdRows != last) { last = g_wdRows; still = 0; told = 0; continue; }
+        if (++still % 20 || told >= 6) continue;
+        char line[256];
+        snprintf(line, sizeof line, "# watchdog: no row for %lu s; core 0 at %u (common.h WH_), in compiled code %lu, guest pc %08lx lr %08lx, "
+                 "block host %08lx, cycles %llu, field %lu, gx draws %llu\n", (unsigned long)still, (unsigned)g_where,
+                 (unsigned long)jit_in_run, (unsigned long)g_sys.cpu.pc, (unsigned long)g_sys.cpu.lr, (unsigned long)g_sys.cpu.hostPc,
+                 (unsigned long long)g_sys.cpu.cycles, (unsigned long)g_sys.vi.field, (unsigned long long)g_sys.gx.core.draws);
+        relay_ring_note(line);
+        relay_flush();
+        told++;
+    }
+}
+
 static void probe_cores(void) {
     APT_SetAppCpuTimeLimit(80);
     s32 prio = 0x30;
@@ -367,6 +390,8 @@ typedef struct {
     bool noVoices, abVoices;  // --voices off: DSP voices never end (the old behaviour); --ab voices: lifetime on and off (voices column; starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
+    bool noThp;               // --thp off: the THP stand-ins never recognised
+    bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
     bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
@@ -427,8 +452,9 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
+        else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
@@ -783,6 +809,8 @@ static const char* run(const char* path) {
     const char* result = "done";
     bool saved = false;
     u32 perfRows = 0;
+    static Thread wd;
+    if (!wd) { s32 wp = 0x30; svcGetThreadPriority(&wp, CUR_THREAD_HANDLE); wd = threadCreate(watchdog, NULL, 8 * 1024, wp + 1 > 0x3F ? 0x3F : wp + 1, 1, true); }
     g_fields = 0;
     u64 t0 = svcGetSystemTick(), tLast = t0, cycLast = g_sys.cpu.cycles, cyc0 = g_sys.cpu.cycles, tPresent = t0;
     u64 tPace = t0, cycPace = cyc0;  // origin of the real-time pacing (moves when emulation falls behind)
@@ -843,12 +871,14 @@ static const char* run(const char* path) {
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
+        hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_opt.noVoices && !g_opt.abVoices; }  // --ab voices starts off
         jit_set_traces(g_jit, g_opt.traces);
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
     }
+    g_wdArmed = !g_opt.jitBench;
     if (g_opt.jitBench && g_jit) {  // --jit-bench only: the JIT microbenchmarks with this run's options; no game runs
         gxthread_drain();
         jit_bench(g_jit, &g_sys, g_perf);
@@ -982,7 +1012,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
-                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0));  // bit 0 all, bit 1 J3DGD
+                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0) | (hle_thp_enabled() ? 4 : 0));  // bit 0 all, bit 1 J3DGD, bit 2 THP
                 fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_merge() ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)(pica_job_ring() >> 10) : 0u);
@@ -1007,7 +1037,7 @@ static const char* run(const char* path) {
                 fputc('\n', g_perf);
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
-                ++perfRows;
+                g_wdRows = ++perfRows;
                 if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 if (g_pica && pica_take_description()) {
@@ -1039,6 +1069,10 @@ static const char* run(const char* path) {
                 if (g_opt.abVoices && perfRows % AB_SECS == 0) { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_dspVoiceLife; }
                 if (g_opt.abHlegd && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_gd_set_enabled(!hle_gd_enabled());
+                    jit_invalidate_all(g_jit);
+                }
+                if (g_opt.abThp && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    hle_thp_set_enabled(!hle_thp_enabled());
                     jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {
@@ -1112,6 +1146,20 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
                                 (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
+                        static u64 lastThp[3];
+                        if (g_thpStats[0] != lastThp[0] || g_thpStats[2] != lastThp[2])
+                            fprintf(g_perf, "# thp idct 10s: calls %llu, guest instructions %llu, refused %llu\n",
+                                    (unsigned long long)(g_thpStats[0] - lastThp[0]), (unsigned long long)(g_thpStats[1] - lastThp[1]),
+                                    (unsigned long long)(g_thpStats[2] - lastThp[2]));
+                        memcpy(lastThp, g_thpStats, sizeof lastThp);
+                        {  // relay.c: the sockets service restarted after failed requests (the 2DS's address then)
+                            extern u32 g_netResets, g_netIp;
+                            static u32 lastResets;
+                            if (g_netResets != lastResets)
+                                fprintf(g_perf, "# relay network resets so far %lu (2DS ip %08lx at the last failure)\n",
+                                        (unsigned long)g_netResets, (unsigned long)g_netIp);
+                            lastResets = g_netResets;
+                        }
                         {  // the DSP's voices per rendered frame (dsp_hle.c g_dspVoices)
                             extern u64 g_dspVoices[6];
                             extern bool g_dspVoiceLife;
@@ -1413,6 +1461,7 @@ static const char* run(const char* path) {
             tLast = now; cycLast = g_sys.cpu.cycles; fieldsLast = g_fields;
         }
     }
+    g_wdArmed = false;
     if (g_perf) { fclose(g_perf); g_perf = NULL; }
     gxthread_drain();
     if (g_opt.unattended) return result;
