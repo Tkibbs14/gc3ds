@@ -1817,6 +1817,26 @@ static void emit_fallback(Cg* c, u32 inst) {
     rc_after_interp(c);
 }
 
+// `bl` to an SDK paired-single function with a native stand-in (hle_ps.c), called in place: LR as bl sets it, the
+// stand-in on guest state in memory, and the block goes on after the bl (the caller adds the function's instructions
+// to the count). Refused (the FPU off, a GQR or pointer it does not take): leaves for the function, as the bl would.
+static void emit_ps_call(Cg* c, u32 target, u32 d) {
+    Emit* e = &c->e;
+    c->single = 0;  // it writes FPRs in guest state
+    rc_flush(c);
+    Rc clean = rc_clean(&c->rc);
+    load_const(e, R1, c->pc + 4);
+    str_imm(e, R1, RG, OFF_LR);
+    mov_reg(e, R0, RG);
+    load_const(e, R1, d);
+    call(c, (const void*)hle_ps_inline_call);
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    exit_snap(c, C_EQ, true, target, &clean);
+    // The GPRs, CR and XER it never writes: their slots (callee-saved host registers, clean after the flush) stay.
+    // FPRs it may write in guest state: the float cache forgets them.
+    if (!c->inCold) for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
+}
+
 // ---- branches (end the block) ----
 // Taken: to `target` (constant) or, when `indirect`, to the address in r2. Not taken: pc + 4. Uses r0, r3.
 // indStub (OPT_RETSTUB): an indirect branch whose taken side is a plain branch to ST_INDLR / ST_INDCTR (which read the
@@ -3918,6 +3938,21 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 c->count += ran;
                 j->codePages[0] = 1;  // the handler's page: an icbi there drops this block
                 count_op(&j->stats.fallback, inst);
+                j->stats.instrsCompiled += n;
+                continue;
+            }
+        }
+        if ((inst >> 26) == 18 && (inst & 1)) {  // bl to an SDK paired-single function: its stand-in in place (hle_ps.c)
+            s32 li = ((s32)(inst << 6)) >> 6 & ~3;
+            u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li, n = 0, tpa;
+            int d = hle_ps_inline(target, &n);
+            if (d >= 0 && c->count + n < 200 && gk_translate(g, target, false, false, &tpa, false) && tpa + 4 * n <= j->ramSize &&
+                ((tpa + 4 * n - 1) >> 12) < sizeof j->codePages) {
+                emit_ps_call(c, target, (u32)d);
+                c->countExtra += n;  // (Entry.count is a byte: hence the 200)
+                c->count += n;
+                j->codePages[tpa >> 12] = j->codePages[(tpa + 4 * n - 1) >> 12] = 1;  // an icbi there drops this block
+                j->stats.instrsNative++;
                 j->stats.instrsCompiled += n;
                 continue;
             }

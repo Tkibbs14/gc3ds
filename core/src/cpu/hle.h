@@ -43,3 +43,17 @@ void hle_thp_set_enabled(bool on);
 bool hle_thp_enabled(void);
 u32 hle_thp_run(Gekko* g);
 extern u64 g_thpStats[3];  // calls, guest instructions stood in for, calls refused (an address outside MEM1 / the cache)
+// The SDK's paired-single matrix / vector library (hle_ps.c), recognised at any address by its bytes.
+void hle_ps_set_memory(u8* mem1, u32 size, u8* lc);
+void hle_ps_invalidate(u32 pa);
+bool hle_ps_is_hook(u32 pc);
+void hle_ps_set_enabled(bool on);  // --ab ps / --ps off; drop compiled code after a change
+bool hle_ps_enabled(void);
+u32 hle_ps_run(Gekko* g);
+u32 hle_ps_count(void);            // functions in the table
+const char* hle_ps_name(u32 k);
+extern u64 g_psCalls[], g_psRefused;  // calls per function (index hle_ps_count(): all), refused calls
+// The JIT's in-place call (hle_ps.c): the function at target and its instruction count, or -1; then the call itself
+// (LR set by the caller): 1 when the stand-in ran, 0 when it refused.
+int hle_ps_inline(u32 target, u32* n);
+u32 hle_ps_inline_call(Gekko* g, u32 d);

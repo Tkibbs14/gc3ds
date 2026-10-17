@@ -402,6 +402,25 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   its hook block), Huffman decoding 10.3% (__THPHuffDecodeDCTCompY 7.2%). The native IDCT is ~9,700 cycles a call
   (~23k calls/s at 28% of ~800 M cycles): only ~1.6x the guest code.
 
+### The SDK's paired-single maths library as stand-ins called in place (jobs 312-317, hle_ps.c)
+
+- **What:** 14 PSMTX / PSVEC functions (Concat, Copy, MultVec, MultVecSR, Identity, ScaleApply, TransApply, VECAdd,
+  Subtract, Scale, DotProduct, CrossProduct, SquareMag, SquareDistance) as C generated from main.dol's own code
+  (core/tools/ps_translate.py), recognised at any address by a hash of their bytes. TP calls them ~75k times a
+  second in the cutscene and ~230k in the later stretch (PSVECAdd ~40k/s there).
+- **TP runs with FPSCR[NI]** (non-IEEE: denormals flush); the first build refused every call for it (job 312 void).
+- **PC HLE_CHECK:** 5,006,874 calls (fields 900-2100 and 6000-6300), **0 differed**.
+- **As entry hooks they lose (job 313, `--ab ps`):** later stretch **14% slower** (phase pairs, resolved), cutscene
+  -3%; job 314 (all on): later stretch 13.22% against 15.1-15.5% without. Each call left compiled code, went through
+  the generic stand-in dispatch and came back through the indirect table: more than the 8-51 instructions it saves.
+- **Called in place:** the JIT compiles `bl` to one of them as a direct C call inside the caller's block (LR set as bl
+  sets it; refused: the block leaves for the function as the bl would), adding the function's instruction count
+  statically (as the inline sc handler does); on the 3DS the functions are no longer entry hooks. Job 315: within noise.
+  Job 316 (only f1 and f14-f31 written back, the caller's GPR cache kept across the call): later +2.1% (+-6, within
+  noise). **Plain run (job 317) against plain runs without them (299, 300, 305, 306, 309, 311): cutscene 27.4-27.9 ->
+  28.61%, later stretch 15.1-15.5 -> 16.20%, movie 11.73 (314) -> 11.95%.** JIT fuzzer gate: 0 failures (the known
+  seed-11 stfs denormal gap aside).
+
 ### DSP voices and JAudio (jobs 297-298)
 
 - **Census (job 297):** the mail-level Zelda microcode never marked a voice done: **~30 voices enabled and not done in
