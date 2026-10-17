@@ -567,6 +567,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   fuzzer (new sequences: lis + stores in and just past the pipe's 32 bytes, with the pipe's buffer set): 0 fails at
   masks 70259 and 4723, ~2,200 known-address pipe stores compiled per seed. Default on (`--pipek off` to compare).
 
+- **The GX thread is now the limit in gameplay (job 360, after OPT_PIPEK):** busy 88.6%; vertex work (gxvtx) 21.6%,
+  of which vfast_prepare 13.5%; state work (gxstate) 20.6% with the split's timers (17.1% without). **State split, ms
+  per second:** the previous batch's draw call (flush_batch) **57**, update_tev **28**, the batch key 8.5, apply_frag 5,
+  light uniforms 4, split_early 3.4, texture binds 3; textures (gxtex) 5.6%. 88% of ~7,600 draws/s start a new batch
+  (~6,700/s), so flush_batch is ~8.5 us a batch, nearly all the citro3d draw call (vwait 1.8%): its state upload
+  (combiners, fragment state, vertex-shader uniforms such as the matrix palette) and the draw. gcbench measured a bare
+  C3D_DrawArrays at 3.25 us of CPU against 0.74 us for a raw register sequence (HANDOFF item 6). **Next:** what the
+  draw call uploads per batch (uniform counts, dirty flags), then raw command-buffer writes for the per-batch state
+  that changes, and longer batches; the vertex worker on core 3 is only ~16% busy.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed
