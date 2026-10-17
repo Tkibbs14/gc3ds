@@ -33,3 +33,13 @@ void hle_gd_set_enabled(bool on);
 bool hle_gd_enabled(void);
 u32 hle_gd_run(Gekko* g);
 extern u64 g_hleGdRuns, g_hleGdInsns;
+// The THP movie decoder's inverse DCTs (hle_thp.c), recognised wherever its module is loaded; called by the functions
+// above. lc: the locked cache's 16 KB (its output and coefficients live there).
+void hle_thp_set_memory(u8* mem1, u32 size, u8* lc);
+void hle_thp_invalidate(u32 pa);
+bool hle_thp_is_hook(u32 pc);
+// On (default) or off (--ab thp; drop compiled code after a change).
+void hle_thp_set_enabled(bool on);
+bool hle_thp_enabled(void);
+u32 hle_thp_run(Gekko* g);
+extern u64 g_thpStats[3];  // calls, guest instructions stood in for, calls refused (an address outside MEM1 / the cache)

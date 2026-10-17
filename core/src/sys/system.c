@@ -302,6 +302,7 @@ bool sys_init(System* s) {
     s->dsp.aram = calloc(1, 16u * 1024 * 1024);
     if (!s->mem1 || !s->lockedCache || !s->dsp.aram) return false;
     hle_set_memory(s->mem1, MEM1_SIZE);
+    hle_thp_set_memory(s->mem1, MEM1_SIZE, s->lockedCache);
     aot_set_memory(s->mem1);
     s->bus = (GekkoBus){
         .ctx = s,
