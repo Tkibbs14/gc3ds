@@ -36,6 +36,9 @@ static System g_sys;
 static char g_files[MAX_FILES][320];
 static int g_nFiles;
 static u32 g_fields;
+// Live input from relay commands (apply_cmd: "press A 6", "stick 128 255 60", "save sdmc:/gc3ds/states/x.state"), so
+// a run can be steered from the PC a few fields at a time: buttons and the main stick held until field `until`.
+static struct { u16 bits; u8 sx, sy; bool stick; u32 until, stickUntil, saveAt; char savePath[96]; } g_live;
 static Jit* g_jit;
 static bool g_useJit = true;
 static bool g_pica;  // GX draws on the PICA200 (false: software renderer)
@@ -270,7 +273,7 @@ static void present_field(System* s, const GXPresent* p) {
 
 // 3DS controls -> GameCube pad: A/B/X/Y as labelled, L/R -> L/R, ZR -> Z, Start, D-pad, Circle Pad -> main stick,
 // C-Stick -> C stick.
-static u16 scripted_buttons(void);  // --press (after RunOpts)
+static u32 scripted_buttons(void);  // --press (after RunOpts): pad bits, and the main stick above them
 
 static void update_input(System* s) {
     hidScanInput();
@@ -288,7 +291,8 @@ static void update_input(System* s) {
     if (k & KEY_X) b |= 0x0400;
     if (k & KEY_Y) b |= 0x0800;
     if (k & KEY_START) b |= 0x1000;
-    b |= scripted_buttons();
+    u32 sb = scripted_buttons();
+    b |= (u16)sb;
     s->si.buttons[0] = b;
     circlePosition cp, cs;
     hidCircleRead(&cp);
@@ -296,6 +300,11 @@ static void update_input(System* s) {
     u8* st = s->si.stick[0];
     st[0] = clamp8(128 + cp.dx * 100 / 156);
     st[1] = clamp8(128 + cp.dy * 100 / 156);
+    if (sb & 0xF0000u) {  // --press SLEFT / SRIGHT / SUP / SDOWN: the main stick to that edge (as gcemu's)
+        st[0] = sb & 0x10000u ? 0x10 : sb & 0x20000u ? 0xF0 : 0x80;
+        st[1] = sb & 0x40000u ? 0xF0 : sb & 0x80000u ? 0x10 : 0x80;
+    }
+    if (g_live.stick && g_fields <= g_live.stickUntil) { st[0] = g_live.sx; st[1] = g_live.sy; }
     st[2] = clamp8(128 + cs.dx * 100 / 156);
     st[3] = clamp8(128 + cs.dy * 100 / 156);
     st[4] = (k & KEY_L) ? 0xFF : 0;
@@ -369,7 +378,7 @@ typedef struct {
     bool slowInline;     // --slow inline|stub: memory slow paths per site (old) or through the shared stubs
     int pmuSplit;        // --pmu-split on: performance counters split between compiled code and the rest (# pmu split); hle: the ShdwDraw stand-in; fast: its fast cells; empty: a bracket around nothing there (the bracket's own cost)
     bool profile;        // --profile on: blocks store their start for the sampler (# hot guest code); one store per block
-    struct { u32 from, to; u16 bits; } press[16];  // --press A@200-206,START@900-905: buttons held over field ranges
+    struct { u32 from, to; u32 bits; } press[48];  // --press A@200-206,START@900-905: buttons held over field ranges
     u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
@@ -426,8 +435,8 @@ typedef struct {
 static RunOpts g_opt;
 static bool g_relayoutOn;  // the relayout arm (--relayout, --ab relayout)
 
-static u16 scripted_buttons(void) {
-    u16 b = 0;
+static u32 scripted_buttons(void) {
+    u32 b = g_fields <= g_live.until ? g_live.bits : 0;
     for (u32 i = 0; i < g_opt.nPress; i++)
         if (g_fields >= g_opt.press[i].from && g_fields <= g_opt.press[i].to) b |= g_opt.press[i].bits;
     return b;
@@ -526,15 +535,16 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--aotabi")) o->aotAbi = atoi(v);
         else if (!strcmp(a, "--aotpipe")) o->aotPipe = atoi(v);
         else if (!strcmp(a, "--press")) {
-            static const struct { const char* name; u16 bit; } kButtons[] = {
+            static const struct { const char* name; u32 bit; } kButtons[] = {
                 { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
                 { "L", 0x0040 }, { "A", 0x0100 }, { "B", 0x0200 }, { "X", 0x0400 }, { "Y", 0x0800 }, { "START", 0x1000 },
+                { "SLEFT", 0x10000 }, { "SRIGHT", 0x20000 }, { "SUP", 0x40000 }, { "SDOWN", 0x80000 },
             };
             for (const char* q = v; *q && o->nPress < sizeof o->press / sizeof o->press[0];) {
                 char name[16];
                 unsigned from, to;
                 int k = 0;
-                u16 bit = 0;
+                u32 bit = 0;
                 if (sscanf(q, "%15[A-Za-z]@%u-%u%n", name, &from, &to, &k) != 3) { snprintf(err, n, "--press BUTTON@from-to,..."); return false; }
                 for (size_t b = 0; b < sizeof kButtons / sizeof kButtons[0]; b++) if (!strcmp(name, kButtons[b].name)) bit = kButtons[b].bit;
                 if (!bit) { snprintf(err, n, "--press: unknown button %s", name); return false; }
@@ -616,7 +626,23 @@ static u32 g_dlOnSecs;   // seconds with the display-list cache on since the las
 static void apply_cmd(const char* cmd, double realS, double emuS) {
     char name[24] = "", val[24] = "";
     bool ok = true;
+    unsigned a1 = 0, a2 = 0, a3 = 0;
+    char word[16] = "";
     if (!strcmp(cmd, "shot")) perf_shot(realS, emuS);
+    else if (sscanf(cmd, "press %15s %u", word, &a1) >= 1) {  // a button for a1 fields (default 6)
+        static const struct { const char* name; u16 bit; } kB[] = {
+            { "LEFT", 0x0001 }, { "RIGHT", 0x0002 }, { "DOWN", 0x0004 }, { "UP", 0x0008 }, { "Z", 0x0010 }, { "R", 0x0020 },
+            { "L", 0x0040 }, { "A", 0x0100 }, { "B", 0x0200 }, { "X", 0x0400 }, { "Y", 0x0800 }, { "START", 0x1000 },
+        };
+        u16 bit = 0;
+        for (size_t i = 0; i < sizeof kB / sizeof kB[0]; i++) if (!strcmp(word, kB[i].name)) bit = kB[i].bit;
+        ok = bit != 0;
+        if (ok) { g_live.bits = bit; g_live.until = g_fields + (a1 ? a1 : 6); }
+    } else if (sscanf(cmd, "stick %u %u %u", &a1, &a2, &a3) == 3) {  // main stick x y (0-255, 128 centre) for a3 fields
+        g_live.sx = (u8)a1; g_live.sy = (u8)a2; g_live.stick = true; g_live.stickUntil = g_fields + a3;
+    } else if (sscanf(cmd, "save %95s", g_live.savePath) == 1) {
+        g_live.saveAt = g_sys.vi.field + 1;
+    }
     else if (!strcmp(cmd, "stop")) g_stopReq = true;
     else if (!strncmp(cmd, "tev", 3) && g_pica) pica_describe(cmd[3] ? (u32)strtoul(cmd + 3, NULL, 10) : 6);
     else if (sscanf(cmd, "set %23s %23s", name, val) == 2) {
@@ -941,6 +967,12 @@ static const char* run(const char* path) {
             if (g_perf) fprintf(g_perf, "# machine stopped at pc=%08x\n", (unsigned)g_sys.cpu.pc);
             result = "stopped";
             break;
+        }
+        if (g_live.saveAt && g_sys.vi.field >= g_live.saveAt) {  // a live "save" command
+            gxthread_drain();
+            bool ok = sys_save_state(&g_sys, g_live.savePath);
+            g_live.saveAt = 0;
+            if (g_perf) fprintf(g_perf, "# save state %s at field %lu: %s\n", g_live.savePath, (unsigned long)g_sys.vi.field, ok ? "ok" : "FAILED");
         }
         if (g_opt.saveAt && !saved && g_sys.vi.field >= g_opt.saveAt) {
             gxthread_drain();  // GX state must be complete before it is written
