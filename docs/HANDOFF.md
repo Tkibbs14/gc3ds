@@ -1,5 +1,16 @@
 # gc3ds handoff (2026-10-10)
 
+> **▶ Current state (2026-10-17).** The sections below are the 2026-10-10 snapshot and the running log after it
+> (newest at the end); the newest numbers are in [research/MEASUREMENTS.md](research/MEASUREMENTS.md).
+> - The repository is **public** now.
+> - Twilight Princess plays into gameplay: a 2DS state with Link in Ordon (`sdmc:/gc3ds/states/tp_ordon.state`) is
+>   the benchmark (a stick walk, AGENTS.md "Measuring"): ~22% speed. The older `tp850` state is the title / attract
+>   sequence.
+> - The GX thread (~88% busy in gameplay) is the next limit; core 0 is ~98%.
+> - The PC input sequence below has drifted: with its presses up to field 2636 the game is still at the memory card
+>   prompt at 3250; adding `A@3410` (no memory card), `SLEFT@3660`, `A@3700` (continue without saving), `START@4000`,
+>   `A@4030` (name) and `A@4310` (horse name) reaches the opening by field ~4800 (2026-10-17, the current PC build).
+
 Start here in a new session. Measured facts are in [FINDINGS.md](FINDINGS.md), hardware references in
 [ARCHITECTURE.md](ARCHITECTURE.md), and the next big piece of work in [GPU_BACKEND_PLAN.md](GPU_BACKEND_PLAN.md).
 The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the owner says games run well.

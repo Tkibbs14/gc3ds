@@ -53,6 +53,14 @@ bash core/tools/relay.sh frames <job>              # the job's top-screen frames
 `run` / `queue` upload the current `gc3ds.3dsx` if the relay does not have it (builds are named by the first 16 hex
 digits of their sha256) and tie the job to it; `queue` refuses to queue when the upload failed.
 
+Live commands (`cmd`, taken within ~2 s): `shot` (a top-screen frame, then `frames`), `stop`, `set NAME VALUE` (opt,
+sched, merge, vtrim, dlcache, shapes, ...), and for steering a game from the PC: `press BUTTON N` (A, B, X, Y, Z, L, R,
+START, UP, DOWN, LEFT, RIGHT, held N fields, default 6), `stick X Y N` (the main stick, 0-255 with 128 the centre, held
+N fields) and `save sdmc:/gc3ds/states/NAME.state` (a save state at the next field). Menus answer the stick, not the
+d-pad. That is how gameplay benchmark states are made: queue a long run, then press / shot / look until the game is
+where you want it, and save. `--press` takes the same buttons plus `SLEFT` / `SRIGHT` / `SUP` / `SDOWN` (the stick to
+an edge) for scripted runs; its fields count from the run's start.
+
 ## On the console
 
 - It polls every 10 s and runs jobs one after another.

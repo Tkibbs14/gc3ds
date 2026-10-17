@@ -6,7 +6,7 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs its heavy scenes at ~20% of full speed.
+test. Today it runs Ordon gameplay at ~22% of full speed (the intro cutscene ~30%, the THP movie ~12%).
 
 ## Rules
 
@@ -20,6 +20,8 @@ test. Today it runs its heavy scenes at ~20% of full speed.
 3. **Measure, do not guess.** Every performance change is judged by an A/B *within one run* on real hardware
    (`--ab NAME`, see "Measuring"). Runs of the same build differ by ~5%, so comparisons across runs are hints only.
    Report the mean and standard error, and split long runs at the scene change (`real_s` 300 for the tp850 state).
+   **Judge speed on gameplay** (the Ordon walk, "Measuring"): the tp850 state is the title / attract sequence, and work
+   that only helps it (its static title-screen shadow) does not help play.
 4. **Keep the evidence.** Every idea with redesign potential goes into `docs/research/REDESIGN_CANDIDATES.md` with its
    evidence, cost, status (parked / next / built / rejected) and a "re-evaluate when" trigger. Never delete an entry;
    update its status. A rejected idea keeps the measurement that rejected it, so nobody re-runs it blind.
@@ -31,7 +33,7 @@ test. Today it runs its heavy scenes at ~20% of full speed.
 
 | Path | What |
 |---|---|
-| `core/src/cpu/` | Gekko interpreter (`gekko_int.c` integer, `gekko_fpu.c` float and paired singles, `gekko_softfp.c` exact soft float, `gekko_mem.c` MMU/BATs), `gekko_regs.c` (registers each instruction reads and writes, fuzzed), `hle_tp.c` (stand-ins, off by default) |
+| `core/src/cpu/` | Gekko interpreter (`gekko_int.c` integer, `gekko_fpu.c` float and paired singles, `gekko_softfp.c` exact soft float, `gekko_mem.c` MMU/BATs), `gekko_regs.c` (registers each instruction reads and writes, fuzzed), `hle_tp.c` / `hle_gd.c` / `hle_ps.c` / `hle_thp.c` (native stand-ins for hot guest functions, on by default, checked with `HLE_CHECK=1` on the PC) |
 | `core/src/jit/jit.c` | The JIT: ARMv6K code generation, register cache (`Rc`, r4-r8), float lanes (`OPT_FCACHE`, s16-s31), check hoisting (`OPT_HOIST`), known-single stores (`OPT_KSTORE`), shared memory and float stubs, block linking and traces, cold code, exits |
 | `core/src/jit/arm_emit.h` | ARM and VFPv2 instruction encoders |
 | `core/src/sys/`, `core/src/hw/` | System bus, interrupts, VI, DI (disc), DSP/ARAM (`dsp_hle.c`), EXI, SI |
@@ -93,6 +95,10 @@ bash core/tools/relay.sh log <job>
 python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait_pct,valloc_pct,vwork_pct
 ```
 
+- **Gameplay benchmark:** `--state sdmc:/gc3ds/states/tp_ordon.state --seconds 300 --press` a square walk of the main
+  stick (`SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519`, repeated every 480 fields; `--press` counts fields
+  from the run's start). New gameplay states are made by steering a run live: `relay.sh cmd JOB "press A 6"`,
+  `"stick X Y N"`, `"save sdmc:/gc3ds/states/NAME.state"`, with `"shot"` and `relay.sh frames JOB` to see where it is.
 - The A/B switch flips every 20 s (`AB_SECS`); each row of perf.csv records which half it is in. Read "speed" and
   **core 0's own speed** (`speed / (1 - gxwait_pct)`): while the GX side limits the game, a faster core 0 only turns
   into waiting.
@@ -106,20 +112,25 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   code can lose on the console while winning in the model (float lanes, job 132). Report hot words per guest
   instruction (the `JIT: kept blocks` line) next to the model.
 
-## Where things stand (read the end of docs/HANDOFF.md for the latest)
+## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **Bottleneck:** core 0 (~23% own speed in the tp850 cutscene, ~12% later) and the GX side (~20-21%) are close; with
-  half the vertex work gone (frame skip), core 0 is the wall. Core 0's cost is broad: ~33 cycles per guest
-  instruction, no hot function, memory instructions ~60% of modelled cycles, load latency 55% of stalls.
+- **Gameplay (Ordon walk, October 2026):** ~22% speed. Core 0 ~98% busy and the GX thread ~88%: **the GX thread is the
+  next limit**. Its state work per draw is the largest part (the citro3d draw call with its state upload, ~8.5 us a
+  batch, and ~88% of draws start a new batch; combiner setup next), then vertex preparation. The vertex worker on
+  core 3 is ~16% busy. Core 0's profile is flat; the GX SDK is ~30% of it.
 - **Defaults that measured as gains:** draw merging (+24%), check hoisting (core 0 +5%), the job-ring and TEV work in
-  HANDOFF, matrix indices apart from vertex records (VIx).
+  HANDOFF, matrix indices apart from vertex records (VIx), the native stand-ins (shadow scan with a leaf memo, the
+  paired-single library, J3D display-list writers, THP decode), PE register reads that no longer wait for the GX thread
+  (cutscene +3.2%), and pipe stores at known addresses (`OPT_PIPEK`, gameplay +7.0%).
 - **Built, off, measured without a clear gain:** display-list vertex cache, float lanes, known-single stores (on; +1%),
-  frame skip (+10%, visual glitches; a candidate user option).
+  frame skip (+10%, visual glitches; a candidate user option), byte-swapped guest RAM (`GC_SWAPRAM`, neutral).
 - **Rejected with measurements:** second vertex worker on core 1 (evicts core 0's L2), shared-index fast path (TP: <1%
-  of vertices), CPU display-list cache as a speed lever (RAM latency), matrix-chain HLE (flat profile). See
+  of vertices), CPU display-list cache as a speed lever (RAM latency), matrix-chain HLE (flat profile), AOT translation
+  (slower on the console), translating call-heavy small functions (entry and exit cost more than the JIT's code). See
   REDESIGN_CANDIDATES for the numbers.
-- **Open directions:** less hot code per guest instruction; cheaper memory instructions (psq GQR assumptions, constant
-  addresses, fewer first-access checks); longer blocks; GPU-resident vertex data for repeated display lists (C1);
+- **Open directions:** first the GX thread: less state uploaded per draw (raw command-buffer writes for only what
+  changed, HANDOFF item 6), longer batches, and work moved to the idle vertex worker; then core 0: less hot code per
+  guest instruction; cheaper memory instructions (psq GQR assumptions, fewer first-access checks); longer blocks; GPU-resident vertex data for repeated display lists (C1);
   texgen and normal transforms in the PICA shader (C6); measuring the hardware itself further (I-cache, L2 and RAM
   latencies, cross-core effects) so the cycle model predicts the console.
 

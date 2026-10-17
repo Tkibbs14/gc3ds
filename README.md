@@ -5,24 +5,24 @@ actually do: a Gekko-to-ARM11 JIT on one core, the GameCube's graphics pipeline 
 PICA200 GPU doing the drawing. Every design decision here was measured on a real New 2DS XL.
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
-boots, plays its title, its THP movies and its opening cutscene, at about **20% of full speed in its heavy scenes** and
-~12% in the heaviest stretch measured. Most of the work so far went into finding out where the time goes and what does
-and does not help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the
-repository today.
+boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
+On a New 2DS XL it runs at about **22% of full speed in Ordon gameplay**, ~30% in the intro cutscene and ~12% in the
+THP movie (October 2026). Most of the work so far went into finding out where the time goes and what does and does not
+help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
 
 **Bring your own games.** gc3ds contains no game data, BIOS or firmware, and never will. Use dumps of discs you own.
 
-## Where the time goes (New 2DS XL, Twilight Princess's opening cutscene)
+## Where the time goes (New 2DS XL, Twilight Princess gameplay in Ordon)
 
-- **Core 0 (the JIT)** alone would run the cutscene at ~23% and the heaviest stretch at ~12%. It spends ~33 cycles per
-  emulated instruction while not waiting: ~13 executed instructions, ~10 instruction-fetch stall cycles, ~8 data stall
-  cycles. There is no hot spot: the profile is flat (no Twilight Princess function above 0.5% of core 0).
-- **The GX side** (the command FIFO on core 2, a vertex worker on core 3) limits the cutscene at ~20%: gathering vertex
-  attributes from emulated RAM is memory-latency bound (~1.35 µs a vertex). Skipping every other frame's vertex work
-  gives +10%, and then core 0 is the wall.
-- Full speed would need ~9 host cycles per emulated instruction on core 0 and ~5x the vertex throughput. See
-  `docs/research/PERF_LEVERS.md` and `docs/research/REDESIGN_CANDIDATES.md` for what has been tried, measured, kept or
-  rejected, and what is still open.
+- **Both sides are near their limit.** Core 0 (the emulated CPU, JIT) is ~98% busy and the GX thread (core 2) ~88%;
+  the vertex worker on core 3 is ~16% busy.
+- **Core 0** is bound by instruction fetch and memory waits, not by any one guest function: the profile is flat. The
+  GameCube's graphics library (the game building its command stream) is ~30% of it, the 3D model library ~13%.
+  Compiling the game's stores to the graphics pipe straight into appends gained 7%; levers that only cut executed
+  instructions (byte-swapped guest RAM, float and compare tricks) measured 0-5%.
+- **The GX thread** now limits gameplay: per draw, state work (citro3d's draw call and state upload, combiner setup)
+  and vertex preparation; nearly every draw starts a new GPU batch.
+- Full speed is still ~4.5x away. `docs/research/MEASUREMENTS.md` holds every measurement, and `docs/research/REDESIGN_CANDIDATES.md` every idea that was tried, kept or rejected, with its numbers.
 
 ## How it works
 
@@ -65,7 +65,10 @@ bash core/tools/vfast_check.sh 2              # fast vertex path against the ref
 ## Measuring on a console
 
 `docs/REMOTE_RUNS.md`: queue builds and A/B runs to a console on any network through a relay you run yourself
-(`tools/relay-server/`), and read the results with `core/tools/perf_heavy.py`.
+(`tools/relay-server/`), and read the results with `core/tools/perf_heavy.py`. A running job can be steered live
+(`relay.sh cmd JOB "press A 6"`, `"stick X Y N"`, `"save PATH"`, `"shot"`; `relay.sh frames JOB` fetches the
+screenshots), which is how gameplay save states for benchmarks are made; `--press` scripts buttons and the main stick
+(`SLEFT` / `SRIGHT` / `SUP` / `SDOWN`) for repeatable gameplay runs.
 
 ## Documentation
 
@@ -73,6 +76,7 @@ bash core/tools/vfast_check.sh 2              # fast vertex path against the ref
 |---|---|
 | `AGENTS.md` | How to work on this repository (people and coding agents): rules, gates, how to measure, where things stand |
 | `docs/HANDOFF.md` | The running log of what was built, measured and learned, newest at the end |
+| `docs/research/MEASUREMENTS.md` | Every measurement, with its job, conditions and what it informs |
 | `docs/research/PERF_LEVERS.md`, `docs/research/REDESIGN_CANDIDATES.md` | Ranked levers; every idea with its evidence and status |
 | `docs/OPT_JIT_PLAN.md`, `docs/REGION_JIT_PLAN.md`, `docs/DL_CACHE_PLAN.md`, `docs/GPU_BACKEND_PLAN.md` | Designs |
 | `docs/FINDINGS.md`, `docs/research/GPU_GUIDANCE.md`, `docs/research/PICA200.md`, `docs/ARCHITECTURE.md` | Hardware facts measured on a New 2DS XL, and references |
