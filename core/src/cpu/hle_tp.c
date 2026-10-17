@@ -72,7 +72,7 @@ static bool known(void) {
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
     if (!g_on) return false;
-    if (pc != PC_ENTRY && pc != PC_NEXT) return hle_gd_is_hook(pc) || hle_thp_is_hook(pc) || hle_ps_is_hook(pc);
+    if (pc != PC_ENTRY && pc != PC_NEXT) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
     return known();
 }
 
@@ -470,9 +470,9 @@ static u32 checked(Gekko* g, u32 budget) {
 u32 hle_run(Gekko* g, u32 budget) {
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
-        u32 n = hle_gd_run(g);
+        u32 n = hle_ps_run(g);  // (first: on the PC it checks the generated GD writers before hle_gd.c's own)
+        if (!n) n = hle_gd_run(g);
         if (!n) n = hle_thp_run(g);
-        if (!n) n = hle_ps_run(g);
         if (n) { g_hleRuns++; g_hleInsns += n; }
         return n;
     }

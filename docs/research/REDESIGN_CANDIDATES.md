@@ -258,3 +258,26 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   (~10.8 us). The descent was not where the call's cost sits: job 288 puts ~25 of ~420 ARM instructions a cell per
   level, and the store-buffer drains and head work dominate.
 - **Re-evaluate when:** a `--pmu-split hle` profile shows the descent's levels as a real share of the call.
+
+## C20. __save_gpr / __restore_gpr as in-place stand-ins
+
+- **Status:** rejected 2026-10-17 (jobs 321-326); exact on the PC.
+- **What:** the CodeWarrior runtime's register save and restore (2.5% of the cutscene, job 311), entered at each
+  `_savegpr_N`, as C called in place of `bl` (ps_translate.py `__save_gpr.dis@K`).
+- **Result:** a small loss (job 322 with them: cutscene 28.29%, later 15.70%, against 28.98 / 16.35 without, job
+  318). The call writes back every dirty cached GPR first, and after a restore the caller forgets them all: more than
+  the 1-18 word moves saved.
+- **Re-evaluate when:** the JIT can pass the cached registers to a stand-in (or inline the moves itself: these are
+  plain stores and loads it could emit in place, without a call).
+
+## C21. GX register setters as in-place stand-ins (logged mode)
+
+- **Status:** rejected 2026-10-17 (jobs 321-326); exact on the PC.
+- **What:** GXSetArray, GXSetTevOrder, __GXSetMatrixIndex, the GXSetTev* family, GXSetChanCtrl, GXLoadPosMtxImm,
+  GXSetTevIndirect (~9% of the cutscene together, job 311): computed addresses into __GXData, so stores go through a
+  log applied at the end.
+- **Result:** neutral (job 326 against 322). These are 17-100 instructions of integer work and stores; the call, the
+  register flush and the log cost what the JIT's code did. The J3DGD display-list writers in this mode were a large loss
+  (job 323: cutscene 21.8%): quadratic log reads, one pointer reload per byte.
+- **Re-evaluate when:** the translator can prove a computed address stays within a range checked at entry (e.g.
+  __GXData + small index), so these run without the log; or when calls get cheaper (C20).

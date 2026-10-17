@@ -436,6 +436,27 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   signals): cutscene +3.6 +- 10.8%, later -3.0 +- 5.7% (phase pairs): no effect; reverted. The handler's share is
   something else (it also switches OS contexts twice).
 
+### More SDK functions in place: branches, computed addresses, GPR helpers (jobs 320-327): not kept
+
+- **Translator v3 (ps_translate.py):** forward branches (CR fields, XER[CA], LR as C locals), the function's own stack
+  frame as a local array, `__save_gpr` / `__restore_gpr` entered at each `_savegpr_N`, and a logged mode for computed
+  addresses (stores wait in a log, applied at the end; out of range refuses with nothing applied). Compiled code takes
+  the instruction count the stand-in reports off RDC (branches make it vary). HLE_CHECK now records every stand-in store
+  and compares it with the interpreter (not only near the arguments): 452,461 calls, 0 differed. psq_st stores a
+  single-denormal value as signed zero, as the interpreter does (the earlier stand-ins stored the bits).
+- **Added (cutscene share, job 311):** the GPR helpers (2.5%), GXSetArray, GXSetTevOrder, __GXSetMatrixIndex, the
+  GXSetTev* family, GXSetChanCtrl, GXLoadPosMtxImm, GXSetTevIndirect, the J3DGD light and texture-matrix writers.
+- **Job 320 slower than 318** (28.98 -> 28.03%); the recognition table held 32 functions, so most of the new ones were
+  not even used. With room for them (jobs 321-325, `--psoff` per group): **cutscene 21.8%**, all of it in
+  J3DLightObj::load (38.5% of samples, job 325, `--profile on`): the J3DGD writers in logged mode reload the display
+  list's write pointer for every byte, and each load scanned a log growing by two entries a byte (quadratic).
+- **Without them (job 326, J3DGD writers dropped, the log's newest exact store returned first):** cutscene 28.28%,
+  later 15.76%: the same as without the GX setters (job 322: 28.29 / 15.70) and below the 18 functions alone (job 318:
+  28.98 / 16.35). The GX setters are neutral, the GPR helpers a small loss (the call flushes every cached GPR, and the
+  restore drops them all). Back to the 18 functions; the translator keeps the new forms (C20, C21).
+- Refusals (job 326, per 10 s): GXLoadLightObjImm ~17k, GXLoadPosMtxImm ~8k, PSMTXMultVec ~660: FP functions called
+  with the FPU off (the OS's lazy FPU switch), where the guest's exception must run: correct, and rare enough.
+
 ### DSP voices and JAudio (jobs 297-298)
 
 - **Census (job 297):** the mail-level Zelda microcode never marked a voice done: **~30 voices enabled and not done in

@@ -406,6 +406,7 @@ typedef struct {
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool noThp;               // --thp off: the THP stand-ins never recognised
+    char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
     bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
@@ -472,6 +473,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
+        else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
@@ -890,6 +892,7 @@ static const char* run(const char* path) {
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
+        if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         { extern bool g_dspVoiceLife; g_dspVoiceLife = !g_opt.noVoices && !g_opt.abVoices; }  // --ab voices starts off
         jit_set_traces(g_jit, g_opt.traces);
@@ -1175,15 +1178,25 @@ static const char* run(const char* path) {
                                     (unsigned long long)(g_thpStats[2] - lastThp[2]));
                         memcpy(lastThp, g_thpStats, sizeof lastThp);
                         {  // hle_ps.c: the SDK matrix / vector stand-ins, calls per function
-                            static u64 lastPs[64], lastPsRef;
+                            static u64 lastPs[256], lastPsRef;
                             u32 nd = hle_ps_count();
-                            if (nd < 63) {
-                                char b[1024];
+                            if (nd < 255) {
+                                char b[3072];
                                 int o = snprintf(b, sizeof b, "# ps library 10s: calls %llu, refused %llu;",
                                                  (unsigned long long)(g_psCalls[nd] - lastPs[nd]), (unsigned long long)(g_psRefused - lastPsRef));
                                 for (u32 k = 0; k < nd && o < (int)sizeof b - 48; k++)
                                     if (g_psCalls[k] != lastPs[k]) o += snprintf(b + o, sizeof b - o, " %s %llu", hle_ps_name(k), (unsigned long long)(g_psCalls[k] - lastPs[k]));
                                 fprintf(g_perf, "%s\n", b);
+                                {  // refusals and pipe stops per function (each costs a block exit)
+                                    static u64 lastRef[256], lastStop[256];
+                                    o = snprintf(b, sizeof b, "# ps library refused / stopped 10s:");
+                                    for (u32 k = 0; k < nd && o < (int)sizeof b - 64; k++)
+                                        if (g_psRefusedBy[k] != lastRef[k] || g_psStops[k] != lastStop[k])
+                                            o += snprintf(b + o, sizeof b - o, " %s %llu/%llu", hle_ps_name(k),
+                                                          (unsigned long long)(g_psRefusedBy[k] - lastRef[k]), (unsigned long long)(g_psStops[k] - lastStop[k]));
+                                    fprintf(g_perf, "%s\n", b);
+                                    for (u32 k = 0; k < nd; k++) { lastRef[k] = g_psRefusedBy[k]; lastStop[k] = g_psStops[k]; }
+                                }
                                 for (u32 k = 0; k <= nd; k++) lastPs[k] = g_psCalls[k];
                                 lastPsRef = g_psRefused;
                             }

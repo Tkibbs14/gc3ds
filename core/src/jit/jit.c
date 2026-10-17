@@ -1820,7 +1820,10 @@ static void emit_fallback(Cg* c, u32 inst) {
 // `bl` to an SDK paired-single function with a native stand-in (hle_ps.c), called in place: LR as bl sets it, the
 // stand-in on guest state in memory, and the block goes on after the bl (the caller adds the function's instructions
 // to the count). Refused (the FPU off, a GQR or pointer it does not take): leaves for the function, as the bl would.
-static void emit_ps_call(Cg* c, u32 target, u32 d) {
+// The function's instructions come off RDC as it reports them (its branches make the count vary). Bit 31 of the result:
+// its gather-pipe bytes made the GP ask the CPU to stop: leave after it (at the return address), as compiled pipe
+// stores do (stop_tail).
+static void emit_ps_call(Cg* c, u32 target, u32 d, bool gprs) {
     Emit* e = &c->e;
     c->single = 0;  // it writes FPRs in guest state
     rc_flush(c);
@@ -1832,15 +1835,14 @@ static void emit_ps_call(Cg* c, u32 target, u32 d) {
     call(c, (const void*)hle_ps_inline_call);
     dp_imm(e, CMP, 1, 0, R0, 0);
     exit_snap(c, C_EQ, true, target, &clean);
-    // The GPRs, CR and XER it never writes: their slots (callee-saved host registers, clean after the flush) stay.
-    // FPRs it may write in guest state: the float cache forgets them.
-    if (!c->inCold) for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
-}
-// After the call's instructions are counted (emit_ps_call's caller): 2 = its gather-pipe bytes made the GP ask the CPU
-// to stop: leave after it (at the return address), as compiled pipe stores do (stop_tail).
-static void emit_ps_stop(Cg* c) {
-    dp_imm(&c->e, CMP, 1, 0, R0, 2);
-    exit_snap(c, C_EQ, true, c->pc + 4, NULL);
+    dp_imm(e, BIC, 0, R1, R0, IMM(0x80000000u));
+    dp_reg(e, SUB, 0, RDC, RDC, R1);
+    // The GPRs, CR and XER the common ones never write: their slots (callee-saved host registers, clean after the
+    // flush) stay. FPRs it may write in guest state: the float cache forgets them; GPRs too after __restore_gpr's kind.
+    if (gprs) rc_after_interp(c);
+    else if (!c->inCold) for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
+    dp_imm(e, TST, 1, 0, R0, IMM(0x80000000u));
+    exit_snap(c, C_NE, true, c->pc + 4, NULL);
 }
 
 // ---- branches (end the block) ----
@@ -3950,17 +3952,15 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
         if ((inst >> 26) == 18 && (inst & 1)) {  // bl to an SDK paired-single function: its stand-in in place (hle_ps.c)
             s32 li = ((s32)(inst << 6)) >> 6 & ~3;
-            u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li, n = 0, tpa;
-            int d = hle_ps_inline(target, &n);
-            if (d >= 0 && c->count + n < 200 && gk_translate(g, target, false, false, &tpa, false) && tpa + 4 * n <= j->ramSize &&
-                ((tpa + 4 * n - 1) >> 12) < sizeof j->codePages) {
-                emit_ps_call(c, target, (u32)d);
-                c->countExtra += n;  // (Entry.count is a byte: hence the 200)
-                c->count += n;
-                emit_ps_stop(c);
-                j->codePages[tpa >> 12] = j->codePages[(tpa + 4 * n - 1) >> 12] = 1;  // an icbi there drops this block
+            u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li, size = 0, tpa;
+            bool gprs = false;
+            int d = hle_ps_inline(target, &gprs, &size);
+            if (d >= 0 && gk_translate(g, target, false, false, &tpa, false) && tpa + size <= j->ramSize &&
+                ((tpa + size - 1) >> 12) < sizeof j->codePages) {
+                emit_ps_call(c, target, (u32)d, gprs);
+                j->codePages[tpa >> 12] = j->codePages[(tpa + size - 1) >> 12] = 1;  // an icbi there drops this block
                 j->stats.instrsNative++;
-                j->stats.instrsCompiled += n;
+                j->stats.instrsCompiled += size / 4;
                 continue;
             }
         }
