@@ -27,8 +27,16 @@ void cp_write16(System* s, u32 off, u16 v) {
     if (off < 0x80) s->gx.cpRegs[off / 2] = v;
 }
 
+// g_peReadSync false (the default; --pesync on for the old wait): a PE register read takes the signals the GX thread
+// has posted so far instead of waiting for it to execute everything fed (the hardware does not wait either; emulated
+// timing then depends on the GX thread's progress). The interrupt handlers read the status right after a finish
+// interrupt: 2DS jobs 354-355, cutscene 29.10 -> 30.03%, core 0's GX wait 7.4 -> 4.1%. (Inline GX, the PC: no wait.)
+bool g_peReadSync = false;
 u16 pe_read16(System* s, u32 off) {
-    if (s->gxAsync) s->gxAsync->sync(s);  // tokens and finish flags of everything sent so far
+    if (s->gxAsync) {  // tokens and finish flags of everything sent so far
+        if (g_peReadSync) s->gxAsync->sync(s);
+        else s->gxAsync->poll(s);
+    }
     return off < 0x100 ? s->gx.peRegs[off / 2] : 0;
 }
 

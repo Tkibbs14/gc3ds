@@ -550,6 +550,17 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **The commit (675acb2) on the 2DS (job 350):** cutscene **29.09%**, later stretch **17.87%**, movie **12.42%**;
   the day's start (job 327) was 28.57 / 16.12 / 11.72: +1.8% / +10.9% / +6.0%.
 
+### PE reads no longer drain the GX thread (jobs 354-355, device)
+
+- **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed
+  (vertex worker included); GXFinishInterruptHandler (the cutscene's top function, 4.3% of samples, job 353) reads the
+  status right after each finish interrupt. With `--pesync off` a read applies the signals posted so far (poll) only.
+- **Same build, job 354 (wait) against 355 (no wait):** cutscene **29.10 -> 30.03% (+3.2%)**, later 17.84 -> 18.01%,
+  movie 12.38 -> 12.43%; core 0's GX wait in the cutscene 7.37 -> 4.08%, later 1.20 -> 0.21%. No errors; frames
+  presented per 10 s equal (99 / 99 xfb copies in the cutscene). Default since; `--pesync on` restores the wait.
+- **Profiles were off before this (job 353):** `--profile on` is needed for '# hot guest code' (blocks store their
+  start only then); without it each report credits ~93% to one stale block (jobs 350-352).
+
 ### Byte-swapped guest RAM, C18 (jobs 351-352, device; PC checks)
 
 - **Job 351 (first swapped build):** cutscene **28.78%**, later **16.76%**, movie **11.67%** against job 350's

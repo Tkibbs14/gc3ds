@@ -218,6 +218,7 @@ u32 ai_read32(System* s, u32 off);   void ai_write32(System* s, u32 off, u32 v);
 u32 di_read32(System* s, u32 off);   void di_write32(System* s, u32 off, u32 v);
 u16 cp_read16(System* s, u32 off);   void cp_write16(System* s, u32 off, u16 v);
 u16 pe_read16(System* s, u32 off);   void pe_write16(System* s, u32 off, u16 v);
+extern bool g_peReadSync;  // gx.c: PE reads wait for the GX thread (--pesync on; off by default)
 u16 mi_read16(System* s, u32 off);   void mi_write16(System* s, u32 off, u16 v);
 void gp_fifo_write(System* s, const u8* data, u32 len);  // bytes in console (big-endian) order
 void gp_wgp_put(void* s, u32 v, u32 size);  // one 1/2/4-byte store's value (the JIT's direct path to the pipe)

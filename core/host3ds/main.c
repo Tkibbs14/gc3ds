@@ -512,6 +512,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--native2")) o->native2 = !strcmp(v, "on");
         else if (!strcmp(a, "--ind2")) o->ind2 = !strcmp(v, "on");
         else if (!strcmp(a, "--befloat")) o->befloat = !strcmp(v, "on");
+        else if (!strcmp(a, "--pesync")) g_peReadSync = strcmp(v, "off") != 0;  // (gx.c: PE reads drain the GX thread)
         else if (!strcmp(a, "--fastfloat")) o->fastfloat = !strcmp(v, "on");
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
