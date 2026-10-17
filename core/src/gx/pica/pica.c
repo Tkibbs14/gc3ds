@@ -225,6 +225,13 @@ static void draw_elements(u32 first, u32 n) {
     g_picaStats.drawCalls++;
 }
 
+// The GX state work of a draw, split (one draw in 16, scaled as PROF_GXSTATE): the previous batch's draw call
+// (flush_batch), split_early, update_tev, the batch key (batch_key + tex_key, the full build), apply_frag, texture binds,
+// light uniforms (perf.csv "# gx state split 10s").
+u64 g_picaStateT[7];
+#define SPROF_BEGIN() dprof_begin()
+#define SPROF_END(k, t) do { if (g_drawTimed && g_profClock) g_picaStateT[k] += (g_profClock() - (t)) * g_drawScale; } while (0)
+
 static void flush_batch(void) {
     vw_sync();  // where the batch ends may still be on the vertex worker (CPU-transformed draws it culls)
     if (g.batchOpen && g.batchIdx) {
@@ -1526,12 +1533,17 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     // (recorded below once the batch is known to be this state)
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
     if (!same) {
+        u64 ts = SPROF_BEGIN();
         flush_batch();
+        SPROF_END(0, ts); ts = SPROF_BEGIN();
         split_early();
+        SPROF_END(1, ts); ts = SPROF_BEGIN();
         update_tev(gx);
+        SPROF_END(2, ts); ts = SPROF_BEGIN();
         kn = batch_key(gx, key);
         key[kn++] = cls;
         tex_key(gx, key, &kn);
+        SPROF_END(3, ts);
         u64 t0 = dprof_begin();
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
         dprof_end(PROF_GXTEX, t0);
@@ -1649,13 +1661,18 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
                 }
             }
         }
+        u64 ts = SPROF_BEGIN();
         apply_frag(gx);
+        SPROF_END(4, ts);
         // Only the units the combiners read are bound; the others keep whatever they had, which nothing samples.
         // - Never bind NULL: citro3d 1.7.1 reads the texture's type through it, a data abort on hardware. Azahar does
         //   not fault on reads near address 0, so it hid this.
         // - Binding a placeholder to unused units 1 and 2 crashed Azahar itself (2026-10-10).
+        ts = SPROF_BEGIN();
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) C3D_TexBind((int)i, tex[i] ? tex[i] : &g.white);
+        SPROF_END(5, ts); ts = SPROF_BEGIN();
         apply_light_uniforms();
+        SPROF_END(6, ts);
         g.batchOpen = true;
         g.batchFirst = g.arenaUsed;
         g.batchIdxFirst = g.idxUsed;

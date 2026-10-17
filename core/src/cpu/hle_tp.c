@@ -533,6 +533,49 @@ static u32 checked(Gekko* g, u32 budget) {
 }
 #endif
 
+#ifndef __3DS__
+// SHDW_KEYSTAT=1 (PC, temporary measurement): how often a ShdwDraw walk repeats one seen before. Key: the GPRs the
+// walk reads at its entry; outcome: the triangles it hands to guest code (r0 index, r16 list pointer) and its end.
+#define SKN (1u << 18)
+static struct { u64 key, out; } *g_skT;
+static struct { int on; bool live; u64 key, out, calls, done, hits, same, diff; } g_sk = { -1 };
+static u64 sk_mix(u64 h, u32 v) { return (h ^ v) * 0x100000001B3ull; }
+static u64 g_skEntries;
+static void sk_report(void) {
+    fprintf(stderr, "SHDW_KEYSTAT walk: cells %llu fast %llu new leaf %llu triangles %llu, stand-in entries %llu\n",
+            (unsigned long long)g_shdwWalk[0], (unsigned long long)g_shdwWalk[2], (unsigned long long)g_shdwWalk[3],
+            (unsigned long long)g_shdwWalk[5], (unsigned long long)g_skEntries);
+    fprintf(stderr, "SHDW_KEYSTAT: calls %llu finished %llu; key seen before %llu (%.1f%%): same outcome %llu, different %llu\n",
+            (unsigned long long)g_sk.calls, (unsigned long long)g_sk.done, (unsigned long long)g_sk.hits,
+            g_sk.done ? 100.0 * g_sk.hits / g_sk.done : 0.0, (unsigned long long)g_sk.same, (unsigned long long)g_sk.diff);
+}
+static void sk_before(const Gekko* g) {
+    if (g_sk.on < 0) { g_sk.on = getenv("SHDW_KEYSTAT") != NULL; if (g_sk.on) { g_skT = calloc(SKN, sizeof *g_skT); atexit(sk_report); } }
+    if (!g_sk.on) return;
+    g_skEntries++;
+    if (g->pc != PC_ENTRY) return;
+    static const u8 kRegs[] = { 2, 13, 15, 16, 19, 20, 21, 22, 26, 27, 28, 29, 30, 31 };
+    u64 h = 0xCBF29CE484222325ull;
+    for (u32 i = 0; i < sizeof kRegs; i++) h = sk_mix(h, g->gpr[kRegs[i]]);
+    g_sk.key = h | 1;
+    g_sk.out = 0xCBF29CE484222325ull;
+    g_sk.live = true;
+    g_sk.calls++;
+}
+static void sk_after(const Gekko* g) {
+    if (!g_sk.on || !g_sk.live) return;
+    if (g->pc == PC_TRI) { g_sk.out = sk_mix(sk_mix(g_sk.out, g->gpr[0]), g->gpr[16]); return; }
+    if (g->pc != PC_EXIT) return;
+    g_sk.live = false;
+    g_sk.done++;
+    u32 s = (u32)(g_sk.key >> 40) & (SKN - 1);
+    for (u32 k = 0; k < 64; k++, s = (s + 1) & (SKN - 1)) {
+        if (g_skT[s].key == g_sk.key) { g_sk.hits++; if (g_skT[s].out == g_sk.out) g_sk.same++; else g_sk.diff++; g_skT[s].out = g_sk.out; return; }
+        if (!g_skT[s].key) { g_skT[s].key = g_sk.key; g_skT[s].out = g_sk.out; return; }
+    }
+}
+#endif
+
 u32 hle_run(Gekko* g, u32 budget) {
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
@@ -546,7 +589,9 @@ u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     static int chk = -1;
     if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
+    sk_before(g);
     u32 n = chk ? checked(g, budget) : scan(g, budget);
+    sk_after(g);
 #else
     // Timed one call in 16 (a clock read is a system call, ~200 cycles: two a call were ~1.3% of core 0 here).
     u64 t0 = g_profClock && !(g_shdwStats[0] & 15) ? g_profClock() : 0;

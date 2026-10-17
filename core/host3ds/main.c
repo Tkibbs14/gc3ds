@@ -1209,6 +1209,17 @@ static const char* run(const char* path) {
                                 (unsigned long long)(why[1] - lastWhy[1]), (unsigned long long)(why[2] - lastWhy[2]),
                                 (unsigned long long)(why[3] - lastWhy[3]), (unsigned long long)(why[4] - lastWhy[4]),
                                 (unsigned long long)(why[5] - lastWhy[5]));
+                {  // the GX state work split (pica.c g_picaStateT), ms per second of wall time
+                    extern u64 g_picaStateT[7];
+                    static u64 last[7];
+                    static const char* const kN[7] = { "flush", "split", "tev", "key", "frag", "texbind", "lights" };
+                    fprintf(g_perf, "# gx state split 10s (ms/s):");
+                    for (int q = 0; q < 7; q++) {
+                        fprintf(g_perf, " %s %.1f", kN[q], (double)(g_picaStateT[q] - last[q]) * 1000.0 / SYSCLOCK_ARM11 / 10.0);
+                        last[q] = g_picaStateT[q];
+                    }
+                    fprintf(g_perf, "\n");
+                }
                         static u64 lastHleRuns, lastHleInsns;
                         static u64 lastShdw[4];
                         fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu; ShdwDraw: calls %llu, "
