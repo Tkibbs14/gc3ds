@@ -38,6 +38,7 @@ typedef struct {
     u64 instrsRun, fallbacksRun;  // guest instructions executed by blocks, and how many of them were interpreted
     u64 slowLoads, slowStores;    // loads / stores through the C helpers (MMIO, write-gather pipe, non-standard BATs)
     u64 gatherStores;             // stores to the write-gather pipe through jit_set_gather's direct path
+    u64 pipeKnown;                // pipe stores compiled to the append stub (an address known when compiling, OPT_PIPEK)
     JitOpCounts fallback;      // static: one per compiled occurrence
     JitOpCounts fallbackRun;   // dynamic: one per execution
     JitOpCounts exitOther;     // dispatcher returns for "other" reasons, by the guest instruction before g->pc
@@ -148,7 +149,10 @@ extern int jit_fc_min;
 // of four: the 2DS rewards less distinct hot code (traces lost 5.5% to their duplicated code, job 154).
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
-       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_ALL = 65535 };
+       OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_ALL = 131071 };
+// OPT_PIPEK: a D-form store (stw sth stb stfs) whose address the block knows (a constant from lis / li / addi / ori)
+// and lies in the write-gather pipe appends to the pipe's burst through a shared stub instead of the RAM check and the
+// slow path: the SDK's GX functions write the graphics commands this way.
 // OPT_FASTFLOAT (owner-approved experiment, 2026-10-17): single-precision and paired-single results are not rounded to
 // single, frC is not cut to 25 bits, and stores convert with the hardware's rounding: results may differ from Gekko's
 // in the last bits (exact by default).

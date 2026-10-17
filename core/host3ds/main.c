@@ -412,6 +412,7 @@ typedef struct {
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
     bool relayout, abRelayout;  // --relayout on|off, --ab relayout: every AB_SECS the hottest sampled blocks are compiled first after a flush (needs --profile on)
     bool icbi, abIcbi;        // --icbi on|off, --ab icbi: icbi inside blocks (OPT_ICBI)
+    bool pipek, abPipek;      // --pipek on|off, --ab pipek: pipe stores at known addresses straight to the pipe (OPT_PIPEK)
     bool noVoices, abVoices;  // --voices off: DSP voices never end (the old behaviour); --ab voices: lifetime on and off (voices column; starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
@@ -451,6 +452,7 @@ static void opts_default(RunOpts* o) {
     o->merge = true;
     o->sched = true;   // relay 91-92: on vs off within noise (cutscene -0.2, title +1.1 points), fewer instructions and words
     o->opt = true;     // check hoisting: core 0 +5.7% (job 97), +5.0% cutscene and +4.7% core-0-bound section (job 117)
+    o->pipek = true;   // pipe stores at known addresses straight to the pipe: Ordon gameplay +7.0% (jobs 358-359)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
     o->hle = true;     // shadow-scan stand-in: Link / Epona stretch 10.6% -> 12.4%, cutscene within noise (job 145)
@@ -479,7 +481,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -525,6 +527,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--fastfloat")) o->fastfloat = !strcmp(v, "on");
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
+        else if (!strcmp(a, "--pipek")) o->pipek = !strcmp(v, "on");
         else if (!strcmp(a, "--ab-flip")) o->abFlip = !strcmp(v, "on");
         else if (!strcmp(a, "--relayout")) o->relayout = !strcmp(v, "on");
         else if (!strcmp(a, "--vin")) o->vin = !strcmp(v, "on");
@@ -908,6 +911,7 @@ static const char* run(const char* path) {
                            (g_opt.fastfloat && !g_opt.abFastfloat ? OPT_FASTFLOAT : 0) |
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
+                           (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
                            (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.abFlip && g_opt.abInlmem ? OPT_INLMEM : 0));  // or on with --ab-flip
         jit_set_mem_stamps(g_jit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
@@ -1171,6 +1175,7 @@ static const char* run(const char* path) {
                 if (g_opt.abFastfloat && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_FASTFLOAT);
                 if (g_opt.abLatch && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_LATCH);
                 if (g_opt.abIcbi && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_ICBI);
+                if (g_opt.abPipek && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_PIPEK);
                 if (g_opt.abInlmem && g_jit && g_useJit && perfRows % AB_SECS == 0) jit_set_opt(g_jit, jit_opt(g_jit) ^ OPT_INLMEM);
                 if (g_opt.abStack && g_jit && g_useJit && perfRows % AB_SECS == 0)
                     jit_set_opt(g_jit, jit_opt(g_jit) ^ (OPT_RETSTUB | OPT_SYSCALL | OPT_HLELINK));

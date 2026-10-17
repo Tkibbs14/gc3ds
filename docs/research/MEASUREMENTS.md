@@ -550,6 +550,23 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **The commit (675acb2) on the 2DS (job 350):** cutscene **29.09%**, later stretch **17.87%**, movie **12.42%**;
   the day's start (job 327) was 28.57 / 16.12 / 11.72: +1.8% / +10.9% / +6.0%.
 
+### Gameplay benchmark and pipe stores at known addresses (jobs 356-359, device)
+
+- **The first gameplay state (job 356):** `sdmc:/gc3ds/states/tp_ordon.state`, Link in Ordon after the opening (made
+  by steering a run live: relay `cmd JOB "press A 6"`, `"stick X Y N"`, `"save PATH"`). Benchmark: `--state
+  sdmc:/gc3ds/states/tp_ordon.state --seconds 300 --press` a square walk (SUP / SRIGHT / SDOWN / SLEFT, 120 fields each
+  from field 40). The old tp850 benchmark is the title / attract sequence (see the memory note), not play.
+- **Gameplay is ~20% speed, with both cores near their limit:** core 0 98-99%, the GX thread 80-84% busy (job 357).
+- **Profile (job 357, `--profile on`):** flat; **the GX SDK 29.6% of core 0 samples** (GXLoadPosMtxImm 2.2%,
+  GXLoadTexObjPreLoaded 2.0%, __GXSendFlushPrim 1.5%, GXSetTev* ~6%, ...), game code 23%, J3D 13.4%, OS / DVD / AI / DSP
+  3.9%, collision 2.9%, vector / matrix 2.7%; J2DPane::draw 3.3% and font drawing (the HUD). ShdwDraw ~1%.
+- **OPT_PIPEK (job 358 off, 359 on, same walk):** a D-form store (stw sth stb stfs) whose base the block set with lis /
+  li / addi / ori to a pipe address (the SDK's GX functions: lis rX,0xCC01; st* -0x8000(rX)) appends to the pipe's
+  burst through a 2-word site and a shared stub (~8 instructions) instead of the RAM check, cold code and the slow
+  stub (~50). **Speed 20.26 -> 21.68% (+7.0%)**; the GX thread 80.8 -> 88.3% busy; draws 7,176 -> 7,618/s. JIT
+  fuzzer (new sequences: lis + stores in and just past the pipe's 32 bytes, with the pipe's buffer set): 0 fails at
+  masks 70259 and 4723, ~2,200 known-address pipe stores compiled per seed. Default on (`--pipek off` to compare).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

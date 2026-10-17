@@ -117,6 +117,7 @@ struct Jit {
     u32 stub[ST_N];             // word offsets of the shared stubs in `code`
     u32 stubWords;              // code words they use (compiled blocks start after them)
     u16 memStub[MS_KINDS][MS_REGS];  // word offsets of the memory-access stubs
+    u16 pipeStub[3][MS_REGS];        // ... stores of 4, 2, 1 bytes to the write-gather pipe at a known address (pipe_store)
     u16 memStub2[MS_KINDS][MS_REGS];  // ... the scheduled set (SCHED_STUBS)
     u32 sched;                  // jit_set_sched: SCHED_STUBS | SCHED_CONST
     u16 psqStub[2][8][2];       // emit_float_stubs: psq_l [0] / psq_st [1] with a plain-float GQR, by GQR and W
@@ -483,6 +484,7 @@ typedef struct {
     // since; chkClear: the GPRs the instruction being compiled writes (cleared from chk before the next one).
     bool hoist;
     u32 chk, chkClear;
+    u32 kmask, kval[32], kprev;  // GPRs whose value the block knows (kconst_after), and the instruction before this one
     u8 chkAl[32];  // (swapped RAM) the alignment checked with rA's window: 1, 2 or 4 (hoist_fits)
     u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
@@ -2222,6 +2224,54 @@ static void int_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, bool update) {
 }
 
 // Integer store of rS's low `size` bytes to the address in r0; with update, rA = the address.
+// Known GPR values inside a block, for stores to the write-gather pipe whose address is a constant (the SDK's GX
+// functions: lis rX,0xCC01 then stores to -0x8000(rX)). Applied after each instruction: addi / addis (li / lis) and
+// ori of known values set a register; any other write forgets it; a call (bl, bcl, bclrl, bcctrl) or sc forgets all.
+static void kconst_after(Cg* c, u32 inst) {
+    u32 op = inst >> 26, rd = (inst >> 21) & 31, ra = (inst >> 16) & 31, v = 0, dst = rd;
+    bool set = false;
+    if ((op == 16 || op == 18 || op == 19) && (inst & 1)) { c->kmask = 0; return; }
+    if (op == 17) { c->kmask = 0; return; }
+    if (op == 14 || op == 15) {  // addi / addis
+        u32 imm = op == 14 ? (u32)(s32)(s16)(inst & 0xFFFF) : (inst & 0xFFFFu) << 16;
+        if (!ra) { v = imm; set = true; }
+        else if ((c->kmask >> ra) & 1) { v = c->kval[ra] + imm; set = true; }
+    } else if (op == 24 && ((c->kmask >> rd) & 1)) {  // ori rA, rS, imm
+        v = c->kval[rd] | (inst & 0xFFFFu);
+        set = true;
+        dst = ra;
+    }
+    u64 rdm = 0, wr = 0;
+    c->kmask &= gekko_regs(inst, &rdm, &wr) ? ~(u32)wr : 0;
+    if (set) { c->kmask |= 1u << dst; c->kval[dst] = v; }
+}
+
+// The pipe address a D-form store through rA + d has, when the block knows rA and it falls in the pipe's 32 bytes.
+static bool pipe_known(const Cg* c, u32 ra, u32 d, u32* ea) {
+    if (!ra || !c->fastmem || !c->j->gatherBuf || !c->j->memStubs || c->inCold || !((c->kmask >> ra) & 1)) return false;
+    u32 a = c->kval[ra] + d;
+    if (a - c->j->gatherEa >= 32) return false;
+    *ea = a;
+    return true;
+}
+
+// A store of `size` bytes of v to the pipe at known address ea: the shared append stub (two words here); when the
+// 32-byte burst completes (or no buffer), the generic slow path with r0 = ea (jit_gather, which may ask to stop).
+static void pipe_store(Cg* c, u32 size, int v, u32 ea) {
+    Emit* e = &c->e;
+    int ri = ms_reg(v);
+    if (ri < 0) { mov_reg(e, R2, v); v = R2; ri = 0; }
+    branch_abs(e, C_AL, true, c->j->code + c->j->pipeStub[size == 4 ? 0 : size == 2 ? 1 : 2][ri]);
+    u32 slow = branch_c(e, C_CS, 0);
+    u32 resume = e->n;
+    cold_begin(c);
+    fix_to_cold(c, slow);
+    load_const(e, R0, ea);
+    store_slow(c, size, v);
+    cold_end(c, resume);
+    c->j->stats.pipeKnown++;
+}
+
 static void int_store(Cg* c, u32 size, u32 rs, u32 ra, bool update) {
     int v = src(c, rs, R2);
     set_tail(c, update ? 1 : 0, R0, ra, 0, 0);
@@ -2358,6 +2408,13 @@ static bool compile_int(Cg* c, u32 inst) {
     case 36: case 37: case 38: case 39: case 44: case 45: {  // stw stwu stb stbu sth sthu
         bool update = op & 1;
         if (update && ra == 0) return false;
+        u32 pea;
+        if (!update && (c->j->opt & OPT_PIPEK) && pipe_known(c, ra, simm, &pea)) {
+            int v = src(c, rd, R2);
+            set_tail(c, 0, R0, ra, 0, 0);
+            pipe_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, v, pea);
+            return true;
+        }
         if (c->hoist && ra && hoist_fits(c, ra, simm, op <= 37 ? 4 : op <= 39 ? 1 : 2)) { hoist_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, simm, update); return true; }
         ea_disp(c, ra, simm);
         int_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, update);
@@ -2755,6 +2812,7 @@ static void cut_single_bits(Cg* c, int dst, u32 o, int t1, int t2) {
 // same bits in hardware as by the cut. The round trip checks it; a NaN, extra mantissa bits or anything outside the
 // normal single range (which the ARM11 also flushes to +0 where the cut keeps the sign) takes the cut, out of line.
 // Uses d5-d7; clobbers the ARM flags.
+static void fs_flush_denormal(Emit* e, int r);
 static void dbl_to_single_bits(Cg* c, int dst, u32 fr, u32 lane, int t1, int t2) {
     Emit* e = &c->e;
     u32 o = OFF_FPR(fr) + 8u * lane;
@@ -2855,6 +2913,19 @@ static void emit_store64(Cg* c, u32 frs) {
 static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
     Emit* e = &c->e;
     if (update && ra == 0) return false;  // invalid form
+    u32 pea;
+    if (kind == 2 && !indexed && !update && (c->j->opt & OPT_PIPEK) && pipe_known(c, ra, simm, &pea)) {  // stfs to the pipe
+        if ((c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1)) {  // an exact single: its bits (as stfsStK)
+            ld_fpr(c, 1, fr, 0);
+            vcvt_f32_f64(e, 12, 1);
+            vmov_r_s(e, R2, 12);
+        } else {
+            dbl_to_single_bits(c, R2, fr, 0, R12, LR);
+        }
+        set_tail(c, 0, R0, ra, 0, 0);
+        pipe_store(c, 4, R2, pea);
+        return true;
+    }
     if (c->hoist && !indexed && ra && c->j->memStubs && !c->inCold && hoist_fits(c, ra, simm, 4)) {  // check hoisting: the unchecked stubs, no slow path
         if (kind >= 2) ld_fpr(c, 1, fr, 0);
         int x = hoist_addr(c, ra, simm, update, 4);
@@ -3429,6 +3500,14 @@ static int fc_compile(Cg* c, u32 inst) {
             k0 = fc_find(&c->rc, fd, 0);
             if (k0 < 0) return -1;  // not in a lane: the old store (known-single stubs when it is an exact single)
             fc_pin(c, k0);
+        }
+        u32 pea;
+        if (!load && !update && (j->opt & OPT_PIPEK) && pipe_known(c, ra, simm, &pea)) {  // stfs to the pipe
+            vmov_r_s(e, R2, 16 + k0);
+            fs_flush_denormal(e, R2);
+            set_tail(c, 0, R0, ra, 0, 0);
+            pipe_store(c, 4, R2, pea);
+            return 1;
         }
         if (c->hoist && ra && hoist_fits(c, ra, simm, 4)) {
             int x = hoist_addr(c, ra, simm, update, 4);
@@ -4020,6 +4099,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             u64 rd = 0, wr = 0;
             c->chk &= ~c->chkClear;
             c->chkClear = gekko_regs(inst, &rd, &wr) ? (u32)wr : 0xFFFFFFFFu;
+            if (i > 0) kconst_after(c, c->kprev);  // (the known values before this instruction)
+            c->kprev = inst;
         }
         j->stats.instrsCompiled++;
         if ((inst >> 26) == 31 && ((inst >> 1) & 0x3FF) == 467 && (((inst >> 16) & 31) | ((inst >> 6) & 0x3E0)) == 8)
@@ -4299,6 +4380,26 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
             }
             cond_last(e, C_CC);
             bx_reg_c(e, C_AL, LR);
+        }
+    }
+    // Pipe stores at a known address (pipe_store): append the value's console-order bytes to the pipe's burst when
+    // they fit before it completes; carry set when they do not (the site's slow path). Clobbers r1, r3, r12, flags.
+    for (int k = 0; k < 3; k++) {
+        for (int ri = 0; ri < MS_REGS; ri++) {
+            int r = ri == 0 ? R2 : R4 + ri - 1;
+            u32 size = k == 0 ? 4 : k == 1 ? 2 : 1;
+            j->pipeStub[k][ri] = (u16)e->n;
+            ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_LEN));
+            ldr_imm(e, R12, R1, 0);
+            dp_imm(e, ADD, 0, R3, R12, size);
+            dp_imm(e, CMP, 1, 0, R3, 32);
+            bx_reg_c(e, C_CS, LR);
+            str_imm(e, R3, R1, 0);
+            ldr_imm(e, R1, RG, OFF_JITFN(JF_GATHER_BUF));
+            if (size == 4) { rev(e, R3, r); str_reg(e, R3, R1, R12); }
+            else if (size == 2) { rev16(e, R3, r); strh_reg(e, R3, R1, R12); }
+            else strb_reg(e, r, R1, R12);
+            bx_reg_c(e, C_AL, LR);  // carry clear from the compare
         }
     }
 }

@@ -791,6 +791,8 @@ int main(int argc, char** argv) {
     if (!jit) { printf("jit_create failed\n"); sys_free(&A); sys_free(&B); return 2; }
     jit_debug_max_insns = 1;
     jit_set_gather(jit, gp_wgp_put, &A, GP_WGP_EA);
+    // The pipe's buffer, as the 3DS frontend sets it (compiled code appends to it; OPT_PIPEK needs it).
+    if (!getenv("JIT_FUZZ_NOPIPEBUF")) jit_set_gather_buffer(jit, A.gx.wgp, &A.gx.wgpLen);
     if (!getenv("JIT_FUZZ_NOLC")) jit_set_locked_cache(jit, A.lockedCache);
     for (u32 i = 0; i < LOCKED_CACHE_SIZE; i += 4) {  // normal singles, as fill_floats_at (lfs / psq_l of tiny values differ by design)
         u32 ex = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254, v = (rnd() & 1) << 31 | ex << 23 | (rnd() & 0x7FFFFF);
@@ -831,7 +833,29 @@ int main(int argc, char** argv) {
         u32 chainPa = 0;
         while (intOnly && is_branch_op(seq[0])) seq[0] = gen(&st);
         bool traceCase = !isFloat && (intOnly || rnd() % 100 < 30) && !is_branch_op(seq[0]);
-        if (traceCase) {
+        if (!isFloat && !traceCase && rnd() % 10 == 0) {
+            // Stores to the pipe through a base the block sets itself (OPT_PIPEK: the address is known when compiling):
+            // lis x,0xCC01 (the SDK's form), sometimes moved with ori / addi (still known) or mulli x,x,1 (the value
+            // stays, the compiler loses it: the generic path), then stw / sth / stb / stfs at -0x8000 + 0..35 (inside
+            // the pipe's 32 bytes, or just past them: the MMIO path).
+            u32 x = 1 + rnd() % 31;
+            seq[0] = (15u << 26) | (x << 21) | 0xCC01u;
+            len = 1;
+            if (rnd() % 4 == 0) seq[len++] = (24u << 26) | (x << 21) | (x << 16) | (4u * (rnd() % 4));
+            u32 n = 1 + rnd() % 10;
+            for (u32 k = 0; k < n && len < 40; k++) {
+                static const u32 ops[] = { 36, 44, 38, 52, 36, 38 };
+                u32 r = rbits(5);
+                if (rnd() % 10 == 0) { seq[len++] = (14u << 26) | (x << 21) | (x << 16) | (rnd() % 4); continue; }
+                if (rnd() % 14 == 0) { seq[len++] = (7u << 26) | (x << 21) | (x << 16) | 1u; continue; }
+                u32 op = ops[rnd() % 6];
+                if (op == 52)  // stfs: a moderate normal double (tiny values convert differently by design)
+                    st.fpr[r][0] = ((u64)(rnd() & 1) << 63) | ((u64)(1013 + rnd() % 20) << 52) |
+                                   (((u64)rnd() << 32 | rnd()) & 0x000FFFFFFFFFFFFFull);
+                u32 d = (u32)(-0x8000 + (s32)(rnd() % 36)) & 0xFFFFu;
+                seq[len++] = (op << 26) | (r << 21) | (x << 16) | d;
+            }
+        } else if (traceCase) {
             len = 4 + rnd() % (longTraces ? 40 : 8);
             for (u32 i = 1; i < len; i++) {
                 if (rnd() % 100 < 28) { seq[i] = gen_trace_branch(i, len, seq[i - 1]); continue; }
@@ -1094,6 +1118,7 @@ int main(int argc, char** argv) {
     if (g_smcSkips) printf("chain cases not compared: %u stored into their own program\n", g_smcSkips);
     if (chains) printf("chain runs past their budget: %u; blocks compiled without the budget branch: %llu of %llu\n", g_overBudget,
                        (unsigned long long)jit_stats(jit)->blocksNoCheck, (unsigned long long)jit_stats(jit)->blocksCompiled);
+    printf("pipe stores compiled at a known address (OPT_PIPEK): %llu\n", (unsigned long long)jit_stats(jit)->pipeKnown);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
     jit_destroy(jit);
