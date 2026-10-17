@@ -52,26 +52,29 @@ void vfast_ref(const VFold* f, const VSel* sel, const SVert* v, PVert* o) {
 // ---- decoding ----
 typedef struct { u8 mode, fmt, n, cs; float scale; u32 base, stride; } VAttr;  // mode: 0 absent, 1 direct, 2/3 index8/16
 
-static const u8 kZero[64];
+static const u8 kZero[64] __attribute__((aligned(4)));  // (read in the layout: from its word, ramlayout.h)
 
-static u32 be16(const u8* p) { return ((u32)p[0] << 8) | p[1]; }
-static u32 be32(const u8* p) { return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3]; }
+// Vertex data is read in guest memory's layout (ramlayout.h): the command stream (fifo.c keeps the gather pipe's bytes
+// in it; a job's copy keeps the stream's word alignment) and the arrays in RAM both are.
+#define B8(p) ramp_rd8(p)
+static u32 be16(const u8* p) { return ramp_rd16(p); }
+static u32 be32(const u8* p) { return ramp_rd32(p); }
 static u32 comp_size(u32 fmt) { return fmt <= 1 ? 1 : fmt <= 3 ? 2 : 4; }
 static u32 color_size(u32 fmt) { static const u8 s[8] = { 2, 3, 4, 2, 3, 4, 4, 4 }; return s[fmt & 7]; }
 
 // Formats 8-15: the same components from a little-endian array (native mode: Dusklight stores the game's vertex
 // arrays in host order and says so in GX_AURORA_LOAD_ARRAYBASE; fifo.c GXCore.arrayLE). Bytes are unchanged.
-static inline u32 le16(const u8* p) { return p[0] | ((u32)p[1] << 8); }
-static inline u32 le32(const u8* p) { return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
+static inline u32 le16(const u8* p) { return B8(p) | ((u32)B8(p + 1) << 8); }
+static inline u32 le32(const u8* p) { return B8(p) | ((u32)B8(p + 1) << 8) | ((u32)B8(p + 2) << 16) | ((u32)B8(p + 3) << 24); }
 static inline float read_comp(const u8* p, u32 fmt, float scale) {
     switch (fmt) {
-    case 8: return p[0] * scale;
-    case 9: return (s8)p[0] * scale;
+    case 8: return B8(p) * scale;
+    case 9: return (s8)B8(p) * scale;
     case 10: return le16(p) * scale;
     case 11: return (s16)le16(p) * scale;
     case 12: case 13: case 14: case 15: { u32 v = le32(p); float f; memcpy(&f, &v, 4); return f; }
-    case 0: return p[0] * scale;
-    case 1: return (s8)p[0] * scale;
+    case 0: return B8(p) * scale;
+    case 1: return (s8)B8(p) * scale;
     case 2: return be16(p) * scale;
     case 3: return (s16)be16(p) * scale;
     default: { u32 v = be32(p); float f; memcpy(&f, &v, 4); return f; }
@@ -81,16 +84,16 @@ static inline float read_comp(const u8* p, u32 fmt, float scale) {
 static u32 read_color(const u8* p, u32 fmt) {
     if (fmt & 8) {  // a little-endian array: the 16- and 24-bit formats are swapped, the byte formats are not
         fmt &= 7;
-        if (fmt == 0 || fmt == 3) { u8 q[2] = { p[1], p[0] }; return read_color(q, fmt); }
-        if (fmt == 4) { u8 q[3] = { p[2], p[1], p[0] }; return read_color(q, fmt); }
+        if (fmt == 0 || fmt == 3) { u8 q[2] = { (u8)B8(p + 1), (u8)B8(p) }; return read_color(q, fmt); }
+        if (fmt == 4) { u8 q[3] = { (u8)B8(p + 2), (u8)B8(p + 1), (u8)B8(p) }; return read_color(q, fmt); }
     }
     switch (fmt) {
     case 0: { u32 c = be16(p); u32 r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
               return ((r * 255 / 31) << 24) | ((g * 255 / 63) << 16) | ((b * 255 / 31) << 8) | 0xFF; }
-    case 1: case 2: return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | 0xFF;
+    case 1: case 2: return ((u32)B8(p) << 24) | ((u32)B8(p + 1) << 16) | ((u32)B8(p + 2) << 8) | 0xFF;
     case 3: { u32 c = be16(p);
               return (((c >> 12) & 15) * 17u << 24) | (((c >> 8) & 15) * 17u << 16) | (((c >> 4) & 15) * 17u << 8) | ((c & 15) * 17u); }
-    case 4: { u32 c = ((u32)p[0] << 16) | ((u32)p[1] << 8) | p[2];
+    case 4: { u32 c = ((u32)B8(p) << 16) | ((u32)B8(p + 1) << 8) | B8(p + 2);
               u32 r = (c >> 18) & 63, g = (c >> 12) & 63, b = (c >> 6) & 63, a = c & 63;
               return ((r * 255 / 63) << 24) | ((g * 255 / 63) << 16) | ((b * 255 / 63) << 8) | (a * 255 / 63); }
     default: return be32(p);
@@ -113,7 +116,7 @@ static void attr_init(const GXCore* gx, VAttr* a, u32 mode, u32 arr, u32 fmt, u3
 // Source of one attribute (stream or array element); advances the stream past it. `direct`: bytes in the stream.
 static inline const u8* fetch(const u8* mem1, const VAttr* a, const u8** p, u32 direct) {
     if (a->mode == 1) { const u8* q = *p; *p += direct; return q; }
-    u32 idx = a->mode == 2 ? (*p)[0] : be16(*p);
+    u32 idx = a->mode == 2 ? B8(*p) : be16(*p);
     *p += a->mode == 2 ? 1 : 2;
     u32 pa = a->base + idx * a->stride;
     return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? mem1 + pa : kZero;
@@ -353,7 +356,7 @@ static u32 align8(u32 v) { return (v + 7) & ~7u; }
 // use. vfast_prepare packs the matrices it used at the start of that room, so the job ends at vfast_job_used bytes and a
 // ring allocator can take the rest back (the 3DS vertex worker's job ring: most draws use a few of the 64 matrices).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
-    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize) +
+    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize + 4) +
            align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4);
 }
 u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
@@ -364,9 +367,9 @@ static void gather_indices(VJob* job) {
         const u8* p = job->raw + vi * job->vsize;
         VIx* in = &job->ix[vi];
         in->pn = job->pnDefault;
-        if (job->pnDirect) in->pn = *p++;
+        if (job->pnDirect) in->pn = (u8)B8(p++);
         memcpy(in->tm, job->tmDefault, 8);
-        for (u32 i = 0; i < 8; i++) if ((job->tmDirect >> i) & 1) in->tm[i] = *p++;
+        for (u32 i = 0; i < 8; i++) if ((job->tmDirect >> i) & 1) in->tm[i] = (u8)B8(p++);
     }
 }
 
@@ -409,7 +412,7 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
         if (npf && vi + PF_AHEAD < to) {
             const u8* q = job->raw + (vi + PF_AHEAD) * job->vsize;
             for (u32 k = 0; k < npf; k++) {
-                u32 idx = pf[k].wide ? be16(q + pf[k].off) : q[pf[k].off];
+                u32 idx = pf[k].wide ? be16(q + pf[k].off) : B8(q + pf[k].off);
                 u32 pa = pf[k].base + idx * pf[k].stride;
                 if (pa >= PA_MEM1_BEGIN && pa < PA_MEM1_END) __builtin_prefetch(mem1 + pa);
             }
@@ -418,9 +421,9 @@ static void gather_range(VJob* job, bool indices, u32 from, u32 to) {
         if (indices) {
             VIx* x = &job->ix[vi];
             x->pn = job->pnDefault;
-            if (pnDirect) x->pn = *p++;
+            if (pnDirect) x->pn = (u8)B8(p++);
             memcpy(x->tm, job->tmDefault, 8);
-            for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) x->tm[i] = *p++;
+            for (u32 i = 0; i < 8; i++) if ((tmDirect >> i) & 1) x->tm[i] = (u8)B8(p++);
         } else {
             p += skip;
         }
@@ -747,7 +750,7 @@ static void vc_put(VCache* vc, const VJob* job, u32 pa, u32 from, u32 cnt, const
         u32 lo = 0xFFFFFFFFu, hi = 0;
         for (u32 vi = from; vi < from + cnt; vi++) {
             const u8* p = job->raw + vi * job->vsize + ix[k].off;
-            u32 idx = ix[k].wide ? ((u32)p[0] << 8 | p[1]) : p[0];
+            u32 idx = ix[k].wide ? be16(p) : B8(p);
             if (idx < lo) lo = idx;
             if (idx > hi) hi = idx;
         }
@@ -951,8 +954,8 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     m += align8(count * job->inStride);
     job->ix = (VIx*)(void*)m;
     m += align8(count * (u32)sizeof(VIx));
-    u8* rawCopy = m;  // the stream, for a gather left to vfast_finish
-    m += align8(count * vsize);
+    u8* rawCopy = m;  // the stream, for a gather left to vfast_finish (at the stream's own word alignment: its layout)
+    m += align8(count * vsize + 4);
     job->pos = (float (*)[21])(void*)m;
     m += align8(pos_cap(gx, count) * 21 * 4);
     job->tex = (float (*)[12])(void*)m;
@@ -1008,10 +1011,10 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
             u32 shared = 0;
             for (u32 vi = 0; vi < count; vi++) {
                 const u8* q = raw + vi * vsize;
-                u32 first = ix[0].wide ? ((u32)q[ix[0].off] << 8 | q[ix[0].off + 1]) : q[ix[0].off];
+                u32 first = ix[0].wide ? be16(q + ix[0].off) : B8(q + ix[0].off);
                 bool same = true;
                 for (u32 k = 1; k < ni && same; k++)
-                    same = (ix[k].wide ? ((u32)q[ix[k].off] << 8 | q[ix[k].off + 1]) : q[ix[k].off]) == first;
+                    same = (ix[k].wide ? be16(q + ix[k].off) : B8(q + ix[k].off)) == first;
                 shared += same;
             }
             g_vfastStats.sharedVerts += shared;
@@ -1026,8 +1029,9 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     u64 t0;
     if (!job->gathered) {
         gather_indices(job);
-        memcpy(rawCopy, raw, count * vsize);
-        job->raw = rawCopy;
+        u32 ra = (u32)((uintptr_t)raw & 3);  // the copy at the stream's own place in a word (its layout)
+        ram_copy(rawCopy, ra, raw, count * vsize);
+        job->raw = rawCopy + ra;
         goto matrices;
     }
     t0 = dprof_begin();  // all reads of guest memory (timed as "dec" on the 3DS profile)
@@ -1435,7 +1439,7 @@ void vfast_native_mem(const u8* mem1) { g_natMem = mem1; }
 // must not count as part of it).
 static inline const u8* nat_fetch(const VAttr* a, const u8** p, u32 direct, u32 elem, u32* lo, u32* hi) {
     if (a->mode == 1) { const u8* q = *p; *p += direct; return q; }
-    u32 idx = a->mode == 2 ? (*p)[0] : be16(*p);
+    u32 idx = a->mode == 2 ? B8(*p) : be16(*p);
     *p += a->mode == 2 ? 1 : 2;
     u32 pa = a->base + idx * a->stride;
     if (pa < *lo) *lo = pa;
@@ -1454,7 +1458,7 @@ void vfast_native_decode(const GXCore* gx, u32 vat, const u8* raw, u32 count, u3
     for (u32 vi = 0; vi < count; vi++) {
         const u8* p = raw + vi * vsize;
         u32 pn = pnDefault;
-        if (ni->pnDirect) pn = *p++;
+        if (ni->pnDirect) pn = B8(p++);
         float* o = pos[vi];
         o[0] = o[1] = o[2] = 0;
         {

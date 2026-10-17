@@ -7,22 +7,25 @@ enum { CP_MATINDEX_A = 0x30, CP_MATINDEX_B = 0x40, CP_VCD_LO = 0x50, CP_VCD_HI =
        CP_VAT_B = 0x80, CP_VAT_C = 0x90, CP_ARRAY_BASE = 0xA0, CP_ARRAY_STRIDE = 0xB0 };
 enum { ARR_POS = 0, ARR_NRM = 1, ARR_COL0 = 2, ARR_TEX0 = 4 };
 
-static u32 be16(const u8* p) { return ((u32)p[0] << 8) | p[1]; }
-static u32 be32(const u8* p) { return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3]; }
+// Vertex data is read in guest memory's layout (ramlayout.h): the command stream (fifo.c keeps the gather pipe's bytes
+// in it) and the arrays in RAM both are.
+#define B8(p) ramp_rd8(p)
+static u32 be16(const u8* p) { return ramp_rd16(p); }
+static u32 be32(const u8* p) { return ramp_rd32(p); }
 
 // Formats 8-15: the same components from a little-endian array (native mode: Dusklight stores the game's vertex
 // arrays in host order and says so in GX_AURORA_LOAD_ARRAYBASE; fifo.c GXCore.arrayLE). Bytes are unchanged.
-static inline u32 le16(const u8* p) { return p[0] | ((u32)p[1] << 8); }
-static inline u32 le32(const u8* p) { return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
+static inline u32 le16(const u8* p) { return B8(p) | ((u32)B8(p + 1) << 8); }
+static inline u32 le32(const u8* p) { return B8(p) | ((u32)B8(p + 1) << 8) | ((u32)B8(p + 2) << 16) | ((u32)B8(p + 3) << 24); }
 static inline float read_comp(const u8* p, u32 fmt, float scale) {
     switch (fmt) {
-    case 8: return p[0] * scale;
-    case 9: return (s8)p[0] * scale;
+    case 8: return B8(p) * scale;
+    case 9: return (s8)B8(p) * scale;
     case 10: return le16(p) * scale;
     case 11: return (s16)le16(p) * scale;
     case 12: case 13: case 14: case 15: { u32 v = le32(p); float f; memcpy(&f, &v, 4); return f; }
-    case 0: return p[0] * scale;
-    case 1: return (s8)p[0] * scale;
+    case 0: return B8(p) * scale;
+    case 1: return (s8)B8(p) * scale;
     case 2: return be16(p) * scale;
     case 3: return (s16)be16(p) * scale;
     default: { u32 v = be32(p); float f; memcpy(&f, &v, 4); return f; }
@@ -34,16 +37,16 @@ static u32 comp_size(u32 fmt) { return fmt <= 1 ? 1 : fmt <= 3 ? 2 : 4; }
 static u32 read_color(const u8* p, u32 fmt) {
     if (fmt & 8) {  // a little-endian array: the 16- and 24-bit formats are swapped, the byte formats are not
         fmt &= 7;
-        if (fmt == 0 || fmt == 3) { u8 q[2] = { p[1], p[0] }; return read_color(q, fmt); }
-        if (fmt == 4) { u8 q[3] = { p[2], p[1], p[0] }; return read_color(q, fmt); }
+        if (fmt == 0 || fmt == 3) { u8 q[2] = { (u8)B8(p + 1), (u8)B8(p) }; return read_color(q, fmt); }  /* (native mode only: big-endian layout) */
+        if (fmt == 4) { u8 q[3] = { (u8)B8(p + 2), (u8)B8(p + 1), (u8)B8(p) }; return read_color(q, fmt); }  /* (native mode only: big-endian layout) */
     }
     switch (fmt) {
     case 0: { u32 c = be16(p); u32 r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;  // RGB565
               return ((r * 255 / 31) << 24) | ((g * 255 / 63) << 16) | ((b * 255 / 31) << 8) | 0xFF; }
-    case 1: case 2: return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | 0xFF;  // RGB888(x)
+    case 1: case 2: return ((u32)B8(p) << 24) | ((u32)B8(p + 1) << 16) | ((u32)B8(p + 2) << 8) | 0xFF;  // RGB888(x)
     case 3: { u32 c = be16(p);  // RGBA4444
               return (((c >> 12) & 15) * 17u << 24) | (((c >> 8) & 15) * 17u << 16) | (((c >> 4) & 15) * 17u << 8) | ((c & 15) * 17u); }
-    case 4: { u32 c = ((u32)p[0] << 16) | ((u32)p[1] << 8) | p[2];  // RGBA6666
+    case 4: { u32 c = ((u32)B8(p) << 16) | ((u32)B8(p + 1) << 8) | B8(p + 2);  // RGBA6666
               u32 r = (c >> 18) & 63, g = (c >> 12) & 63, b = (c >> 6) & 63, a = c & 63;
               return ((r * 255 / 63) << 24) | ((g * 255 / 63) << 16) | ((b * 255 / 63) << 8) | (a * 255 / 63); }
     default: return be32(p);  // RGBA8888
@@ -55,10 +58,10 @@ static u32 color_size(u32 fmt) { static const u8 s[8] = { 2, 3, 4, 2, 3, 4, 4, 4
 // Source of one attribute: the stream itself (direct) or an array element in RAM (indexed).
 static const u8* attr_src(System* s, const GXCore* gx, u32 mode, u32 arr, const u8** stream, u32 directSize) {
     if (mode == 1) { const u8* p = *stream; *stream += directSize; return p; }
-    u32 index = mode == 2 ? (*stream)[0] : be16(*stream);
+    u32 index = mode == 2 ? B8(*stream) : be16(*stream);
     *stream += mode == 2 ? 1 : 2;
     u32 pa = (gx->cp[CP_ARRAY_BASE + arr] & GX_ARRAY_MASK) + index * (gx->cp[CP_ARRAY_STRIDE + arr] & 0xFF);
-    static const u8 zero[64];
+    static const u8 zero[64] __attribute__((aligned(4)));  // (read in the layout: from its word, ramlayout.h)
     return pa >= PA_MEM1_BEGIN && pa + 64 <= PA_MEM1_END ? s->mem1 + pa : zero;
 }
 
@@ -69,8 +72,8 @@ void gx_decode_vertex(System* s, const GXCore* gx, u32 vat, const u8* p, GXVerte
     memset(v, 0, sizeof *v);
     v->pnmtx = (u8)(ma & 63);
     for (int i = 0; i < 8; i++) v->texmtx[i] = (u8)(i < 4 ? (ma >> (6 + 6 * i)) & 63 : (mb >> (6 * (i - 4))) & 63);
-    if (lo & 1) v->pnmtx = *p++;
-    for (int i = 0; i < 8; i++) if ((lo >> (1 + i)) & 1) v->texmtx[i] = *p++;
+    if (lo & 1) v->pnmtx = (u8)B8(p++);
+    for (int i = 0; i < 8; i++) if ((lo >> (1 + i)) & 1) v->texmtx[i] = (u8)B8(p++);
 
     u32 pos = (lo >> 9) & 3;
     if (pos) {

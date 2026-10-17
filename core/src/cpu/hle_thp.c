@@ -28,13 +28,13 @@ static u8* g_lc;     // the locked cache (16 KB at 0xE0000000)
 
 // Guest addresses, already checked (thp_run): MEM1 through either mapping, or the locked cache.
 static inline u8* hp(u32 ea) { return (ea >> 24) == 0xE0 ? g_lc + (ea & 0x3FFF) : g_m + (ea & 0x01FFFFFF); }
-// Word and halfword accesses (the guest's are aligned: floats to 4, s16 to 2) with one byte swap each.
-static inline u32 be32(const u8* p) { u32 w; memcpy(&w, p, 4); return __builtin_bswap32(w); }
-static inline u32 be16(const u8* p) { u16 h; memcpy(&h, p, 2); return __builtin_bswap16(h); }
+// Word and halfword accesses (the guest's are aligned: floats to 4, s16 to 2), in guest memory's layout (ramlayout.h).
+static inline u32 be32(const u8* p) { return ramp_rd32a(p); }
+static inline u32 be16(const u8* p) { return ramp_rd16a(p); }
 #define LD32(a) be32(hp(a))
 #define LD16(a) be16(hp(a))
 static inline float hf(const u8* p) { u32 w = be32(p); float f; memcpy(&f, &w, 4); return f; }
-static inline void sf(u8* p, float f) { u32 w; memcpy(&w, &f, 4); w = __builtin_bswap32(w); memcpy(p, &w, 4); }
+static inline void sf(u8* p, float f) { u32 w; memcpy(&w, &f, 4); ramp_wr32a(p, w); }
 static inline float ldf(u32 ea) { return hf(hp(ea)); }
 static inline u8 qu8(float v) {  // GQR6's store: u8, scale -3 (the interpreter's quantize: truncate toward zero, saturate)
     float x = v * 0.125f;  // exact (a power of two; a value this small truncates to 0 either way)
@@ -47,7 +47,7 @@ static inline P lds2(u32 ea) { const u8* p = hp(ea); P r = { (float)(s16)be16(p)
 #define LDF2(a) ldf2(a)
 #define LDS16X2(a) lds2(a)
 #define STF2(a, v) do { u8* p_ = hp(a); P v_ = (v); sf(p_, v_.p0); sf(p_ + 4, v_.p1); } while (0)
-#define STU8X2(a, v) do { u8* p_ = hp(a); P v_ = (v); p_[0] = qu8(v_.p0); p_[1] = qu8(v_.p1); } while (0)
+#define STU8X2(a, v) do { u8* p_ = hp(a); P v_ = (v); ramp_wr8(p_, qu8(v_.p0)); ramp_wr8(p_ + 1, qu8(v_.p1)); } while (0)
 
 #include "hle_thp_idct.inc"
 

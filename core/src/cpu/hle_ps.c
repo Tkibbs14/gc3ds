@@ -47,11 +47,18 @@ static inline bool fexact(const Gekko* g, int k) {
 #define CLZ(v) ((v) ? (u32)__builtin_clz(v) : 32u)
 #define CMPS(a, b) ((s32)(a) < (s32)(b) ? 8u : (s32)(a) > (s32)(b) ? 4u : 2u)
 #define CMPU(a, b) ((u32)(a) < (u32)(b) ? 8u : (u32)(a) > (u32)(b) ? 4u : 2u)
-static inline u32 BE32(const u8* p) { u32 w; memcpy(&w, p, 4); return __builtin_bswap32(w); }
-static inline u32 BE16(const u8* p) { u16 h; memcpy(&h, p, 2); return __builtin_bswap16(h); }
-static inline void SBE32(u8* p, u32 v) { v = __builtin_bswap32(v); memcpy(p, &v, 4); }
-static inline void SBE16(u8* p, u32 v) { u16 h = __builtin_bswap16((u16)v); memcpy(p, &h, 2); }
-static inline void stf(u8* p, float f) { SBE32(p, FBITS(f)); }
+// Guest memory (and the private frame, 4-byte aligned like it) in its layout (ramlayout.h); HBE32 / HSBE32: a host
+// buffer of big-endian bytes (the gather pipe's, before it goes to the GP).
+static inline u32 BE32(const u8* p) { return ramp_rd32(p); }
+static inline u32 BE16(const u8* p) { return ramp_rd16(p); }
+static inline u32 BE8(const u8* p) { return ramp_rd8(p); }
+static inline void SBE32(u8* p, u32 v) { ramp_wr32(p, v); }
+static inline void SBE16(u8* p, u32 v) { ramp_wr16(p, v); }
+static inline void SBE8(u8* p, u32 v) { ramp_wr8(p, v); }
+static inline u32 HBE32(const u8* p) { u32 w; memcpy(&w, p, 4); return __builtin_bswap32(w); }
+static inline u32 HBE16(const u8* p) { u16 h; memcpy(&h, p, 2); return __builtin_bswap16(h); }
+static inline void HSBE32(u8* p, u32 v) { v = __builtin_bswap32(v); memcpy(p, &v, 4); }
+static inline void stf(u8* p, float f) { HSBE32(p, FBITS(f)); }
 // Stores to guest RAM. HLE_CHECK (PC) records each one's address and old bytes, to compare it with the interpreter's
 // result wherever it landed (not only near the arguments).
 #ifndef __3DS__
@@ -64,16 +71,21 @@ static inline void cap_note(u8* p, u32 size) {
     if (!g_scapOn) return;
     if (g_nscap == CAP_MAX) { g_scapFull = true; return; }
     g_scap[g_nscap].p = p;
-    memcpy(g_scap[g_nscap].old, p, size);
+    for (u32 k = 0; k < size; k++) g_scap[g_nscap].old[k] = (u8)ramp_rd8(p + k);  // (the guest's bytes, in order)
     g_scap[g_nscap].size = size;
     g_nscap++;
+}
+// A recorded store's bytes now differ from nat (the guest's bytes, in order).
+static bool cap_diff(u32 i, const u8* nat) {
+    for (u32 k = 0; k < g_scap[i].size; k++) if (ramp_rd8(g_scap[i].p + k) != nat[k]) return true;
+    return false;
 }
 #else
 #define cap_note(p, size) ((void)0)
 #endif
 #define STW32(p, v) do { u8* q_ = (p); cap_note(q_, 4); SBE32(q_, (v)); } while (0)
 #define STW16(p, v) do { u8* q_ = (p); cap_note(q_, 2); SBE16(q_, (v)); } while (0)
-#define STW8(p, v) do { u8* q_ = (p); cap_note(q_, 1); *q_ = (u8)(v); } while (0)
+#define STW8(p, v) do { u8* q_ = (p); cap_note(q_, 1); ramp_wr8(q_, (v)); } while (0)
 // Logged mode (a function whose addresses are computed): its stores to RAM wait in a log, applied in order at the end;
 // a load reads memory with the logged bytes that overlap it laid over, in order (GX setters write a byte or halfword
 // of a register shadow and read the word back). Any address out of range refuses with nothing applied.
@@ -86,8 +98,8 @@ static inline u32 wl_read(const Wl* wl, u32 wn, u32 ea, u32 size, const u8* h) {
         if (w->ea == ea && w->size == size) return w->v;
         break;  // a partial overlap: lay every overlapping store over memory, in order
     }
-    u8 b[4];
-    memcpy(b, h, size);
+    u8 b[4];  // big-endian
+    for (u32 k = 0; k < size; k++) b[k] = (u8)ramp_rd8(h + k);
     for (u32 i = 0; i < wn; i++) {
         const Wl* w = &wl[i];
         if (w->ea >= ea + size || ea >= w->ea + w->size) continue;
@@ -96,7 +108,7 @@ static inline u32 wl_read(const Wl* wl, u32 wn, u32 ea, u32 size, const u8* h) {
             if (at >= ea && at < ea + size) b[at - ea] = (u8)(w->v >> (8 * (w->size - 1 - k)));
         }
     }
-    return size == 4 ? BE32(b) : size == 2 ? BE16(b) : b[0];
+    return size == 4 ? HBE32(b) : size == 2 ? HBE16(b) : b[0];
 }
 #define DLD(EA, SZ) ({ u32 e_ = (EA); u8* h_ = region(e_, (SZ)); if (!h_) return 0; wl_read(wl, wn, e_, (SZ), h_); })
 #define DST(EA, V, SZ) do { u32 e_ = (EA), x_ = (V); u8* h_ = region(e_, (SZ)); if (!h_ || wn == WL_MAX) return 0; \
@@ -108,7 +120,7 @@ static inline u32 wl_read(const Wl* wl, u32 wn, u32 ea, u32 size, const u8* h) {
 #define PIPE_MAX 256
 #define PIPE8(v) (pb[pn++] = (u8)(v))
 #define PIPE16(v) do { u32 v_ = (v); pb[pn] = (u8)(v_ >> 8); pb[pn + 1] = (u8)v_; pn += 2; } while (0)
-#define PIPE32(v) do { SBE32(pb + pn, (v)); pn += 4; } while (0)
+#define PIPE32(v) do { HSBE32(pb + pn, (v)); pn += 4; } while (0)
 #define PIPEF1(f) do { stf(pb + pn, (f).p0); pn += 4; } while (0)
 #define PIPEF2(f) do { P f_ = (f); stf(pb + pn, f_.p0); stf(pb + pn + 4, f_.p1); pn += 8; } while (0)
 #define PIPE_OUT() pipe_out(g, pb, pn)
@@ -161,11 +173,11 @@ static inline float QLD(const u8* h, u32 q) {
     int s = (sc & 0x20) ? (int)sc - 64 : (int)sc;
     s32 v;
     switch (t) {
-    case 4: v = h[0]; break;
-    case 5: v = (s32)((u32)h[0] << 8 | h[1]); break;
-    case 6: v = (s8)h[0]; break;
-    case 7: v = (s16)((u32)h[0] << 8 | h[1]); break;
-    default: { u32 w; memcpy(&w, h, 4); w = __builtin_bswap32(w); float f; memcpy(&f, &w, 4); return f; }
+    case 4: v = (s32)ramp_rd8(h); break;
+    case 5: v = (s32)ramp_rd16(h); break;
+    case 6: v = (s8)ramp_rd8(h); break;
+    case 7: v = (s16)ramp_rd16(h); break;
+    default: { u32 w = ramp_rd32(h); float f; memcpy(&f, &w, 4); return f; }
     }
     u32 e = (u32)(127 - s) << 23;  // 2^-s as a float (|s| <= 32: a normal exponent)
     float p2; memcpy(&p2, &e, 4);
@@ -252,7 +264,7 @@ bool hle_ps_enabled(void) { return g_on; }
 u32 hle_ps_count(void) { return (u32)NDEF; }
 const char* hle_ps_name(u32 k) { return k < NDEF ? g_psDefs[k].name : "all"; }
 
-static inline u32 rdw(u32 pa) { u32 w; memcpy(&w, g_m + pa, 4); return __builtin_bswap32(w); }
+static inline u32 rdw(u32 pa) { return ram_rd32(g_m, pa); }
 static inline u32 be32p(const u8* p) { return BE32(p); }
 
 static int find(u32 pc) {
@@ -269,7 +281,7 @@ static int find(u32 pc) {
         const PsDef* f = &g_psDefs[d];
         if (f->first != w || pa + f->size > g_size) continue;
         u64 h = 0xCBF29CE484222325ull;
-        for (u32 i = 0; i < f->size; i++) { h ^= g_m[pa + i]; h *= 0x100000001B3ull; }
+        for (u32 i = 0; i < f->size; i++) { h ^= ram_rd8(g_m, pa + i); h *= 0x100000001B3ull; }
         if (h != f->hash) continue;
 #ifndef __3DS__
         if (getenv("HLE_CHECK")) fprintf(stderr, "HLE_CHECK %s recognised at %08x\n", f->name, pc);
@@ -401,10 +413,10 @@ static u32 ps_checked(Gekko* g) {
     Gekko gn = *g;
     for (int k = 0; k < NW; k++) if (w[k]) { memcpy(native[k], w[k], 64); }
     static u8 snat[CAP_MAX][4];  // each recorded store's bytes as the stand-in left them
-    for (u32 i = 0; i < g_nscap; i++) memcpy(snat[i], g_scap[i].p, g_scap[i].size);
+    for (u32 i = 0; i < g_nscap; i++) for (u32 k = 0; k < g_scap[i].size; k++) snat[i][k] = (u8)ramp_rd8(g_scap[i].p + k);
     *g = g0;
     for (int k = NW - 1; k >= 0; k--) if (w[k]) memcpy(w[k], before[k], 64);  // (overlapping windows: restored in reverse)
-    for (u32 i = g_nscap; i-- > 0;) memcpy(g_scap[i].p, g_scap[i].old, g_scap[i].size);
+    for (u32 i = g_nscap; i-- > 0;) for (u32 k = 0; k < g_scap[i].size; k++) ramp_wr8(g_scap[i].p + k, g_scap[i].old[k]);
     g_capSel = 1;
     u32 steps = 0;
     while (steps < n) {
@@ -422,7 +434,7 @@ static u32 ps_checked(Gekko* g) {
     if (!g_pchk.calls++) atexit(pchk_report);
     bool mem = pipeSame && !g_scapFull;
     for (int k = 0; k < NW; k++) if (w[k] && memcmp(w[k], native[k], 64)) mem = false;
-    for (u32 i = 0; i < g_nscap; i++) if (memcmp(g_scap[i].p, snat[i], g_scap[i].size)) mem = false;
+    for (u32 i = 0; i < g_nscap; i++) if (cap_diff(i, snat[i])) mem = false;
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) &&
                 !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (gn.cr & 0x00FFF000u) && mem;
@@ -447,9 +459,9 @@ static u32 ps_checked(Gekko* g) {
                         break;
                     }
         for (u32 i = 0; i < g_nscap; i++)
-            if (memcmp(g_scap[i].p, snat[i], g_scap[i].size)) {
+            if (cap_diff(i, snat[i])) {
                 fprintf(stderr, "  store %u (%u bytes): native %02x%02x%02x%02x interpreter %02x%02x%02x%02x\n", i, g_scap[i].size,
-                        snat[i][0], snat[i][1], snat[i][2], snat[i][3], g_scap[i].p[0], g_scap[i].p[1], g_scap[i].p[2], g_scap[i].p[3]);
+                        snat[i][0], snat[i][1], snat[i][2], snat[i][3], ramp_rd8(g_scap[i].p), ramp_rd8(g_scap[i].p + 1), ramp_rd8(g_scap[i].p + 2), ramp_rd8(g_scap[i].p + 3));
                 break;
             }
         if (g_scapFull) fprintf(stderr, "  (more stores than the capture holds)\n");

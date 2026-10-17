@@ -105,11 +105,13 @@ static inline void ldrb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0
 static inline void strb_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x07C00000u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void ldrh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x019000B0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 static inline void strh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x018000B0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
+static inline void ldrsh_reg(Emit* e, int rt, int rn, int rm) { E(e, cc(C_AL) | 0x019000F0u | ((u32)rn << 16) | ((u32)rt << 12) | (u32)rm); }
 // Byte and halfword accesses with an immediate offset (0..4095 for bytes, 0..255 for halfwords).
 static inline void ldrb_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x05D00000u | ((u32)rn << 16) | ((u32)rt << 12) | off); }
 static inline void strb_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x05C00000u | ((u32)rn << 16) | ((u32)rt << 12) | off); }
 static inline void ldrh_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x01D000B0u | ((u32)rn << 16) | ((u32)rt << 12) | ((off & 0xF0u) << 4) | (off & 0xFu)); }
 static inline void strh_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x01C000B0u | ((u32)rn << 16) | ((u32)rt << 12) | ((off & 0xF0u) << 4) | (off & 0xFu)); }
+static inline void ldrsh_imm(Emit* e, int rt, int rn, u32 off) { E(e, cc(C_AL) | 0x01D000F0u | ((u32)rn << 16) | ((u32)rt << 12) | ((off & 0xF0u) << 4) | (off & 0xFu)); }
 // Saturate rn to a signed / unsigned `bits`-bit range.
 static inline void ssat(Emit* e, int rd, u32 bits, int rn) { E(e, cc(C_AL) | 0x06A00010u | ((bits - 1) << 16) | ((u32)rd << 12) | (u32)rn); }
 static inline void usat(Emit* e, int rd, u32 bits, int rn) { E(e, cc(C_AL) | 0x06E00010u | (bits << 16) | ((u32)rd << 12) | (u32)rn); }

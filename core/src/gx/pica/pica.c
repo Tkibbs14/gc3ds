@@ -1783,7 +1783,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     if (g_gxMergeOpen) {
         if (can && vat == g_mg.vat && vsize == g_mg.vsize && g_mg.count + count <= MERGE_VERTS &&
             g_mg.bytes + bytes <= MERGE_BYTES && g_mg.nSeg < MERGE_SEGS) {
-            memcpy(g_mg.raw + g_mg.bytes, raw, bytes);
+            ram_copy(g_mg.raw, g_mg.bytes, raw, bytes);  // (in the layout, ramlayout.h)
             g_mg.pa[g_mg.nSeg] = pa;
             g_mg.seg[g_mg.nSeg++] = (prim << 16) | count;
             g_mg.count += count;
@@ -1795,7 +1795,7 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         merge_issue(s);
     }
     if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0, &pa, NULL, 0); return; }
-    memcpy(g_mg.raw, raw, bytes);
+    ram_copy(g_mg.raw, 0, raw, bytes);
     g_mg.pa[0] = pa;
     g_mg.seg[0] = (prim << 16) | count;
     g_mg.nSeg = 1;
@@ -2243,13 +2243,14 @@ static bool ns_range(NShape* e, u32 lo, u32 hi) {
 typedef struct { u32 vat; const u8* cmd; u32 len; const u8* verts; u32 nv, vsize; const u8* idx; u32 ni; bool list; } NsReq;
 
 // A run's vertices and indices; false for a primitive the conversion does not take (lines, points) or a malformed run.
+// (A run is read in guest memory's layout, ramlayout.h.)
 static bool ns_list_count(const NsReq* q, u32* nv, u32* ni) {
     u32 v = 0, t = 0;
     for (u32 off = 0; off < q->len;) {
-        u8 op = q->cmd[off];
+        u8 op = (u8)ramp_rd8(q->cmd + off);
         if (op == 0x00) { off++; continue; }
         if (op < 0x80 || op >= 0xC0 || (op & 7) != q->vat || off + 3 > q->len) return false;
-        u32 prim = (op >> 3) & 7, n = ((u32)q->cmd[off + 1] << 8) | q->cmd[off + 2];
+        u32 prim = (op >> 3) & 7, n = ramp_rd16(q->cmd + off + 1);
         if (prim > PRIM_FAN) return false;
         v += n;
         t += tri_verts(prim, n);
@@ -2269,8 +2270,9 @@ static void ns_list_fill(const GXCore* gx, const NsReq* q, VNatInfo* inf, float 
     for (u32 r = 0; r < 12; r++) inf->lo[r] = inf->hi[r] = 0;
     for (u32 off = 0; off < q->len;) {
         const u8* c = q->cmd + off;
-        if (c[0] == 0x00) { off++; continue; }
-        u32 prim = (c[0] >> 3) & 7, n = ((u32)c[1] << 8) | c[2];
+        u32 op = ramp_rd8(c);
+        if (op == 0x00) { off++; continue; }
+        u32 prim = (op >> 3) & 7, n = ramp_rd16(c + 1);
         VNatInfo d = *inf;
         u8 (*c2[2])[4] = { col[0] ? col[0] + at : NULL, col[1] ? col[1] + at : NULL };
         float (*t8[8])[2];

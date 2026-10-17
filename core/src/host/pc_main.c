@@ -45,9 +45,9 @@ static bool xfb_to_rgb(System* s, u8* rgb, u32* outW, u32* outH) {
             u32 pa = line + x * 2;
             if (pa + 4 > PA_MEM1_END) return false;
             const u8* p = s->mem1 + pa;
-            int u = p[1] - 128, v = p[3] - 128;
+            int u = (int)ramp_rd8(p + 1) - 128, v = (int)ramp_rd8(p + 3) - 128;  // (guest memory's layout)
             for (int k = 0; k < 2; k++) {
-                int yy = (p[k * 2] - 16) * 298;
+                int yy = ((int)ramp_rd8(p + k * 2) - 16) * 298;
                 u8* o = rgb + 3 * (y * w + x + k);
                 o[0] = clamp8((yy + 409 * v + 128) >> 8);
                 o[1] = clamp8((yy - 100 * u - 208 * v + 128) >> 8);
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
     save_frame(&sys, &fe, "last");
     {  // the machine state as a hash (compare runs without frames, e.g. GC3DS_NODRAW)
         u64 h = 0xCBF29CE484222325ull;
-        for (u32 i = 0; i < MEM1_SIZE; i++) { h ^= sys.mem1[i]; h *= 0x100000001B3ull; }
+        for (u32 i = 0; i < MEM1_SIZE; i++) { h ^= ram_rd8(sys.mem1, i); h *= 0x100000001B3ull; }  // (the guest's bytes, in order)
         for (u32 i = 0; i < 32; i++) { h ^= sys.cpu.gpr[i]; h *= 0x100000001B3ull; }
         h ^= sys.cpu.pc; h *= 0x100000001B3ull;
         fprintf(stderr, "state hash %016llx at cycle %llu\n", (unsigned long long)h, (unsigned long long)sys.cpu.cycles);

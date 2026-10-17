@@ -65,15 +65,43 @@ static inline u64 ram_rd64(const u8* b, u32 o) { return ((u64)ram_rd32(b, o) << 
 static inline void ram_wr64(u8* b, u32 o, u64 v) { ram_wr32(b, o, (u32)(v >> 32)); ram_wr32(b, o + 4, (u32)v); }
 
 // The same through a host pointer into guest memory (MEM1 and the locked cache are 4-byte aligned in host memory, so
-// the word a pointer is in starts at the pointer with its low two bits cleared).
+// the word a pointer is in starts at the pointer with its low two bits cleared, and the XOR applies to the pointer).
 #define RAMP_B(p) ((const u8*)((uintptr_t)(p) & ~(uintptr_t)3))
 #define RAMP_O(p) ((u32)((uintptr_t)(p) & 3))
-static inline u32 ramp_rd8(const u8* p) { return ram_rd8(RAMP_B(p), RAMP_O(p)); }
-static inline u32 ramp_rd16(const u8* p) { return ram_rd16(RAMP_B(p), RAMP_O(p)); }
-static inline u32 ramp_rd32(const u8* p) { return ram_rd32(RAMP_B(p), RAMP_O(p)); }
-static inline void ramp_wr8(u8* p, u32 v) { ram_wr8((u8*)RAMP_B(p), RAMP_O(p), v); }
-static inline void ramp_wr16(u8* p, u32 v) { ram_wr16((u8*)RAMP_B(p), RAMP_O(p), v); }
-static inline void ramp_wr32(u8* p, u32 v) { ram_wr32((u8*)RAMP_B(p), RAMP_O(p), v); }
+#define RAMP_X(p, x) ((const u8*)((uintptr_t)(p) ^ (x)))
+static inline u32 ramp_rd8(const u8* p) { return *RAMP_X(p, RAM_X8); }
+static inline void ramp_wr8(u8* p, u32 v) { *(u8*)RAMP_X(p, RAM_X8) = (u8)v; }
+// Aligned to the access (the caller knows it): a plain load or store in the swapped layout, one swap in big-endian.
+static inline u32 ramp_rd16a(const u8* p) {
+    u16 h; memcpy(&h, RAMP_X(p, RAM_X16), 2);
+    return GC_SWAPRAM ? h : bswap16(h);
+}
+static inline u32 ramp_rd32a(const u8* p) {
+    u32 v; memcpy(&v, p, 4);
+    return GC_SWAPRAM ? v : bswap32(v);
+}
+static inline void ramp_wr16a(u8* p, u32 v) { u16 h = GC_SWAPRAM ? (u16)v : bswap16((u16)v); memcpy((u8*)RAMP_X(p, RAM_X16), &h, 2); }
+static inline void ramp_wr32a(u8* p, u32 v) { if (!GC_SWAPRAM) v = bswap32(v); memcpy(p, &v, 4); }
+static inline u32 ramp_rd16(const u8* p) {
+    if (GC_SWAPRAM && __builtin_expect((uintptr_t)p & 1, 0)) return (ramp_rd8(p) << 8) | ramp_rd8(p + 1);
+    return ramp_rd16a(p);
+}
+static inline u32 ramp_rd32(const u8* p) {
+    if (GC_SWAPRAM && __builtin_expect((uintptr_t)p & 3, 0))
+        return (ramp_rd8(p) << 24) | (ramp_rd8(p + 1) << 16) | (ramp_rd8(p + 2) << 8) | ramp_rd8(p + 3);
+    return ramp_rd32a(p);
+}
+static inline void ramp_wr16(u8* p, u32 v) {
+    if (GC_SWAPRAM && __builtin_expect((uintptr_t)p & 1, 0)) { ramp_wr8(p, v >> 8); ramp_wr8(p + 1, v); return; }
+    ramp_wr16a(p, v);
+}
+static inline void ramp_wr32(u8* p, u32 v) {
+    if (GC_SWAPRAM && __builtin_expect((uintptr_t)p & 3, 0)) {
+        ramp_wr8(p, v >> 24); ramp_wr8(p + 1, v >> 16); ramp_wr8(p + 2, v >> 8); ramp_wr8(p + 3, v);
+        return;
+    }
+    ramp_wr32a(p, v);
+}
 
 // A big-endian byte stream into guest memory at b + o, and back out.
 static inline void ram_from_be(u8* b, u32 o, const u8* src, u32 n) {
@@ -115,5 +143,22 @@ static inline void ram_fix_be(u8* b, u32 o, u32 n) {
     for (u32 w = s; w < e; w += 4) { u32 x; memcpy(&x, b + w, 4); x = bswap32(x); memcpy(b + w, &x, 4); }
 #else
     (void)b; (void)o; (void)n;
+#endif
+}
+// n bytes already in the layout, from a pointer into guest memory (or a buffer holding them at the same place in a
+// word as they were), to b + o. In the swapped layout a stream's end bytes sit outside its own address range, so the
+// copy is whole words where the two agree mod 4 and byte by byte elsewhere.
+static inline void ram_copy(u8* b, u32 o, const u8* src, u32 n) {
+#if GC_SWAPRAM
+    u32 i = 0;
+    if (((o ^ (u32)(uintptr_t)src) & 3) == 0) {
+        for (; i < n && ((o + i) & 3); i++) ram_wr8(b, o + i, ramp_rd8(src + i));
+        u32 w = (n - i) & ~3u;
+        memcpy(b + o + i, src + i, w);
+        i += w;
+    }
+    for (; i < n; i++) ram_wr8(b, o + i, ramp_rd8(src + i));
+#else
+    memcpy(b + o, src, n);
 #endif
 }

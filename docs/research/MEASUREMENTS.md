@@ -550,6 +550,19 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **The commit (675acb2) on the 2DS (job 350):** cutscene **29.09%**, later stretch **17.87%**, movie **12.42%**;
   the day's start (job 327) was 28.57 / 16.12 / 11.72: +1.8% / +10.9% / +6.0%.
 
+### Byte-swapped guest RAM, C18 (jobs 351-352, device; PC checks)
+
+- **Job 351 (first swapped build):** cutscene **28.78%**, later **16.76%**, movie **11.67%** against job 350's
+  29.09 / 17.87 / 12.42 (-1.1% / -6.2% / -6.0%). JIT code **9.80 host words per guest instruction against 7.98**
+  (exit stubs 0.9 -> 1.4, cold 1.2 -> 1.6 per guest instruction): a second deopt exit per first hoisted access.
+- **Job 352 (alignment folded into the window stub, aligned accessors in the stand-ins):** cutscene **28.92%**,
+  later **17.91%**, movie **12.41%** (-0.6% / +0.2% / even); code 7.78 against 7.74. Neutral: removing rev from
+  every guest word load is worth nothing measurable on core 0.
+- **Correctness (PC):** GC_SWAPRAM 1 against HEAD byte-identical (state hash and last.png) for boot 0-600, tp_pc_900
+  -> 2100 and tp_pc_5000 -> 5400; HLE_CHECK fields 900-2100 in the swapped layout 0 differed (5,007,286 PS, 1,096,284
+  J3DGD, 5,814 ShdwDraw; HLE_STOP_EVERY=37 1,200 stopped inside); JIT fuzzer mask 4723, swapped: main 20,000 (11,148
+  float), chain seeds 1-8, default seeds 11/21/31, 0 fails, planted bugs detected.
+
 ### Translator direct mode: calcWeightEnvelopeMtx (jobs 333-334, device; PC HLE_CHECK)
 
 - **Exact:** fields 900-1400, 1,500 calls, 0 refused, 0 differed; with `HLE_STOP_EVERY=37` (every 37th access fails,

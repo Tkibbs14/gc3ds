@@ -24,6 +24,7 @@ APP_AUTHOR      := gc3ds contributors
 ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS   := -g -Wall -Wextra -Wno-unused-parameter -O2 -mword-relocations -ffunction-sections $(ARCH)
 CFLAGS   += $(INCLUDE) -D__3DS__ -std=gnu11
+CFLAGS   += $(EXTRA_CFLAGS)  # e.g. EXTRA_CFLAGS=-DGC_SWAPRAM=1 BUILD=build-swap (that layout's objects apart)
 ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 LIBS     := -lcitro3d -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lctru -lm

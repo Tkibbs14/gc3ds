@@ -289,7 +289,7 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         if kind == 'D':
             flags['logged'] = True
             return f'DLD({e}, {size})'
-        return {4: f'BE32({e})', 2: f'BE16({e})', 1: f'*({e})'}[size]
+        return {4: f'BE32({e})', 2: f'BE16({e})', 1: f'BE8({e})'}[size]
 
     def store(base, off, size, v):  # C statement
         kind, e = addr(base, off, size, True)
@@ -303,13 +303,13 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             flags['logged'] = True
             return f'DST({e}, {v}, {size});'
         if kind == 'STK':  # the private frame
-            return {4: f'SBE32({e}, {v});', 2: f'SBE16({e}, {v});', 1: f'*({e}) = (u8)({v});'}[size]
+            return {4: f'SBE32({e}, {v});', 2: f'SBE16({e}, {v});', 1: f'SBE8({e}, {v});'}[size]
         return f'STW{size * 8}({e}, {v});'  # guest RAM (HLE_CHECK records each store)
 
     def xload(e, size):  # direct mode: a load from a guest address, stopping here when it is not in MEM1
         flags['stops'] = True
         return {4: f'BE32(XH({e}, 4, {cur[0]:#010x}u))', 2: f'BE16(XH({e}, 2, {cur[0]:#010x}u))',
-                1: f'*XH({e}, 1, {cur[0]:#010x}u)'}[size]
+                1: f'BE8(XH({e}, 1, {cur[0]:#010x}u))'}[size]
 
     def xstore(e, size, v):
         flags['stops'] = True
@@ -994,7 +994,7 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
     if allg:
         out.append('    ' + ' '.join(f'(void){r};' for r in allg))
     if flags['stack']:
-        out.append(f'    u8 stk[{flags["stack"] + 16}];  // the frame and the LR save word above it (dead after the call)')
+        out.append(f'    u8 stk[{flags["stack"] + 16}] __attribute__((aligned(4)));  // the frame and the LR save word above it (dead after the call)')
         out.append(f'#define STK(i) (stk + {flags["stack"]} + (i))')
     if flags['pipe']:
         out.append('    u8 pb[PIPE_MAX];')

@@ -9,6 +9,14 @@
 #include "arm_emit.h"
 #include "jit.h"
 
+// Guest memory's layout (ramlayout.h, REDESIGN_CANDIDATES C18). Big-endian RAM: a guest word or halfword is byte
+// swapped after a load and before a store. Swapped RAM (GC_SWAPRAM): words are in host order (no swap), a halfword
+// sits at ea ^ 2 and a byte at ea ^ 3 (an EOR of the address before the access); a double is two words, the high one
+// first, as in big-endian RAM.
+#define RAM_XH 2u
+#define RAM_XB 3u
+static inline void grev(Emit* e, int d, int s) { if (!GC_SWAPRAM) rev(e, d, s); else mov_reg(e, d, s); }
+
 #define MAX_BLOCK_INSNS 64  // a trace (blocks follow unconditional branches and fall through conditional ones) is up to this long
 #define DISPATCH_BITS 16
 #define DISPATCH_SIZE (1u << DISPATCH_BITS)
@@ -31,7 +39,7 @@
 typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
-       ST_HOISTCHK, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 11264 };  // (the BE float stubs)  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
+       ST_HOISTCHK, ST_HOISTCHK2, ST_HOISTCHK4, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 11264 };  // (the BE float stubs)  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
 enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
@@ -235,8 +243,7 @@ static u32 jit_hle(Gekko* g, u32 pc, s32 budget) {
     u32 pa;
     bool stop;
     if (!gk_translate(g, g->pc, false, false, &pa, false) || pa + 4 > g_jit->ramSize) return 0;
-    const u8* w = g_jit->ram + pa;
-    g->pc = gekko_interp_one(g, g->pc, ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], &stop);
+    g->pc = gekko_interp_one(g, g->pc, ram_rd32(g_jit->ram, pa), &stop);
     return 1;
 }
 
@@ -291,8 +298,7 @@ static u32 jit_sc_handler(Gekko* g, u32 pc, u32 n) {
     for (u32 k = 0; k < n; k++) {
         u32 pa, w = 0;  // (an address that does not translate: 0, an illegal instruction, as the fetch never happens here)
         if (gk_translate(g, npc, false, false, &pa, false) && pa + 4 <= g_jit->ramSize) {
-            const u8* b = g_jit->ram + pa;
-            w = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | b[3];
+            w = ram_rd32(g_jit->ram, pa);
         }
         npc = gekko_interp_one(g, npc, w, &stop);
         req |= GKP(g)->stopReq;
@@ -477,6 +483,7 @@ typedef struct {
     // since; chkClear: the GPRs the instruction being compiled writes (cleared from chk before the next one).
     bool hoist;
     u32 chk, chkClear;
+    u8 chkAl[32];  // (swapped RAM) the alignment checked with rA's window: 1, 2 or 4 (hoist_fits)
     u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
     u32 countExtra;  // guest instructions run inside the block beyond its own (OPT_SYSCALL: sc's handler)
@@ -693,7 +700,7 @@ static int crf_scan(Jit* j, u32 pc, u32 f, bool fused) {
             seen[nSeen++] = p;
             u32 pa;
             if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return CF_UNKNOWN;
-            u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+            u32 inst = ram_rd32(j->ram, pa);
             u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, rd, wr;
             if (!crf_use(inst, &rd, &wr)) return CF_UNKNOWN;
             if (fused && p == pc) rd = 0;  // the fused bc reads the ARM flags, not the stored field
@@ -735,7 +742,7 @@ static void cf_note(Jit* j, u32 pc, u32 inst) {
     if (!g_regStat || !crf_use(inst, &rd, &wr) || !wr || (wr & (wr - 1))) return;
     u32 f = (u32)__builtin_ctz(wr), pa, next = 0;
     if (gk_translate(j->g, pc + 4, false, false, &pa, false) && pa + 4 <= j->ramSize)
-        next = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+        next = ram_rd32(j->ram, pa);
     u32 nbo = (next >> 21) & 31, nbi = (next >> 16) & 31;
     bool fused = (next >> 26) == 16 && (nbo & 4) && !(nbo & 16) && (nbi >> 2) == f && (nbi & 3) != 3 && !(next & 1) &&
                  ((inst >> 26) != 63 && (inst >> 26) != 59 && (inst >> 26) != 4);  // integer flags only
@@ -761,7 +768,7 @@ static int id_dead(Jit* j, u32 pc, bool isCr, u32 ids, bool abi) {
             seenWant[nSeen++] = want;
             u32 pa;
             if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return 0;
-            u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+            u32 inst = ram_rd32(j->ram, pa);
             u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
             if (isCr) {
                 u32 rd, wr;
@@ -1177,7 +1184,7 @@ static void rx_add(Cg* c, int kind, u32 target, u32 from) {
     if (kind == RX_IND) {  // the branch itself: blr returns, bctr does not tell
         u32 pa;
         if (gk_translate(c->j->g, from, false, false, &pa, false) && pa + 4 <= c->j->ramSize)
-            bi = ((u32)c->j->ram[pa] << 24) | ((u32)c->j->ram[pa + 1] << 16) | ((u32)c->j->ram[pa + 2] << 8) | c->j->ram[pa + 3];
+            bi = ram_rd32(c->j->ram, pa);
     }
     bool isBlr = kind == RX_IND && (bi >> 26) == 19 && ((bi >> 1) & 0x3FF) == 16;
     for (int k = 0; k < NSLOT_STAT; k++) {
@@ -1641,6 +1648,34 @@ static void load_slow(Cg* c, u32 size, bool sign, int dreg) {
     mov_reg(e, dreg, R2);
 }
 
+// The access itself, to an address already checked (x: the guest address register; [RRAM, x] is its host byte):
+// `size` bytes into dreg, zero- or sign-extended. Swapped RAM uses r12 for a halfword's or a byte's address.
+static void ram_load(Emit* e, u32 size, bool sign, int dreg, int x) {
+    if (size == 4) { ldr_reg(e, dreg, RRAM, x); grev(e, dreg, dreg); return; }
+    if (GC_SWAPRAM) {
+        dp_imm(e, EOR, 0, R12, x, size == 2 ? RAM_XH : RAM_XB);
+        if (size == 1) ldrb_reg(e, dreg, RRAM, R12);
+        else if (sign) ldrsh_reg(e, dreg, RRAM, R12);
+        else ldrh_reg(e, dreg, RRAM, R12);
+        return;
+    }
+    if (size == 2) { ldrh_reg(e, dreg, RRAM, x); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+    else ldrb_reg(e, dreg, RRAM, x);
+}
+// `size` bytes of vreg to the checked guest address in x. Big-endian RAM swaps through r3, swapped RAM addresses a
+// halfword or a byte through r12.
+static void ram_store(Emit* e, u32 size, int vreg, int x) {
+    if (GC_SWAPRAM) {
+        if (size == 4) { str_reg(e, vreg, RRAM, x); return; }
+        dp_imm(e, EOR, 0, R12, x, size == 2 ? RAM_XH : RAM_XB);
+        if (size == 2) strh_reg(e, vreg, RRAM, R12); else strb_reg(e, vreg, RRAM, R12);
+        return;
+    }
+    if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, x); }
+    else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, x); }
+    else strb_reg(e, vreg, RRAM, x);
+}
+
 // Load `size` bytes from the guest address in r0 into dreg (zero- or sign-extended). The fast path covers aligned
 // accesses to MEM1 through the standard cached/uncached mappings and falls through; everything else goes out of line
 // to jit_load and comes back. With set_tail, the loaded value is r2 on the way out of a stop.
@@ -1670,13 +1705,11 @@ static void emit_load(Cg* c, u32 size, bool sign, int dreg) {
         branch_abs(e, C_AL, true, c->j->code + (v2 ? c->j->memStub2[k][ri] : c->j->memStub[k][ri]));
         slow[0] = branch_c(e, C_CS, 0);
         slow[1] = NO_BRANCH;
-        if (v2 && size == 4) rev(e, dreg, dreg);  // the scheduled stubs leave the swap here (see emit_mem_stubs)
-        else if (v2 && size == 2) { if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
+        if (!GC_SWAPRAM && v2 && size == 4) rev(e, dreg, dreg);  // the scheduled stubs leave the swap here (see emit_mem_stubs)
+        else if (!GC_SWAPRAM && v2 && size == 2) { if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
     } else {
         mem1_check(c, size, slow);
-        if (size == 4) { ldr_reg(e, dreg, RRAM, R0); rev(e, dreg, dreg); }
-        else if (size == 2) { ldrh_reg(e, dreg, RRAM, R0); if (sign) revsh(e, dreg, dreg); else rev16(e, dreg, dreg); }
-        else ldrb_reg(e, dreg, RRAM, R0);
+        ram_load(e, size, sign, dreg, R0);
     }
     u32 resume = e->n;
     cold_start(c, slow);
@@ -1773,9 +1806,7 @@ static void emit_store(Cg* c, u32 size, int vreg) {
         slow[1] = NO_BRANCH;
     } else {
         mem1_check(c, size, slow);
-        if (size == 4) { rev(e, R3, vreg); str_reg(e, R3, RRAM, R0); }
-        else if (size == 2) { rev16(e, R3, vreg); strh_reg(e, R3, RRAM, R0); }
-        else strb_reg(e, vreg, RRAM, R0);
+        ram_store(e, size, vreg, R0);
     }
     u32 resume = e->n;
     cold_start(c, slow);
@@ -2125,16 +2156,29 @@ static void op_imm(Cg* c, int opc, int d, int s, u32 imm) {
 // Check hoisting: the index register of a D-form access rA + d (r0 = the address, or rA's register when d = 0 without
 // update and rA was checked before). The first access through rA in the block calls ST_HOISTCHK on its address: outside
 // the window, the block leaves before the instruction and is recompiled with per-access checks (exit_deopt_if).
-static int hoist_addr(Cg* c, u32 ra, u32 d, bool update) {
+// Swapped RAM (GC_SWAPRAM): an unchecked access must also be aligned (to its size; words for floats and doubles), since
+// a misaligned ldr there reads bytes of the wrong word. The first access through rA checks the address's alignment
+// with the window (a failure deoptimizes as one outside it), and later ones are unchecked only when that alignment
+// covers them and their displacement keeps it (hoist_fits; the others take the checked path).
+static u32 hoist_align(u32 size) { return !GC_SWAPRAM || size == 1 ? 1u : size >= 4 ? 4u : size; }
+static bool hoist_fits(const Cg* c, u32 ra, u32 d, u32 size) {
+    u32 a = hoist_align(size);
+    if (a == 1) return true;
+    if (d & (a - 1)) return false;
+    return !((c->chk >> ra) & 1) || c->chkAl[ra] >= a;
+}
+static int hoist_addr(Cg* c, u32 ra, u32 d, bool update, u32 size) {
     Emit* e = &c->e;
     int b = src(c, ra, R0);
     bool first = !((c->chk >> ra) & 1);
     if (!first && !d && !update) return b;
     add_const(e, R0, b, d, R12);
     if (first) {
-        branch_abs(e, C_AL, true, stub(c, ST_HOISTCHK));
+        u32 a = hoist_align(size);
+        branch_abs(e, C_AL, true, stub(c, a == 4 ? ST_HOISTCHK4 : a == 2 ? ST_HOISTCHK2 : ST_HOISTCHK));
         exit_deopt_if(c, C_CS);
         c->chk |= 1u << ra;
+        c->chkAl[ra] = (u8)a;
     }
     return R0;
 }
@@ -2145,13 +2189,12 @@ static void hoist_load(Cg* c, u32 size, bool sign, u32 rd, u32 ra, u32 d, bool u
 #ifndef __3DS__
     if (g_regStat && !c->inCold) rs_emit_count(e, &g_eaRun[ra == 1 ? 0 : ra == 2 ? 1 : ra == 13 ? 2 : 3]);
 #endif
-    int x = hoist_addr(c, ra, d, update);
+    int x = hoist_addr(c, ra, d, update, size);
     int t = dst(c, rd, R2);
     int k = slot_of(&c->rc, rd);
-    bool defer = size == 4 && k >= 0 && kSlot[k] == t && !c->inCold;  // the swap waits for the value's first use
-    if (size == 4) { ldr_reg(e, t, RRAM, x); if (!defer) rev(e, t, t); }
-    else if (size == 2) { ldrh_reg(e, t, RRAM, x); if (sign) revsh(e, t, t); else rev16(e, t, t); }
-    else ldrb_reg(e, t, RRAM, x);
+    bool defer = !GC_SWAPRAM && size == 4 && k >= 0 && kSlot[k] == t && !c->inCold;  // the swap waits for the value's first use
+    if (defer) ldr_reg(e, t, RRAM, x);
+    else ram_load(e, size, sign, t, x);
     dst_done(c, rd, t);
     if (defer) c->rc.swap[k] = true;
     if (update) st_gpr(c, R0, ra);
@@ -2163,11 +2206,9 @@ static void hoist_store(Cg* c, u32 size, u32 rs, u32 ra, u32 d, bool update) {
 #ifndef __3DS__
     if (g_regStat && !c->inCold) rs_emit_count(e, &g_eaRun[ra == 1 ? 0 : ra == 2 ? 1 : ra == 13 ? 2 : 3]);
 #endif
-    int x = hoist_addr(c, ra, d, update);
+    int x = hoist_addr(c, ra, d, update, size);
     int v = src(c, rs, R2);
-    if (size == 4) { rev(e, R3, v); str_reg(e, R3, RRAM, x); }
-    else if (size == 2) { rev16(e, R3, v); strh_reg(e, R3, RRAM, x); }
-    else strb_reg(e, v, RRAM, x);
+    ram_store(e, size, v, x);
     if (update) st_gpr(c, R0, ra);
 }
 
@@ -2309,7 +2350,7 @@ static bool compile_int(Cg* c, u32 inst) {
     case 32: case 33: case 34: case 35: case 40: case 41: case 42: case 43: {  // lwz lwzu lbz lbzu lhz lhzu lha lhau
         bool update = op & 1;
         if (update && (ra == 0 || ra == rd)) return false;  // invalid forms
-        if (c->hoist && ra) { hoist_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, simm, update); return true; }
+        if (c->hoist && ra && hoist_fits(c, ra, simm, op <= 33 ? 4 : op <= 35 ? 1 : 2)) { hoist_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, simm, update); return true; }
         ea_disp(c, ra, simm);
         int_load(c, op <= 33 ? 4 : op <= 35 ? 1 : 2, op >= 42, rd, ra, update);
         return true;
@@ -2317,7 +2358,7 @@ static bool compile_int(Cg* c, u32 inst) {
     case 36: case 37: case 38: case 39: case 44: case 45: {  // stw stwu stb stbu sth sthu
         bool update = op & 1;
         if (update && ra == 0) return false;
-        if (c->hoist && ra) { hoist_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, simm, update); return true; }
+        if (c->hoist && ra && hoist_fits(c, ra, simm, op <= 37 ? 4 : op <= 39 ? 1 : 2)) { hoist_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, simm, update); return true; }
         ea_disp(c, ra, simm);
         int_store(c, op <= 37 ? 4 : op <= 39 ? 1 : 2, rd, ra, update);
         return true;
@@ -2768,8 +2809,8 @@ static void emit_load64(Cg* c, u32 frd) {
     mem1_check(c, 8, slow);
     dp_reg(e, ADD, 0, R1, R0, RRAM);
     ldmia(e, R1, (1u << R2) | (1u << R3));
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     str_imm(e, R3, RG, OFF_FPR(frd));
     str_imm(e, R2, RG, OFF_FPR(frd) + 4);
     u32 resume = e->n;
@@ -2800,8 +2841,8 @@ static void emit_store64(Cg* c, u32 frs) {
     mem1_check(c, 8, slow);
     ldr_imm(e, R2, RG, OFF_FPR(frs) + 4);
     ldr_imm(e, R3, RG, OFF_FPR(frs));
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     dp_reg(e, ADD, 0, R1, R0, RRAM);
     stmia(e, R1, (1u << R2) | (1u << R3));
     u32 resume = e->n;
@@ -2814,9 +2855,9 @@ static void emit_store64(Cg* c, u32 frs) {
 static bool float_mem(Cg* c, u32 kind, u32 fr, u32 ra, u32 rb, u32 simm, bool indexed, bool update) {
     Emit* e = &c->e;
     if (update && ra == 0) return false;  // invalid form
-    if (c->hoist && !indexed && ra && c->j->memStubs && !c->inCold) {  // check hoisting: the unchecked stubs, no slow path
+    if (c->hoist && !indexed && ra && c->j->memStubs && !c->inCold && hoist_fits(c, ra, simm, 4)) {  // check hoisting: the unchecked stubs, no slow path
         if (kind >= 2) ld_fpr(c, 1, fr, 0);
-        int x = hoist_addr(c, ra, simm, update);
+        int x = hoist_addr(c, ra, simm, update, 4);
         if (x != R0) mov_reg(e, R0, x);
         Jit* j = c->j;
         bool ks = kind == 2 && (j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & 1);  // an exact single: no round trip
@@ -2950,9 +2991,9 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
 #ifndef __3DS__
     if (g_regStat && !c->inCold) rs_emit_count(e, &g_psqRun[store][qt][w]);
 #endif
-    if (qt == 0 && c->hoist && !indexed && ra && c->j->memStubs && !c->inCold) {  // check hoisting: the unchecked stub
+    if (qt == 0 && c->hoist && !indexed && ra && c->j->memStubs && !c->inCold && hoist_fits(c, ra, (u32)((s32)(inst << 20) >> 20), 4)) {  // check hoisting: the unchecked stub
         if (store) { ld_fpr(c, 1, fr, 0); if (!w) ld_fpr(c, 2, fr, 1); }
-        int x = hoist_addr(c, ra, (u32)((s32)(inst << 20) >> 20), update);
+        int x = hoist_addr(c, ra, (u32)((s32)(inst << 20) >> 20), update, 4);
         if (x != R0) mov_reg(e, R0, x);
         bool ks = store && (c->j->opt & OPT_KSTORE) && ((c->single >> (2 * fr)) & (w ? 1u : 3u)) == (w ? 1u : 3u);
         bool be = (c->j->opt & OPT_BEFLOAT) != 0;
@@ -3056,14 +3097,14 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
     if (!store && qt == 0) {
         if (w) {
             ldr_imm(e, R2, R1, 0);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             vmov_s_r(e, 0, R2);
             vcvt_f64_f32(e, 1, 0);
             st_fpr(c, 1, fr, 0);
         } else {
             ldmia(e, R1, (1u << R2) | (1u << R3));
-            rev(e, R2, R2);
-            rev(e, R3, R3);
+            grev(e, R2, R2);
+            grev(e, R3, R3);
             vmov_ss_rr(e, 0, R2, R3);
             vcvt_f64_f32(e, 1, 0);
             vcvt_f64_f32(e, 2, 1);
@@ -3072,7 +3113,13 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         }
     } else if (!store) {
         for (u32 lane = 0; lane < (w ? 1u : 2u); lane++) {
-            if (sz == 1) { ldrb_imm(e, R2, R1, lane); if (sgn) sxtb(e, R2, R2); }
+            if (GC_SWAPRAM) {  // the element at (r1 + its offset) ^ 3 or ^ 2 (r1: MEM1's or the locked cache's host copy)
+                if (lane) dp_imm(e, ADD, 0, R12, R1, sz);
+                dp_imm(e, EOR, 0, R12, lane ? R12 : R1, sz == 1 ? RAM_XB : RAM_XH);
+                if (sz == 1) { ldrb_imm(e, R2, R12, 0); if (sgn) sxtb(e, R2, R2); }
+                else if (sgn) ldrsh_imm(e, R2, R12, 0);
+                else ldrh_imm(e, R2, R12, 0);
+            } else if (sz == 1) { ldrb_imm(e, R2, R1, lane); if (sgn) sxtb(e, R2, R2); }
             else { ldrh_imm(e, R2, R1, 2 * lane); if (sgn) revsh(e, R2, R2); else rev16(e, R2, R2); }
             vmov_s_r(e, 0, R2);
             vcvt_f64_s32(e, 1, 0);
@@ -3081,12 +3128,12 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
         }
     } else if (qt == 0) {
         dbl_to_single_bits(c, R2, fr, 0, R12, LR);
-        rev(e, R2, R2);
+        grev(e, R2, R2);
         if (w) {
             str_imm(e, R2, R1, 0);
         } else {
             dbl_to_single_bits(c, R3, fr, 1, R12, LR);
-            rev(e, R3, R3);
+            grev(e, R3, R3);
             stmia(e, R1, (1u << R2) | (1u << R3));
         }
     } else {
@@ -3099,7 +3146,11 @@ static bool compile_psq(Cg* c, u32 inst, bool store, bool indexed, bool update) 
             vcvt_s32_f64(e, 0, 0);  // toward zero, saturating to int32; NaN gives 0
             vmov_r_s(e, R2, 0);
             if (sgn) ssat(e, R2, bits, R2); else usat(e, R2, bits, R2);
-            if (sz == 1) strb_imm(e, R2, R1, lane);
+            if (GC_SWAPRAM) {  // (as the loads above)
+                if (lane) dp_imm(e, ADD, 0, R12, R1, sz);
+                dp_imm(e, EOR, 0, R12, lane ? R12 : R1, sz == 1 ? RAM_XB : RAM_XH);
+                if (sz == 1) strb_imm(e, R2, R12, 0); else strh_imm(e, R2, R12, 0);
+            } else if (sz == 1) strb_imm(e, R2, R1, lane);
             else { rev16(e, R2, R2); strh_imm(e, R2, R1, 2 * lane); }
         }
     }
@@ -3379,8 +3430,8 @@ static int fc_compile(Cg* c, u32 inst) {
             if (k0 < 0) return -1;  // not in a lane: the old store (known-single stubs when it is an exact single)
             fc_pin(c, k0);
         }
-        if (c->hoist && ra) {
-            int x = hoist_addr(c, ra, simm, update);
+        if (c->hoist && ra && hoist_fits(c, ra, simm, 4)) {
+            int x = hoist_addr(c, ra, simm, update, 4);
             if (x != R0) mov_reg(e, R0, x);
             if (!load) vmov_r_s(e, R2, 16 + k0);
             branch_abs(e, C_AL, true, j->code + (load ? j->lfsUB : j->stfsUB));
@@ -3424,9 +3475,9 @@ static int fc_compile(Cg* c, u32 inst) {
             fc_pin(c, k0);
             if (!w) fc_pin(c, k1);
         }
-        bool hoisted = c->hoist && ra;
+        bool hoisted = c->hoist && ra && hoist_fits(c, ra, simm, 4);
         if (hoisted) {
-            int x = hoist_addr(c, ra, simm, update);
+            int x = hoist_addr(c, ra, simm, update, 4);
             if (x != R0) mov_reg(e, R0, x);
         } else {
             ea_disp(c, ra, simm);  // (no cache change after the first branch to cold code)
@@ -3609,7 +3660,7 @@ static bool fc_gate(Jit* j, u32 pa) {
     u32 n = 0;
     for (u32 i = 0; i < 64; i++, pa += 4) {
         if (pa + 4 > j->ramSize || (i && !(pa & 0xFFF))) break;
-        u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+        u32 inst = ram_rd32(j->ram, pa);
         u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
         if (op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528)) || op == 17) break;
         if ((op >= 48 && op <= 61 && op != 58) || op == 4 || op == 63) n++;
@@ -3754,8 +3805,7 @@ static bool compile_float(Cg* c, u32 inst) {
 static u32 sc_handler_len(const Jit* j) {
     if (j->g->msr & MSR_IP) return 0;  // the vectors are in ROM then
     for (u32 k = 0; k < 16; k++) {
-        const u8* b = j->ram + 0xC00 + 4 * k;
-        u32 w = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | b[3];
+        u32 w = ram_rd32(j->ram, 0xC00 + 4 * k);
         u32 op = w >> 26, xo = (w >> 1) & 0x3FF, spr = ((w >> 16) & 31) | ((w >> 6) & 0x3E0);
         if (op == 19 && xo == 50) return k + 1;  // rfi: the handler's instructions, rfi included
         bool ok = op == 24 || (op == 31 && xo == 339) || (op == 31 && xo == 598) || (op == 19 && xo == 150) ||
@@ -3790,7 +3840,7 @@ static bool block_may_loop(Jit* j, u32 pc) {
     for (u32 k = 0, p = pc; k < MAX_BLOCK_INSNS + 8; k++, p += 4) {
         u32 pa;
         if (!gk_translate(j->g, p, false, false, &pa, false) || pa + 4 > j->ramSize) return true;
-        u32 inst = ((u32)j->ram[pa] << 24) | ((u32)j->ram[pa + 1] << 16) | ((u32)j->ram[pa + 2] << 8) | j->ram[pa + 3];
+        u32 inst = ram_rd32(j->ram, pa);
         u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
         if (op == 18 || op == 16) {
             s32 off = op == 18 ? (((s32)(inst << 6)) >> 6) & ~3 : (s32)(s16)(inst & 0xFFFC);
@@ -3852,7 +3902,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->noLink = noLink;
     c->trace = j->traces && !noLink;
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
-    c->faultMem = c->fastmem && j->faultMem;
+    c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM;  // (swapped RAM: a misaligned word would not fault)
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
     c->fcOn = c->fp && (j->opt & OPT_FCACHE) && fc_gate(j, pa);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
@@ -3933,7 +3983,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         u32 ipa = t.nextPa;
         if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
         if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
-        u32 inst = ((u32)j->ram[ipa] << 24) | ((u32)j->ram[ipa + 1] << 16) | ((u32)j->ram[ipa + 2] << 8) | j->ram[ipa + 3];
+        u32 inst = ram_rd32(j->ram, ipa);
         c->count = i + 1 + c->countExtra;
         c->gpc[i] = c->pc;
         c->gpa[i] = ipa;
@@ -4134,9 +4184,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (want && (big ? c->count >= 16 && big-- > 0 : pc == dumpPc)) {
             fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, exitWords, c->alt.n);
             for (u32 k = 0; k < c->count && c->gpa[k] + 4 <= j->ramSize; k++) {
-                const u8* w = j->ram + c->gpa[k];
                 char dis[96];
-                gekko_disasm(c->gpc[k], ((u32)w[0] << 24) | ((u32)w[1] << 16) | ((u32)w[2] << 8) | w[3], dis, sizeof dis);
+                gekko_disasm(c->gpc[k], ram_rd32(j->ram, c->gpa[k]), dis, sizeof dis);
                 fprintf(stderr, "JIT_GUEST %08x %s\n", c->gpc[k], dis);
             }
             for (u32 k = 0; k < e->n; k++) fprintf(stderr, "JIT_HOT %08x\n", ((const u32*)fn)[k]);
@@ -4200,15 +4249,8 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
                 dp_imm(e, CMP, 1, 0, R1, IMM(0x01800000u));
             }
             bx_reg_c(e, C_CS, LR);  // misaligned, outside MEM1 or the uncached mirror
-            switch (k) {
-            case MS_L32: ldr_reg(e, r, RRAM, R0); rev(e, r, r); break;
-            case MS_L16U: ldrh_reg(e, r, RRAM, R0); rev16(e, r, r); break;
-            case MS_L16S: ldrh_reg(e, r, RRAM, R0); revsh(e, r, r); break;
-            case MS_L8: ldrb_reg(e, r, RRAM, R0); break;
-            case MS_S32: rev(e, R3, r); str_reg(e, R3, RRAM, R0); break;
-            case MS_S16: rev16(e, R3, r); strh_reg(e, R3, RRAM, R0); break;
-            default: strb_reg(e, r, RRAM, R0); break;
-            }
+            if (k <= MS_L8) ram_load(e, size, k == MS_L16S, r, R0);
+            else ram_store(e, size, r, R0);
             bx_reg_c(e, C_AL, LR);  // carry clear from the range check
         }
     }
@@ -4231,6 +4273,22 @@ static void emit_mem_stubs(Jit* j, Emit* e) {
                 dp_imm(e, EOR, 0, R12, R0, IMM(0x80000000u));
             }
             dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u >> sh));
+            if (GC_SWAPRAM) {  // no swaps; a halfword or a byte at r0 ^ 2 / ^ 3 (the EOR leaves the flags alone)
+                if (size < 4) dp_imm(e, EOR, 0, R12, R0, size == 2 ? RAM_XH : RAM_XB);
+                int x = size < 4 ? R12 : R0;
+                switch (k) {
+                case MS_L32: ldr_reg(e, r, RRAM, x); break;
+                case MS_L16U: ldrh_reg(e, r, RRAM, x); break;
+                case MS_L16S: ldrsh_reg(e, r, RRAM, x); break;
+                case MS_L8: ldrb_reg(e, r, RRAM, x); break;
+                case MS_S32: str_reg(e, r, RRAM, x); break;
+                case MS_S16: strh_reg(e, r, RRAM, x); break;
+                default: strb_reg(e, r, RRAM, x); break;
+                }
+                cond_last(e, C_CC);
+                bx_reg_c(e, C_AL, LR);
+                continue;
+            }
             switch (k) {
             case MS_L32: ldr_reg(e, r, RRAM, R0); break;
             case MS_L16U: case MS_L16S: ldrh_reg(e, r, RRAM, R0); break;
@@ -4342,7 +4400,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_reg(e, ADD, 0, R1, R1, RRAM);
             if (w) {
                 ldr_imm(e, R2, R1, 0);
-                rev(e, R2, R2);
+                grev(e, R2, R2);
                 vmov_s_r(e, 0, R2);
                 vcvt_f64_f32(e, 1, 0);
                 dp_imm(e, MOV, 0, R2, 0, 0);
@@ -4350,8 +4408,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
                 vmov_d_rr(e, 2, R2, R3);  // ps1 = 1.0
             } else {
                 ldmia(e, R1, (1u << R2) | (1u << R3));
-                rev(e, R2, R2);
-                rev(e, R3, R3);
+                grev(e, R2, R2);
+                grev(e, R3, R3);
                 vmov_ss_rr(e, 0, R2, R3);
                 vcvt_f64_f32(e, 1, 0);
                 vcvt_f64_f32(e, 2, 1);
@@ -4376,9 +4434,9 @@ static void emit_float_stubs(Jit* j, Emit* e) {
                 branch_c(e, C_CS, failOut);
             }
             dp_reg(e, ADD, 0, R1, R1, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             if (w) str_imm(e, R2, R1, 0);
-            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            else { grev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
             bx_reg_c(e, C_AL, LR);
         }
     // stfs
@@ -4390,7 +4448,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R1);
     bx_reg_c(e, C_AL, LR);
     // lfs
@@ -4402,7 +4460,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     ldr_reg(e, R2, RRAM, R1);
-    rev(e, R2, R2);
+    grev(e, R2, R2);
     vmov_s_r(e, 0, R2);
     vcvt_f64_f32(e, 1, 0);
     bx_reg_c(e, C_AL, LR);
@@ -4416,8 +4474,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     branch_c(e, C_CS, fail);
     dp_reg(e, ADD, 0, R1, R1, RRAM);
     ldmia(e, R1, (1u << R2) | (1u << R3));
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     vmov_d_rr(e, 1, R3, R2);
     bx_reg_c(e, C_AL, LR);
     // stfd
@@ -4429,8 +4487,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     vmov_rr_d(e, R3, R2, 1);  // r3 = low word, r2 = high word
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     dp_reg(e, ADD, 0, R1, R1, RRAM);
     stmia(e, R1, (1u << R2) | (1u << R3));
     bx_reg_c(e, C_AL, LR);
@@ -4447,7 +4505,7 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_reg(e, ADD, 0, R1, R0, RRAM);
             ldr_imm(e, R2, R1, 0);
             if (w) {
-                rev(e, R2, R2);
+                grev(e, R2, R2);
                 vmov_s_r(e, 0, R2);
                 vcvt_f64_f32(e, 1, 0);
                 dp_imm(e, MOV, 0, R2, 0, 0);
@@ -4455,8 +4513,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
                 vmov_d_rr(e, 2, R2, R3);  // ps1 = 1.0
             } else {
                 ldr_imm(e, R3, R1, 4);
-                rev(e, R2, R2);
-                rev(e, R3, R3);
+                grev(e, R2, R2);
+                grev(e, R3, R3);
                 vmov_ss_rr(e, 0, R2, R3);
                 vcvt_f64_f32(e, 1, 0);
                 vcvt_f64_f32(e, 2, 1);
@@ -4469,15 +4527,15 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             fs_conv(e, R2, 1, cut1);
             if (!w) fs_conv(e, R3, 2, cut2);
             dp_reg(e, ADD, 0, R1, R0, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             str_imm(e, R2, R1, 0);
-            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            if (!w) { grev(e, R3, R3); str_imm(e, R3, R1, 4); }
             dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done (the conversions changed the flags)
             bx_reg_c(e, C_AL, LR);
         }
     j->stfsUStub = (u16)e->n;
     fs_conv(e, R2, 1, cut1);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R0);
     bx_reg_c(e, C_AL, LR);
     // OPT_KSTORE: the same stores for values the block knows are exact singles (Cg.single: from lfs, psq_l or a result
@@ -4505,9 +4563,9 @@ static void emit_float_stubs(Jit* j, Emit* e) {
                 branch_c(e, C_CS, failOut);
             }
             dp_reg(e, ADD, 0, R1, R1, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             if (w) str_imm(e, R2, R1, 0);
-            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            else { grev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
             bx_reg_c(e, C_AL, LR);
             j->psqUStK[q][w] = (u16)e->n;  // as psqUStub[1]
             fs_gqr(j, e, q);
@@ -4517,9 +4575,9 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             vmov_r_s(e, R2, 12);
             if (!w) { vcvt_f32_f64(e, 14, 2); vmov_r_s(e, R3, 14); }
             dp_reg(e, ADD, 0, R1, R0, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             str_imm(e, R2, R1, 0);
-            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            if (!w) { grev(e, R3, R3); str_imm(e, R3, R1, 4); }
             dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done
             bx_reg_c(e, C_AL, LR);
         }
@@ -4532,13 +4590,13 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R1);
     bx_reg_c(e, C_AL, LR);
     j->stfsUStK = (u16)e->n;  // as stfsUStub
     vcvt_f32_f64(e, 12, 1);
     vmov_r_s(e, R2, 12);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R0);
     bx_reg_c(e, C_AL, LR);
     // OPT_FCACHE: the same accesses with single bits in r2 (and r3) instead of doubles in d1 (and d2): loads return them
@@ -4551,11 +4609,11 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
     ldr_reg(e, R2, RRAM, R1);
-    rev(e, R2, R2);
+    grev(e, R2, R2);
     bx_reg_c(e, C_AL, LR);
     j->lfsUB = (u16)e->n;
     ldr_reg(e, R2, RRAM, R0);
-    rev(e, R2, R2);
+    grev(e, R2, R2);
     bx_reg_c(e, C_AL, LR);
     j->stfsB = (u16)e->n;  // as stfsStub
     fs_flush_denormal(e, R2);
@@ -4565,12 +4623,12 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_imm(e, SUB, 0, R12, R1, IMM(0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(0x01800000u));
     branch_c(e, C_CS, fail);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R1);
     bx_reg_c(e, C_AL, LR);
     j->stfsUB = (u16)e->n;
     fs_flush_denormal(e, R2);
-    rev(e, R3, R2);
+    grev(e, R3, R2);
     str_reg(e, R3, RRAM, R0);
     bx_reg_c(e, C_AL, LR);
     for (u32 q = 0; q < 8; q++)
@@ -4593,12 +4651,12 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_reg(e, ADD, 0, R1, R1, RRAM);
             if (w) {
                 ldr_imm(e, R2, R1, 0);
-                rev(e, R2, R2);
+                grev(e, R2, R2);
                 load_const(e, R3, 0x3F800000u);  // ps1 = 1.0
             } else {
                 ldmia(e, R1, (1u << R2) | (1u << R3));
-                rev(e, R2, R2);
-                rev(e, R3, R3);
+                grev(e, R2, R2);
+                grev(e, R3, R3);
             }
             bx_reg_c(e, C_AL, LR);  // carry clear from the range check
             j->psqULB[q][w] = (u16)e->n;  // as psqUStub[0]: Z set when done
@@ -4608,8 +4666,8 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             dp_reg(e, ADD, 0, R1, R0, RRAM);
             ldr_imm(e, R2, R1, 0);
             if (w) load_const(e, R3, 0x3F800000u);
-            else { ldr_imm(e, R3, R1, 4); rev(e, R3, R3); }
-            rev(e, R2, R2);
+            else { ldr_imm(e, R3, R1, 4); grev(e, R3, R3); }
+            grev(e, R2, R2);
             dp_reg(e, CMP, 1, 0, R0, R0);
             bx_reg_c(e, C_AL, LR);
             j->psqSB[q][w] = (u16)e->n;  // as psqStub[1]
@@ -4630,9 +4688,9 @@ static void emit_float_stubs(Jit* j, Emit* e) {
                 branch_c(e, C_CS, failOut);
             }
             dp_reg(e, ADD, 0, R1, R1, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             if (w) str_imm(e, R2, R1, 0);
-            else { rev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
+            else { grev(e, R3, R3); stmia(e, R1, (1u << R2) | (1u << R3)); }
             bx_reg_c(e, C_AL, LR);
             j->psqUSB[q][w] = (u16)e->n;  // as psqUStub[1]
             fs_gqr(j, e, q);
@@ -4641,15 +4699,15 @@ static void emit_float_stubs(Jit* j, Emit* e) {
             fs_flush_denormal(e, R2);
             if (!w) fs_flush_denormal(e, R3);
             dp_reg(e, ADD, 0, R1, R0, RRAM);
-            rev(e, R2, R2);
+            grev(e, R2, R2);
             str_imm(e, R2, R1, 0);
-            if (!w) { rev(e, R3, R3); str_imm(e, R3, R1, 4); }
+            if (!w) { grev(e, R3, R3); str_imm(e, R3, R1, 4); }
             dp_reg(e, CMP, 1, 0, R0, R0);  // Z set: done
             bx_reg_c(e, C_AL, LR);
         }
     j->lfsUStub = (u16)e->n;
     ldr_reg(e, R2, RRAM, R0);
-    rev(e, R2, R2);
+    grev(e, R2, R2);
     vmov_s_r(e, 0, R2);
     vcvt_f64_f32(e, 1, 0);
     bx_reg_c(e, C_AL, LR);
@@ -4657,14 +4715,14 @@ static void emit_float_stubs(Jit* j, Emit* e) {
     dp_reg(e, ADD, 0, R1, R0, RRAM);
     ldr_imm(e, R2, R1, 0);
     ldr_imm(e, R3, R1, 4);
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     vmov_d_rr(e, 1, R3, R2);
     bx_reg_c(e, C_AL, LR);
     j->stfdUStub = (u16)e->n;
     vmov_rr_d(e, R3, R2, 1);
-    rev(e, R2, R2);
-    rev(e, R3, R3);
+    grev(e, R2, R2);
+    grev(e, R3, R3);
     dp_reg(e, ADD, 0, R1, R0, RRAM);
     str_imm(e, R2, R1, 0);
     str_imm(e, R3, R1, 4);
@@ -4873,6 +4931,16 @@ static void emit_stubs(Jit* j) {
     dp_imm(e, SUB, 0, R12, R12, IMM(HOIST_LO - 0x80000000u));
     dp_imm(e, CMP, 1, 0, R12, IMM(HOIST_SIZE));
     bx_reg_c(e, C_AL, LR);
+    // The same, also failing when the address is not 2- / 4-byte aligned (swapped RAM, hoist_fits): rotated right, a
+    // misaligned offset (the window starts word aligned) has bits at the top and fails the same unsigned bound.
+    for (int k = 1; k <= 2; k++) {
+        j->stub[k == 1 ? ST_HOISTCHK2 : ST_HOISTCHK4] = e->n;
+        dp_imm(e, EOR, 0, R12, R0, IMM(0x80000000u));
+        dp_imm(e, SUB, 0, R12, R12, IMM(HOIST_LO - 0x80000000u));
+        mov_shift(e, 0, R12, R12, ROR, k);
+        dp_imm(e, CMP, 1, 0, R12, IMM(HOIST_SIZE >> k));
+        bx_reg_c(e, C_AL, LR);
+    }
     j->stub[ST_MEMDIRTY] = e->n;  // r2 = physical address in MEM1: its 4 KB page gets the next stamp (r1, r2, r3 clobbered)
     ldr_imm(e, R1, RG, OFF_JITFN(JF_MEMSTAMPS));
     ldr_imm(e, R3, R1, 0);
@@ -4934,8 +5002,8 @@ static void emit_stubs(Jit* j) {
         u32 bad3 = branch_c(e, C_HI, 0);
         dp_reg(e, ADD, 0, R3, RRAM, R0);
         u32 loop = e->n;
-        if (!st) { ldr_post(e, R12, R3, 4); rev(e, R12, R12); str_post(e, R12, R1, 4); }
-        else { ldr_post(e, R12, R1, 4); rev(e, R12, R12); str_post(e, R12, R3, 4); }
+        if (!st) { ldr_post(e, R12, R3, 4); grev(e, R12, R12); str_post(e, R12, R1, 4); }
+        else { ldr_post(e, R12, R1, 4); grev(e, R12, R12); str_post(e, R12, R3, 4); }
         dp_imm(e, SUB, 1, R2, R2, 1);
         branch_c(e, C_NE, loop);
         dp_imm(e, CMN, 1, 0, R0, 0);  // carry clear: done
@@ -5135,7 +5203,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     Entry* en = &j->table[idx];
     en->pc = pc; en->msrBits = msrBits; en->fn = fn;
     en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
-               ((u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]) == 0x48000000u;
+               ram_rd32(j->ram, pa) == 0x48000000u;
     en->poll = (u8)poll;
     en->count = (u8)g_lastCount;
     en->pro = (u8)g_lastPro;
@@ -5361,7 +5429,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
             u32 at = g->pc, pa;  // what it was: an exception vector, or the instruction before where it goes on
             if ((at & ~0x1F00u) == 0 || (at & ~0x1F00u) == 0x80000000u) j->stats.exitVector[(at >> 8) & 31]++;
             else if (gk_translate(g, at - 4, false, false, &pa, false) && pa + 4 <= j->ramSize)
-                count_op(&j->stats.exitOther, (u32)j->ram[pa] << 24 | (u32)j->ram[pa + 1] << 16 | (u32)j->ram[pa + 2] << 8 | j->ram[pa + 3]);
+                count_op(&j->stats.exitOther, ram_rd32(j->ram, pa));
         }
         if (s > (u32*)1 && j->linking && gen == j->gen) { site = s; siteGen = gen; siteKey = key; }
         else if (s > (u32*)1) j->stats.linkNoSite++;
@@ -5449,7 +5517,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
                 (u32)(uintptr_t)(j->code + j->codeWords), (u32)(uintptr_t)jit_create);
         // The shared stubs' byte offsets (dcache_report.py names the misses a stub makes).
         static const char* const kSt[ST_N] = { "enter", "exit", "link", "dyn", "budget", "indirect", "interp", "loadslow",
-                                                "storeslow", "storepipe", "deopt", "hoistchk", "memdirty", "indlr", "indctr",
+                                                "storeslow", "storepipe", "deopt", "hoistchk", "hoistchk2", "hoistchk4", "memdirty", "indlr", "indctr",
                                                 "lmw", "stmw" };
         fprintf(stderr, "range stubs");
         for (int k = 0; k < ST_N; k++) fprintf(stderr, " %s %x", kSt[k], j->stub[k] * 4);
@@ -5583,6 +5651,7 @@ void jit_set_mem_stamps(Jit* j, void* stamps) {
 }
 
 void jit_set_opt(Jit* j, u32 mask) {
+    if (GC_SWAPRAM) mask &= ~(u32)OPT_BEFLOAT;  // (its stubs read big-endian RAM in big-endian data mode)
     if (j->opt == mask) return;
     j->opt = mask;
     jit_invalidate_all(j);

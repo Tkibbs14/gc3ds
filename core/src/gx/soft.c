@@ -986,7 +986,7 @@ static void merge_draw(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u
     bool lit = vfast_gpu_light(gx, &sel, &lu);
     memset(&g_mrg.sep[g_mrg.count], 0, count * sizeof(PVert));
     vfast_run(s, gx, vat, &f, &sel, raw, count, vsize, &g_mrg.sep[g_mrg.count], lit);
-    memcpy(g_mrg.raw + g_mrg.count * vsize, raw, count * vsize);
+    ram_copy(g_mrg.raw, g_mrg.count * vsize, raw, count * vsize);  // (in the layout, ramlayout.h)
     g_mrg.vat = vat;
     g_mrg.vsize = vsize;
     g_mrg.segPrim[g_mrg.nSeg] = prim;

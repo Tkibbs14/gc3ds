@@ -21,6 +21,8 @@ gc-tests/examples-dol/
 *.wbfs
 *.ciso
 core/host3ds/build/
+core/host3ds/build-*/
+core/build-swap/
 core/host3ds/romfs/
 core/host3ds/*.3dsx
 core/host3ds/*.elf

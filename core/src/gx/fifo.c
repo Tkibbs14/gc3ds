@@ -5,8 +5,12 @@
 #include "../sys/system.h"
 #include "gx.h"
 
-static u32 rd16(const u8* p) { return ((u32)p[0] << 8) | p[1]; }
-static u32 rd32(const u8* p) { return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3]; }
+// Commands are read in guest memory's layout (ramlayout.h): display lists in RAM, and the gather pipe's bytes, which
+// feed() stores in the same layout so that one parser reads both. (Native mode's Aurora commands assume the
+// big-endian layout, GC_SWAPRAM 0.)
+static u32 rd8(const u8* p) { return ramp_rd8(p); }
+static u32 rd16(const u8* p) { return ramp_rd16(p); }
+static u32 rd32(const u8* p) { return ramp_rd32(p); }
 
 // CP register numbers.
 enum { CP_VCD_LO = 0x50, CP_VCD_HI = 0x60, CP_VAT_A = 0x70, CP_VAT_B = 0x80, CP_VAT_C = 0x90, CP_ARRAY_BASE = 0xA0,
@@ -174,7 +178,7 @@ static void efb_copy_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32
         for (u32 tx = 0; tx < tilesX; tx++) {
             u32 at = dest + ty * stride + tx * bytes;
             if (at < PA_MEM1_BEGIN || at + bytes > PA_MEM1_END) return;
-            u8* o = s->mem1 + at;
+            u8 o[64];  // the tile, big-endian, then into RAM in its layout
             memset(o, 0, bytes);
             for (u32 py = 0; py < bh; py++) {
                 for (u32 px = 0; px < bw; px++) {
@@ -215,6 +219,7 @@ static void efb_copy_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32
                     }
                 }
             }
+            ram_from_be(s->mem1, at, o, bytes);
         }
     }
 }
@@ -247,8 +252,8 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
                     u += (-38 * r - 74 * g + 112 * b + 128) / 256 + 128;
                     v += (112 * r - 94 * g - 18 * b + 128) / 256 + 128;
                 }
-                u8* o = s->mem1 + row + x * 2;
-                o[0] = clamp8(yy[0]); o[1] = clamp8(u / 2); o[2] = clamp8(yy[1]); o[3] = clamp8(v / 2);
+                const u8 o[4] = { clamp8(yy[0]), clamp8(u / 2), clamp8(yy[1]), clamp8(v / 2) };
+                ram_from_be(s->mem1, row + x * 2, o, 4);
             }
         }
         gx->texVersion++;  // a new frame: textures in RAM may have been replaced since the last one
@@ -284,7 +289,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_MASK: gx->bpMask = val & 0xFFFFFF; break;
     case 0x65: {  // LOADTLUT1: copy a palette from RAM (LOADTLUT0 = address >> 5) into texture memory
         u32 ram = (gx->bp[0x64] & 0x1FFFFF) << 5, tmemAddr = (val & 0x3FF) << 9, bytes = ((val >> 10) & 0x7FF) * 32;
-        if (ram + bytes <= PA_MEM1_END && tmemAddr + bytes <= (1u << 20)) memcpy(gx->tmem + tmemAddr, s->mem1 + ram, bytes);
+        if (ram + bytes <= PA_MEM1_END && tmemAddr + bytes <= (1u << 20)) ram_to_be(gx->tmem + tmemAddr, s->mem1, ram, bytes);
         gx->tlutVersion++;
         break;
     }
@@ -363,7 +368,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
         NEED(13);
         u32 r = CP_ARRAY_BASE + (sub & 15), v = rd32(a + 4), bit = 1u << (sub & 15);
         if (gx->cp[r] != v) { merge_break(s, gx); gx->cp[r] = v; }
-        if (a[12]) { gx->arrayLE |= bit; gx->aurora[1]++; } else gx->arrayLE &= ~bit;
+        if (rd8(a + 12)) { gx->arrayLE |= bit; gx->aurora[1]++; } else gx->arrayLE &= ~bit;
         gx->aurora[0]++;
         return 3 + 13;
     }
@@ -375,7 +380,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
     case 0x0021: return 3;
     case 0x0030: {  // LOAD_TEXOBJ: u8 map, u64 data, u32 width, height, format, tlut, u8 mips, u32 id, version
         NEED(34);
-        u32 map = a[0] & 7, addr = rd32(a + 5);
+        u32 map = rd8(a) & 7, addr = rd32(a + 5);
         if (gx->texAddr[map] != addr) { merge_break(s, gx); gx->texAddr[map] = addr; gx->bpVersion++; }
         gx->aurora[2]++;
         return 3 + 34;
@@ -384,9 +389,9 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
         // The texture's BP TLUT register holds the slot (GXLoadTexObj), read as TMEM offset slot * 512: the palette
         // goes there, and its format is added to that register when it is written (bp_write).
         NEED(23);
-        u32 slot = a[0] & 31, addr = rd32(a + 5), bytes = rd16(a + 13) * 2u, at = slot << 9;
+        u32 slot = rd8(a) & 31, addr = rd32(a + 5), bytes = rd16(a + 13) * 2u, at = slot << 9;
         merge_break(s, gx);
-        if (addr >= PA_MEM1_BEGIN && at + bytes <= (1u << 20)) memcpy(gx->tmem + at, s->mem1 + addr, bytes);
+        if (addr >= PA_MEM1_BEGIN && at + bytes <= (1u << 20)) ram_to_be(gx->tmem + at, s->mem1, addr, bytes);
         gx->tlutFmt[slot] = (u8)(rd32(a + 9) & 3);
         gx->tlutVersion++;
         gx->aurora[3]++;
@@ -404,7 +409,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
     case 0x0036: {  // LOAD_COPY_DST: u32 width, height, format, u8 mipmap -> the BP 0x52 bits GXSetTexCopyDst sets
         NEED(13);
         u32 fmt = rd32(a + 8), f = fmt & 15;
-        gx->copyCtl = (((f & 7) << 1 | (f >> 3)) << 3) | (a[12] ? 1u << 9 : 0) | (fmt < 4 ? 1u << 15 : 0);
+        gx->copyCtl = (((f & 7) << 1 | (f >> 3)) << 3) | (rd8(a + 12) ? 1u << 9 : 0) | (fmt < 4 ? 1u << 15 : 0);
         bp_write(s, gx, BP_COPY_STRIDE, 0);  // efb_copy_texture: a packed row of tiles
         gx->aurora[4]++;
         return 3 + 13;
@@ -417,8 +422,8 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
         NEED(5);
         u32 bytes = rd32(a + 1);
         NEED(5 + bytes);
-        u32 vsize = gx_vertex_size(gx, a[0] & 7);
-        if (bytes && vsize) draw(s, gx, a[0], a + 5, bytes / vsize, vsize, inList);
+        u32 vsize = gx_vertex_size(gx, rd8(a) & 7);
+        if (bytes && vsize) draw(s, gx, (u8)rd8(a), a + 5, bytes / vsize, vsize, inList);
         gx->aurora[5]++;
         return 3 + 5 + bytes;
     }
@@ -486,9 +491,9 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
 // themselves: their commands are.
 u64 g_gxOpTicks[6], g_gxOpCount[6];
 static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
-    u8 op = p[0];
+    u8 op = (u8)rd8(p);
     u32 cls = op >= 0x80 && op < 0xC0 ? 0 : op == 0x61 ? 1 : op == 0x10 ? 2 : op == 0x08 ? 3 : op == 0x50 ? 4 : 5;
-    bool call = op == 0x40 || (op == 0x50 && avail >= 3 && p[1] == 0x00 && p[2] == 0x60);
+    bool call = op == 0x40 || (op == 0x50 && avail >= 3 && rd8(p + 1) == 0x00 && rd8(p + 2) == 0x60);
     static u32 n;
     if (call || !g_profClock || (++n & 15)) {
         if (!call) g_gxOpCount[cls]++;
@@ -505,7 +510,7 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
 #endif
 
 static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
-    u8 op = p[0];
+    u8 op = (u8)rd8(p);
     if (op >= 0x80 && op < 0xC0) {
         if (avail < 3) return 0;
         u32 count = rd16(p + 1), vat = op & 7, vsize = gx_vertex_size(gx, vat);
@@ -521,7 +526,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
     case 0x08:
         if (avail < 6) return 0;
         {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
-            u32 v = rd32(p + 2), r = p[1];
+            u32 v = rd32(p + 2), r = rd8(p + 1);
             if (gx->cp[r] != v) {
                 merge_break(s, gx);
                 if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
@@ -555,7 +560,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
         if (avail < 5) return 0;
 #ifdef GC3DS_NATIVE
         {
-            u32 reg = p[1], v = rd32(p + 1) & 0xFFFFFF;
+            u32 reg = rd8(p + 1), v = rd32(p + 1) & 0xFFFFFF;
             // Aurora's GXCopyTex sends only the clear bit: the rest is GXSetTexCopyDst's (aurora_cmd). Display copies
             // (bit 14) are gc3ds's own, at the end of a frame (core/native/platform/gx_3ds.c).
             if (reg == BP_COPY_EXEC && !(v & (1u << 14))) v = (v & (1u << 11)) | gx->copyCtl;
@@ -568,7 +573,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
         return 5;
     case 0x50: return aurora_cmd(s, gx, p, avail, inList);
 #else
-        bp_write(s, gx, p[1], rd32(p + 1) & 0xFFFFFF);
+        bp_write(s, gx, rd8(p + 1), rd32(p + 1) & 0xFFFFFF);
         return 5;
 #endif
     }
@@ -586,13 +591,13 @@ u64 g_dlRun[11];
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
     u32 off = 0, stop = 0;  // stop: the end of the run of draws being executed one by one
     while (off < len) {
-        u8 op = p[off];
+        u8 op = (u8)rd8(p + off);
         if (op >= 0x80 && op < 0xC0 && len - off >= 3 && off >= stop) {
             // A run: this draw and the draws (and NOPs) right after it in the same vertex format.
             u32 vat = op & 7, vsize = gx_vertex_size(gx, vat), end = off, draws = 0, verts = 0, cmds = 0;
             bool other = false;  // lines or points: not converted
             while (end < len) {
-                u8 o = p[end];
+                u8 o = (u8)rd8(p + end);
                 if (o == 0x00) { end++; cmds++; continue; }
                 if (o < 0x80 || o >= 0xC0 || (o & 7) != vat || len - end < 3) break;
                 u32 n = rd16(p + end + 1);
@@ -605,15 +610,15 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
             if (draws >= 2) { g_dlRun[2]++; g_dlRun[4] += verts; }
             if (other) g_dlRun[5]++;
             if (end < len) {
-                u8 o = p[end];
+                u8 o = (u8)rd8(p + end);
                 g_dlRun[o >= 0x80 && o < 0xC0 ? 9 : o == 0x08 ? 6 : o == 0x10 || (o >= 0x20 && o <= 0x38) ? 7 : o == 0x61 ? 8 : 10]++;
             }
             if (draws && inList && !other && gx->backend && gx->backend->draw_list &&
                 gx->backend->draw_list(gx->backendCtx, s, vat, p + off, end - off)) {
                 for (u32 q = off; q < end;) {  // the statistics draw() keeps
-                    if (p[q] == 0x00) { q++; continue; }
+                    if (rd8(p + q) == 0x00) { q++; continue; }
                     u32 n = rd16(p + q + 1);
-                    gx->draws++; g_dlStats[1]++; gx->vertices += n; gx->primCount[(p[q] >> 3) & 7]++;
+                    gx->draws++; g_dlStats[1]++; gx->vertices += n; gx->primCount[(rd8(p + q) >> 3) & 7]++;
                     q += 3 + n * vsize;
                 }
                 gx->commands += cmds;
@@ -638,9 +643,8 @@ static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
         gx->pending = p;
         gx->pendingCap = cap;
     }
-    memcpy(gx->pending + gx->pendingLen, data, len);
-    gx->pendingLen += len;
-    u32 off = 0;
+    ram_from_be(gx->pending, gx->pendingLen, data, len);  // (in guest memory's layout, as display lists are)
+    gx->pendingLen += len;    u32 off = 0;
     for (;;) {
         u32 n = off < gx->pendingLen ? exec_one(s, gx, gx->pending + off, gx->pendingLen - off, false) : 0;
         if (!n) break;
@@ -648,7 +652,10 @@ static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
         off += n;
     }
     if (off) {
-        memmove(gx->pending, gx->pending + off, gx->pendingLen - off);
+        if (GC_SWAPRAM && (off & 3))  // a shift by a part of a word: byte by byte, to stay in the layout
+            for (u32 i = 0; i < gx->pendingLen - off; i++) ram_wr8(gx->pending, i, ram_rd8(gx->pending, off + i));
+        else  // (whole words: the last one's bytes lie up to its end in the swapped layout; the capacity is whole words)
+            memmove(gx->pending, gx->pending + off, GC_SWAPRAM ? (gx->pendingLen - off + 3) & ~3u : gx->pendingLen - off);
         gx->pendingLen -= off;
     }
 }

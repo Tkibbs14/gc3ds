@@ -111,7 +111,7 @@ static void execute(System* s) {
         if (p) {
             static const u8 info[12] = { 0, 0, 0, 2, 0x20, 0x06, 0x05, 0x26, 0x41, 0, 0, 0 };
             memset(p, 0, 0x20);
-            memcpy(p, info, sizeof info);
+            ram_from_be(s->mem1, (u32)(p - s->mem1), info, sizeof info);  // (into the RAM layout)
         }
         finish(s, ERR_NONE, US(300));
         return;

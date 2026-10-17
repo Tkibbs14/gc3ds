@@ -257,7 +257,7 @@ static void present_field(System* s, const GXPresent* p) {
         for (u32 x = 0; x < 400; x++) {
             u32 sx = x * w / 400;
             const u8* p = src + (sx & ~1u) * 2;
-            int yy = (p[(sx & 1) ? 2 : 0] - 16) * 298, u = p[1] - 128, v = p[3] - 128;
+            int yy = ((int)ramp_rd8(p + ((sx & 1) ? 2 : 0)) - 16) * 298, u = (int)ramp_rd8(p + 1) - 128, v = (int)ramp_rd8(p + 3) - 128;  // (guest memory's layout)
             u8* o = fb + (x * 240 + (239 - y)) * 3;
             o[0] = clamp8((yy + 516 * u + 128) >> 8);
             o[1] = clamp8((yy - 100 * u - 208 * v + 128) >> 8);

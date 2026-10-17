@@ -12,6 +12,7 @@
 // after a triangle), and stops where guest code takes over: a new triangle (0x8007fce4) or the end (0x8007fee8). A
 // guest address it cannot read stops it at that instruction, for guest code to run. The code is recognised by a hash
 // of those bytes (none are kept here). HLE_CHECK=1 (PC) runs every call natively and in the interpreter and compares.
+#include "../ramlayout.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,7 +57,7 @@ static u64 code_hash(void) {
     u32 pa = PC_ENTRY & 0x0FFFFFFFu, n = PC_EXIT - PC_ENTRY;
     if (!g_mem || pa + n > g_memSize) return 0;
     u64 h = 0xCBF29CE484222325ull;
-    for (u32 i = 0; i < n; i++) { h ^= g_mem[pa + i]; h *= 0x100000001B3ull; }
+    for (u32 i = 0; i < n; i++) { h ^= ram_rd8(g_mem, pa + i); h *= 0x100000001B3ull; }  // (the guest's bytes, in order)
     return h;
 }
 
@@ -86,8 +87,9 @@ static inline u32 shl(u32 v, u32 s) { u32 r; __asm__("lsl %0, %1, %2" : "=r"(r) 
 static inline u32 shr(u32 v, u32 s) { return (s & 0x20) ? 0 : v >> (s & 31); }  // srw
 static inline u32 shl(u32 v, u32 s) { return (s & 0x20) ? 0 : v << (s & 31); }  // slw
 #endif
-static inline u32 ld32(const u8* h) { u32 w; memcpy(&w, h, 4); return __builtin_bswap32(w); }
-static inline u32 ld16(const u8* h) { return (u32)h[0] << 8 | h[1]; }
+// Guest memory in its layout (ramlayout.h); every caller has checked the address's alignment.
+static inline u32 ld32(const u8* h) { return ramp_rd32a(h); }
+static inline u32 ld16(const u8* h) { return ramp_rd16a(h); }
 static inline u32 rotl(u32 v, u32 n) { return n ? (v << n) | (v >> (32 - n)) : v; }
 static inline u32 cmps(u32 a, u32 b) { return (s32)a < (s32)b ? 8u : (s32)a > (s32)b ? 4u : 2u; }  // CR field LT GT EQ
 static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
@@ -161,7 +163,7 @@ static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
                     u32 tt = ld16(m + a);
                     p += 2;
                     if (!tt) break;
-                    if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
+                    if ((tt >> 5) >= vWords || !(ram_rd8(vb, (tt >> 3) ^ 3) & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
                     k++;
                 }
                 if (k < 4096) { me->leaf = leaf; me->tag = gr->gen << 12 | k; }
@@ -217,7 +219,7 @@ static u32 scan(Gekko* g, u32 budget) {
     const u32 size = g_memSize, lim4 = size - 4, lim2 = size - 2;
 #define RD32(dst, addr, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } (dst) = ld32(m + a_); } while (0)
 #define RD16(dst, addr, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim2) | (a_ & 1), 0)) { pc = (at); goto out; } (dst) = ld16(m + a_); } while (0)
-#define WR32(addr, v, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } u32 w_ = __builtin_bswap32(v); memcpy(m + a_, &w_, 4); } while (0)
+#define WR32(addr, v, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } ramp_wr32a(m + a_, (v)); } while (0)
 #define CRS(a, b) do { crA = (a); crB = (b); crK = 1; } while (0)
 #define CRU(a, b) do { crA = (a); crB = (b); crK = 2; } while (0)
     // Fast cells (at 0x8007fb70, shdw_fast): the frame (words 2212-2228 and the visited bitset at +156) through one host
@@ -233,7 +235,7 @@ static u32 scan(Gekko* g, u32 budget) {
     }
     ShdwGrid gr = { m, fr + 156, g_shMemo, g_shGen, lim4, lim2, fastOk ? (size - fa - 156) >> 2 : 0, 0, 0, 0, budget, 0, 0, 0, 0, 0, 0, 0 };
 #define FBAD4(a) (__builtin_expect(((a) > lim4) | ((a) & 3), 0))
-#define FWR32(off, v) do { u32 w_ = __builtin_bswap32(v); memcpy(fr + (off), &w_, 4); } while (0)
+#define FWR32(off, v) ramp_wr32a(fr + (off), (v))
     if (pc == PC_NEXT) goto L_fea4;
     if (pc != PC_ENTRY) return 0;
 L_fb48:
@@ -401,7 +403,7 @@ L_fea4:
                 u32 a = p + 2 - 0x80000000u, tt;
                 if ((a > lim2) | (a & 1)) break;
                 tt = ld16(m + a);
-                if (!tt || (tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) break;
+                if (!tt || (tt >> 5) >= vWords || !(ram_rd8(vb, (tt >> 3) ^ 3) & (1u << (tt & 7)))) break;
                 skipped++; p += 2;
             }
             if (skipped) {
@@ -409,7 +411,7 @@ L_fea4:
                 g_shdwStats[1] += skipped;
                 r16 = p;
                 n += 13 * skipped;
-                r3 = ld32(vb + ((lastT >> 5) << 2));
+                r3 = ramp_rd32(vb + ((lastT >> 5) << 2));  // (vb's alignment is the guest's)
                 r4 = (lastT >> 5) << 2;
                 r5 = 1u << (lastT & 31);
                 r0 = r3 & r5;
@@ -503,7 +505,7 @@ static u32 checked(Gekko* g, u32 budget) {
     while (steps < n) {  // exactly as many instructions as the stand-in counted, then compare where they ended
         u32 pa = g->pc & 0x0FFFFFFFu, inst;
         if (pa + 4 > g_memSize) break;
-        inst = ((u32)g_mem[pa] << 24) | ((u32)g_mem[pa + 1] << 16) | ((u32)g_mem[pa + 2] << 8) | g_mem[pa + 3];
+        inst = ram_rd32(g_mem, pa);
         bool stop;
         g->pc = gekko_interp_one(g, g->pc, inst, &stop);
         steps++;

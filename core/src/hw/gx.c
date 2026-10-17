@@ -51,7 +51,7 @@ static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
     u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29);
     for (u32 i = 0; i < 32; i++) {
-        if (wp < PA_MEM1_END) s->mem1[wp] = data[i];
+        if (wp < PA_MEM1_END) ram_wr8(s->mem1, wp, data[i]);
         wp++;
         if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
     }

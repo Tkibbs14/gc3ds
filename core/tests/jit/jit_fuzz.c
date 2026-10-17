@@ -794,7 +794,7 @@ int main(int argc, char** argv) {
     if (!getenv("JIT_FUZZ_NOLC")) jit_set_locked_cache(jit, A.lockedCache);
     for (u32 i = 0; i < LOCKED_CACHE_SIZE; i += 4) {  // normal singles, as fill_floats_at (lfs / psq_l of tiny values differ by design)
         u32 ex = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254, v = (rnd() & 1) << 31 | ex << 23 | (rnd() & 0x7FFFFF);
-        A.lockedCache[i] = (u8)(v >> 24); A.lockedCache[i + 1] = (u8)(v >> 16); A.lockedCache[i + 2] = (u8)(v >> 8); A.lockedCache[i + 3] = (u8)v;
+        ram_wr32(A.lockedCache, i, v);  // (guest memory's layout, ramlayout.h)
     }
     memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);  // (chain mode copies nothing per case)
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;

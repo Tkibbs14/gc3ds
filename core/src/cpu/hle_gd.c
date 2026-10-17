@@ -15,6 +15,7 @@
 // A function is recognised by a hash of its bytes, and only if it is straight-line apart from the index clamp's one
 // forward branch (ble +8 at +0x14, over one instruction) and its final blr: the count is its length less one when the
 // clamp is skipped. The address of __GDCurrentDL is the first r13-relative lwz in it (the game's small data).
+#include "../ramlayout.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,13 +45,13 @@ static u8* g_mem;
 static u32 g_memSize;
 u64 g_hleGdRuns, g_hleGdInsns;
 
-static u32 rd_be32(u32 pa) { return ((u32)g_mem[pa] << 24) | ((u32)g_mem[pa + 1] << 16) | ((u32)g_mem[pa + 2] << 8) | g_mem[pa + 3]; }
+static u32 rd_be32(u32 pa) { return ram_rd32(g_mem, pa); }  // (guest memory in its layout, ramlayout.h)
 
 static bool check_fn(GdFn* f) {
     u32 pa = f->pc & 0x0FFFFFFFu;
     if (!f->pc || !f->size || (f->size & 3) || !g_mem || pa + f->size > g_memSize) return false;
     u64 h = 0xCBF29CE484222325ull;
-    for (u32 i = 0; i < f->size; i++) { h ^= g_mem[pa + i]; h *= 0x100000001B3ull; }
+    for (u32 i = 0; i < f->size; i++) { h ^= ram_rd8(g_mem, pa + i); h *= 0x100000001B3ull; }
 #ifndef __3DS__
     if (getenv("HLE_PRINT_HASH")) fprintf(stderr, "HLE hash of %s %08x+%x: %016llx\n", f->name, f->pc, f->size, (unsigned long long)h);
 #endif
@@ -132,16 +133,16 @@ static u32 gd_checked(Gekko* g) {
     Gekko g0 = *g;
     u8 obj0[16];
     memcpy(obj0, g_mem + objPa, 16);
-    memcpy(before, g_mem + outPa, len);
+    ram_to_be(before, g_mem, outPa, len);  // (the output, unaligned: as the guest's bytes)
     u32 n = gd_native(g);
     if (!n) return 0;
     Gekko gn = *g;
     u8 objN[16];
     memcpy(objN, g_mem + objPa, 16);
-    memcpy(native, g_mem + outPa, len);
+    ram_to_be(native, g_mem, outPa, len);
     *g = g0;  // the interpreter from the same state (its own stack frame writes are not compared: dead state)
     memcpy(g_mem + objPa, obj0, 16);
-    memcpy(g_mem + outPa, before, len);
+    ram_from_be(g_mem, outPa, before, len);
     u32 steps = 0;
     while (steps < n) {
         u32 pa = g->pc & 0x0FFFFFFFu;
@@ -151,14 +152,16 @@ static u32 gd_checked(Gekko* g) {
         steps++;
     }
     if (!g_gchk.calls++) atexit(gchk_report);
+    u8 now[64];
+    ram_to_be(now, g_mem, outPa, len);
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) &&
-                !memcmp(g_mem + objPa, objN, 16) && !memcmp(g_mem + outPa, native, len);
+                !memcmp(g_mem + objPa, objN, 16) && !memcmp(now, native, len);
     if (!same && g_gchk.bad++ < 20) {
         fprintf(stderr, "HLE_CHECK %s call %llu: native %u insns to %08x, interpreter %u to %08x\n", f->name,
                 (unsigned long long)g_gchk.calls, n, gn.pc, steps, g->pc);
         for (u32 k = 0; k < len; k++)
-            if (g_mem[outPa + k] != native[k]) fprintf(stderr, "  byte %u: native %02x interpreter %02x\n", k, native[k], g_mem[outPa + k]);
+            if (now[k] != native[k]) fprintf(stderr, "  byte %u: native %02x interpreter %02x\n", k, native[k], now[k]);
         if (memcmp(g_mem + objPa, objN, 16)) fprintf(stderr, "  list object differs\n");
     }
     return steps;
@@ -189,17 +192,16 @@ static u32 gd_native(Gekko* g) {
     u32 count = f->insns - 1;            // ble taken over li 0
     if (idx > 7) { idx = 0; count++; }  // cmplwi 7; ble not taken; li r0,0
     u16 addr = (u16)(f->xf + (u16)((idx << 4) & 0xFFF0));
-    u8* o = g_mem + out;
-    o[0] = 0x10;
-    o[1] = 0; o[2] = (u8)(f->nf - 1);
-    o[3] = (u8)(addr >> 8); o[4] = (u8)addr;
+    ram_wr8(g_mem, out, 0x10);
+    ram_wr16(g_mem, out + 1, (u32)(f->nf - 1));
+    ram_wr16(g_mem, out + 3, addr);
     bool tiny = (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0;
     for (u32 k = 0; k < f->nf; k++) {
         u32 w = sf_double_to_single(fpr_get0(g, 1 + (int)k), tiny);
-        o[5 + 4 * k] = (u8)(w >> 24); o[6 + 4 * k] = (u8)(w >> 16); o[7 + 4 * k] = (u8)(w >> 8); o[8 + 4 * k] = (u8)w;
+        ram_wr32(g_mem, out + 5 + 4 * k, w);
     }
     u32 np = ptr + len;
-    g_mem[objPa + 8] = (u8)(np >> 24); g_mem[objPa + 9] = (u8)(np >> 16); g_mem[objPa + 10] = (u8)(np >> 8); g_mem[objPa + 11] = (u8)np;
+    ram_wr32(g_mem, objPa + 8, np);
     g->pc = g->lr;
     g_hleGdRuns++;
     g_hleGdInsns += count;

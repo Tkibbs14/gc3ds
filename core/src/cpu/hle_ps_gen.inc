@@ -19,7 +19,7 @@ static u32 ps_PSMTXConcat(Gekko* g) {  // 51 instructions
     if (!hr5) return 0;
     u32 r6;
     (void)r1; (void)r3; (void)r4; (void)r5; (void)r6;
-    u8 stk[80];  // the frame and the LR save word above it (dead after the call)
+    u8 stk[80] __attribute__((aligned(4)));  // the frame and the LR save word above it (dead after the call)
 #define STK(i) (stk + 64 + (i))
     u32 ca = 0, n = 0;
     (void)ca;
@@ -794,7 +794,7 @@ L_80326948:;
     n++; r5 = BE32(XH(r3 + 0x0u, 4, 0x8032696cu));
     n++; r5 = BE32(XH(r5 + 0x20u, 4, 0x80326970u));
     n++; r0 = ROTL(r31, 0) & 0x0000ffffu;
-    n++; r9 = *XH(r5 + r0, 1, 0x80326978u);
+    n++; r9 = BE8(XH(r5 + r0, 1, 0x80326978u));
 L_8032697c:;
     n++; { u32 ea_ = r30 + 0x2u; r11 = BE16(XH(ea_, 2, 0x8032697cu)); r30 = ea_; }
     n++; r5 = BE32(XH(r3 + 0x0u, 4, 0x80326980u));
@@ -846,9 +846,9 @@ L_8032697c:;
     n++; f10 = PMADDS0(f30, f0, f10); FWB(10);
     n++; f12 = PMADDS0(f29, f0, f12); FWB(12);
     n++; f31 = PMADDS0(f28, f0, f31); FWB(31);
-    n++; r6 = *XH(r7 + r31, 1, 0x80326a44u);
+    n++; r6 = BE8(XH(r7 + r31, 1, 0x80326a44u));
     n++; r5 = BE32(XH(r3 + 0x4u, 4, 0x80326a48u));
-    n++; r0 = *XH(r5 + r11, 1, 0x80326a4cu);
+    n++; r0 = BE8(XH(r5 + r11, 1, 0x80326a4cu));
     n++; r0 = r6 & r0;
     n++; STW8(XH(r7 + r31, 1, 0x80326a54u), r0);
     n++; r12 = r12 + 0x1u;

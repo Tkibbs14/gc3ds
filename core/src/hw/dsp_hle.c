@@ -36,7 +36,7 @@ static const KnownUcode kUcodes[] = {
 
 static u32 ector_hash(const u8* p, u32 len) {
     u32 h = 0;
-    for (u32 i = 0; i < len; i++) { h ^= p[i]; h = (h << 3) | (h >> 29); }
+    for (u32 i = 0; i < len; i++) { h ^= ramp_rd8(p + i); h = (h << 3) | (h >> 29); }  // (guest memory's layout: its bytes in order)
     return h;
 }
 
@@ -166,8 +166,9 @@ static u32 vpb_base(System* s) {
     if (s->dsp.hle.ucodeHash == 0x6CA33A6Du) return mem1_read32(s, 0x004512E8u);
     return 0;
 }
-static inline u32 vw(const u8* p, u32 i) { return (u32)p[2 * i] << 8 | p[2 * i + 1]; }
-static inline void vset(u8* p, u32 i, u32 v) { p[2 * i] = (u8)(v >> 8); p[2 * i + 1] = (u8)v; }
+// A voice block's 16-bit words, in guest memory's layout (ramlayout.h).
+static inline u32 vw(const u8* p, u32 i) { return ramp_rd16(p + 2 * i); }
+static inline void vset(u8* p, u32 i, u32 v) { ramp_wr16(p + 2 * i, v); }
 static inline u32 v32(const u8* p, u32 i) { return vw(p, i) << 16 | vw(p, i + 1); }
 static inline void vset32(u8* p, u32 i, u32 v) { vset(p, i, v >> 16); vset(p, i + 1, v & 0xFFFF); }
 

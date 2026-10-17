@@ -25,6 +25,16 @@ static const EventFn kEvents[] = { vi_line_event, di_complete_event, dsp_aid_eve
 static bool put(FILE* f, const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }
 static bool get(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
+// Guest memory (MEM1, the locked cache, the gather pipe's pending bytes) is big-endian in the file, whatever its layout
+// in memory (ramlayout.h), so a state loads in either. Whole words swap in place (their own inverse).
+static void swap_words(u8* p, u32 n) {
+#if GC_SWAPRAM
+    for (u32 i = 0; i < n; i += 4) { u32 w; memcpy(&w, p + i, 4); w = bswap32(w); memcpy(p + i, &w, 4); }
+#else
+    (void)p; (void)n;
+#endif
+}
+
 bool sys_save_state(System* s, const char* path) {
     GXCore* gx = &s->gx.core;
     StateHeader h = { STATE_MAGIC, (u32)sizeof *s, (u32)sizeof *gx, STATE_VERSION, { 0 }, gx->pendingLen, 0 };
@@ -35,12 +45,23 @@ bool sys_save_state(System* s, const char* path) {
         if (k == NUM_EVENT_FNS) { emu_error("save state: scheduled event %d is not in kEvents\n", i); return false; }
         h.eventFn[i] = (u8)k;
     }
+    u8* pend = gx->pending;
+    if (GC_SWAPRAM && gx->pendingLen) {
+        pend = malloc(gx->pendingLen);
+        if (!pend) return false;
+        ram_to_be(pend, gx->pending, 0, gx->pendingLen);
+    }
     FILE* f = fopen(path, "wb");
-    if (!f) return false;
+    if (!f) { if (pend != gx->pending) free(pend); return false; }
+    swap_words(s->mem1, MEM1_SIZE);
+    swap_words(s->lockedCache, LOCKED_CACHE_SIZE);
     bool ok = put(f, &h, sizeof h) && put(f, s, sizeof *s) && put(f, s->mem1, MEM1_SIZE) &&
               put(f, s->lockedCache, LOCKED_CACHE_SIZE) && put(f, s->dsp.aram, ARAM_BYTES) && put(f, gx->tmem, 1u << 20) &&
               put(f, gx->efb, EFB_W * EFB_H * 4) && put(f, gx->efbZ, EFB_W * EFB_H * 4) &&
-              (!gx->pendingLen || put(f, gx->pending, gx->pendingLen));
+              (!gx->pendingLen || put(f, pend, gx->pendingLen));
+    swap_words(s->mem1, MEM1_SIZE);
+    swap_words(s->lockedCache, LOCKED_CACHE_SIZE);
+    if (pend != gx->pending) free(pend);
     return fclose(f) == 0 && ok;
 }
 
@@ -59,14 +80,24 @@ bool sys_load_state(System* s, const char* path) {
     } else ok = false;
     for (int i = 0; ok && i < MAX_EVENTS; i++) ok = !t->events[i].used || h.eventFn[i] < NUM_EVENT_FNS;
     if (ok && h.pendingLen > gx->pendingCap) {
-        u8* p = realloc(gx->pending, h.pendingLen);
-        if (p) { gx->pending = p; gx->pendingCap = h.pendingLen; } else ok = false;
+        u32 cap = (h.pendingLen + 3) & ~3u;  // (whole words: ramlayout.h)
+        u8* p = realloc(gx->pending, cap);
+        if (p) { gx->pending = p; gx->pendingCap = cap; } else ok = false;
     }
     ok = ok && get(f, s->mem1, MEM1_SIZE) && get(f, s->lockedCache, LOCKED_CACHE_SIZE) && get(f, s->dsp.aram, ARAM_BYTES) &&
          get(f, gx->tmem, 1u << 20) && get(f, gx->efb, EFB_W * EFB_H * 4) && get(f, gx->efbZ, EFB_W * EFB_H * 4) &&
          (!h.pendingLen || get(f, gx->pending, h.pendingLen));
     fclose(f);
     if (!ok) { free(t); return false; }
+    swap_words(s->mem1, MEM1_SIZE);
+    swap_words(s->lockedCache, LOCKED_CACHE_SIZE);
+    if (GC_SWAPRAM && h.pendingLen) {
+        u8* be = malloc(h.pendingLen);
+        if (!be) { free(t); return false; }
+        memcpy(be, gx->pending, h.pendingLen);
+        ram_from_be(gx->pending, 0, be, h.pendingLen);
+        free(be);
+    }
 
     // CPU: architectural state over a freshly reset core, then the BATs and MSR rewritten so that its lookup tables
     // are rebuilt.
