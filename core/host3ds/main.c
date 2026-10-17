@@ -367,7 +367,7 @@ typedef struct {
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
     bool gxInline;       // --gx inline|thread: GX on the CPU thread instead of core 2
     bool slowInline;     // --slow inline|stub: memory slow paths per site (old) or through the shared stubs
-    int pmuSplit;        // --pmu-split on: performance counters split between compiled code and the rest (# pmu split); hle: the ShdwDraw stand-in
+    int pmuSplit;        // --pmu-split on: performance counters split between compiled code and the rest (# pmu split); hle: the ShdwDraw stand-in; fast: its fast cells; empty: a bracket around nothing there (the bracket's own cost)
     bool profile;        // --profile on: blocks store their start for the sampler (# hot guest code); one store per block
     struct { u32 from, to; u16 bits; } press[16];  // --press A@200-206,START@900-905: buttons held over field ranges
     u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
@@ -485,7 +485,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
-        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : 0;
+        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
@@ -857,6 +857,10 @@ static const char* run(const char* path) {
         hle_shdw_begin_hook = g_opt.pmuSplit == 2 ? pmu_split_begin : NULL;
         hle_shdw_end_hook = g_opt.pmuSplit == 2 ? pmu_split_end : NULL;
         if (g_opt.pmuSplit == 2) pmu_split_what("the ShdwDraw stand-in");
+        hle_shdw_fast_begin_hook = g_opt.pmuSplit == 3 ? pmu_split_begin : g_opt.pmuSplit == 4 ? pmu_split_empty : NULL;
+        hle_shdw_fast_end_hook = g_opt.pmuSplit == 3 ? pmu_split_end : NULL;
+        if (g_opt.pmuSplit == 3) pmu_split_what("ShdwDraw's fast cells");
+        if (g_opt.pmuSplit == 4) pmu_split_what("an empty bracket where the fast cells run");
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);

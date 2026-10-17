@@ -14,7 +14,13 @@ frame (and the LR save word above it) is a local array: dead state once it retur
 are C locals, taken from the guest when read before written; f1 (the return value), f14-f31 and LR are left as the
 guest leaves them, and f0, f2-f13, the volatile GPRs and CR fields and XER are dead after the call (the ABI; owner
 decision 2026-10-15). An FPR argument is taken only when both lanes are singles (checked at entry). Branches go
-forward only; loops, calls, indexed or update loads and anything not handled here are refused at translation time."""
+forward only; loops, calls, indexed or update loads and anything not handled here are refused at translation time.
+
+Direct mode (NAME.dis!): for bigger functions with loops (J3D's matrix work). Every access is checked where it runs:
+an address outside MEM1's cached mapping stops the function before that instruction, with every GPR, CR field,
+XER[CA], LR and written FPR in guest state and g->pc there (g_psMid), for guest code to go on from it. The stack
+frame is guest memory; branches may go backward; `bl` to the CodeWarrior GPR save / restore helpers runs in place
+(--helpers SAVE14,REST14: the addresses of _savegpr_14 and _restgpr_14 in the game)."""
 import re, sys
 
 FNV = 0xCBF29CE484222325
@@ -87,9 +93,18 @@ def merge(a, b, path):
     return s
 
 
-def translate(path, logged=False):
+HELPERS = None  # direct mode: (_savegpr_14, _restgpr_14) addresses, from --helpers
+
+
+def sig(t):  # a label state, to find where direct mode's passes settle
+    return (tuple(sorted(t.const.items())), frozenset(t.fmust), frozenset(t.fmay), frozenset(t.wmust), frozenset(t.wr), t.live)
+
+
+def translate(path, logged=False, direct=False, backin=None, backout=None):
     # NAME.dis@K: the function entered at its K-th instruction (__save_gpr / __restore_gpr: callers enter at
     # _savegpr_N / _restgpr_N, N = 14 + K): a definition of its own, named NAME_K.
+    # Direct mode: backin holds each loop head's state from the backward branches of the previous pass; backout
+    # collects them for the next.
     path, _, skip = path.partition("@")
     ins = parse(path)[int(skip or 0):]
     name = re.sub(r"[^A-Za-z0-9_]", "_", re.sub(r"(?<=[A-Za-z0-9>])__[A-Z0-9][A-Za-z0-9_]*$", "", path.split("/")[-1][:-4])) + (f"_{skip}" if skip else "")
@@ -99,6 +114,8 @@ def translate(path, logged=False):
     targets = {}
     for off, word, op, a in ins:
         o = word >> 26
+        if o == 18 and (word & 3) == 1 and not direct:
+            raise SystemExit(f'{path}: a call')
         if o == 18 and not (word & 3):
             li = word & 0x03FFFFFC
             li = li - 0x04000000 if li & 0x02000000 else li
@@ -116,6 +133,10 @@ def translate(path, logged=False):
     gpr_in, fpr_in, cr_in, gpr_used = [], [], set(), set()
     flags = {'pipe': False, 'stack': 0, 'ca_in': False, 'lr': False, 'lr_w': False, 'xso': False, 'fsave': False,
              'branch': False, 'logged': False, 'fpu': False}
+    cur = [0]  # direct mode: the instruction being translated (where a failed access stops)
+    fw_last = []  # direct mode: FPRs the instruction writes (their bits in the written mask)
+    frest = set()  # direct mode: FPRs lfd restored (ps0 from the saved double)
+    all_fw = set()  # FPRs written anywhere
     gpr_nv = set()  # non-volatile GPRs it writes (written back; compiled code forgets its cached GPRs after the call)
     fpr_saved, fpr_restored = set(), set()
     body = []
@@ -128,7 +149,7 @@ def translate(path, logged=False):
         return r
 
     def wr(r, const=None):
-        if r in ('r1', 'r2', 'r13'):
+        if r in ('r2', 'r13') or (r == 'r1' and not direct):
             raise SystemExit(f'{path}: writes {r} (reserved)')
         if int(r[1:]) >= 14:
             gpr_nv.add(r)
@@ -142,6 +163,8 @@ def translate(path, logged=False):
             st.const[r] = const & 0xFFFFFFFF
 
     def frd(f):  # an FPR read
+        if f in frest:
+            raise SystemExit(f'{path}: {f} read after lfd restored it')
         if f in fpr_restored:
             raise SystemExit(f'{path}: {f} read after lfd restored it')
         if f not in st.fmust and f not in fpr_in:
@@ -153,6 +176,8 @@ def translate(path, logged=False):
     def fwr(f):
         st.fmust.add(f)
         st.fmay.add(f)
+        fw_last.append(f)
+        all_fw.add(f)
 
     def crf_rd(n):
         cr_in.add(n)  # (written on only some paths: the guest value on the others)
@@ -186,6 +211,13 @@ def translate(path, logged=False):
         guest address the access checks itself (stores go to the log, applied at the end)."""
         if base == 'r0':
             raise SystemExit(f'{path}: d(0) addressing')
+        if direct:  # 'X': a guest address checked where it runs (XH stops the function there)
+            if base in st.const and (st.const[base] + off) & 0xFFFFFFFF == PIPE:
+                if not store:
+                    raise SystemExit(f'{path}: a load from the pipe')
+                flags['pipe'] = True
+                return 'PIPE', 'PIPE'
+            return 'X', f'{rd(base)} + {off & 0xFFFFFFFF:#x}u'
         if base == 'r1':
             idx = st.frame + off
             flags['stack'] = max(flags['stack'], -st.frame)
@@ -216,6 +248,8 @@ def translate(path, logged=False):
 
     def load(base, off, size):  # C for the loaded value (u32); sign extension is the caller's
         kind, e = addr(base, off, size, False)
+        if kind == 'X':
+            return xload(e, size)
         if kind == 'D':
             flags['logged'] = True
             return f'DLD({e}, {size})'
@@ -223,7 +257,11 @@ def translate(path, logged=False):
 
     def store(base, off, size, v):  # C statement
         kind, e = addr(base, off, size, True)
+        if kind == 'X':
+            return xstore(e, size, v)
         if kind == 'PIPE':
+            if direct:  # (a loop may fill the buffer: what is there goes to the GP first)
+                return f'if (pn > PIPE_MAX - 8) {{ PIPE_OUT(); pn = 0; }} PIPE{size * 8}({v});'
             return f'PIPE{size * 8}({v});'
         if kind == 'D':
             flags['logged'] = True
@@ -231,6 +269,18 @@ def translate(path, logged=False):
         if kind == 'STK':  # the private frame
             return {4: f'SBE32({e}, {v});', 2: f'SBE16({e}, {v});', 1: f'*({e}) = (u8)({v});'}[size]
         return f'STW{size * 8}({e}, {v});'  # guest RAM (HLE_CHECK records each store)
+
+    def xload(e, size):  # direct mode: a load from a guest address, stopping here when it is not in MEM1
+        flags['stops'] = True
+        return {4: f'BE32(XH({e}, 4, {cur[0]:#010x}u))', 2: f'BE16(XH({e}, 2, {cur[0]:#010x}u))',
+                1: f'*XH({e}, 1, {cur[0]:#010x}u)'}[size]
+
+    def xstore(e, size, v):
+        flags['stops'] = True
+        return f'STW{size * 8}(XH({e}, {size}, {cur[0]:#010x}u), {v});'
+
+    def ea_idx(rA, rB):  # an indexed address (rA 0: rB alone)
+        return rd(rB) if rA == 'r0' else f'{rd(rA)} + {rd(rB)}'
 
     def cmp0(res):  # Rc=1: CR0 from a result compared with 0 (and XER[SO])
         crf_wr(0)
@@ -256,7 +306,7 @@ def translate(path, logged=False):
             if rA == 'r0':
                 wr(rD, v)
                 return f'{rD} = {v & 0xFFFFFFFF:#x}u;'
-            if rA == 'r1' and rD == 'r1':
+            if rA == 'r1' and rD == 'r1' and not direct:
                 st.frame += v
                 return f'/* addi r1 (the frame: {st.frame}) */'
             c = st.const.get(rA)
@@ -366,6 +416,25 @@ def translate(path, logged=False):
                      104: f'(u32)-(s32){rd(rA)}'}[xo]
                 wr(rD)
                 return f'{rD} = {e};' + (cmp0(rD) if rc else '')
+            if direct and xo in (23, 87, 279, 343):  # lwzx, lbzx, lhzx, lhax
+                size = {23: 4, 87: 1, 279: 2, 343: 2}[xo]
+                e = xload(ea_idx(rA, rB), size)
+                if xo == 343:
+                    e = f'(u32)(s32)(s16){e}'
+                wr(rD)
+                return f'{rD} = {e};'
+            if direct and xo in (151, 215, 407):  # stwx, stbx, sthx
+                size = {151: 4, 215: 1, 407: 2}[xo]
+                return xstore(ea_idx(rA, rB), size, rd(rD))
+            if direct and xo in (55, 119, 311):  # lwzux, lbzux, lhzux
+                if rA == 'r0' or rA == rD:
+                    raise SystemExit(f'{path}: an invalid update form')
+                size = {55: 4, 119: 1, 311: 2}[xo]
+                e = xload('ea_', size)
+                ea = ea_idx(rA, rB)
+                wr(rD)
+                wr(rA)
+                return f'{{ u32 ea_ = {ea}; {rD} = {e}; {rA} = ea_; }}'
             if xo in (10, 8, 138, 136, 202, 200, 234):  # addc, subfc, adde, subfe, addze, subfze, addme
                 if word & (1 << 10):
                     raise SystemExit(f'{path}: an OE form')
@@ -378,6 +447,23 @@ def translate(path, logged=False):
                 wr(rD)
                 return f'{{ u64 t_ = {e}; {rD} = (u32)t_; ca = (u32)(t_ >> 32); }}' + (cmp0(rD) if rc else '')
             return None
+        if direct and op in (33, 35, 41, 43):  # lwzu, lbzu, lhzu, lhau
+            if rA == 'r0' or rA == rD:
+                raise SystemExit(f'{path}: an invalid update form')
+            size = {33: 4, 35: 1, 41: 2, 43: 2}[op]
+            e = xload('ea_', size)
+            if op == 43:
+                e = f'(u32)(s32)(s16){e}'
+            src = rd(rA)
+            wr(rD)
+            wr(rA)
+            return f'{{ u32 ea_ = {src} + {simm & 0xFFFFFFFF:#x}u; {rD} = {e}; {rA} = ea_; }}'
+        if direct and op in (39, 45):  # stbu, sthu
+            size = {39: 1, 45: 2}[op]
+            v, src = rd(rD), rd(rA)
+            s = xstore('ea_', size, v)
+            wr(rA)
+            return f'{{ u32 ea_ = {src} + {simm & 0xFFFFFFFF:#x}u; {s} {rA} = ea_; }}'
         if op in (32, 34, 40, 42):  # lwz, lbz, lhz, lha
             size = {32: 4, 34: 1, 40: 2, 42: 2}[op]
             e = load(rA, simm, size)
@@ -385,7 +471,7 @@ def translate(path, logged=False):
                 e = f'(u32)(s32)(s16){e}'
             # A pointer it may go through, loaded before any store to RAM from a range checked at entry: fetchable at
             # entry (static mode).
-            fetchable = op == 32 and not logged and rA != 'r1' and not st.stored
+            fetchable = op == 32 and not logged and not direct and rA != 'r1' and not st.stored
             k = key_of(rA)[0] if fetchable else None
             wr(rD)
             if fetchable:
@@ -396,6 +482,11 @@ def translate(path, logged=False):
         if op in (36, 37, 38, 44):  # stw, stwu, stb, sth
             size = {36: 4, 37: 4, 38: 1, 44: 2}[op]
             v = rd(rD)
+            if op == 37 and direct:  # stwu: the store, then rA (r1 too: the frame is guest memory here)
+                src = rd(rA)
+                s = xstore('ea_', 4, v)
+                wr(rA)
+                return f'{{ u32 ea_ = {src} + {simm & 0xFFFFFFFF:#x}u; {s} {rA} = ea_; }}'
             if op == 37 and rA == 'r1':  # the frame: the old r1 stored at the new top
                 if simm >= 0:
                     raise SystemExit(f'{path}: stwu r1 with a positive offset')
@@ -430,8 +521,36 @@ def translate(path, logged=False):
             e = load(*mem(a[1]), 4)
             fwr(a[0])
             return f'{a[0]} = PS(U2F({e}));'
+        if op == 'lfsu' and direct:
+            base, o = mem(a[1])
+            if base == 'r0':
+                raise SystemExit(f'{path}: an invalid update form')
+            src = rd(base)
+            e = xload('ea_', 4)
+            fwr(a[0])
+            wr(base)
+            return f'{{ u32 ea_ = {src} + {o & 0xFFFFFFFF:#x}u; {a[0]} = PS(U2F({e})); {base} = ea_; }}'
+        if op == 'stfd' and direct:  # (the frame's FPR saves: an FPR this function has not written, as the guest holds it)
+            f = a[0]
+            if f in st.fmay:
+                raise SystemExit(f'{path}: stfd {f} after it was written')
+            base, o = mem(a[1])
+            e = f'{rd(base)} + {o & 0xFFFFFFFF:#x}u'
+            return (f'{{ u64 d_ = DBITS(g->fpr[{f[1:]}].ps0); u32 ea_ = {e}; {xstore("ea_", 4, "(u32)(d_ >> 32)")} '
+                    f'{xstore("ea_ + 4u", 4, "(u32)d_")} }}')
+        if op == 'lfd' and direct:  # (the epilogue's restores: ps0 the saved double; nothing reads it afterwards)
+            f = a[0]
+            base, o = mem(a[1])
+            e = f'{rd(base)} + {o & 0xFFFFFFFF:#x}u'
+            frest.add(f)
+            flags['frest'] = True
+            k = f[1:]
+            return (f'{{ u32 ea_ = {e}; u32 hi_ = {xload("ea_", 4)}, lo_ = {xload("ea_ + 4u", 4)}; '
+                    f'd{k} = (u64)hi_ << 32 | lo_; frs |= 1u << {k}; }}')
         if op == 'stfs':  # ps0 rounded to single (an FPR argument is a double: as the interpreter rounds it)
             f = a[0]
+            if f in frest:
+                raise SystemExit(f'{path}: stfs {f} after lfd restored it')
             if f in st.fmust:
                 v = f'FBITS({f}.p0)'
             else:
@@ -439,12 +558,16 @@ def translate(path, logged=False):
                     raise SystemExit(f'{path}: stfs {f} written on only some paths')
                 v = f'S2S({f[1:]})'
             return store(*mem(a[1]), 4, v)
-        if op == 'frsp':
+        if op == 'frsp':  # (the source is decided before the destination counts as written: frsp f1,f1 reads the argument)
             src = a[1]
-            fwr(a[0])
             if src in st.fmust:
-                return f'{a[0]} = PS({src}.p0);'
-            return f'{a[0]} = PS(F2S({src[1:]}));'
+                e = f'PS({src}.p0)'
+            elif src in st.fmay:
+                raise SystemExit(f'{path}: frsp {src} written on only some paths')
+            else:
+                e = f'PS(F2S({src[1:]}))'
+            fwr(a[0])
+            return f'{a[0]} = {e};'
         if op in ('ps_add', 'ps_sub'):
             e = f'{"PADD" if op == "ps_add" else "PSUB"}({frd(a[1])}, {frd(a[2])})'
             fwr(a[0])
@@ -476,9 +599,22 @@ def translate(path, logged=False):
             return f'/* lfd {a[0]} (ps0 restored) */'
         return None
 
+    def branch_to(t):  # the state at a branch, for its target
+        if t <= cur[0]:
+            if not direct:
+                raise SystemExit(f'{path}: a backward branch (a loop)')
+            backout[t] = merge(backout[t], st, path) if t in backout else st.copy()
+        else:
+            pending[t] = merge(pending[t], st, path) if t in pending else st.copy()
+
     for off, word, op, a in ins:
+        cur[0] = off
         if off in targets:
             st = merge(st, pending.pop(off), path) if off in pending else st
+            if direct and off in backin:  # a loop head: what the previous pass's backward branches brought
+                st = merge(st, backin[off], path)
+            elif direct and not st.live:  # (first pass: reached only from below; nothing known yet)
+                st = St()
             st.live = True
             body.append(f'L_{off:x}:;')
         if not st.live:
@@ -487,14 +623,38 @@ def translate(path, logged=False):
         if off == end:  # the final blr
             body.append('    n++;')
             break
+        if o == 18 and (word & 3) == 1:  # bl (direct mode): the GPR save / restore helpers, in place
+            li = word & 0x03FFFFFC
+            li = li - 0x04000000 if li & 0x02000000 else li
+            t = (off + li) & 0xFFFFFFFF
+            if not HELPERS:
+                raise SystemExit(f'{path}: a call (no --helpers)')
+            kind = next((k for k, base in (('save', HELPERS[0]), ('rest', HELPERS[1])) if 0 <= t - base < 18 * 4 and not (t - base) & 3), None)
+            if kind is None:
+                raise SystemExit(f'{path}: a call to {t:x}')
+            first = 14 + (t - (HELPERS[0] if kind == 'save' else HELPERS[1])) // 4
+            regs = [f'r{k}' for k in range(first, 32)]
+            cnt = len(regs) + 1  # the helper's stw / lwz and its blr
+            src = rd('r11')
+            flags['stops'] = True
+            flags['lr'] = flags['lr_w'] = True
+            if kind == 'save':
+                ops = ' '.join(f'STW32(h_ + {4 * i}, {rd(r)});' for i, r in enumerate(regs))
+                body.append(f'    n++; {{ u8* h_ = XH({src} - {4 * len(regs)}u, {4 * len(regs)}, {off:#010x}u); '
+                            f'{ops} }} lr = {off + 4:#010x}u; n += {cnt};')
+            else:
+                for r in regs:
+                    wr(r)
+                ops = ' '.join(f'{r} = BE32(h_ + {4 * i});' for i, r in enumerate(regs))
+                body.append(f'    n++; {{ u8* h_ = XH({src} - {4 * len(regs)}u, {4 * len(regs)}, {off:#010x}u); {ops} }} '
+                            f'lr = {off + 4:#010x}u; n += {cnt};')
+            continue
         if o == 18 and not (word & 3):  # b
             flags['branch'] = True
             li = word & 0x03FFFFFC
             li = li - 0x04000000 if li & 0x02000000 else li
             t = off + li
-            if t <= off:
-                raise SystemExit(f'{path}: a backward branch (a loop)')
-            pending[t] = merge(pending[t], st, path) if t in pending else st.copy()
+            branch_to(t)
             body.append(f'    n++; goto L_{t:x};')
             st.live = False
             continue
@@ -503,10 +663,8 @@ def translate(path, logged=False):
             bd = word & 0xFFFC
             bd = bd - 0x10000 if bd & 0x8000 else bd
             t = off + bd
-            if t <= off:
-                raise SystemExit(f'{path}: a backward branch (a loop)')
             c = cond(word)
-            pending[t] = merge(pending[t], st, path) if t in pending else st.copy()
+            branch_to(t)
             if c is None:
                 body.append(f'    n++; goto L_{t:x};')
                 st.live = False
@@ -522,13 +680,16 @@ def translate(path, logged=False):
             if c is None:
                 st.live = False
             continue
-        if op.startswith('ps') or op in ('lfs', 'stfs', 'frsp', 'stfd', 'lfd'):
+        fw_last.clear()
+        if op.startswith('ps') or op in ('lfs', 'lfsu', 'stfs', 'frsp', 'stfd', 'lfd'):
             flags['fpu'] = True
             s = fp(off, word, op, a)
         else:
             s = integer(word, off)
         if s is None:
             raise SystemExit(f'{path}: unsupported at {off:x}: {op} {a}')
+        if direct:  # the FPRs it wrote, for the write-back (only those go back: the others stay as the guest has them)
+            s += ''.join(f' fw |= 1u << {f[1:]};' for f in fw_last)
         body.append(f'    n++; {s}')
     if st.frame != 0:
         raise SystemExit(f'{path}: the frame is not given back')
@@ -536,6 +697,9 @@ def translate(path, logged=False):
         raise SystemExit(f'{path}: saved FPRs with branches')
     if any('L_ret' in s for s in body):
         body.append('L_ret:;')
+
+    if direct:
+        return direct_out(path, name, ins, body, flags, st, gpr_used, gpr_nv, fpr_in, written_cr, cr_in, frest, all_fw)
 
     # ---- entry: range checks, then the pointers fetched through the checked ranges ----
     pre = []
@@ -618,7 +782,89 @@ def translate(path, logged=False):
     return name, len(ins) * 4, words[0], fnv(words), out, flags['pipe'], bool(gpr_nv), flags['fpu']
 
 
+def direct_out(path, name, ins, body, flags, st, gpr_used, gpr_nv, fpr_in, written_cr, cr_in, frest, all_fw):
+    """Direct mode's C: every used GPR, CR field and XER[CA] taken from the guest at entry (so any of them can go back
+    exactly wherever it stops); FPRs read before written must be singles in both lanes (fexact) and go back only when
+    written (the mask fw); lfd's restores keep the saved double (d<k>, mask frs)."""
+    num = lambda x: int(x[1:])
+    regs = sorted(gpr_used, key=num)
+    fset = sorted(all_fw | set(fpr_in), key=num)
+    crs = sorted(written_cr | cr_in)
+    uses_ca = any('ca' in s for s in body)
+    out = [f'static u32 ps_{name}(Gekko* g) {{  // {len(ins)} instructions (direct: stops where an access is not in MEM1)']
+    if flags['pipe']:
+        out.append('    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)')
+    for f in fpr_in:
+        out.append(f'    if (!fexact(g, {f[1:]})) return 0;')
+    if regs:
+        out.append('    u32 ' + ', '.join(f'{r} = g->gpr[{r[1:]}]' for r in regs) + ';')
+    if flags['pipe']:
+        out += ['    u8 pb[PIPE_MAX];', '    u32 pn = 0;']
+    if flags['lr'] or flags['lr_w']:
+        out.append('    u32 lr = g->lr;')
+    if flags['xso']:
+        out.append('    const u32 xso = g->xer >> 31;  // XER[SO] into each compare')
+    if crs:
+        out.append('    u32 ' + ', '.join(f'cr{n} = (g->cr >> {28 - 4 * n}) & 15' for n in crs) + ';')
+    out.append('    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)')
+    out.append('    const u32 xsz = g_size;')
+    out.append('    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, frs = 0;')
+    for f in fset:
+        out.append(f'    P {f} = {"FIN(" + f[1:] + ")" if f in fpr_in else "(P){ 0, 0 }"};')
+    for f in sorted(frest, key=num):
+        out.append(f'    u64 d{f[1:]} = 0;')
+    out.append('    ' + ' '.join(f'(void){v};' for v in regs + [f'cr{n}' for n in crs] + ['ca', 'spc', 'fw', 'frs']))
+
+    def fprs_back(which):
+        w = []
+        for f in fset:
+            k = num(f)
+            if which == 'end' and k != 1 and k < 14:
+                continue
+            w.append(f'    if (fw & (1u << {k})) {{ g->fpr[{k}].ps0 = (double){f}.p0; g->fpr[{k}].ps1 = (double){f}.p1; }}')
+        for f in sorted(frest, key=num):
+            k = num(f)
+            w.append(f'    if (frs & (1u << {k})) g->fpr[{k}].ps0 = BITSD(d{k});')
+        return w
+    end = fprs_back('end') + (['    PIPE_OUT();'] if flags['pipe'] else [])
+    end += (['    g->lr = lr;'] if flags['lr_w'] else [])
+    end += [f'    g->gpr[{r[1:]}] = {r};' for r in sorted(gpr_nv | ({'r1'} & gpr_used), key=num)]
+    end += ['    return n;']
+    stop = ['stop:', '    n--;  // (the instruction that stopped did not run)', '    if (!n) return 0;']
+    stop += (['    PIPE_OUT();'] if flags['pipe'] else [])
+    stop += [f'    g->gpr[{r[1:]}] = {r};' for r in regs if r not in ('r2', 'r13')]
+    stop += fprs_back('stop')
+    if crs:
+        mask = 0
+        for n_ in crs:
+            mask |= 0xF << (28 - 4 * n_)
+        stop.append(f'    g->cr = (g->cr & {(~mask) & 0xFFFFFFFF:#010x}u) | ' + ' | '.join(f'(cr{n_} << {28 - 4 * n_})' for n_ in crs) + ';')
+    if uses_ca:
+        stop.append('    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);')
+    if flags['lr_w']:
+        stop.append('    g->lr = lr;')
+    stop += ['    g->pc = spc;', '    g_psMid = true;', '    return n;']
+    if not flags.get('stops'):
+        stop = []
+    out += body + end + stop + ['}']
+    words = [w for _, w, _, _ in ins]
+    return name, len(ins) * 4, words[0], fnv(words), out, flags['pipe'], bool(gpr_nv), flags['fpu']
+
+
+def translate_direct(path):  # passes until each loop head's state settles (what its backward branches bring)
+    backin = {}
+    for _ in range(16):
+        backout = {}
+        r = translate(path, direct=True, backin=backin, backout=backout)
+        if {k: sig(v) for k, v in backout.items()} == {k: sig(v) for k, v in backin.items()}:
+            return r
+        backin = backout
+    raise SystemExit(f'{path}: the loop states did not settle')
+
+
 def translate_any(path):  # checked at entry where every address is known there; else logged
+    if path.endswith('!'):
+        return translate_direct(path[:-1])
     try:
         return translate(path)
     except SystemExit as e:
@@ -628,7 +874,11 @@ def translate_any(path):  # checked at entry where every address is known there;
 
 
 if __name__ == '__main__':
-    fns = [translate_any(p) for p in sys.argv[1:]]
+    args = sys.argv[1:]
+    if args[:1] == ['--helpers']:
+        HELPERS = tuple(int(x, 16) for x in args[1].split(','))
+        args = args[2:]
+    fns = [translate_any(p) for p in args]
     print('// Generated by core/tools/ps_translate.py from SDK functions as compiled into a game\'s main.dol: one C')
     print('// statement per guest instruction. Included by hle_ps.c; do not edit.')
     for name, size, first, h, out, pipe, gprs, fpu in fns:

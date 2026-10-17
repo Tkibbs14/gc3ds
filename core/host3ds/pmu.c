@@ -85,17 +85,23 @@ const char* pmu_columns(void) {
 #define SPLIT_EVERY 8
 static u64 g_inCyc[NPAIRS], g_inEv[NPAIRS][2], g_allCyc[NPAIRS], g_allEv[NPAIRS][2], g_s0[3];
 static u32 g_splitN;
+static u64 g_runs[NPAIRS];  // runs bracketed while each pair of events counted (all; one in SPLIT_EVERY is measured)
 static bool g_inSample;
 static const char* g_splitWhat = "compiled code incl. its helpers";
 void pmu_split_what(const char* what) { g_splitWhat = what; }
 
 void pmu_split_begin(void) {
-    if (!g_on || ++g_splitN % SPLIT_EVERY) return;
+    if (!g_on) return;
+    g_runs[g_pair]++;
+    if (++g_splitN % SPLIT_EVERY) return;
     g_s0[0] = get(PERFCOUNTERREG_CORE_CYCLE_COUNTER);
     g_s0[1] = get(PERFCOUNTERREG_CORE_COUNT_REG_0);
     g_s0[2] = get(PERFCOUNTERREG_CORE_COUNT_REG_1);
     g_inSample = true;
 }
+
+void pmu_split_end(void);
+void pmu_split_empty(void) { pmu_split_begin(); pmu_split_end(); }
 
 void pmu_split_end(void) {
     if (!g_inSample) return;
@@ -114,7 +120,17 @@ void pmu_split_report(FILE* f) {
     for (u32 p = 0; p < NPAIRS; p++)
         for (u32 k = 0; k < 2; k++)
             if (g_allEv[p][k]) fprintf(f, ", %s %.0f%%", kPairs[p][k].col, 100.0 * (double)g_inEv[p][k] / (double)g_allEv[p][k]);
+    // A run's absolute counts (each pair of events over the runs while that pair counted).
+    u64 runs = 0;
+    for (u32 p = 0; p < NPAIRS; p++) runs += g_runs[p];
+    if (runs) {
+        fprintf(f, "; runs %llu, a run: cycles %.0f", (unsigned long long)runs, (double)ic / (double)runs);
+        for (u32 p = 0; p < NPAIRS; p++)
+            for (u32 k = 0; k < 2; k++)
+                if (g_runs[p] && g_allEv[p][k]) fprintf(f, ", %s %.1f", kPairs[p][k].col, (double)g_inEv[p][k] / (double)g_runs[p]);
+    }
     fprintf(f, "\n");
+    memset(g_runs, 0, sizeof g_runs);
     memset(g_inCyc, 0, sizeof g_inCyc); memset(g_inEv, 0, sizeof g_inEv);
     memset(g_allCyc, 0, sizeof g_allCyc); memset(g_allEv, 0, sizeof g_allEv);
 }

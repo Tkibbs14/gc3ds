@@ -56,7 +56,7 @@ static inline void stf(u8* p, float f) { SBE32(p, FBITS(f)); }
 // result wherever it landed (not only near the arguments).
 #ifndef __3DS__
 typedef struct { u8* p; u8 old[4]; u32 size; } Cap;
-#define CAP_MAX 512
+#define CAP_MAX 8192  // (direct-mode functions store in loops)
 static Cap g_scap[CAP_MAX];
 static u32 g_nscap;
 static bool g_scapOn, g_scapFull;
@@ -122,6 +122,21 @@ static void pipe_out(Gekko* g, const u8* data, u32 len) {
 }
 void hle_ps_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx) { g_pipeWrite = write; g_pipeCtx = ctx; }
 
+// Direct mode (bigger functions with loops, ps_translate.py NAME.dis!): each access checked where it runs (MEM1's cached
+// mapping through the locals xm / xsz); anything else stops the function before that instruction (`goto stop`, spc its
+// address), which writes every register back with g->pc there and sets g_psMid, for guest code to go on from it.
+static bool g_psMid;
+#ifndef __3DS__
+// HLE_STOP_EVERY=N (PC, with HLE_CHECK): every Nth checked access fails, so the stops (rare in play) are compared too.
+static u32 g_xEvery, g_xCount;
+#define XFORCE() (g_xEvery && ++g_xCount % g_xEvery == 0)
+#else
+#define XFORCE() 0
+#endif
+#define XH(EA, SZ, AT) ({ u32 xa_ = (EA) - 0x80000000u; if (__builtin_expect((xa_ > xsz - (SZ)) | XFORCE(), 0)) { spc = (AT); goto stop; } xm + xa_; })
+static inline u64 DBITS(double d) { u64 w; memcpy(&w, &d, 8); return w; }
+static inline double BITSD(u64 w) { double d; memcpy(&d, &w, 8); return d; }
+
 // pipe: writes the gather pipe; gprs: writes r14-r31; fpu: has FP instructions (needs the FPU and paired singles on).
 typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); bool pipe, gprs, fpu; } PsDef;
 #include "hle_ps_gen.inc"
@@ -154,7 +169,13 @@ static void known_put(u32 pc, int def) {
     g_nknown++;
 }
 
-void hle_ps_set_memory(u8* mem1, u32 size, u8* lc) { g_m = mem1; g_size = size; g_lc = lc; known_clear(); }
+void hle_ps_set_memory(u8* mem1, u32 size, u8* lc) {
+    g_m = mem1; g_size = size; g_lc = lc; known_clear();
+#ifndef __3DS__
+    const char* e = getenv("HLE_STOP_EVERY");
+    g_xEvery = e ? (u32)atoi(e) : 0;
+#endif
+}
 void hle_ps_invalidate(u32 pa) {  // what was found in that page is found again (the rest re-entered)
     static struct { u32 pc; s16 def; } keep[KN];
     u32 n = 0;
@@ -244,14 +265,16 @@ static u32 ps_native(Gekko* g) {
     int d = find(g->pc);
     if (d < 0) return 0;
     u32 n = ps_call(g, d);
-    if (n) g->pc = g->lr;
+    if (n && !g_psMid) g->pc = g->lr;  // (stopped inside: g->pc is where)
     return n;
 }
 // Called by compiled code in place of `bl` (LR already set): the guest instructions it ran (0: refused, nothing
-// changed), with bit 31 set when its pipe bytes made the GP ask the CPU to stop (the caller leaves after the call).
+// changed), with bit 31 set when its pipe bytes made the GP ask the CPU to stop (the caller leaves after the call), and
+// bit 30 when a direct-mode function stopped inside (the caller leaves for g->pc).
 u32 hle_ps_inline_call(Gekko* g, u32 d) {
     u32 n = ps_call(g, (int)d);
-    if (!n) { g_psRefusedBy[d]++; return 0; }
+    if (!n) return 0;
+    if (g_psMid) { g_psStops[d]++; return n | 0x40000000u; }
     if (g_psStop) { g_psStops[d]++; return n | 0x80000000u; }
     return n;
 }
@@ -267,12 +290,12 @@ static u32 ps_call(Gekko* g, int d) {
             fprintf(stderr, "HLE_CHECK %s refused: msr %08x fpscr %08x hid2 %08x gqr0 %08x\n", g_psDefs[d].name, g->msr, g->fpscr,
                     g->spr[SPR_HID2], g->spr[SPR_GQR0]);
 #endif
-        g_psRefused++;
+        g_psRefused++; g_psRefusedBy[d]++;
         return 0;
     }
-    g_psStop = false;
+    g_psStop = g_psMid = false;
     u32 n = g_psDefs[d].fn(g);
-    if (!n) { g_psRefused++; return 0; }
+    if (!n) { g_psRefused++; g_psRefusedBy[d]++; return 0; }
     g_psCalls[d]++;
     g_psCalls[NDEF]++;
     return n;
@@ -282,10 +305,14 @@ static u32 ps_call(Gekko* g, int d) {
 // HLE_CHECK=1: every call also runs in the interpreter from the same state for the same instruction count; compared:
 // PC, LR, r1, r2, r13-r31, f1 and f14-f31 (both lanes; the others are volatile, dead), CR fields 2-4, and 64 bytes at each of
 // r3, r4, r5 (the arguments' matrices and vectors). The interpreter's result stands.
-static struct { u64 calls, bad; } g_pchk;
+static struct { u64 calls, bad, mid; } g_pchk;
 static void pchk_report(void) {
-    fprintf(stderr, "HLE_CHECK (PS library): %llu stand-in calls compared with the interpreter, %llu differed\n",
-            (unsigned long long)g_pchk.calls, (unsigned long long)g_pchk.bad);
+    fprintf(stderr, "HLE_CHECK (PS library): %llu stand-in calls compared with the interpreter, %llu differed (%llu stopped inside)\n",
+            (unsigned long long)g_pchk.calls, (unsigned long long)g_pchk.bad, (unsigned long long)g_pchk.mid);
+    for (u32 d = 0; d < NDEF; d++)
+        if (g_psCalls[d] || g_psRefusedBy[d])
+            fprintf(stderr, "  %s: %llu calls, %llu refused\n", g_psDefs[d].name, (unsigned long long)g_psCalls[d],
+                    (unsigned long long)g_psRefusedBy[d]);
 }
 // The gather pipe's bytes while checking (hw/gx.c gp_capture): each run's go to a buffer, compared, then to the GP once.
 static u8 g_cap[2][PIPE_MAX * 2];
@@ -311,6 +338,7 @@ static u32 ps_checked(Gekko* g) {
     u32 n = ps_native(g);
     g_scapOn = false;
     if (!n) { gp_capture = NULL; return 0; }
+    const bool mid = g_psMid;
     Gekko gn = *g;
     for (int k = 0; k < NW; k++) if (w[k]) { memcpy(native[k], w[k], 64); }
     static u8 snat[CAP_MAX][4];  // each recorded store's bytes as the stand-in left them
@@ -339,9 +367,30 @@ static u32 ps_checked(Gekko* g) {
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) &&
                 !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (gn.cr & 0x00FFF000u) && mem;
+    // Stopped inside the function (direct mode): guest code goes on from there, so everything must match.
+    if (mid) same = same && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && !memcmp(g->fpr, gn.fpr, sizeof g->fpr) && g->cr == gn.cr &&
+                    (g->xer & XER_CA) == (gn.xer & XER_CA);
+    if (mid) g_pchk.mid++;
     if (!same && g_pchk.bad++ < 20) {
         fprintf(stderr, "HLE_CHECK %s call %llu: native %u insns to %08x, interpreter %u to %08x%s\n", g_psDefs[d].name,
                 (unsigned long long)g_pchk.calls, n, gn.pc, steps, g->pc, mem ? "" : "; memory differs");
+        for (int k = 0; k < NW; k++)
+            if (w[k] && memcmp(w[k], native[k], 64))
+                for (int b = 0; b < 64; b += 4)
+                    if (memcmp(w[k] + b, native[k] + b, 4)) {
+                        fprintf(stderr, "  window %d +%d: native %08x interpreter %08x (before %08x)\n", k, b, be32p(native[k] + b),
+                                be32p(w[k] + b), be32p(before[k] + b));
+                        break;
+                    }
+        for (u32 i = 0; i < g_nscap; i++)
+            if (memcmp(g_scap[i].p, snat[i], g_scap[i].size)) {
+                fprintf(stderr, "  store %u (%u bytes): native %02x%02x%02x%02x interpreter %02x%02x%02x%02x\n", i, g_scap[i].size,
+                        snat[i][0], snat[i][1], snat[i][2], snat[i][3], g_scap[i].p[0], g_scap[i].p[1], g_scap[i].p[2], g_scap[i].p[3]);
+                break;
+            }
+        if (g_scapFull) fprintf(stderr, "  (more stores than the capture holds)\n");
+        fprintf(stderr, "  in: r3 %08x r4 %08x r5 %08x f1 %.9g/%.9g f2 %.9g f3 %.9g fpscr %08x\n", g0.gpr[3], g0.gpr[4], g0.gpr[5],
+                g0.fpr[1].ps0, g0.fpr[1].ps1, g0.fpr[2].ps0, g0.fpr[3].ps0, g0.fpscr);
         for (int k = 1; k < 32; k++)
             if ((k == 1 || k >= 14) && memcmp(&g->fpr[k], &gn.fpr[k], sizeof(FPR)))
                 fprintf(stderr, "  f%d native %.9g/%.9g interpreter %.9g/%.9g\n", k, gn.fpr[k].ps0, gn.fpr[k].ps1, g->fpr[k].ps0, g->fpr[k].ps1);

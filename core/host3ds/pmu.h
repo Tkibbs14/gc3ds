@@ -20,6 +20,7 @@ void pmu_probe(FILE* f);
 // cycles and the two events since then (false when the counters are unavailable).
 // What pmu_split_begin/end are wrapped around, for the report line.
 void pmu_split_what(const char* what);
+void pmu_split_empty(void);  // begin then end at once: what a bracket itself costs
 void pmu_select(unsigned p);
 bool pmu_read(unsigned long long* cyc, unsigned long long* ev0, unsigned long long* ev1);
 // Split of core 0's counts between compiled code (with the helpers it calls) and everything else: pmu_split_begin /

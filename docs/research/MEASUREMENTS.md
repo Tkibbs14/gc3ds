@@ -456,6 +456,29 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   restore drops them all). Back to the 18 functions; the translator keeps the new forms (C20, C21).
 - Refusals (job 326, per 10 s): GXLoadLightObjImm ~17k, GXLoadPosMtxImm ~8k, PSMTXMultVec ~660: FP functions called
   with the FPU off (the OS's lazy FPU switch), where the guest's exception must run: correct, and rare enough.
+- **Defect found 2026-10-17 (PC HLE_CHECK from boot, title screen):** `frsp f1,f1` was translated as `f1 = PS(f1.p0)`,
+  reading the C variable before anything wrote it (the destination counted as written before the source was looked
+  at). PSMTXScaleApply could store 0.0 for 1.0 (calls ~1250-1750 from boot, scale 1 on an identity). The 5M-call
+  checks over fields 900-2100 passed by luck (the register happened to hold the argument). Fixed in the translator
+  (frsp decides its source first); regenerated; the PC check over fields 900-2100 then: PS library 4,896,101 calls,
+  ShdwDraw 5,814, J3DGD 1,096,284, **0 differed**.
+
+### ShdwDraw redesigned again: commit at the end, header hoisted, its own function (jobs 328-332)
+
+- **Commit instead of snapshot (job 328):** a fast cell computes into temporaries and commits at its end (no frame
+  save / restore); the grid header read once a call; the frame's step words in locals; a slice's budget exit at the
+  loop head leaves only dead state (r0, r3-r8, CR0, XER[CA], masked by the PC check at that PC). Cutscene 28.57 ->
+  **28.59%**, later stretch 16.12 -> **16.47%** (job 327 -> 328), movie flat; the stand-in 3,060 -> 2,920 ms per 10 s
+  (11.0 -> 10.2 us a call, ~285k calls / 10 s, 93% of ~3.8M cells fast).
+- **Fast cells in a function of their own (job 329):** inside scan the compiler spilled around every cell (~450 ARM
+  instructions of the fast block, 161 stack accesses); shdw_fast holds only what carries between cells. **No gain:**
+  later stretch 16.30%, ~3,030 ms per 10 s. Fewer instructions per cell did not make cells cheaper (C19's descent
+  cache did not either).
+- **PMU split (job 330, `--pmu-split hle`, later stretch):** core 0 runs 362M ARM instructions/s, 166M cycles/s of data
+  stalls, 139M of fetch stalls, 1.33M mispredicts/s. The stand-in: cycles 30%, instructions 39-46%, data stalls 30-34%,
+  mispredicts 73-84%, D-micro-TLB misses 41-47%, store-buffer drains 93-110%, D-cache read misses 11%. That reads as
+  ~400 ARM instructions a cell, about twice what shdw_fast runs; the bracket's counter reads are system calls inside
+  it, so jobs 331-332 measure the fast cells alone and an empty bracket.
 
 ### DSP voices and JAudio (jobs 297-298)
 

@@ -34,6 +34,8 @@ u64 g_shdwStats[4];
 u64 g_shdwWalk[10];
 void (*hle_shdw_begin_hook)(void);
 void (*hle_shdw_end_hook)(void);
+void (*hle_shdw_fast_begin_hook)(void);  // around the fast cells alone (--pmu-split fast / empty)
+void (*hle_shdw_fast_end_hook)(void);
 static u8* g_mem;
 static u32 g_memSize;
 static int g_known = -1;  // -1 not checked yet, 0 other code, 1 recognised
@@ -90,6 +92,95 @@ static inline u32 rotl(u32 v, u32 n) { return n ? (v << n) | (v >> (32 - n)) : v
 static inline u32 cmps(u32 a, u32 b) { return (s32)a < (s32)b ? 8u : (s32)a > (s32)b ? 4u : 2u; }  // CR field LT GT EQ
 static inline u32 cmpu(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }
 
+// Fast cells (at 0x8007fb70), in a function of their own: inside scan, with ~25 guest registers live as locals, the
+// compiler spilled around every cell (~450 ARM instructions a cell, 2DS job 328). Here only what carries from one cell
+// to the next is live (ShdwRun, loaded once and stored once a run of cells), and the grid's constants are in ShdwGrid.
+// A cell computes into temporaries and commits only when it went through whole, so the cell a run stops at is left for
+// the exact code from its head with nothing changed.
+typedef struct { u32 r14, r16, r17, r20, r21, r22, r23, r24, r25, f2224, f2228, n, k, cells, levels, empty, fresh; } ShdwRun;
+typedef struct { const u8* m; const u8* vb; u32 lim4, lim2, vWords, r18, r19, r29, budget, cur, lev, s52, s48, f2212, f2216, f2220; } ShdwGrid;
+enum { SHDW_BUDGET = 1, SHDW_TRI, SHDW_ROW, SHDW_ADDR };
+
+static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
+    const u8* const m = gr->m;
+    const u8* const vb = gr->vb;
+    const u32 lim4 = gr->lim4, lim2 = gr->lim2, vWords = gr->vWords, r18 = gr->r18, r19 = gr->r19, r29 = gr->r29;
+    const u32 budget = gr->budget, hCur = gr->cur, hLev = gr->lev, f2212 = gr->f2212, f2216 = gr->f2216, f2220 = gr->f2220;
+    // The first level's offset ORs r17's bits with r18's and r19's, which do not change within a run.
+    const u32 yz0 = shl(shr(r19, hLev), gr->s52) | shl(shr(r18, hLev), gr->s48);
+    u32 r14 = s->r14, r16 = s->r16, r17 = s->r17, r20 = s->r20, r21 = s->r21, r22 = s->r22, r23 = s->r23, r24 = s->r24, r25 = s->r25;
+    u32 f2224 = s->f2224, f2228 = s->f2228, n = s->n, kAll = 0, cells = 0, levels = 0, empty = 0, fresh = 0, why;
+    for (;;) {
+        if (n >= budget) { why = SHDW_BUDGET; break; }
+        u32 nn = n + 14, a, w, lev = hLev, cur = hCur, lv = 0;  // 0x8007fb70 .. the b to 0x8007fbcc
+        u32 off = (shr(r17, lev) | yz0) << 2;
+        for (;; lv++) {
+            nn += 4;  // or, lwzx, cmpi, bc at 0x8007fbcc
+            a = cur + off - 0x80000000u;
+            if (__builtin_expect((a > lim4) | (a & 3), 0)) { why = SHDW_ADDR; goto stop; }
+            w = ld32(m + a);
+            if ((s32)w < 0) break;
+            nn += 9;  // 0x8007fba8 .. 0x8007fbc8
+            cur += w;
+            lev -= 1;
+            off = ((shr(r17, lev) & 1u) | ((shr(r18, lev) & 1u) << 1) | ((shr(r19, lev) & 1u) << 2)) << 2;
+        }
+        u32 leaf = cur + (w & 0x7FFFFFFFu), sz = shl(1, lev), mask = sz - 1;
+        u32 step = sz - (r17 & mask), r4p = sz - (r18 & mask), t = sz - (r19 & mask);
+        nn += 14 + 3 + 3;  // 0x8007fbd8 .. the bc at 0x8007fc14; to 0x8007fc24; lhz, cmpli, bc
+        u32 n14 = r14, n2224 = f2224;
+        if ((s32)t < (s32)n14) { n14 = t; nn++; }
+        if ((s32)r4p < (s32)n2224) { n2224 = r4p; nn++; }
+        a = leaf + 2 - 0x80000000u;
+        if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
+        u32 cnt = ld16(m + a);
+        // The leaf history (r20-r25) changes only for a non-empty leaf further along than r23: rarely, so it is applied
+        // at the commit from a small case number instead of six temporaries.
+        u32 hist = 0;
+        if (cnt) {
+            nn += 2;
+            if ((s32)r4p > (s32)r23) {
+                nn += 2;
+                if ((s32)r4p <= (s32)r24) { hist = 1; nn += 2; }
+                else { nn += 2; if ((s32)r4p <= (s32)r25) { hist = 2; nn += 5; } else { hist = 3; nn += 7; } }
+            }
+        }
+        u32 n16 = leaf, k = 0;
+        nn += 3;  // the first of the previous row's leaves
+        bool same = leaf == f2220;
+        if (!same) { nn += 3; same = leaf == f2216; }
+        if (!same) { nn += 3; same = leaf == f2212; if (same) nn++; }
+        if (!same) {  // its triangles: all visited (13 each) up to the list's end (3), else the exact code takes the cell
+            u32 p = leaf;
+            for (;;) {
+                a = p + 2 - 0x80000000u;
+                if (__builtin_expect((a > lim2) | (a & 1), 0)) { why = SHDW_ADDR; goto stop; }
+                u32 tt = ld16(m + a);
+                p += 2;
+                if (!tt) break;
+                if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { why = SHDW_TRI; goto stop; }
+                k++;
+            }
+            nn += 13 * k + 3;
+            n16 = p;
+        }
+        nn += 4;  // lwz, add, cmpl, bc at 0x8007feb0
+        if (r17 + step > r29) { why = SHDW_ROW; goto stop; }  // the row's end: the exact code (it writes the frame's row words)
+        // The whole cell went through: commit it.
+        if (hist == 1) { r23 = r4p; r20 = leaf; }
+        else if (hist == 2) { r23 = r24; r24 = r4p; r20 = r21; r21 = leaf; }
+        else if (hist == 3) { r23 = r24; r24 = r25; r25 = r4p; r20 = r21; r21 = r22; r22 = leaf; }
+        r14 = n14; f2228 = step; f2224 = n2224; r16 = n16;
+        r17 += step;
+        n = nn;
+        kAll += k; cells++; levels += lv; empty += !cnt; fresh += !same;
+    }
+stop:
+    s->r14 = r14; s->r16 = r16; s->r17 = r17; s->r20 = r20; s->r21 = r21; s->r22 = r22; s->r23 = r23; s->r24 = r24; s->r25 = r25;
+    s->f2224 = f2224; s->f2228 = f2228; s->n = n; s->k = kAll; s->cells = cells; s->levels = levels; s->empty = empty; s->fresh = fresh;
+    return why;
+}
+
 static u32 scan(Gekko* g, u32 budget) {
     // The guest registers as locals (not an array): the compiler keeps the hot ones in ARM registers; the array
     // version spent ~7 cycles per guest instruction (2DS job 267: 38% of core 0 in the later stretch).
@@ -106,22 +197,15 @@ static u32 scan(Gekko* g, u32 budget) {
 #define WR32(addr, v, at) do { u32 a_ = (addr) - 0x80000000u; if (__builtin_expect((a_ > lim4) | (a_ & 3), 0)) { pc = (at); goto out; } u32 w_ = __builtin_bswap32(v); memcpy(m + a_, &w_, 4); } while (0)
 #define CRS(a, b) do { crA = (a); crB = (b); crK = 1; } while (0)
 #define CRU(a, b) do { crA = (a); crB = (b); crK = 2; } while (0)
-    // Fast cells (at 0x8007fb70): the frame (words 2212-2228 and the visited bitset at +156) through one host pointer,
-    // and what a cell changes saved at its head (FSAVE), to rewind it (FRESTORE).
+    // Fast cells (at 0x8007fb70, shdw_fast): the frame (words 2212-2228 and the visited bitset at +156) through one host
+    // pointer. The grid's header (r15's node: root, top level, shifts) is read once a call (nothing here writes it).
     const u32 fa = r1 - 0x80000000u;
     const bool fastOk = size >= 2232 && fa <= size - 2232 && !(fa & 3);
     u8* const fr = m + (fastOk ? fa : 0);
-    const u8* const vb = fr + 156;
-    const u32 vWords = fastOk ? (size - fa - 156) >> 2 : 0;
-    bool fastPrev = false, noFast = false, svCa = false;
-    u32 sv14 = 0, sv16 = 0, sv17 = 0, sv18 = 0, sv19 = 0, sv20 = 0, sv21 = 0, sv22 = 0, sv23 = 0, sv24 = 0, sv25 = 0, svN = 0, sv2224 = 0, sv2228 = 0;
+    bool hOk = false;
+    ShdwGrid gr = { m, fr + 156, lim4, lim2, fastOk ? (size - fa - 156) >> 2 : 0, 0, 0, 0, budget, 0, 0, 0, 0, 0, 0, 0 };
 #define FBAD4(a) (__builtin_expect(((a) > lim4) | ((a) & 3), 0))
-#define FBAD2(a) (__builtin_expect(((a) > lim2) | ((a) & 1), 0))
 #define FWR32(off, v) do { u32 w_ = __builtin_bswap32(v); memcpy(fr + (off), &w_, 4); } while (0)
-#define FSAVE() do { sv14 = r14; sv16 = r16; sv17 = r17; sv18 = r18; sv19 = r19; sv20 = r20; sv21 = r21; sv22 = r22; \
-                     sv23 = r23; sv24 = r24; sv25 = r25; svN = n; svCa = caClear; sv2224 = ld32(fr + 2224); sv2228 = ld32(fr + 2228); } while (0)
-#define FRESTORE() do { r14 = sv14; r16 = sv16; r17 = sv17; r18 = sv18; r19 = sv19; r20 = sv20; r21 = sv21; r22 = sv22; \
-                        r23 = sv23; r24 = sv24; r25 = sv25; n = svN; caClear = svCa; FWR32(2224, sv2224); FWR32(2228, sv2228); } while (0)
     if (pc == PC_NEXT) goto L_fea4;
     if (pc != PC_ENTRY) return 0;
 L_fb48:
@@ -138,97 +222,44 @@ L_fb54:
     r17 = r30; n++;                              // or r17,r30,r30
 L_fb70:
     if (n >= budget) {
-        // Slice used up: guest code goes on from the loop head. After a fast cell its scratch registers were not kept:
-        // that cell runs again instruction by instruction first (it stops here again, with everything as the guest's).
-        if (fastPrev) { FRESTORE(); fastPrev = false; noFast = true; wBud++; goto L_fb70; }
+        // Slice used up: guest code goes on from the loop head, where the scratch registers (r0, r3-r8), CR0 and XER[CA]
+        // are all written before they are read, so the fast cells' leaving them as they were is dead state.
         pc = 0x8007FB70u;
         goto out;
     }
-    if (fastOk && !noFast) {
-        // ---- a fast cell (2DS job 285: ~3.1 M cells / 10 s, 3.6 tree levels each, ~1 us apiece) ----
-        // Only what carries to the next cell is kept: the position, the steps (r14, the frame's 2224 / 2228), the
-        // leaf history (r20-r25), r16 and the instruction count; the scratch registers, CR0 and the frame are left as
-        // they were. Anything else (an unvisited triangle, the row's end, an address outside MEM1) rewinds to the cell's
-        // head and runs it instruction by instruction below, so whatever guest code sees is exactly as before.
-        FSAVE();
-        u32 nn = n, a, w, lev, cur, off, node, s52, s48;
-        a = r15 + 24 - 0x80000000u; if (FBAD4(a)) goto L_ffail; node = ld32(m + a);
-        a = node + 12 - 0x80000000u; if (FBAD4(a)) goto L_ffail; cur = ld32(m + a);
-        a = node + 44 - 0x80000000u; if (FBAD4(a)) goto L_ffail; lev = ld32(m + a);
-        a = node + 52 - 0x80000000u; if (FBAD4(a)) goto L_ffail; s52 = ld32(m + a);
-        a = node + 48 - 0x80000000u; if (FBAD4(a)) goto L_ffail; s48 = ld32(m + a);
-        off = (shr(r17, lev) | shl(shr(r19, lev), s52) | shl(shr(r18, lev), s48)) << 2;
-        nn += 14;  // 0x8007fb70 .. the b to 0x8007fbcc
-        for (u32 lv = 0;; lv++) {
-            nn += 4;  // or, lwzx, cmpi, bc at 0x8007fbcc
-            a = cur + off - 0x80000000u; if (FBAD4(a)) goto L_ffail;
-            w = ld32(m + a);
-            if ((s32)w < 0) { wLevel += lv; break; }
-            nn += 9;  // 0x8007fba8 .. 0x8007fbc8
-            cur += w;
-            lev -= 1;
-            off = ((shr(r17, lev) & 1u) | ((shr(r18, lev) & 1u) << 1) | ((shr(r19, lev) & 1u) << 2)) << 2;
+    if (fastOk) {
+        if (!hOk) {
+            u32 a, node;
+            a = r15 + 24 - 0x80000000u; if (FBAD4(a)) goto L_ffail; node = ld32(m + a);
+            a = node + 12 - 0x80000000u; if (FBAD4(a)) goto L_ffail; gr.cur = ld32(m + a);
+            a = node + 44 - 0x80000000u; if (FBAD4(a)) goto L_ffail; gr.lev = ld32(m + a);
+            a = node + 52 - 0x80000000u; if (FBAD4(a)) goto L_ffail; gr.s52 = ld32(m + a);
+            a = node + 48 - 0x80000000u; if (FBAD4(a)) goto L_ffail; gr.s48 = ld32(m + a);
+            hOk = true;
         }
-        u32 leaf = cur + (w & 0x7FFFFFFFu), sz = shl(1, lev), mask = sz - 1;
-        u32 step = sz - (r17 & mask), r4p = sz - (r18 & mask), t = sz - (r19 & mask), v2224;
-        nn += 14;  // 0x8007fbd8 .. the bc at 0x8007fc14
-        FWR32(2228, step);
-        if ((s32)t < (s32)r14) { r14 = t; nn++; }
-        v2224 = ld32(fr + 2224);
-        nn += 3;
-        if ((s32)r4p < (s32)v2224) { FWR32(2224, r4p); nn++; }
-        a = leaf + 2 - 0x80000000u; if (FBAD2(a)) goto L_ffail;
-        u32 cnt = ld16(m + a);
-        nn += 3;  // lhz, cmpli, bc
-        if (!cnt) wEmpty++;
-        else {
-            nn += 2;
-            if ((s32)r4p > (s32)r23) {
-                nn += 2;
-                if ((s32)r4p <= (s32)r24) { r23 = r4p; r20 = leaf; nn += 2; }
-                else {
-                    nn += 2;
-                    if ((s32)r4p <= (s32)r25) { r23 = r24; r24 = r4p; r20 = r21; r21 = leaf; nn += 5; }
-                    else { r23 = r24; r24 = r25; r25 = r4p; r20 = r21; r21 = r22; r22 = leaf; nn += 7; }
-                }
-            }
+        // The previous row's leaves and r18 / r19 change only in the exact code (at a row's end).
+        gr.r18 = r18; gr.r19 = r19; gr.r29 = r29;
+        gr.f2212 = ld32(fr + 2212); gr.f2216 = ld32(fr + 2216); gr.f2220 = ld32(fr + 2220);
+        ShdwRun s = { r14, r16, r17, r20, r21, r22, r23, r24, r25, ld32(fr + 2224), ld32(fr + 2228), n, 0, 0, 0, 0, 0 };
+        if (hle_shdw_fast_begin_hook) hle_shdw_fast_begin_hook();
+        u32 why = shdw_fast(&s, &gr);
+        if (hle_shdw_fast_end_hook) hle_shdw_fast_end_hook();
+        if (s.cells) {
+            r14 = s.r14; r16 = s.r16; r17 = s.r17; r20 = s.r20; r21 = s.r21; r22 = s.r22; r23 = s.r23; r24 = s.r24; r25 = s.r25;
+            FWR32(2224, s.f2224); FWR32(2228, s.f2228);
+            n = s.n;
+            if (s.k) { caClear = true; g_shdwStats[1] += s.k; }
+            wCell += s.cells; wFast += s.cells; wLevel += s.levels; wEmpty += s.empty; wNew += s.fresh;
         }
-        r16 = leaf;
-        nn += 3;  // the first of the previous row's leaves
-        bool same = leaf == ld32(fr + 2220);
-        if (!same) { nn += 3; same = leaf == ld32(fr + 2216); }
-        if (!same) { nn += 3; same = leaf == ld32(fr + 2212); if (same) nn++; }
-        if (!same) {  // its triangles: all visited (13 each) up to the list's end (3), else the exact code takes the cell
-            wNew++;
-            u32 p = leaf, k = 0;
-            for (;;) {
-                a = p + 2 - 0x80000000u; if (FBAD2(a)) goto L_ffail;
-                u32 tt = ld16(m + a);
-                p += 2;
-                if (!tt) break;
-                if ((tt >> 5) >= vWords || !(vb[(tt >> 3) ^ 3] & (1u << (tt & 7)))) { wFTri++; goto L_ffail; }
-                k++;
-            }
-            if (k) { caClear = true; g_shdwStats[1] += k; }
-            nn += 13 * k + 3;
-            r16 = p;
-        }
-        nn += 4;  // lwz, add, cmpl, bc at 0x8007feb0
-        if (r17 + step > r29) { wFRow++; goto L_ffail; }  // the row's end: the exact code (it writes the frame's row words)
-        r17 += step;
-        n = nn;
-        wCell++;
-        wFast++;
-        fastPrev = true;
-        goto L_fb70;
+        if (why == SHDW_BUDGET) { pc = 0x8007FB70u; goto out; }  // (as above)
+        if (why == SHDW_TRI) wFTri++;
+        else if (why == SHDW_ROW) wFRow++;
+        goto L_ffail;
     }
-    goto L_fexact;
+    goto L_fslow;
 L_ffail:
-    FRESTORE();
     wFail++;
-L_fexact:
-    fastPrev = false;
-    noFast = false;
+L_fslow:
     wCell++;
     RD32(r8, r15 + 24, 0x8007FB70u); n++;        // lwz r8,24(r15)
     RD32(r3, r8 + 12, 0x8007FB74u); n++;         // lwz r3,12(r8)
@@ -410,10 +441,7 @@ out:
 #undef CRS
 #undef CRU
 #undef FBAD4
-#undef FBAD2
 #undef FWR32
-#undef FSAVE
-#undef FRESTORE
     if (!n) return 0;
     g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; g->gpr[14] = r14; g->gpr[15] = r15; g->gpr[16] = r16; g->gpr[17] = r17; g->gpr[18] = r18; g->gpr[19] = r19; g->gpr[20] = r20; g->gpr[21] = r21; g->gpr[22] = r22; g->gpr[23] = r23; g->gpr[24] = r24; g->gpr[25] = r25; g->gpr[26] = r26; g->gpr[27] = r27; g->gpr[28] = r28; g->gpr[29] = r29; g->gpr[30] = r30;
     if (crK) g->cr = (g->cr & 0x0FFFFFFFu) | (((crK == 1 ? cmps(crA, crB) : cmpu(crA, crB)) | ((g->xer & XER_SO) ? 1u : 0u)) << 28);
@@ -453,6 +481,14 @@ static u32 checked(Gekko* g, u32 budget) {
         steps++;
     }
     if (!g_chk.calls++) atexit(chk_report);
+    if (gn.pc == 0x8007FB70u && g->pc == gn.pc) {
+        // A stop at the loop head after a fast cell: r0, r3-r8, CR0 and XER[CA] are written there before they are read
+        // (dead state, as the fast cell leaves them): compared as equal.
+        static const int dead[] = { 0, 3, 4, 5, 6, 7, 8 };
+        for (u32 k = 0; k < sizeof dead / sizeof dead[0]; k++) gn.gpr[dead[k]] = g->gpr[dead[k]];
+        gn.cr = (gn.cr & 0x0FFFFFFFu) | (g->cr & 0xF0000000u);
+        gn.xer = (gn.xer & ~XER_CA) | (g->xer & XER_CA);
+    }
     bool same = steps == n && g->pc == gn.pc && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && g->cr == gn.cr &&
                 g->xer == gn.xer && !memcmp(g_mem + fpa, frameN, FRAME);
     if (!same && g_chk.bad++ < 20) {
