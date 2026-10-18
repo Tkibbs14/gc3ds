@@ -49,6 +49,10 @@ void pica_set_rawdraw(bool on);
 bool pica_rawdraw(void);
 // Command buffer prefetch (off by default until measured): after each batch's draw call, the next lines of citro3d's
 // command buffer are prefetched so the following calls do not miss to FCRAM.
+void pica_set_mips(bool on);  // mip levels from the game's textures (applied at the next frame: every texture again)
+bool pica_mips(void);
+void pica_set_texdiv(u32 n);  // measurement only: textures decoded at 1/n size (applied at the next frame)
+u32 pica_texdiv(void);
 void pica_set_cmdpld(bool on);
 bool pica_cmdpld(void);
 // Raw state (off by default until measured; with raw draws): the blocks a batch changes (effect, texture units,

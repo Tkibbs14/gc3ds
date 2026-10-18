@@ -690,6 +690,19 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   fixed it (job 383: the transition drew every frame, 7.8 guarded calls/s, and faded correctly). Past the transition
   (a heavier area): ~6 game frames/s with skipping, speed_pct ~9%; state saved there as tp_area2.state (job 384).
 
+### The heavy Ordon area is GPU-bound by texture fetch; mipmaps (jobs 385-388, device, tp_area2.state)
+
+- **Frame skip there (job 385):** game frames ~4.0/s without, ~5.8-6.0/s with (+48%); pictures 4.0 -> 3.0/s.
+- **Profile (job 386):** speed 11.5%, core 0 waits for the GX thread **39%**, the GX thread 93.8% busy of which
+  **gxsync 34.8%: waiting for the GPU. The PICA took 99.5 ms a frame** (c3d_gpu_ms) against 8.4 in Ordon's start (job
+  370), with fewer vertices (335k/s against 447k) and similar draw calls (7.8k/s against 8.7k): the GPU is the limit.
+- **Texture diagnostic (job 387, `--texdiv 4 --ab texdiv`, measurement only):** textures at 1/4 size: GPU 100.7 -> 28.1
+  ms, speed 11.5 -> 15.9% (+38%): texture fetch (C17's minified-RGBA8 case: 17 Mpixel/s against 204 in the cache).
+- **Mipmaps (job 388, `--ab mips`):** textures whose GX filter samples mips get the levels the game stores after level 0
+  (TX_SETMODE0 mip mode, TX_SETMODE1 max LOD; power-of-two sizes from 16; down to 8 x 8): **GPU 100.6 -> 55.4 ms a
+  frame, speed 11.50 -> 13.73% (+2.207 +- 0.019 points over 7 phase pairs, +19.2%)**, core 0's GX wait 40 -> 30%.
+  Screenshots of both arms match (distant ground slightly smoother). Default on.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

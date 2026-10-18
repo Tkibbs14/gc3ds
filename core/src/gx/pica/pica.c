@@ -59,6 +59,7 @@
 
 typedef struct {         // a texture decoded from RAM
     u32 addr, fmt, w, h, tlutAddr, tlutFmt, dataHash, tlutHash, texVersion, tlutVersion, lastUse, bytes;
+    u32 levels;  // mip levels decoded (1: level 0 only)
     C3D_Tex tex;
     bool live;
 } PTex;
@@ -138,6 +139,15 @@ static struct {
 } g;
 
 PicaStats g_picaStats;
+static volatile u32 g_texDivWant = 1;  // --texdiv (measurement, decode below)
+static u32 g_texDiv = 1;
+// Mipmaps (--mips): textures whose GX filter samples mip levels get the levels the game stores after level 0 (decoded
+// from RAM like level 0), so minified textures hit the PICA's texture cache. Without them the heavy Ordon area's GPU
+// took ~100 ms a frame (job 386); textures at 1/4 size took 28 ms (+38% speed, job 387).
+static volatile bool g_mipsWant;
+static bool g_mips;
+void pica_set_mips(bool on) { g_mipsWant = on; }
+bool pica_mips(void) { return g_mipsWant; }
 static u8 g_morton[64];
 static SVert* g_sv;
 static PVert* g_pv;
@@ -736,6 +746,8 @@ static void begin_frame(void) {
     g.batchOpen = false;
     for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
     g.nGrave = 0;
+    if (g_texDiv != g_texDivWant) { g_texDiv = g_texDivWant; g.resetPending = true; }  // (--texdiv: every texture again)
+    if (g_mips != g_mipsWant) { g_mips = g_mipsWant; g.resetPending = true; }  // (--mips: every texture again)
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
     ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
     g.natAttr = false;
@@ -922,6 +934,16 @@ static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; 
 // bottom-up (the PICA samples t = 0 from the last stored row; checked with texturetest in Azahar), so GX texture
 // coordinates are used unchanged. Sizes that are not powers of two are resampled (nearest) up to one, which keeps
 // every wrap mode correct.
+// One level: rgba (w x h) into W x H tiles at dst (resampled nearest when the sizes differ).
+static void upload_level(u32* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h) {
+    for (u32 y = 0; y < H; y++) {
+        const u32* row = rgba + ((H - 1 - y) * h / H) * w;
+        u32* tiles = dst + (y >> 3) * (W >> 3) * 64;
+        const u8* m = &g_morton[(y & 7) * 8];
+        for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[x * w / W];
+    }
+}
+
 static void upload(C3D_Tex* t, const u32* rgba, u32 w, u32 h) {
     u32 W = t->width, H = t->height;
     u32* dst = (u32*)t->data;
@@ -949,20 +971,44 @@ static void evict_unused(u32 want) {
     }
 }
 
+// Measurement only (--texdiv N, --ab texdiv): textures decoded at 1/N of their size (nearest), to test whether the
+// GPU's time is texture fetch (job 386: ~100 ms of GPU a frame in the heavy area against 8 ms in Ordon's start).
+
+
+void pica_set_texdiv(u32 n) { g_texDivWant = n >= 1 && n <= 16 ? n : 1; }
+u32 pica_texdiv(void) { return g_texDivWant; }
+
 static bool decode(System* s, const GXCore* gx, PTex* e) {
-    u32 W = pow2(e->w), H = pow2(e->h), bytes = W * H * 4;
+    u32 W = pow2(e->w), H = pow2(e->h);
+    if (g_texDiv > 1) { W = W / g_texDiv < 8 ? 8 : W / g_texDiv; H = H / g_texDiv < 8 ? 8 : H / g_texDiv; }
+    u32 bytes = W * H * 4;
+    u32 lv = g_texDiv == 1 && e->levels > 1 ? e->levels : 1;
+    if (lv > 1) bytes = C3D_TexCalcTotalSize(bytes, (int)lv - 1);
     g_picaStats.texDecodes++;
     g_picaStats.texDecodeBytes += bytes;
     evict_unused(bytes);
     C3D_Tex nt;
-    if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) {
+    C3D_TexInitParams ip = { (u16)W, (u16)H, (u8)(lv - 1), GPU_RGBA8, GPU_TEX_2D, false };
+    if (!C3D_TexInitWithParams(&nt, NULL, ip)) {
         evict_unused(TEX_BUDGET);  // linear memory short of the budget: every texture this frame does not use goes
-        if (!C3D_TexInit(&nt, (u16)W, (u16)H, GPU_RGBA8)) { g_picaStats.texFails++; return false; }
+        if (!C3D_TexInitWithParams(&nt, NULL, ip)) { g_picaStats.texFails++; return false; }
     }
     u32 n = e->w * e->h;
     if (!scratch_reserve(n)) { C3D_TexDelete(&nt); g_picaStats.texFails++; return false; }
     gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
-    upload(&nt, g_scratch, e->w, e->h);
+    if (lv == 1) {
+        upload(&nt, g_scratch, e->w, e->h);
+    } else {  // level L follows level L - 1 in RAM, each in the format's tiles (power-of-two sizes: no resampling)
+        u32 src = e->addr;
+        for (u32 L = 0; L < lv; L++) {
+            u32 wl = e->w >> L, hl = e->h >> L;
+            if (L) gx_decode_texture(s->mem1 + src, e->fmt, wl, hl, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
+            upload_level((u32*)C3D_Tex2DGetImagePtr(&nt, (int)L, NULL), W >> L, H >> L, g_scratch, wl, hl);
+            src += gx_texture_size(e->fmt, wl, hl);
+        }
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)nt.data, bytes);
+        g_texEpoch++;
+    }
     if (e->live) { retire(&e->tex, e->lastUse == g.frameNo); g.texBytes -= e->bytes; }
     e->tex = nt;
     e->bytes = bytes;
@@ -971,8 +1017,10 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     return true;
 }
 
-static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg) {
-    u32 bytes = gx_texture_size(fmt, w, h);
+static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u32 fmt, u32 w, u32 h, u32 tlutReg,
+                               u32 levels) {
+    u32 bytes = 0;
+    for (u32 L = 0; L < levels; L++) bytes += gx_texture_size(fmt, w >> L, h >> L);  // (the levels in RAM)
     if (!bytes || addr < PA_MEM1_BEGIN || addr + bytes > PA_MEM1_END) return NULL;
     bool pal = fmt == 8 || fmt == 9 || fmt == 10;
     u32 tlutAddr = pal ? (tlutReg & 0x3FF) << 9 : 0, tlutFmt = pal ? (tlutReg >> 10) & 3 : 0;
@@ -980,12 +1028,13 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
     PTex* slot = NULL;
     PTex* last = g.lastHit[map];  // texture maps mostly keep their texture from one draw to the next
     if (last && last->live && last->addr == addr && last->fmt == fmt && last->w == w && last->h == h &&
-        last->tlutAddr == tlutAddr && last->tlutFmt == tlutFmt)
+        last->tlutAddr == tlutAddr && last->tlutFmt == tlutFmt && last->levels == levels)
         e = last;
     for (u32 i = 0; i < MAX_TEX && !e; i++) {
         PTex* p = &g.tex[i];
         if (!p->live) { if (!slot) slot = p; continue; }
-        if (p->addr == addr && p->fmt == fmt && p->w == w && p->h == h && p->tlutAddr == tlutAddr && p->tlutFmt == tlutFmt) {
+        if (p->addr == addr && p->fmt == fmt && p->w == w && p->h == h && p->tlutAddr == tlutAddr && p->tlutFmt == tlutFmt &&
+            p->levels == levels) {
             e = p;
             break;
         }
@@ -1017,7 +1066,7 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
             g.texBytes -= slot->bytes;
         }
         e = slot;
-        e->addr = addr; e->fmt = fmt; e->w = w; e->h = h; e->tlutAddr = tlutAddr; e->tlutFmt = tlutFmt;
+        e->addr = addr; e->fmt = fmt; e->w = w; e->h = h; e->tlutAddr = tlutAddr; e->tlutFmt = tlutFmt; e->levels = levels;
         e->dataHash = hash_words(s->mem1 + addr, bytes);
         e->tlutHash = pal ? hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt)) : 0;
         e->texVersion = g.xfbSeq;
@@ -1057,8 +1106,17 @@ static C3D_Tex* fetch_texture_(System* s, const GXCore* gx, u32 map) {
     u32 w = (img0 & 0x3FF) + 1, h = ((img0 >> 10) & 0x3FF) + 1, fmt = (img0 >> 20) & 15, addr = gx_tex_addr(gx, map, img3);
     PCopy* c = find_copy(s, gx, addr, w, h);
     // Address 0: no data in RAM (native mode: a texture object Aurora gave no data, matched only by a copy to 0).
-    C3D_Tex* t = c ? &c->tex : addr ? cached_texture(s, gx, map, addr, fmt, w, h, tlut) : NULL;
+    // Mip levels: the min filter's mip mode (TX_SETMODE0 bits 5-6: 1 nearest, 2 linear) and TX_SETMODE1's max LOD (u4.4),
+    // for power-of-two sizes from 16 (the PICA's smallest level is 8 x 8).
+    u32 mip = (mode >> 5) & 3, levels = 1;
+    if (g_mips && !c && (mip == 1 || mip == 2) && !(w & (w - 1)) && !(h & (h - 1)) && w >= 16 && h >= 16) {
+        u32 maxLod = (gx->bp[0x84 + m + hi] >> 8) & 0xFF, gxLv = (maxLod + 15) / 16 + 1, pica = 1;
+        while ((w >> pica) >= 8 && (h >> pica) >= 8) pica++;  // levels down to 8 x 8
+        levels = gxLv < pica ? gxLv : pica;
+    }
+    C3D_Tex* t = c ? &c->tex : addr ? cached_texture(s, gx, map, addr, fmt, w, h, tlut, levels) : NULL;
     if (!t) t = &g.white;
+    if (levels > 1 && t != &g.white) C3D_TexSetFilterMipmap(t, mip == 2 ? GPU_LINEAR : GPU_NEAREST);
     static const GPU_TEXTURE_WRAP_PARAM wraps[4] = { GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT };
     C3D_TexSetWrap(t, wraps[mode & 3], wraps[(mode >> 2) & 3]);
     C3D_TexSetFilter(t, (mode >> 4) & 1 ? GPU_LINEAR : GPU_NEAREST, ((mode >> 5) & 7) >= 4 ? GPU_LINEAR : GPU_NEAREST);
