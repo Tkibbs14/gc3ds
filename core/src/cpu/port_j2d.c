@@ -47,6 +47,8 @@ enum {
     A_CHAN_MAPPING = 0x803A1C00,  // J2DColorBlock::setGX's {GX_COLOR0, GX_ALPHA0, GX_COLOR1, GX_ALPHA1}
     A_TEV_C2R = 0x803D2810,       // GXSetTevOrder's channel -> rasterizer colour table
     A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
+    A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
+    A_J3DSYS = 0x80434AC8,  // (j3dSys)
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -91,6 +93,10 @@ typedef struct {
     u32 nlog;
     u32 n;                 // guest instructions the call stands for (an estimate: timing only)
     u32 fail;              // why it gives up (the first reason; PortStats.refusedBy)
+    // FPR lanes the guest code leaves changed: PSMTXConcat saves f14, f15 and f31 with stfd and restores them with lfd,
+    // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
+    bool leak;
+    float l14, l15, l31;
 } Pc;
 
 // Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
@@ -792,6 +798,10 @@ static void psmtx_concat(Pc* c, u32 a, u32 b, u32* out) {
     f15 = PMADDS1(f31, f3, f15);
     g2 = PMADDS1(f8_, f4, g2); g0 = PMADDS1(f9, f4, g0); g2 = PMADDS0(f10, f5, g2); g0 = PMADDS0(f11, f5, g0);
     g0 = PMADDS1(f31, f5, g0);
+    c->leak = true;
+    c->l14 = f14.p1;
+    c->l15 = f15.p1;
+    c->l31 = f31.p1;
     P r[6] = { f12, f13, f14, f15, g2, g0 };
     for (u32 i = 0; i < 6; i++) {  // psq_st to the caller's temporary
         out[2 * i] = psq_copy(c, bitsf(r[i].p0));
@@ -870,6 +880,76 @@ static void picex_draw_self(Pc* c, u32 p, u32 mtx) {  // J2DPictureEx::drawSelf 
     c->n += 40;
 }
 
+// ---- J3D: a shape's matrices (libs/JSystem/src/J3DGraphBase/J3DShapeMtx.cpp) ----
+// J3DFifoLoadPosMtxImm 0x8030FAE0 / J3DFifoLoadNrmMtxImm 0x8030FB60 / ...Imm3x3 0x8030FBCC: the words as they are.
+static void j3d_load_pos_mtx(Pc* c, const u32* m, u32 id) {
+    p8(c, 0x10); p16(c, 11); p16(c, (id << 2) & 0xFFFC);
+    for (u32 i = 0; i < 12; i++) p32(c, m[i]);
+    c->n += 31;
+}
+static void j3d_load_nrm_mtx(Pc* c, const u32* m, u32 stride, u32 id) {  // stride 4: from a 3x4 matrix, 3: a 3x3
+    p8(c, 0x10); p16(c, 8); p16(c, id * 3 + 1024);
+    for (u32 r = 0; r < 3; r++) for (u32 k = 0; k < 3; k++) p32(c, m[r * stride + k]);
+    c->n += 25;
+}
+// J3DPSCalcInverseTranspose 0x8031189C: the 3x3 part's inverse transpose (cofactors over the determinant, whose
+// reciprocal is fres refined by two Newton steps), as its paired-single code computes it. false: not taken (a zero
+// determinant leaves the guest's output untouched, so the guest code loads whatever was there).
+static bool j3d_inverse_transpose(Pc* c, const u32* s, u32* d) {
+    P f0 = { fbits(s[0]), 1.0f }, f1 = { fbits(s[1]), fbits(s[2]) }, f2 = { fbits(s[4]), 1.0f };
+    P f3 = { fbits(s[5]), fbits(s[6]) }, f4 = { fbits(s[8]), 1.0f }, f5 = { fbits(s[9]), fbits(s[10]) };
+    P f6 = PMERGE10(f1, f0), f7 = PMERGE10(f3, f2), f8 = PMERGE10(f5, f4);
+    P f11 = PMUL(f3, f6), f13 = PMUL(f5, f7);
+    f11 = PMSUB(f1, f7, f11);
+    P f12 = PMUL(f1, f8);
+    f13 = PMSUB(f3, f8, f13);
+    f12 = PMSUB(f5, f6, f12);
+    P f10 = PMUL(f3, f4), f9 = PMUL(f0, f5);
+    f8 = PMUL(f1, f2);
+    f10 = PMSUB(f2, f5, f10);
+    f9 = PMSUB(f1, f4, f9);
+    f8 = PMSUB(f0, f3, f8);
+    f7 = PMUL(f0, f13);
+    f1 = PSUB(f1, f1);
+    f7 = PMADD(f2, f12, f7);
+    f7 = PMADD(f4, f11, f7);
+    if (!plain(c, bitsf(f7.p0)) || f7.p0 == f1.p0) { give_up(c, 2); return false; }
+    f0 = PS(1.0f / f7.p0);  // fres: the correctly rounded single reciprocal (gekko_softfp.c sf_recip_estimate)
+    f6 = PADD(f0, f0); f5 = PMUL(f0, f0); f0 = PNMSUB(f7, f5, f6);
+    f6 = PADD(f0, f0); f5 = PMUL(f0, f0); f0 = PNMSUB(f7, f5, f6);
+    f13 = PMULS0(f13, f0); f12 = PMULS0(f12, f0); f11 = PMULS0(f11, f0);
+    f10 = PMULS0(f10, f0); f9 = PMULS0(f9, f0); f8 = PMULS0(f8, f0);
+    const float out[9] = { f13.p0, f13.p1, f10.p0, f12.p0, f12.p1, f9.p0, f11.p0, f11.p1, f8.p0 };
+    for (u32 i = 0; i < 9; i++) d[i] = psq_copy(c, bitsf(out[i]));  // psq_st (w = 1 for the third column)
+    c->n += 52;
+    return true;
+}
+// J3DShapeMtxConcatView::loadMtxConcatView_PNGP 0x80313828 (this, slot, draw matrix index) with the loadNrmMtx of
+// J3DShapeMtxConcatView 0x80313D28 or J3DShapeMtxMultiConcatView 0x8031419C: the view matrix times the draw matrix,
+// loaded as the slot's position matrix and as a normal matrix.
+static void j3d_load_mtx_concat_view_pngp(Pc* c, u32 self, u32 slot, u32 idx) {
+    const u32 sys = A_J3DSYS, r13 = c->g->gpr[13];
+    if (!span(c, sys, 284) || !span(c, r13 - 28628u, 24) || !span(c, self, 4)) return;
+    if (f32(r13 - 28608u)) { give_up(c, 7); return; }  // (a differed texture matrix: J3DDifferedTexMtx::loadExecute)
+    u32 vt = f32(self);
+    if (!span(c, vt + 36, 4)) return;
+    u32 nrm = f32(vt + 36);  // J3DShapeMtxConcatView's loadNrmMtx loads normal matrix 0, J3DShapeMtxMultiConcatView's the slot's
+    if (nrm != A_J3DCONCATVIEW_LOADNRM && nrm != A_J3DMULTICONCATVIEW_LOADNRM) { give_up(c, 5); return; }
+    u32 nid = nrm == A_J3DMULTICONCATVIEW_LOADNRM ? slot * 3 : 0;
+    u32 m0 = f32(sys + 64);
+    if (!span(c, m0 + 48, 4)) return;
+    u32 m[12], n3[9];
+    psmtx_concat(c, f32(m0 + 48), f32(sys + 260) + (idx & 0xFFFF) * 48, m);
+    if (c->fail) return;
+    j3d_load_pos_mtx(c, m, slot * 3);
+    u32 aff = f32(r13 - 28628u);
+    if (!span(c, aff + (idx & 0xFFFF), 1)) return;
+    if (f32(r13 - 28620u) == 8192 || f8(r13 - 28624u)) { give_up(c, 7); return; }  // (to a texture matrix; scaled normals)
+    if (f8(aff + (idx & 0xFFFF)) == 1) j3d_load_nrm_mtx(c, m, 4, nid);
+    else if (j3d_inverse_transpose(c, m, n3)) j3d_load_nrm_mtx(c, n3, 3, nid);
+    c->n += 90;
+}
+
 // ---- entry ----
 static Pc g_pc;
 
@@ -880,13 +960,18 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->pp = c->pipe;
     c->bpsn = ~0u;
     c->fail = 0;
+    c->leak = false;
     if (!in_mem1(A_GXDATA_PTR, 4)) return false;
     c->gxd = ram_rd32(g_pm, A_GXDATA_PTR - 0x80000000u);
     if (c->gxd != ram_rd32(g_pm, g->gpr[2] - 13440u - 0x80000000u) || !in_mem1(c->gxd, GXD_BYTES) || (c->gxd & 3)) return false;
     for (u32 k = 0; k < c->nt; k++) c->have[c->touched[k]] = 0;
     c->nt = 0;
     tmark(0);
-    if (hook == PORT_PICTUREEX) picex_draw_self(c, g->gpr[3], g->gpr[4]);
+    // (Floating point off: the FPRs are another thread's until the OS takes the FP-unavailable exception, which the
+    // guest code raises at its first float instruction: the float ports are not taken then.)
+    if (hook != PORT_MATERIAL && !(g->msr & MSR_FP)) { give_up(c, 2); return false; }
+    if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
+    else if (hook == PORT_PICTUREEX) picex_draw_self(c, g->gpr[3], g->gpr[4]);
     else material_set_gx(c, g->gpr[3]);
     tmark(5);
     gx_sync(c);
@@ -902,9 +987,21 @@ static void port_commit(Pc* c) {
     if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pipe, c->pn);
 }
 
-const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf" };
-static inline int hook_of(u32 pc) { return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : -1; }
-u32 g_portHooks = 1u << PORT_MATERIAL;  // --port-hooks MASK (bit per PORT_*): drawSelf off until measured
+// The registers the guest code would leave other than the ABI promises (PSMTXConcat's leaked lanes, Pc.leak).
+static void port_regs(Pc* c, Gekko* g, u32 hook) {
+    if (!c->leak) return;
+    g->fpr[14].ps1 = c->l14;
+    g->fpr[15].ps1 = c->l15;
+    if (hook != PORT_PICTUREEX) g->fpr[31].ps1 = c->l31;  // (drawTexCoord saves and restores f31 whole)
+}
+
+const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
+                                          "J3DShapeMtxConcatView::loadMtxConcatView_PNGP" };
+static inline int hook_of(u32 pc) {
+    return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP : -1;
+}
+u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX;  // --port-hooks MASK (bit per PORT_*); drawSelf: Ordon
+// +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493); J3D off until measured
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
     return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);
@@ -990,8 +1087,10 @@ static u32 port_check(Gekko* g, u32 hook) {
         u32 want = ram_rd32(g_pm, c->log[i][0] - 0x80000000u);
         if (!later && want != c->log[i][1]) { chk_bad(&g0, c, hook, 5, c->log[i][0], want, c->log[i][1]); return n ? n : 1; }
     }
+    Gekko gw = g0;  // the registers as the port leaves them
+    port_regs(c, &gw, hook);
     bool regs = g->pc == ret && g->gpr[1] == sp && g->gpr[2] == g0.gpr[2] && !memcmp(&g->gpr[13], &g0.gpr[13], 19 * 4) &&
-                !memcmp(&g->fpr[14], &g0.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (g0.cr & 0x00FFF000u);
+                !memcmp(&g->fpr[14], &gw.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (g0.cr & 0x00FFF000u);
     if (!regs) chk_bad(&g0, c, hook, 6, g->pc, 0, 0);
     return n ? n : 1;
 }
@@ -1002,13 +1101,17 @@ static void port_report(void) {
         PortHook* s = &g_portStats.h[k];
         fprintf(stderr, "PORT: %s %llu taken, %llu checked, %llu not taken; %llu pipe bytes\n", g_portNames[k],
                 (unsigned long long)s->calls, (unsigned long long)s->checked, (unsigned long long)s->refused, (unsigned long long)s->pipe);
+        fprintf(stderr, "  not taken by reason (setup, memory, floats, texregion, palette, block type, texgens, other):");
+        for (int q = 0; q < 8; q++) fprintf(stderr, " %llu", (unsigned long long)s->refusedBy[q]);
+        fputc('\n', stderr);
     }
     fprintf(stderr, "PORT: %llu checked calls differed\n", (unsigned long long)g_portStats.bad);
 }
 #endif
 // The estimates scaled to what the interpreter ran for the same calls (the material: 1,920 against 1,510 a call, job
-// 470; drawSelf: 2,739 against 2,203, jobs 490-491), so that the emulated clock advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124 };
+// 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495), so that the emulated
+// clock advances as the guest code would have.
+static const u32 kInsScale[PORT_N] = { 127, 124, 93 };
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
@@ -1030,6 +1133,7 @@ u32 port_run_hook(Gekko* g) {
     u64 t1 = t0 ? g_profClock() : 0;
     if (g_portCommitBegin) g_portCommitBegin();
     port_commit(c);
+    port_regs(c, g, (u32)hook);
     if (g_portCommitEnd) g_portCommitEnd();
     if (t0) {
         hs->timed++;

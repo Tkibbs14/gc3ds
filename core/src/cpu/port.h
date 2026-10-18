@@ -3,7 +3,8 @@
 #include "../common.h"
 
 typedef struct Gekko Gekko;
-enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_N };  // the hooked guest functions: J2DMaterial::setGX, J2DPictureEx::drawSelf
+enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_N };  // the hooked guest functions: J2DMaterial::setGX,
+// J2DPictureEx::drawSelf, J3DShapeMtxConcatView::loadMtxConcatView_PNGP
 typedef struct {
     u64 calls, refused, pipe, checked;
     u64 refusedBy[8];     // by reason (port_j2d.c give_up)

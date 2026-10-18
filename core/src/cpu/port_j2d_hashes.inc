@@ -68,3 +68,10 @@
     { 0x803D2280, 0x68, 0x8FF4AAFC09FE6EB9ull },  // @176
     { 0x803D2350, 0x44, 0x37C2BF3DF4C84463ull },  // @476
     { 0x804509D0, 0x8, 0x8832885F376B6FEDull },  // Unit01
+    { 0x80313828, 0xA0, 0x3F63FCE2AA6B8301ull },  // loadMtxConcatView_PNGP__21J3DShapeMtxConcatViewCFiUs
+    { 0x80313D28, 0x124, 0x7013DA30E3F88655ull },  // loadNrmMtx__21J3DShapeMtxConcatViewCFiUsPA4_f
+    { 0x8031189C, 0xC8, 0xB462F714FD85AAD4ull },  // J3DPSCalcInverseTranspose__FPA4_fPA3_f
+    { 0x8030FAE0, 0x80, 0x8CA810D2A7CFBCFDull },  // J3DFifoLoadPosMtxImm__FPA4_fUl
+    { 0x8030FB60, 0x6C, 0x8AD5AC743F728149ull },  // J3DFifoLoadNrmMtxImm__FPA4_fUl
+    { 0x8030FBCC, 0x6C, 0x1676E7739C7965FDull },  // J3DFifoLoadNrmMtxImm3x3__FPA3_fUl
+    { 0x8031419C, 0x138, 0xBF3B95A8FDFDD030ull },  // loadNrmMtx__26J3DShapeMtxMultiConcatViewCFiUsPA4_f
