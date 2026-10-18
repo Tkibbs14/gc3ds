@@ -9,15 +9,14 @@
 // exact; the code bytes of every guest function this replaces are hashed at first use and the port stays off unless
 // they all match. Check mode (--port check; PORT_CHECK=1 on the PC) runs the guest code in the interpreter after each
 // port call and compares every word it wrote above the stack pointer, the pipe bytes and the registers the ABI keeps.
-// Compiled for size: one call runs through every setter once, so its time is the instruction fetch of its code (each
-// setter ~0.7 us at -O2 with the whole path ~20 KB, past the 16 KB L1 I-cache: job 472).
-#pragma GCC optimize("Os")
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "gekko_internal.h"
 #include "port.h"
 #include "memo.h"
+#define HLE_EXACTFLOAT  // (the multiply-adds rounded once, as the interpreter: check mode compares bits)
+#include "hle_psops.h"
 
 int g_portMode;  // --port off|on|check (main.c; GC3DS_PORT=1 / PORT_CHECK=1 on the PC)
 static u8* g_pm;  // MEM1 (guest physical 0)
@@ -30,6 +29,7 @@ void port_set_memory(u8* mem1, u32 size) {
 #ifndef __3DS__
     if (getenv("GC3DS_PORT")) g_portMode = 1;
     if (getenv("PORT_CHECK")) g_portMode = 2;
+    if (getenv("GC3DS_PORT_HOOKS")) g_portHooks = (u32)strtoul(getenv("GC3DS_PORT_HOOKS"), NULL, 0);
 #endif
 }
 void port_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx) { g_ppipe = write; g_pctx = ctx; }
@@ -46,6 +46,7 @@ enum {
     A_GXDATA_PTR = 0x80456580,  // __GXData (r2 - 13440)
     A_CHAN_MAPPING = 0x803A1C00,  // J2DColorBlock::setGX's {GX_COLOR0, GX_ALPHA0, GX_COLOR1, GX_ALPHA1}
     A_TEV_C2R = 0x803D2810,       // GXSetTevOrder's channel -> rasterizer colour table
+    A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -83,7 +84,9 @@ typedef struct {
     u16 touched[GXD_BYTES / 4];
     u32 nt;
     u8 pipe[PIPE_CAP];
-    u32 pn;
+    u8* pp;                // the next pipe byte
+    u32 pn;                // bytes (when the call has run)
+    u32 bpsn, dirty;       // bpSentNot's last value (~0: not set) and the dirty bits set
     u32 log[LOG_MAX][2];   // other stores: address, value (in order; reads see the newest)
     u32 nlog;
     u32 n;                 // guest instructions the call stands for (an estimate: timing only)
@@ -111,10 +114,6 @@ static u32 rd32(Pc* c, u32 a) {
     return ram_rd32(g_pm, a - 0x80000000u);
 }
 static u32 rd8(Pc* c, u32 a) { return (rd32(c, a & ~3u) >> (8 * (3 - (a & 3)))) & 0xFF; }
-static u32 rd16(Pc* c, u32 a) {
-    if (a & 1) { give_up(c, 1); return 0; }
-    return (rd32(c, a & ~3u) >> (a & 2 ? 0 : 16)) & 0xFFFF;
-}
 static void wr32(Pc* c, u32 a, u32 v) {
     if (a - c->gxd < GXD_BYTES && !(a & 3)) { *gxw(c, (a - c->gxd) >> 2) = v; return; }
     if ((a & 3) || !in_mem1(a, 4) || c->nlog >= LOG_MAX) { give_up(c, 1); return; }
@@ -122,13 +121,33 @@ static void wr32(Pc* c, u32 a, u32 v) {
     c->log[c->nlog][1] = v;
     c->nlog++;
 }
-// __GXData fields by offset.
+// Fields of the structures the port only reads (materials, blocks, matrices, the SDK's tables): plain loads after one
+// range check per structure (span).
+static inline u32 f8(u32 a) { return ram_rd8(g_pm, a - 0x80000000u); }
+static inline u32 f16(u32 a) { return ram_rd16(g_pm, a - 0x80000000u); }
+static inline u32 f32(u32 a) { return ram_rd32(g_pm, a - 0x80000000u); }
+static inline bool span(Pc* c, u32 a, u32 len) {
+    if (in_mem1(a, len)) return true;
+    give_up(c, 1);
+    return false;
+}
+// __GXData fields by offset. bpSentNot (the u16 at +2) and the dirty bits (DIRTY) only ever take a value or gain bits
+// in these functions, so they are kept aside and applied once at the end (port_run).
 #define GX(off) (*gxw(c, (off) >> 2))
-static inline void bp_sent_not(Pc* c, u32 v) { GX(0) = (GX(0) & 0xFFFF0000u) | (v & 0xFFFF); }  // sth at +2
+static inline void bp_sent_not(Pc* c, u32 v) { c->bpsn = v & 0xFFFF; }
 #define DIRTY 1452
-static inline void p8(Pc* c, u32 v) { if (c->pn < PIPE_CAP) c->pipe[c->pn++] = (u8)v; else give_up(c, 1); }
-static inline void p32(Pc* c, u32 v) { p8(c, v >> 24); p8(c, v >> 16); p8(c, v >> 8); p8(c, v); }
-static inline void bp(Pc* c, u32 v) { p8(c, 0x61); p32(c, v); }          // GX_WRITE_RAS_REG
+// The pipe: bytes stored straight into the buffer (a call's counts are bounded before it starts: PIPE_CAP holds it).
+static inline void p8(Pc* c, u32 v) { *c->pp++ = (u8)v; }
+static inline void p32(Pc* c, u32 v) {
+    u8* p = c->pp;
+    p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v;
+    c->pp = p + 4;
+}
+static inline void bp(Pc* c, u32 v) {  // GX_WRITE_RAS_REG
+    u8* p = c->pp;
+    p[0] = 0x61; p[1] = (u8)(v >> 24); p[2] = (u8)(v >> 16); p[3] = (u8)(v >> 8); p[4] = (u8)v;
+    c->pp = p + 5;
+}
 static inline void xf(Pc* c, u32 addr, u32 v) { p8(c, 0x10); p32(c, addr); p32(c, v); }  // one XF register
 // rlwimi rA,rS,sh,mb,me (IBM bit numbering): rotate rS left by sh, insert under the mask mb..me.
 static inline u32 rlwimi(u32 a, u32 s, u32 sh, u32 mb, u32 me) {
@@ -157,7 +176,7 @@ static void gx_set_chan_mat_color(Pc* c, u32 chan, u32 color) {  // 0x8035DA48 (
 static void gx_set_num_chans(Pc* c, u32 n) {  // 0x8035DB30
     GX(516) = rlwimi(GX(516), n, 4, 25, 27);
     xf(c, 4105, n & 0xFF);
-    GX(DIRTY) |= 4;
+    c->dirty |= 4;
     c->n += 15;
 }
 static void gx_set_chan_ctrl(Pc* c, u32 chan, u32 enable, u32 amb, u32 mat, u32 mask, u32 diff, u32 attn) {  // 0x8035DB6C
@@ -179,13 +198,13 @@ static void gx_set_chan_ctrl(Pc* c, u32 chan, u32 enable, u32 amb, u32 mat, u32 
 static void gx_set_cull_mode(Pc* c, u32 mode) {  // 0x8035C984
     u32 r5 = rlwimi((mode >> 1) & 1, mode, 1, 30, 30);
     GX(516) = rlwimi(GX(516), r5, 14, 16, 17);
-    GX(DIRTY) |= 4;
+    c->dirty |= 4;
     c->n += 10;
 }
 static void gx_set_num_tex_gens(Pc* c, u32 n) {  // 0x8035BDFC
     GX(516) = rlwimi(GX(516), n, 0, 28, 31);
     xf(c, 4159, n & 0xFF);
-    GX(DIRTY) |= 4;
+    c->dirty |= 4;
     c->n += 15;
 }
 static void gx_set_matrix_index(Pc* c, u32 attr) {  // __GXSetMatrixIndex, 0x803605F8
@@ -252,7 +271,7 @@ static void gx_load_tex_mtx_imm(Pc* c, u32 mtx, u32 id, u32 type) {  // 0x803603
     p8(c, 0x10);
     p32(c, addr | ((count - 1) << 16));
     u32 words = type == 0 ? 12 : 8;
-    for (u32 i = 0; i < words; i++) p32(c, psq_copy(c, rd32(c, mtx + 4 * i)));
+    for (u32 i = 0; i < words; i++) p32(c, psq_copy(c, f32(mtx + 4 * i)));
     c->n += 30;
 }
 static void gx_set_tev_order(Pc* c, u32 stage, u32 coord, u32 map, u32 color) {  // 0x8035F6F4
@@ -262,7 +281,7 @@ static void gx_set_tev_order(Pc* c, u32 stage, u32 coord, u32 map, u32 color) { 
     u32 r9 = r10 < 8 ? r10 : 0;
     if ((s32)coord >= 8) { GX(1432) &= ~(1u << stage); coord = 0; }
     else GX(1432) |= 1u << stage;
-    u32 crc = color == 255 ? 7 : rd32(c, A_TEV_C2R + 4 * color);
+    u32 crc = color == 255 ? 7 : f32(A_TEV_C2R + 4 * color);
     u32 en = (map != 255 && !(map & 0x100)) ? 1 : 0;
     u32 t = GX(tref);
     if (stage & 1) {
@@ -275,7 +294,7 @@ static void gx_set_tev_order(Pc* c, u32 stage, u32 coord, u32 map, u32 color) { 
     GX(tref) = t;
     bp(c, t);
     bp_sent_not(c, 0);
-    GX(DIRTY) |= 1;
+    c->dirty |= 1;
     c->n += 60;
 }
 static void gx_set_tev_color_s10(Pc* c, u32 id, u32 w0, u32 w1) {  // 0x8035F3DC (w0 = r<<16 | g, w1 = b<<16 | a)
@@ -292,7 +311,7 @@ static void gx_set_tev_color_s10(Pc* c, u32 id, u32 w0, u32 w1) {  // 0x8035F3DC
 }
 static void gx_set_num_tev_stages(Pc* c, u32 n) {  // 0x8035F890
     GX(516) = rlwimi(GX(516), (n & 0xFF) - 1, 10, 18, 21);
-    GX(DIRTY) |= 4;
+    c->dirty |= 4;
     c->n += 10;
 }
 static void gx_set_tev_color_in(Pc* c, u32 s, u32 a, u32 b, u32 cc, u32 d) {  // 0x8035F224
@@ -373,7 +392,7 @@ static void gx_set_tev_indirect(Pc* c, u32 stage, u32 ind, u32 fmt, u32 bias, u3
 }
 static void gx_set_num_ind_stages(Pc* c, u32 n) {  // 0x8035F0D4
     GX(516) = rlwimi(GX(516), n & 0xFF, 16, 13, 15);
-    GX(DIRTY) |= 6;
+    c->dirty |= 6;
     c->n += 10;
 }
 static void gx_set_alpha_compare(Pc* c, u32 comp0, u32 ref0, u32 op, u32 comp1, u32 ref1) {  // 0x8035F624
@@ -405,7 +424,7 @@ static void gx_set_dither(Pc* c, u32 d) {  // 0x8035FDD8
 }
 // GXLoadTexObj with the SDK's default region callbacks.
 static u32 gx_default_tex_region(Pc* c, u32 obj, u32 id) {  // 0x8035921C
-    u32 fmt = rd32(c, obj + 20), mip = rd8(c, obj + 31) & 1, i8 = id & 7;
+    u32 fmt = f32(obj + 20), mip = f8(obj + 31) & 1, i8 = id & 7;
     u32 base;
     if (fmt == 6) base = mip ? 776 : 648;
     else if (fmt >= 8 && fmt <= 10) base = 520;
@@ -417,9 +436,10 @@ static void gx_load_tex_obj(Pc* c, u32 obj, u32 id) {  // GXLoadTexObj 0x8035E41
     if (GX(1224) != A_GXDEFAULT_TEXREGION || id > 7) { give_up(c, 3); return; }
     u32 reg = gx_default_tex_region(c, obj, id);
     u32 r13 = c->g->gpr[13];
+    if (!span(c, r13 - 31472u, 56)) return;
     static const s32 kTab[6] = { -31472, -31464, -31456, -31448, -31440, -31432 };
     u32 t[7];
-    for (int k = 0; k < 6; k++) t[k] = rd8(c, r13 + (u32)kTab[k] + id);
+    for (int k = 0; k < 6; k++) t[k] = f8(r13 + (u32)kTab[k] + id);
     wr32(c, obj + 0, rlwimi(rd32(c, obj + 0), t[0], 24, 0, 7));
     wr32(c, obj + 4, rlwimi(rd32(c, obj + 4), t[1], 24, 0, 7));
     wr32(c, obj + 8, rlwimi(rd32(c, obj + 8), t[2], 24, 0, 7));
@@ -428,18 +448,18 @@ static void gx_load_tex_obj(Pc* c, u32 obj, u32 id) {  // GXLoadTexObj 0x8035E41
     wr32(c, obj + 12, rlwimi(rd32(c, obj + 12), t[5], 24, 0, 7));
     bp(c, rd32(c, obj + 0)); bp(c, rd32(c, obj + 4)); bp(c, rd32(c, obj + 8));
     bp(c, rd32(c, reg + 0)); bp(c, rd32(c, reg + 4)); bp(c, rd32(c, obj + 12));
-    if (!(rd8(c, obj + 31) & 2)) {  // a palette: the default TLUT region
+    if (!(f8(obj + 31) & 2)) {  // a palette: the default TLUT region
         if (GX(1228) != A_GXDEFAULT_TLUTREGION) { give_up(c, 4); return; }
-        u32 tl = rd32(c, obj + 24);
+        u32 tl = f32(obj + 24);
         if (tl >= 20) { give_up(c, 4); return; }  // (the guest would use a NULL region)
         u32 tr = c->gxd + 904 + tl * 16;
-        u32 t6 = rd8(c, r13 + (u32)(-31424) + id);
+        u32 t6 = f8(r13 + (u32)(-31424) + id);
         wr32(c, tr + 4, rlwimi(rd32(c, tr + 4), t6, 24, 0, 7));
         bp(c, rd32(c, tr + 4));
     }
     GX(1300 + 4 * id) = rd32(c, obj + 8);
     GX(1332 + 4 * id) = rd32(c, obj + 0);
-    GX(DIRTY) |= 1;
+    c->dirty |= 1;
     bp_sent_not(c, 0);
     c->n += 110;
 }
@@ -465,9 +485,10 @@ static void gx_load_tlut(Pc* c, u32 obj, u32 name) {  // GXLoadTlut 0x8035E4A0, 
 
 // ---- J2D (libs/JSystem/src/J2DGraph) ----
 static void jut_texture_load(Pc* c, u32 tex, u32 id) {  // JUTTexture::load 0x802DE840
-    u32 pal = rd32(c, tex + 44);
+    u32 pal = f32(tex + 44);
+    if (pal && !span(c, pal, 24)) return;
     if (pal) {  // JUTPalette::load 0x802DE95C
-        if (rd16(c, pal + 20)) gx_load_tlut(c, pal, rd8(c, pal + 12));
+        if (f16(pal + 20)) gx_load_tlut(c, pal, f8(pal + 12));
         c->n += 12;
     }
     gx_load_tex_obj(c, tex, id);
@@ -484,43 +505,47 @@ static inline void tmark(int k) {
     g_tm = t;
 }
 static void tev_block2_set_gx(Pc* c, u32 b) {  // J2DTevBlock2::setGX 0x802ED584
-    u32 vt = rd32(c, b);
-    if (rd32(c, vt + 16) != A_TEVBLOCK2_LOADTEX) { give_up(c, 5); return; }
+    if (!span(c, b, 108)) return;
+    u32 vt = f32(b);
+    if (!span(c, vt + 16, 4)) return;
+    if (f32(vt + 16) != A_TEVBLOCK2_LOADTEX) { give_up(c, 5); return; }
     for (u32 i = 0; i < 2; i++) {  // loadTexture 0x802ED874
-        u32 tex = rd32(c, b + 100 + 4 * i);
-        if (tex && rd32(c, tex + 32)) jut_texture_load(c, tex, i);
+        u32 tex = f32(b + 100 + 4 * i);
+        if (tex && !span(c, tex, 48)) return;
+        if (tex && f32(tex + 32)) jut_texture_load(c, tex, i);
         c->n += 12;
     }
     tmark(3);
-    u32 ns = rd8(c, b + 50);
-    for (u32 i = 0; i < ns; i++) gx_set_tev_order(c, i, rd8(c, b + 10 + 4 * i), rd8(c, b + 11 + 4 * i), rd8(c, b + 12 + 4 * i));
-    for (u32 i = 0; i < 4; i++) gx_set_tev_color_s10(c, i == 3 ? 0 : i + 1, rd32(c, b + 18 + 8 * i), rd32(c, b + 22 + 8 * i));
+    u32 ns = f8(b + 50);
+    if (ns > 2) { give_up(c, 1); return; }  // (a J2DTevBlock2 has two stages)
+    for (u32 i = 0; i < ns; i++) gx_set_tev_order(c, i, f8(b + 10 + 4 * i), f8(b + 11 + 4 * i), f8(b + 12 + 4 * i));
+    for (u32 i = 0; i < 4; i++) gx_set_tev_color_s10(c, i == 3 ? 0 : i + 1, f32(b + 18 + 8 * i), f32(b + 22 + 8 * i));
     gx_set_num_tev_stages(c, ns);
     for (u32 i = 0; i < ns; i++) {
         u32 s = b + 8 * i;
-        u32 b53 = rd8(c, s + 53), b54 = rd8(c, s + 54), b57 = rd8(c, s + 57), b58 = rd8(c, s + 58);
+        u32 b53 = f8(s + 53), b54 = f8(s + 54), b57 = f8(s + 57), b58 = f8(s + 58);
         gx_set_tev_color_in(c, i, b53 >> 4, b53 & 15, b54 >> 4, b54 & 15);
         gx_set_tev_alpha_in(c, i, (b57 & 0xE0) >> 5, (b57 >> 2) & 7, ((b57 & 3) << 1) | (b58 >> 7), (b58 >> 4) & 7);
         for (int a = 0; a < 2; a++) {
-            u32 v = rd8(c, s + (a ? 56 : 52));
+            u32 v = f8(s + (a ? 56 : 52));
             u32 bias = v & 3, scale = (v & 0x30) >> 4, clamp = (v >> 3) & 1, reg = (v >> 6) & 3, r9 = (v >> 2) & 1;
             u32 op = bias == 3 ? ((r9 + ((v >> 3) & 6) + 8) & 0xFF) : r9;
             gx_set_tev_op(c, a ? 368 : 304, i, op, bias, scale, clamp, reg);
         }
-        u32 k = rd8(c, b + 84 + i);
+        u32 k = f8(b + 84 + i);
         gx_set_tev_ksel(c, i, k == 255 ? 0 : k, false);
-        k = rd8(c, b + 86 + i);
+        k = f8(b + 86 + i);
         gx_set_tev_ksel(c, i, k == 255 ? 0 : k, true);
         c->n += 60;
     }
-    for (u32 i = 0; i < 4; i++) gx_set_tev_kcolor(c, i, rd32(c, b + 68 + 4 * i));
-    for (u32 i = 0; i < ns; i++) { u32 v = rd8(c, b + 58 + 8 * i); gx_set_tev_swap_mode(c, i, v & 3, (v >> 2) & 3); }
+    for (u32 i = 0; i < 4; i++) gx_set_tev_kcolor(c, i, f32(b + 68 + 4 * i));
+    for (u32 i = 0; i < ns; i++) { u32 v = f8(b + 58 + 8 * i); gx_set_tev_swap_mode(c, i, v & 3, (v >> 2) & 3); }
     for (u32 i = 0; i < 4; i++) {
-        u32 v = rd8(c, b + 88 + i);
+        u32 v = f8(b + 88 + i);
         gx_set_tev_swap_mode_table(c, i, (v >> 6) & 3, (v >> 4) & 3, (v >> 2) & 3, v & 3);
     }
     for (u32 i = 0; i < ns; i++) {  // J2DIndTevStage::load 0x802EA044
-        u32 w = rd32(c, b + 92 + 4 * i);
+        u32 w = f32(b + 92 + 4 * i);
         gx_set_tev_indirect(c, i & 0xFF, w & 3, (w >> 2) & 3, (w >> 4) & 7, (w >> 16) & 15, (w >> 8) & 7, (w >> 11) & 7,
                             (w >> 20) & 1, (w >> 21) & 1, (w >> 22) & 3);
         c->n += 20;
@@ -529,43 +554,48 @@ static void tev_block2_set_gx(Pc* c, u32 b) {  // J2DTevBlock2::setGX 0x802ED584
 }
 static void material_set_gx(Pc* c, u32 m) {  // J2DMaterial::setGX 0x802EA38C
     c->n += 15;
-    if (!rd8(c, m + 14)) return;
+    if (!span(c, m, 132)) return;
+    if (!f8(m + 14)) return;
     {  // J2DColorBlock::setGX 0x802EB424 (this = m + 16)
         u32 b = m + 16;
-        for (u32 i = 0; i < 2; i++) gx_set_chan_mat_color(c, 4 + i, rd32(c, b + 4 * i));
-        gx_set_num_chans(c, rd8(c, b + 8));
-        u32 nc = rd8(c, b + 8) << 1;
+        for (u32 i = 0; i < 2; i++) gx_set_chan_mat_color(c, 4 + i, f32(b + 4 * i));
+        gx_set_num_chans(c, f8(b + 8));
+        u32 nc = f8(b + 8) << 1;
+        if (nc > 4) { give_up(c, 1); return; }  // (past the four-entry channel table: not taken)
         for (u32 i = 0; i < nc; i++)
-            gx_set_chan_ctrl(c, rd32(c, A_CHAN_MAPPING + 4 * i), 0, 0, rd16(c, b + 10 + 2 * i) & 1, 0, 0, 2);
-        gx_set_cull_mode(c, rd8(c, b + 18));
+            gx_set_chan_ctrl(c, f32(A_CHAN_MAPPING + 4 * i), 0, 0, f16(b + 10 + 2 * i) & 1, 0, 0, 2);
+        gx_set_cull_mode(c, f8(b + 18));
         c->n += 40;
     }
     tmark(1);
     {  // J2DTexGenBlock::setGX 0x802EB570 (this = m + 40)
-        u32 b = m + 40, n = rd32(c, b);
+        u32 b = m + 40, n = f32(b);
         gx_set_num_tex_gens(c, n & 0xFF);
         if (n > 8) { give_up(c, 6); return; }
         for (u32 i = 0; i < n; i++)
-            gx_set_tex_coord_gen2(c, i, rd8(c, b + 4 + 4 * i), rd8(c, b + 5 + 4 * i), rd8(c, b + 6 + 4 * i), 0, 125);
+            gx_set_tex_coord_gen2(c, i, f8(b + 4 + 4 * i), f8(b + 5 + 4 * i), f8(b + 6 + 4 * i), 0, 125);
         for (u32 i = 0; i < 8; i++) {
-            u32 tm = rd32(c, b + 36 + 4 * i);
-            if (tm) gx_load_tex_mtx_imm(c, tm + 36, i * 3 + 30, rd8(c, tm));  // J2DTexMtx::load 0x802E9C90
+            u32 tm = f32(b + 36 + 4 * i);
+            if (tm && !span(c, tm, 84)) return;
+            if (tm) gx_load_tex_mtx_imm(c, tm + 36, i * 3 + 30, f8(tm));  // J2DTexMtx::load 0x802E9C90
         }
         c->n += 30;
     }
     tmark(2);
-    u32 tev = rd32(c, m + 112);
+    u32 tev = f32(m + 112);
     if (tev) {
-        u32 fn = rd32(c, rd32(c, tev) + 12);
+        if (!span(c, tev, 4) || !span(c, f32(tev) + 12, 4)) return;
+        u32 fn = f32(f32(tev) + 12);
         if (fn == A_TEVBLOCK2_SETGX) tev_block2_set_gx(c, tev);
         else { give_up(c, 5); g_portStats.otherTev = fn; return; }
     }
     tmark(4);
-    u32 ind = rd32(c, m + 116);
+    u32 ind = f32(m + 116);
     if (ind) {
-        u32 fn = rd32(c, rd32(c, ind) + 12);
+        if (!span(c, ind, 8) || !span(c, f32(ind) + 12, 4)) return;
+        u32 fn = f32(f32(ind) + 12);
         if (fn == A_INDBLOCKFULL_SETGX) {
-            u32 ns = rd8(c, ind + 4);
+            u32 ns = f8(ind + 4);
             if (ns) { give_up(c, 7); return; }  // (indirect stages: not ported)
             gx_set_num_ind_stages(c, 0);
         } else if (fn != A_INDBLOCKNULL_SETGX && fn != A_INDBLOCK_SETGX) {
@@ -574,20 +604,281 @@ static void material_set_gx(Pc* c, u32 m) {  // J2DMaterial::setGX 0x802EA38C
         }
     }
     {  // J2DPEBlock::setGX 0x802F1840 (this = m + 120)
-        u32 b = m + 120, w = rd16(c, b);
-        gx_set_alpha_compare(c, (w >> 5) & 7, rd8(c, b + 2), (w >> 3) & 3, w & 7, rd8(c, b + 3));
-        gx_set_blend_mode(c, rd8(c, b + 4), rd8(c, b + 5), rd8(c, b + 6), rd8(c, b + 7));
-        gx_set_dither(c, rd8(c, b + 8));
+        u32 b = m + 120, w = f16(b);
+        gx_set_alpha_compare(c, (w >> 5) & 7, f8(b + 2), (w >> 3) & 3, w & 7, f8(b + 3));
+        gx_set_blend_mode(c, f8(b + 4), f8(b + 5), f8(b + 6), f8(b + 7));
+        gx_set_dither(c, f8(b + 8));
     }
+}
+
+// ---- vertex formats and GXBegin (GX SDK) ----
+// A byte of __GXData (the u8 fields at 1236, 1237, 1451).
+static inline u32 gxb(Pc* c, u32 off) { return (GX(off & ~3u) >> (8 * (3 - (off & 3)))) & 0xFF; }
+static inline void gxb_set(Pc* c, u32 off, u32 v) {
+    u32 sh = 8 * (3 - (off & 3));
+    GX(off & ~3u) = (GX(off & ~3u) & ~(0xFFu << sh)) | ((v & 0xFF) << sh);
+}
+static inline void p16(Pc* c, u32 v) { p8(c, v >> 8); p8(c, v); }
+// bpSentNot and the dirty bits made current (gx_begin reads both).
+static void gx_sync(Pc* c) {
+    if (c->bpsn != ~0u) { GX(0) = (GX(0) & 0xFFFF0000u) | c->bpsn; c->bpsn = ~0u; }
+    if (c->dirty) { GX(DIRTY) |= c->dirty; c->dirty = 0; }
+}
+static void gx_clear_vtx_desc(Pc* c) {  // 0x8035B58C
+    GX(20) = rlwimi(0, 1, 9, 21, 22);
+    GX(24) = 0;
+    gxb_set(c, 1236, 0);
+    gxb_set(c, 1237, 0);
+    c->dirty |= 8;
+    c->n += 14;
+}
+static void gx_set_vtx_desc(Pc* c, u32 attr, u32 type) {  // 0x8035AEB8 (POS, CLR0, TEX0: the ones J2D uses)
+    if (attr == 9) GX(20) = rlwimi(GX(20), type, 9, 21, 22);
+    else if (attr == 11) GX(20) = rlwimi(GX(20), type, 13, 17, 18);
+    else if (attr == 13) GX(24) = rlwimi(GX(24), type, 0, 30, 31);
+    else { give_up(c, 1); return; }
+    GX(20) = rlwimi(GX(20), gxb(c, 1236) || gxb(c, 1237) ? GX(1232) : 0, 11, 19, 20);
+    c->dirty |= 8;
+    c->n += 22;
+}
+static void gx_set_vtx_attr_fmt(Pc* c, u32 fmt, u32 attr, u32 cnt, u32 type, u32 frac) {  // 0x8035B5C4 (POS, TEX0)
+    if (fmt > 7) { give_up(c, 1); return; }
+    u32 a = 28 + 4 * fmt;
+    if (attr == 9) {
+        GX(a) = rlwimi(GX(a), cnt, 0, 31, 31);
+        GX(a) = rlwimi(GX(a), type, 1, 28, 30);
+        GX(a) = rlwimi(GX(a), frac, 4, 23, 27);
+    } else if (attr == 13) {
+        GX(a) = rlwimi(GX(a), cnt, 21, 10, 10);
+        GX(a) = rlwimi(GX(a), type, 22, 7, 9);
+        GX(a) = rlwimi(GX(a), frac, 25, 2, 6);
+    } else {
+        give_up(c, 1);
+        return;
+    }
+    c->dirty |= 16;
+    gxb_set(c, 1451, gxb(c, 1451) | ((1u << fmt) & 0xFF));
+    c->n += 26;
+}
+static void gx_set_su_regs(Pc* c, u32 map, u32 tc) {  // __SetSURegs 0x8035E750
+    if (map > 7 || tc > 7) { give_up(c, 1); return; }
+    u32 img = GX(1300 + 4 * map), mode = GX(1332 + 4 * map);
+    u32 s0 = 184 + 4 * tc, s1 = 216 + 4 * tc;
+    GX(s0) = rlwimi(GX(s0), img & 0x3FF, 0, 16, 31);
+    GX(s1) = rlwimi(GX(s1), (img >> 10) & 0x3FF, 0, 16, 31);
+    GX(s0) = rlwimi(GX(s0), (mode & 3) == 1, 16, 15, 15);
+    GX(s1) = rlwimi(GX(s1), ((mode >> 2) & 3) == 1, 16, 15, 15);
+    bp(c, GX(s0));
+    bp(c, GX(s1));
+    bp_sent_not(c, 0);
+    c->n += 38;
+}
+static void gx_set_su_tex_regs(Pc* c) {  // __GXSetSUTexRegs 0x8035E7F0
+    c->n += 12;
+    if (GX(1428) == 255) return;
+    u32 gm = GX(516), ns = ((gm >> 10) & 15) + 1, ni = (gm >> 16) & 7;
+    if (ni > 4) { give_up(c, 1); return; }  // (the guest code would use registers left from before)
+    for (u32 i = 0; i < ni; i++) {
+        u32 ir = GX(288), map = (ir >> (6 * i)) & 7, tc = (ir >> (6 * i + 3)) & 7;
+        if (!(GX(1428) & (1u << tc))) gx_set_su_regs(c, map, tc);
+        c->n += 14;
+    }
+    for (u32 i = 0; i < ns; i++) {
+        u32 map = GX(1364 + 4 * i) & ~0x100u, tr = GX(256 + 4 * (i >> 1));
+        u32 tc = i & 1 ? (tr >> 15) & 7 : (tr >> 3) & 7;
+        if (map != 255 && !(GX(1428) & (1u << tc)) && (GX(1432) & (1u << i))) gx_set_su_regs(c, map, tc);
+        c->n += 20;
+    }
+}
+static void gx_set_vcd(Pc* c) {  // __GXSetVCD 0x8035B3AC
+    p8(c, 0x08); p8(c, 0x50); p32(c, GX(20));
+    p8(c, 0x08); p8(c, 0x60); p32(c, GX(24));
+    u32 nrm = gxb(c, 1237) ? 2 : gxb(c, 1236) ? 1 : 0;
+    u32 clr = (33 - cntlzw((GX(20) >> 13) & 15)) >> 1, tex = ((33 - cntlzw(GX(24) & 0xFFFF)) << 3) & ~15u;
+    xf(c, 4104, clr | nrm << 2 | tex);
+    bp_sent_not(c, 1);
+    c->n += 47;
+}
+static void gx_set_vat(Pc* c) {  // __GXSetVAT 0x8035BAA0
+    for (u32 vd = gxb(c, 1451), i = 0; vd; vd >>= 1, i++) {
+        if (vd & 1) {
+            p8(c, 0x08); p8(c, 0x70 | i); p32(c, GX(28 + 4 * i));
+            p8(c, 0x08); p8(c, 0x80 | i); p32(c, GX(60 + 4 * i));
+            p8(c, 0x08); p8(c, 0x90 | i); p32(c, GX(92 + 4 * i));
+            c->n += 16;
+        }
+        c->n += 4;
+    }
+    gxb_set(c, 1451, 0);
+    c->n += 8;
+}
+static void gx_calculate_vlim(Pc* c) {  // __GXCalculateVLim 0x8035B468 (its tables at r13-31488, -31484, -31480)
+    c->n += 4;
+    if (!(GX(4) >> 16)) return;
+    u32 t = c->g->gpr[13] - 31488u;
+    if (!span(c, t, 12)) return;
+    u32 lo = GX(20), a0 = GX(28), hi = GX(24), v = 0;
+    for (u32 k = 0; k < 9; k++) v += (lo >> k) & 1;
+    v += f8(t + 8 + ((lo >> 9) & 3));
+    v += f8(t + 8 + ((lo >> 11) & 3)) * (((a0 >> 9) & 1) == 1 ? 3 : 1);
+    v += f8(t + ((lo >> 13) & 3)) + f8(t + ((lo >> 15) & 3));
+    for (u32 k = 0; k < 8; k++) v += f8(t + 4 + ((hi >> (2 * k)) & 3));
+    GX(4) = (GX(4) & 0xFFFF0000u) | (v & 0xFFFF);
+    c->n += 69;
+}
+static void gx_send_flush_prim(Pc* c) {  // __GXSendFlushPrim 0x8035C834: a strip of vNum vertices of vLim bytes, all zero
+    u32 num = GX(4) >> 16, lim = GX(4) & 0xFFFF, bytes = num * lim, words = (bytes + 3) >> 2;
+    p8(c, 0x98);
+    p16(c, num);
+    if (bytes) {
+        if (words > 256) { give_up(c, 1); return; }
+        for (u32 i = 0; i < words; i++) p32(c, 0);
+    }
+    bp_sent_not(c, 1);
+    c->n += 20 + words;
+}
+static void gx_begin(Pc* c, u32 type, u32 fmt, u32 n) {  // GXBegin 0x8035C764 (with __GXSetDirtyState's work)
+    gx_sync(c);
+    u32 d = GX(DIRTY);
+    if (d) {
+        if (d & 1) gx_set_su_tex_regs(c);
+        if (d & 4) { bp(c, GX(516)); bp_sent_not(c, 0); c->n += 9; }  // __GXSetGenMode (bit 2, __GXUpdateBPMask, is empty)
+        if (d & 8) gx_set_vcd(c);
+        if (d & 16) gx_set_vat(c);
+        if (d & 24) gx_calculate_vlim(c);
+        GX(DIRTY) = 0;
+        gx_sync(c);
+    }
+    if (!GX(0)) { gx_send_flush_prim(c); gx_sync(c); }
+    p8(c, fmt | type);
+    p16(c, n);
+    c->n += 30;
+}
+static void gx_load_pos_mtx_imm(Pc* c, const u32* m, u32 id) {  // 0x8036024C (psq_l / psq_st through GQR0)
+    p8(c, 0x10);
+    p32(c, (id << 2) | 0xB0000u);
+    for (u32 i = 0; i < 12; i++) p32(c, psq_copy(c, m[i]));
+    c->n += 19;
+}
+
+// ---- J2DPictureEx's quad (libs/JSystem/src/J2DGraph/J2DPictureEx.cpp) ----
+static inline float fbits(u32 v) { float f; memcpy(&f, &v, 4); return f; }
+static inline u32 bitsf(float f) { u32 v; memcpy(&v, &f, 4); return v; }
+// A single the VFP and the Gekko treat alike: zero or normal (denormals, infinities and NaNs are not taken).
+static inline bool plain(Pc* c, u32 v) {
+    u32 e = (v >> 23) & 0xFF;
+    if ((e == 0 && (v & 0x7FFFFF)) || e == 0xFF) { give_up(c, 2); return false; }
+    return true;
+}
+// PSMTXConcat 0x803464E4: ab = a * b (3x4), as its paired-single code computes it (multiply-adds rounded once).
+static void psmtx_concat(Pc* c, u32 a, u32 b, u32* out) {
+    if (!span(c, a, 48) || !span(c, b, 48) || !span(c, 0x804509D0u, 8)) return;
+    P m[12];
+    for (u32 i = 0; i < 6; i++) {
+        u32 x0 = f32(a + 8 * i), x1 = f32(a + 8 * i + 4), y0 = f32(b + 8 * i), y1 = f32(b + 8 * i + 4);
+        if (!plain(c, x0) || !plain(c, x1) || !plain(c, y0) || !plain(c, y1)) return;
+        m[i] = (P){ fbits(x0), fbits(x1) };
+        m[6 + i] = (P){ fbits(y0), fbits(y1) };
+    }
+    P f0 = m[0], f1 = m[1], f2 = m[2], f3 = m[3], f4 = m[4], f5 = m[5];  // a's rows as register pairs
+    P f6 = m[6], f7 = m[7], f8_ = m[8], f9 = m[9], f10 = m[10], f11 = m[11];
+    P f31 = { fbits(f32(0x804509D0u)), fbits(f32(0x804509D4u)) };  // {0, 1}
+    P f12 = PMULS0(f6, f0), f13 = PMULS0(f7, f0), f14 = PMULS0(f6, f2), f15 = PMULS0(f7, f2);
+    f12 = PMADDS1(f8_, f0, f12); f14 = PMADDS1(f8_, f2, f14); f13 = PMADDS1(f9, f0, f13); f15 = PMADDS1(f9, f2, f15);
+    f12 = PMADDS0(f10, f1, f12); f13 = PMADDS0(f11, f1, f13); f14 = PMADDS0(f10, f3, f14); f15 = PMADDS0(f11, f3, f15);
+    P g2 = PMULS0(f6, f4);
+    f13 = PMADDS1(f31, f1, f13);
+    P g0 = PMULS0(f7, f4);
+    f15 = PMADDS1(f31, f3, f15);
+    g2 = PMADDS1(f8_, f4, g2); g0 = PMADDS1(f9, f4, g0); g2 = PMADDS0(f10, f5, g2); g0 = PMADDS0(f11, f5, g0);
+    g0 = PMADDS1(f31, f5, g0);
+    P r[6] = { f12, f13, f14, f15, g2, g0 };
+    for (u32 i = 0; i < 6; i++) {  // psq_st to the caller's temporary
+        out[2 * i] = psq_copy(c, bitsf(r[i].p0));
+        out[2 * i + 1] = psq_copy(c, bitsf(r[i].p1));
+    }
+    c->n += 52;
+}
+// J2DPictureEx::drawTexCoord 0x80303BDC as drawFullSet 0x80303B80 calls it: the box's corner, its size (w, h: single
+// bits), the texture coordinates at +266..+280, and the matrix the pane was given.
+static void picex_draw_tex_coord(Pc* c, u32 p, u32 w, u32 h, u32 mtx) {
+    u32 x0 = f32(p + 32), y0 = f32(p + 36), z = 0;
+    if (!plain(c, x0) || !plain(c, y0)) return;
+    u32 x1 = bitsf(fbits(x0) + fbits(w)), y1 = bitsf(fbits(y0) + fbits(h));  // fadds
+    if (!plain(c, x1) || !plain(c, y1)) return;
+    u32 m[12];
+    psmtx_concat(c, mtx, p + 128, m);
+    if (c->fail) return;
+    u32 mat = f32(p + 336);
+    if (mat && !f8(mat + 14)) { c->n += 40; return; }
+    gx_load_pos_mtx_imm(c, m, 0);
+    u32 col[4];
+    for (u32 i = 0; i < 4; i++) col[i] = f32(p + 312 + 4 * i);
+    if (mat) {
+        if ((f16(mat + 28) & 1) == 1) {
+            if (f8(mat + 15) == 1) {
+                u32 al = f8(p + 179);
+                for (u32 i = 0; i < 4; i++) col[i] = (col[i] & ~0xFFu) | (((s32)((col[i] & 0xFF) * al) / 255) & 0xFF);
+                c->n += 20;
+            }
+        } else if (f8(p + 180)) {
+            gx_set_chan_mat_color(c, 2, f8(p + 179));
+        }
+    }
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 4, 0);
+    gx_set_vtx_attr_fmt(c, 0, 13, 1, 3, 8);
+    u32 zr = c->g->gpr[2] - 14140u;
+    if (!span(c, zr, 4)) return;
+    z = f32(zr);
+    if (!plain(c, z)) return;
+    gx_begin(c, 128, 0, 4);
+    if (c->fail) return;
+    static const u8 kCorner[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+    static const u8 kCol[4] = { 0, 1, 3, 2 };
+    static const u16 kTc[4] = { 266, 270, 278, 274 };
+    for (u32 v = 0; v < 4; v++) {
+        p32(c, kCorner[v][0] ? x1 : x0);
+        p32(c, kCorner[v][1] ? y1 : y0);
+        p32(c, z);
+        p32(c, col[kCol[v]]);
+        p16(c, f16(p + kTc[v]));
+        p16(c, f16(p + kTc[v] + 2));
+    }
+    gx_set_vtx_attr_fmt(c, 0, 13, 1, 2, 15);
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 3, 0);
+    c->n += 150;
+}
+static void picex_draw_self(Pc* c, u32 p, u32 mtx) {  // J2DPictureEx::drawSelf 0x80303AB4
+    c->n += 20;
+    if (!span(c, p, 344)) return;
+    u32 mat = f32(p + 336);
+    if (!mat) return;
+    material_set_gx(c, mat);
+    if (c->fail) return;
+    gx_clear_vtx_desc(c);
+    gx_set_vtx_desc(c, 9, 1);
+    gx_set_vtx_desc(c, 11, 1);
+    gx_set_vtx_desc(c, 13, 1);
+    u32 x0 = f32(p + 32), y0 = f32(p + 36), x1 = f32(p + 40), y1 = f32(p + 44);
+    if (!plain(c, x0) || !plain(c, y0) || !plain(c, x1) || !plain(c, y1)) return;
+    u32 w = bitsf(fbits(x1) - fbits(x0)), h = bitsf(fbits(y1) - fbits(y0));  // fsubs
+    if (!plain(c, w) || !plain(c, h)) return;
+    u32 vt = f32(p);
+    if (!span(c, vt + 320, 8)) return;
+    if (f32(vt + 320) != A_PICEX_DRAWFULLSET || f32(vt + 324) != A_PICEX_DRAWTEXCOORD) { give_up(c, 5); return; }
+    picex_draw_tex_coord(c, p, w, h, mtx);
+    c->n += 40;
 }
 
 // ---- entry ----
 static Pc g_pc;
 
-// Runs the port into a fresh context (nothing written to the guest). false: not taken (c->fail).
-static bool port_run(Pc* c, Gekko* g) {
+// Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
+static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = 0;
+    c->pn = c->nlog = c->n = c->dirty = 0;
+    c->pp = c->pipe;
+    c->bpsn = ~0u;
     c->fail = 0;
     if (!in_mem1(A_GXDATA_PTR, 4)) return false;
     c->gxd = ram_rd32(g_pm, A_GXDATA_PTR - 0x80000000u);
@@ -595,8 +886,11 @@ static bool port_run(Pc* c, Gekko* g) {
     for (u32 k = 0; k < c->nt; k++) c->have[c->touched[k]] = 0;
     c->nt = 0;
     tmark(0);
-    material_set_gx(c, g->gpr[3]);
+    if (hook == PORT_PICTUREEX) picex_draw_self(c, g->gpr[3], g->gpr[4]);
+    else material_set_gx(c, g->gpr[3]);
     tmark(5);
+    gx_sync(c);
+    c->pn = (u32)(c->pp - c->pipe);
     return !c->fail;
 }
 static void port_commit(Pc* c) {
@@ -608,7 +902,13 @@ static void port_commit(Pc* c) {
     if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pipe, c->pn);
 }
 
-bool port_is_hook(u32 pc) { return g_portMode && pc == A_MATERIAL_SETGX && g_pm; }
+const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf" };
+static inline int hook_of(u32 pc) { return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : -1; }
+u32 g_portHooks = 1u << PORT_MATERIAL;  // --port-hooks MASK (bit per PORT_*): drawSelf off until measured
+bool port_is_hook(u32 pc) {
+    int h = hook_of(pc);
+    return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);
+}
 
 // ---- check mode (--port check, PORT_CHECK=1 on the PC): the port's intended effects against the interpreter's ----
 // The port runs into its context without committing; the interpreter then runs the call for real (its effects are the
@@ -619,9 +919,10 @@ extern void (*gp_capture)(const u8* data, u32 len);
 static u8 g_icap[PIPE_CAP * 2];
 static u32 g_icapN;
 static void icap_put(const u8* d, u32 len) { for (u32 i = 0; i < len && g_icapN < sizeof g_icap; i++) g_icap[g_icapN++] = d[i]; }
-static void chk_bad(Gekko* g0, Pc* c, u32 what, u32 a, u32 want, u32 mine) {
+static void chk_bad(Gekko* g0, Pc* c, u32 hook, u32 what, u32 a, u32 want, u32 mine) {
     PortStats* s = &g_portStats;
     if (s->bad++) return;
+    s->badHook = hook;
     s->badMat = g0->gpr[3];
     s->badWhat = what;
     s->badAddr = a;
@@ -631,16 +932,18 @@ static void chk_bad(Gekko* g0, Pc* c, u32 what, u32 a, u32 want, u32 mine) {
     s->badPipe[1] = g_icapN;
 #ifndef __3DS__
     static const char* kWhat[] = { "", "the call did not return", "pipe bytes", "memory", "__GXData", "logged stores", "registers" };
-    fprintf(stderr, "PORT_CHECK material %08lx: %s differ at %08lx: interpreter %08lx port %08lx (pipe bytes: port %u interpreter %u)\n",
-            (unsigned long)g0->gpr[3], kWhat[what], (unsigned long)a, (unsigned long)want, (unsigned long)mine, c->pn, g_icapN);
+    fprintf(stderr, "PORT_CHECK %s %08lx: %s differ at %08lx: interpreter %08lx port %08lx (pipe bytes: port %u interpreter %u)\n",
+            g_portNames[hook], (unsigned long)g0->gpr[3], kWhat[what], (unsigned long)a, (unsigned long)want, (unsigned long)mine,
+            c->pn, g_icapN);
 #endif
 }
-static u32 port_check(Gekko* g) {
+static u32 port_check(Gekko* g, u32 hook) {
     Pc* c = &g_pc;
+    PortHook* hs = &g_portStats.h[hook];
     Gekko g0 = *g;
-    bool took = port_run(c, g);
+    bool took = port_run(c, g, hook);
     *g = g0;
-    if (!took) { g_portStats.refused++; g_portStats.refusedBy[c->fail & 7]++; return 0; }  // (the guest code runs as usual)
+    if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }  // (the guest code runs as usual)
     if (g_portMode == 3 && c->pn) c->pipe[c->pn - 1] ^= 1;  // (--port plant: a known difference, the checker must report it)
     u32 sp = g->gpr[1], ret = g->lr;
     g_chkN = 0;
@@ -652,11 +955,11 @@ static u32 port_check(Gekko* g) {
     g_memoRec = NULL;
     gp_capture = NULL;
     if (g_icapN && g_ppipe) g_ppipe(g_pctx, g_icap, g_icapN);
-    g_portStats.checked++;
-    g_portStats.insReal += n;
-    g_portStats.insEst += c->n;
-    g_portStats.pipe += c->pn;
-    if (why) { chk_bad(&g0, c, 1, g->pc, 0, 0); return n ? n : 1; }
+    hs->checked++;
+    hs->insReal += n;
+    hs->insEst += c->n;
+    hs->pipe += c->pn;
+    if (why) { chk_bad(&g0, c, hook, 1, g->pc, 0, 0); return n ? n : 1; }
     if (g_icapN != c->pn || memcmp(g_icap, c->pipe, c->pn)) {
         u32 i = 0;
         while (i < c->pn && i < g_icapN && g_icap[i] == c->pipe[i]) i++;
@@ -665,7 +968,7 @@ static u32 port_check(Gekko* g) {
             want = want << 8 | (k < g_icapN ? g_icap[k] : 0);
             mine = mine << 8 | (k < c->pn ? c->pipe[k] : 0);
         }
-        chk_bad(&g0, c, 2, i, want, mine);
+        chk_bad(&g0, c, hook, 2, i, want, mine);
         return n ? n : 1;
     }
     for (u32 i = 0; i < g_chkN; i++) {
@@ -674,60 +977,67 @@ static u32 port_check(Gekko* g) {
         u32 want = ram_rd32(g_pm, a - 0x80000000u), mine = g_chkW[i][1];
         if (a - c->gxd < GXD_BYTES) { if (c->have[(a - c->gxd) >> 2]) mine = c->gx[(a - c->gxd) >> 2]; }
         else for (u32 k = 0; k < c->nlog; k++) if (c->log[k][0] == a) mine = c->log[k][1];
-        if (want != mine) { chk_bad(&g0, c, 3, a, want, mine); return n ? n : 1; }
+        if (want != mine) { chk_bad(&g0, c, hook, 3, a, want, mine); return n ? n : 1; }
     }
     for (u32 k = 0; k < c->nt; k++) {
         u32 i = c->touched[k];
         u32 want = ram_rd32(g_pm, c->gxd - 0x80000000u + 4 * i);
-        if (c->gx[i] != c->gx0[i] && want != c->gx[i]) { chk_bad(&g0, c, 4, c->gxd + 4 * i, want, c->gx[i]); return n ? n : 1; }
+        if (c->gx[i] != c->gx0[i] && want != c->gx[i]) { chk_bad(&g0, c, hook, 4, c->gxd + 4 * i, want, c->gx[i]); return n ? n : 1; }
     }
     for (u32 i = 0; i < c->nlog; i++) {
         bool later = false;  // (a later store to the same word decides)
         for (u32 k = i + 1; k < c->nlog; k++) later |= c->log[k][0] == c->log[i][0];
         u32 want = ram_rd32(g_pm, c->log[i][0] - 0x80000000u);
-        if (!later && want != c->log[i][1]) { chk_bad(&g0, c, 5, c->log[i][0], want, c->log[i][1]); return n ? n : 1; }
+        if (!later && want != c->log[i][1]) { chk_bad(&g0, c, hook, 5, c->log[i][0], want, c->log[i][1]); return n ? n : 1; }
     }
     bool regs = g->pc == ret && g->gpr[1] == sp && g->gpr[2] == g0.gpr[2] && !memcmp(&g->gpr[13], &g0.gpr[13], 19 * 4) &&
                 !memcmp(&g->fpr[14], &g0.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (g0.cr & 0x00FFF000u);
-    if (!regs) chk_bad(&g0, c, 6, g->pc, 0, 0);
+    if (!regs) chk_bad(&g0, c, hook, 6, g->pc, 0, 0);
     return n ? n : 1;
 }
 
 #ifndef __3DS__
 static void port_report(void) {
-    PortStats* s = &g_portStats;
-    fprintf(stderr, "PORT: J2DMaterial::setGX %llu taken, %llu checked (%llu differed), %llu not taken; %llu pipe bytes\n",
-            (unsigned long long)s->calls, (unsigned long long)s->checked, (unsigned long long)s->bad,
-            (unsigned long long)s->refused, (unsigned long long)s->pipe);
+    for (int k = 0; k < PORT_N; k++) {
+        PortHook* s = &g_portStats.h[k];
+        fprintf(stderr, "PORT: %s %llu taken, %llu checked, %llu not taken; %llu pipe bytes\n", g_portNames[k],
+                (unsigned long long)s->calls, (unsigned long long)s->checked, (unsigned long long)s->refused, (unsigned long long)s->pipe);
+    }
+    fprintf(stderr, "PORT: %llu checked calls differed\n", (unsigned long long)g_portStats.bad);
 }
 #endif
+// The estimates scaled to what the interpreter ran for the same calls (the material: 1,920 against 1,510 a call, job
+// 470; drawSelf: 2,739 against 2,203, jobs 490-491), so that the emulated clock advances as the guest code would have.
+static const u32 kInsScale[PORT_N] = { 127, 124 };
 u32 port_run_hook(Gekko* g) {
-    if (!port_valid() || !g_ppipe) return 0;
+    int hook = hook_of(g->pc);
+    if (hook < 0 || !port_valid() || !g_ppipe) return 0;
 #ifndef __3DS__
     static bool reg;
     if (!reg) { reg = true; atexit(port_report); }
 #endif
-    if (g_portMode >= 2) return port_check(g);
+    if (g_portMode >= 2) return port_check(g, (u32)hook);
     Pc* c = &g_pc;
+    PortHook* hs = &g_portStats.h[hook];
     u64 t0 = prof_begin();
-    g_tOn = t0 && g_portParts;
+    g_tOn = t0 && g_portParts && hook == PORT_MATERIAL;
     g_tm = t0;
     if (g_portPmuBegin) g_portPmuBegin();
-    bool took = port_run(c, g);
+    bool took = port_run(c, g, (u32)hook);
     if (g_portPmuEnd) g_portPmuEnd();
     g_tOn = false;
-    if (!took) { g_portStats.refused++; g_portStats.refusedBy[c->fail & 7]++; return 0; }
+    if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }
     u64 t1 = t0 ? g_profClock() : 0;
     if (g_portCommitBegin) g_portCommitBegin();
     port_commit(c);
     if (g_portCommitEnd) g_portCommitEnd();
     if (t0) {
-        g_portStats.timed++;
-        g_portStats.tRun += t1 - t0;
-        g_portStats.tCommit += g_profClock() - t1;
+        hs->timed++;
+        hs->tRun += t1 - t0;
+        hs->tCommit += g_profClock() - t1;
     }
-    g_portStats.calls++;
-    g_portStats.pipe += c->pn;
+    hs->calls++;
+    hs->pipe += c->pn;
     g->pc = g->lr;
-    return c->n ? c->n : 1;
+    return c->n ? c->n * kInsScale[hook] / 100 : 1;
 }

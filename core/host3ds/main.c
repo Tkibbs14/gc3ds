@@ -474,6 +474,7 @@ typedef struct {
     int port;     // --port off|on|check|plant (on): the native J2D material port (port_j2d.c; check: each call compared with the
                   // interpreter, whose result is kept; plant: check with one pipe bit flipped in the port, which must be reported)
     bool abPort;  // --ab port: the port on and off (hle column bit 4)
+    bool abPichook;  // --ab pichook: the J2DPictureEx::drawSelf port on and off (hle column bit 5)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
@@ -556,7 +557,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -566,6 +567,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
+        else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--port")) o->port = !strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0;
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }
         else if (!strcmp(a, "--gfskip-guard")) {
@@ -1063,6 +1065,7 @@ static const char* run(const char* path) {
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
         g_portMode = g_opt.abPort ? 0 : g_opt.port;  // --ab port starts off
+        if (g_opt.abPichook) g_portHooks &= ~(1u << PORT_PICTUREEX);  // --ab pichook starts off
         if (g_opt.abSkipfn) jit_skip_on = false;  // --ab skipfn starts off
         if (g_opt.abGfskip) g_gfskipOn = false;  // --ab gfskip starts off
         if (g_pica) pica_set_texdiv(g_opt.abTexdiv ? 1 : g_opt.texdiv);  // --ab texdiv starts at 1
@@ -1239,7 +1242,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
-                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0) | (hle_thp_enabled() ? 4 : 0) | (hle_ps_enabled() ? 8 : 0) | (g_portMode ? 16 : 0));  // bit 0 all, bit 1 J3DGD, bit 2 THP, bit 3 PS library, bit 4 J2D port
+                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0) | (hle_thp_enabled() ? 4 : 0) | (hle_ps_enabled() ? 8 : 0) | (g_portMode ? 16 : 0) | (g_portMode && (g_portHooks >> PORT_PICTUREEX & 1) ? 32 : 0));  // bit 0 all, bit 1 J3DGD, bit 2 THP, bit 3 PS library, bit 4 J2D ports, bit 5 the drawSelf one
                 fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_merge() ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)(pica_job_ring() >> 10) : 0u);
@@ -1333,6 +1336,10 @@ static const char* run(const char* path) {
                 }
                 if (g_opt.abPs && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_ps_set_enabled(!hle_ps_enabled());
+                    jit_invalidate_all(g_jit);
+                }
+                if (g_opt.abPichook && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    g_portHooks ^= 1u << PORT_PICTUREEX;
                     jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abPort && g_jit && g_useJit && perfRows % AB_SECS == 0) {
@@ -1477,36 +1484,39 @@ static const char* run(const char* path) {
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
                 }
                 {  // the GX decoder's time by command class (fifo.c, one command in 16)
-                    if (g_opt.port || g_opt.abPort) {  // the native J2D material port (port_j2d.c)
+                    if (g_opt.port || g_opt.abPort) {  // the native library ports (port_j2d.c): a line per hooked function
                         static PortStats lastP;
                         PortStats p = g_portStats;
-                        fprintf(g_perf, "# port 10s: %llu taken, %llu checked, %llu not taken, %.0f pipe bytes each; differed %llu (all time)",
-                                (unsigned long long)(p.calls - lastP.calls), (unsigned long long)(p.checked - lastP.checked),
-                                (unsigned long long)(p.refused - lastP.refused),
-                                (double)(p.pipe - lastP.pipe) / (double)((p.calls + p.checked - lastP.calls - lastP.checked) ? (p.calls + p.checked - lastP.calls - lastP.checked) : 1),
-                                (unsigned long long)p.bad);
-                        if (p.badHash) fprintf(g_perf, "; OFF: the code at %08lx differs from the ported", (unsigned long)p.badHash);
-                        if (p.timed != lastP.timed)
-                            fprintf(g_perf, "; us per call: building %.2f, committing %.2f", (double)(p.tRun - lastP.tRun) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed),
-                                    (double)(p.tCommit - lastP.tCommit) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed));
-                        if (p.timed != lastP.timed) {
-                            fprintf(g_perf, " (set-up, colour, texgens, TEV textures, TEV stages, indirect + PE:");
-                            for (int q = 0; q < 6; q++)
-                                fprintf(g_perf, " %.2f", (double)(p.tSub[q] - lastP.tSub[q]) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed));
-                            fprintf(g_perf, ")");
+                        for (int k = 0; k < PORT_N; k++) {
+                            const PortHook *h = &p.h[k], *l = &lastP.h[k];
+                            u64 ran = h->calls + h->checked - l->calls - l->checked;
+                            fprintf(g_perf, "# port 10s %s: %llu taken, %llu checked, %llu not taken, %.0f pipe bytes each; differed %llu (all time)",
+                                    g_portNames[k], (unsigned long long)(h->calls - l->calls), (unsigned long long)(h->checked - l->checked),
+                                    (unsigned long long)(h->refused - l->refused), (double)(h->pipe - l->pipe) / (double)(ran ? ran : 1),
+                                    (unsigned long long)p.bad);
+                            if (p.badHash) fprintf(g_perf, "; OFF: the code at %08lx differs from the ported", (unsigned long)p.badHash);
+                            if (h->timed != l->timed) {
+                                double t = SYSCLOCK_ARM11 / 1e6 * (double)(h->timed - l->timed);
+                                fprintf(g_perf, "; us per call: building %.2f, committing %.2f", (double)(h->tRun - l->tRun) / t, (double)(h->tCommit - l->tCommit) / t);
+                                if (k == PORT_MATERIAL && g_portParts) {
+                                    fprintf(g_perf, " (set-up, colour, texgens, TEV textures, TEV stages, indirect + PE:");
+                                    for (int q = 0; q < 6; q++) fprintf(g_perf, " %.2f", (double)(p.tSub[q] - lastP.tSub[q]) / t);
+                                    fprintf(g_perf, ")");
+                                }
+                            }
+                            if (h->checked)
+                                fprintf(g_perf, "; instructions per call: interpreter %.1f, port's estimate %.1f", (double)h->insReal / (double)h->checked,
+                                        (double)h->insEst / (double)h->checked);
+                            fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, tev block %08lx, texgens, indirect):",
+                                    (unsigned long)p.otherTev);
+                            for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(h->refusedBy[q] - l->refusedBy[q]));
+                            if (p.bad && (int)p.badHook == k)
+                                fprintf(g_perf, "; first: r3 %08lx, kind %lu (1 no return, 2 pipe, 3 memory, 4 __GXData, 5 logged, 6 regs) at %08lx, "
+                                        "interpreter %08lx port %08lx, pipe bytes port %lu interpreter %lu",
+                                        (unsigned long)p.badMat, (unsigned long)p.badWhat, (unsigned long)p.badAddr, (unsigned long)p.badWant,
+                                        (unsigned long)p.badMine, (unsigned long)p.badPipe[0], (unsigned long)p.badPipe[1]);
+                            fprintf(g_perf, "\n");
                         }
-                        if (p.checked)
-                            fprintf(g_perf, "; instructions per call: interpreter %.1f, port's estimate %.1f", (double)p.insReal / (double)p.checked,
-                                    (double)p.insEst / (double)p.checked);
-                        fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, tev block %08lx, texgens, indirect):",
-                                (unsigned long)p.otherTev);
-                        for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(p.refusedBy[q] - lastP.refusedBy[q]));
-                        if (p.bad)
-                            fprintf(g_perf, "; first: material %08lx, kind %lu (1 no return, 2 pipe, 3 memory, 4 __GXData, 5 logged, 6 regs) at %08lx, "
-                                    "interpreter %08lx port %08lx, pipe bytes port %lu interpreter %lu",
-                                    (unsigned long)p.badMat, (unsigned long)p.badWhat, (unsigned long)p.badAddr, (unsigned long)p.badWant,
-                                    (unsigned long)p.badMine, (unsigned long)p.badPipe[0], (unsigned long)p.badPipe[1]);
-                        fprintf(g_perf, "\n");
                         lastP = p;
                     }
                     {  // function memoization's probe (memo.c)

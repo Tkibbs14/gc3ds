@@ -48,3 +48,23 @@
     { 0x802DE95C, 0x44, 0x111D29DB66059E7Cull },  // load__10JUTPaletteFv
     { 0x8035E4A0, 0x98, 0xF4EA4FB0385A2570ull },  // GXLoadTlut
     { 0x8035F174, 0x24, 0xDE78835FDD992411ull },  // __GXFlushTextureState
+    { 0x80303AB4, 0xCC, 0x2BAEEA6C9D46C601ull },  // drawSelf__12J2DPictureExFffPA3_A4_f
+    { 0x80303B80, 0x5C, 0xB6AC2551EE67D3B2ull },  // drawFullSet__12J2DPictureExFffffPA3_A4_f
+    { 0x80303BDC, 0x280, 0x5913FF2DC466A605ull },  // drawTexCoord__12J2DPictureExFffffssssssssPA3_A4_f
+    { 0x803464E4, 0xCC, 0xECB901B1362E138Eull },  // PSMTXConcat
+    { 0x8035B58C, 0x38, 0x9D190DD6FD00EF2Full },  // GXClearVtxDesc
+    { 0x8035AEB8, 0x26C, 0x3969A032B4F049F7ull },  // GXSetVtxDesc
+    { 0x8035B5C4, 0x25C, 0xF7622C01E29C713Full },  // GXSetVtxAttrFmt
+    { 0x8035C764, 0xD0, 0x9C16989D6B6EB1CFull },  // GXBegin
+    { 0x8035B3AC, 0xBC, 0x54FFD8DB1264645Cull },  // __GXSetVCD
+    { 0x8035BAA0, 0x88, 0x10646584B22C346Bull },  // __GXSetVAT
+    { 0x8035B468, 0x124, 0xEFFCC92DF63E2D92ull },  // __GXCalculateVLim
+    { 0x8035C834, 0x88, 0x35589A738A41A1B2ull },  // __GXSendFlushPrim
+    { 0x8035C9E0, 0x24, 0xD879CCE2D60CDA71ull },  // __GXSetGenMode
+    { 0x8035E750, 0xA0, 0x2F4227053F7E1E17ull },  // __SetSURegs
+    { 0x8035E7F0, 0x17C, 0xAB4269401AFD2E5Eull },  // __GXSetSUTexRegs
+    { 0x8035F140, 0x4, 0x2F639DC45181817Full },  // __GXUpdateBPMask
+    { 0x8036024C, 0x50, 0x6F8865255F47D7CDull },  // GXLoadPosMtxImm
+    { 0x803D2280, 0x68, 0x8FF4AAFC09FE6EB9ull },  // @176
+    { 0x803D2350, 0x44, 0x37C2BF3DF4C84463ull },  // @476
+    { 0x804509D0, 0x8, 0x8832885F376B6FEDull },  // Unit01
