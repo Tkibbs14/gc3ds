@@ -805,6 +805,13 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **The decoder's statistics only when profiling (job 433, `--ab gxdiag`):** dl_note's hashes and the command-class
   profile (two kernel clock reads per 16 commands) off unless `--profile on`: **+0.568 +- 0.034 points (+3.2%, 17.7 ->
   18.2%)**, core 0's GX wait 13.1 -> 9.2%.
+- **The host profile's own cost (jobs 434-437, `--ab profclock`: g_profClock on and off; the off phases' profile
+  columns read 0):** every prof_begin / prof_end pair read the clock (svcGetSystemTick, a system call of ~200 cycles):
+  **heavy area 18.3 -> 19.7% with it off (+1.458 +- 0.057 points, 8%)**, Ordon +0.255 +- 0.014 (+1.1%, core 0's per-slice
+  timers). Now each pair is timed one time in 16 (a pseudo-random draw per translation unit, scaled by 16), and the
+  per-draw timers and the worker's per-job timer one draw / job in 64 (scaled by 64): the clock's remaining cost in the
+  heavy area **+0.434 +- 0.071 points (16 / 16) then +0.326 +- 0.053 (16 / 64), 1.7%** (job 437: 19.4% on, 19.7% off).
+  The profile columns stay (sampled estimates). Earlier A/B verdicts stand (both arms carried the cost).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

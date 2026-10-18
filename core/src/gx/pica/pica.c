@@ -1929,13 +1929,13 @@ static void vw_main(void* arg) {
     u32 idle = 0, jobs = 0, c;
     while (!g_vwQuit) {
         if (vw_claim(&c, false)) {
-            bool timed = !(++jobs & 15);  // timed on one job in 16 (a clock read costs 0.25 us)
-            u64 t0 = timed ? prof_begin() : 0;
+            bool timed = !(++jobs & 63);  // timed on one job in 64 (a clock read costs 0.25 us)
+            u64 t0 = timed && g_profClock ? g_profClock() : 0;
             g_vfPhaseTimed = timed;
             if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, g_vcWorker);  // gathers here use the worker's cache
             vw_do(&g_vw[c % VW_SLOTS]);
             g_vfPhaseTimed = false;
-            if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 16; g_vwPhaseAll += d; }
+            if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 64; g_vwPhaseAll += d; }
             vw_done(c);
             idle = 0;
         } else if (++idle > 4000) {
@@ -2066,6 +2066,7 @@ static u8* vw_alloc(u32 bytes) {
     u32 start = g_vwMemHead;
     if (start + bytes > g_vwLimit) start = 0;
     u64 t0 = 0;
+    bool waited = false;
     GW_ENTER(GW_VWALLOC);
     for (;;) {
         u32 t = g_vwTail;
@@ -2076,7 +2077,7 @@ static u8* vw_alloc(u32 bytes) {
         u32 os = g_vw[t % VW_SLOTS].memStart, he = g_vwMemHead, end = start + bytes;
         bool overlap = os <= he ? (start < he && end > os) || (os == he) : (start < he || end > os);
         if (!full && !overlap) break;
-        if (!t0) { t0 = prof_begin(); g_vwStats[3]++; g_vwStats[4] += g_vwHead - t; }
+        if (!waited) { waited = true; t0 = prof_begin(); g_vwStats[3]++; g_vwStats[4] += g_vwHead - t; }
         vw_steal();
     }
     GW_LEAVE();
@@ -2212,8 +2213,8 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     g_lean = g_c3d ? g_leanWant : 0;
     if (g_descWant && !g_descReady) describe_draw(&s->gx.core, prim, count);
     static u32 drawN;
-    g_drawScale = 16;
-    g_drawTimed = !(++drawN & 15);  // per-draw timers on one draw in 16
+    g_drawScale = 64;
+    g_drawTimed = !(++drawN & 63);  // per-draw timers on one draw in 64 (job 436: at 1 in 16 they cost ~2%)
     GXCore* gx = &s->gx.core;
     if (count > g_vcap) {
         SVert* sv = realloc(g_sv, count * sizeof *sv);

@@ -52,11 +52,20 @@ enum { WH_NONE, WH_GEKKO, WH_DISPATCH, WH_COMPILE, WH_SYSRUN, WH_EVENTS, WH_GXPO
        WH_PERF, WH_PERFCSV, WH_PERFREP, WH_N };  // perf: console and counters / perf.csv rows / the 10 s reports
 extern volatile unsigned char g_where;
 extern u64 (*g_profClock)(void);
-static inline u64 prof_begin(void) { return g_profClock ? g_profClock() : 0; }
-static inline void prof_end(int area, u64 t0) { if (g_profClock) g_hostProf[area] += g_profClock() - t0; }
+// Sampled: a pair is timed one time in PROF_SAMPLE (a pseudo-random draw per translation unit, so alternating call
+// sites are not aliased) and its time scaled by PROF_SAMPLE. The clock is a system call (~200 cycles on the 2DS):
+// timing every pair cost 8% of the heavy area's speed (job 434). prof_begin returns 0 for a pair not timed.
+#define PROF_SAMPLE 16
+static inline u64 prof_begin(void) {
+    static u32 r = 0x9E3779B9u;
+    if (!g_profClock) return 0;
+    r = r * 1664525u + 1013904223u;
+    return (r >> 28) == 0 ? g_profClock() : 0;
+}
+static inline void prof_end(int area, u64 t0) { if (t0 && g_profClock) g_hostProf[area] += (g_profClock() - t0) * PROF_SAMPLE; }
 // Per-draw areas (GX thread): the 3DS backend times one draw in 16 and scales (g_drawScale = 16), because a clock
 // read costs 0.25 us on the 2DS and a draw is ~5 vertices; it sets g_drawTimed for each draw.
 extern bool g_drawTimed;
 extern u32 g_drawScale;
-static inline u64 dprof_begin(void) { return g_drawTimed ? prof_begin() : 0; }
+static inline u64 dprof_begin(void) { return g_drawTimed && g_profClock ? g_profClock() : 0; }  // (sampled per draw)
 static inline void dprof_end(int area, u64 t0) { if (g_drawTimed && g_profClock) g_hostProf[area] += (g_profClock() - t0) * g_drawScale; }
