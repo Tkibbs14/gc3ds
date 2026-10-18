@@ -553,7 +553,6 @@ static volatile bool g_rawWant;  // pica_set_rawdraw (off by default until measu
 static bool g_rawBad;            // a compared draw differed: raw draws stay off
 static u32 g_idxPa, g_rawN;
 u64 g_rawStats[3];  // draw calls issued raw, compared with citro3d's, compared and different
-volatile u8 g_gxWhere;
 #define GW_ENTER(w) u8 gwSaved_ = g_gxWhere; g_gxWhere = (w)
 #define GW_LEAVE() g_gxWhere = gwSaved_
 void pica_set_rawdraw(bool on) { g_rawWant = on; }
@@ -2267,12 +2266,15 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
     if (!same) {
         u64 ts = SPROF_BEGIN();
+        g_gxWhere = GW_FLUSH;
         flush_batch();
         SPROF_END(0, ts); ts = SPROF_BEGIN();
         split_early();
         SPROF_END(1, ts); ts = SPROF_BEGIN();
+        g_gxWhere = GW_TEVUPD;
         update_tev(gx);
         SPROF_END(2, ts); ts = SPROF_BEGIN();
+        g_gxWhere = GW_BATCHKEY;
         kn = batch_key(gx, key);
         key[kn++] = cls;
         tex_key(gx, key, &kn);
@@ -2303,6 +2305,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         if (!workVerts) { dprof_end(PROF_GXVTX, t0); return; }
         nIdx = indexed ? workVerts : 0;
         u64 tq = dprof_begin();
+        g_gxWhere = GW_VQUEUE;
         if (!need_work(indexed ? count : workVerts, nIdx)) {
             emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count);
             return;
@@ -2352,6 +2355,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         w.deferred = deferLit;  // vfast_prepare defers shader-lit draws (and CPU-lit ones with g_vfDeferCpu)
         if (g_vcGx) vfast_set_sources(g_vcGx, pac, w.seg, nSeg ? nSeg : 1);
         u64 tp = dprof_begin();
+        g_gxWhere = GW_VPREP;
         w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem + front, w.pv);
         dprof_end(PROF_VPREP, tp);
         if (!w.job) { dprof_end(PROF_GXVTX, t0); return; }
@@ -2381,6 +2385,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     u32 maxVerts = lines ? count * 6 : count * 3;
     if (!jobPath && !need(maxVerts)) { emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count); return; }
     tState = dprof_begin();
+    g_gxWhere = GW_STATE2;
     if (g.frameNo != frameBefore || !same) {
         if (g.frameNo != frameBefore) {  // a new frame resets citro3d's state tracking; textures stay live
             update_tev(gx);
@@ -2417,6 +2422,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             g.batchKeyLen = kn;
         }
     }
+    g_gxWhere = GW_DRAWTAIL;
     g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
     g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
     dprof_end(PROF_GXSTATE, tState);
@@ -2524,6 +2530,7 @@ bool pica_fskip(void) { return g_fskipWant; }
 
 static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
+    g_gxWhere = GW_MERGE;
     if (g_fskipNow) { g_fskipDraws++; return; }
     g_picaMerge[0]++;
     u32 bytes = count * vsize;
@@ -3475,6 +3482,7 @@ static bool pica_draw_native(void* ctx, System* s, u32 vat, const u8* cmd, u32 l
 // The emulator's display-list runs (GXBackend.draw_list).
 static bool pica_draw_list(void* ctx, System* s, u32 vat, const u8* cmd, u32 len) {
     (void)ctx;
+    g_gxWhere = GW_DLIST;
     g_nsMem = s->mem1;
     vfast_native_mem(s->mem1);
     NsReq q = { vat, cmd, len, NULL, 0, gx_vertex_size(&s->gx.core, vat), NULL, 0, true };
@@ -3485,7 +3493,32 @@ static bool pica_draw_list(void* ctx, System* s, u32 vat, const u8* cmd, u32 len
 #ifdef GC3DS_NATIVE
 static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, pica_draw_native, NULL };
 #else
-static const GXBackend kPica = { pica_draw, pica_efb_copy, pica_flush, pica_draw_indexed, NULL, pica_draw_list };
+// The emulator's entry points, each marking the GX thread back in the decoder when it returns (the sampled position,
+// '# gx thread where 10s', would otherwise credit the decoding that follows to the backend's last position).
+static void pica_draw_m(void* c, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
+    pica_draw(c, s, prim, vat, raw, count, vsize);
+    g_gxWhere = GW_FIFO;
+}
+static bool pica_efb_copy_m(void* c, System* s, u32 ctl, u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
+    bool r = pica_efb_copy(c, s, ctl, x0, y0, w, h, dest);
+    g_gxWhere = GW_FIFO;
+    return r;
+}
+static void pica_flush_m(void* c, System* s) {
+    pica_flush(c, s);
+    g_gxWhere = GW_FIFO;
+}
+static bool pica_draw_indexed_m(void* c, System* s, u32 vat, const u8* verts, u32 nv, u32 vsize, const u8* idx, u32 ni) {
+    bool r = pica_draw_indexed(c, s, vat, verts, nv, vsize, idx, ni);
+    g_gxWhere = GW_FIFO;
+    return r;
+}
+static bool pica_draw_list_m(void* c, System* s, u32 vat, const u8* cmd, u32 len) {
+    bool r = pica_draw_list(c, s, vat, cmd, len);
+    g_gxWhere = GW_FIFO;
+    return r;
+}
+static const GXBackend kPica = { pica_draw_m, pica_efb_copy_m, pica_flush_m, pica_draw_indexed_m, NULL, pica_draw_list_m };
 #endif
 
 // ---- present ----

@@ -793,6 +793,18 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   +- 0.040 points (+12%, 16.2 -> 18.0%)**, core 0's GX wait 17.5 -> 10.7%; 346 textures in VRAM, 177 left in FCRAM
   for want of room; frames of both arms match. **Ordon (job 425): +0.088 +- 0.029 points (+0.4%)**. The XFBs in FCRAM
   cost nothing measurable (the FCRAM arm read 16.2%, as job 421). Default on. Which textures get VRAM is first come.
+- **The GX thread's time by position (jobs 427-432, tp_area2, `--profile on`):** the profiler thread now also samples
+  the GX thread's position byte (g_gxWhere, ~10,000 samples a second; markers through the decoder and the backend,
+  reset to the decoder when a backend entry returns): decoder outside any backend call ~34% at first, of which the
+  display-list statistics' hashes (dl_note) **3.9%**, BP writes 2.6%, list run scans 1.5%, the FIFO copy 1.5%, XF 1.3%;
+  vertex prep 7.2%, the frame-begin GPU wait 6.1%, draw calls 5.3%, batch key 4.5%, ring-space waits 4.3%, texture
+  lookups 3.6%, TEV 3.3%, EFB copies 2.8%. The decoder's command-class profile (`# gx decode 10s`, job 427): draws
+  356 ms/s, BP writes 238 (233,000 a second; mostly the open merged draw issued by merge_break), XF 91, CP 54, list
+  runs to the backend 99. A direct-mapped texture index (job 431) found 90% of lookups past the last hit but there are
+  only ~800 a second: texture lookup time unchanged, reverted.
+- **The decoder's statistics only when profiling (job 433, `--ab gxdiag`):** dl_note's hashes and the command-class
+  profile (two kernel clock reads per 16 commands) off unless `--profile on`: **+0.568 +- 0.034 points (+3.2%, 17.7 ->
+  18.2%)**, core 0's GX wait 13.1 -> 9.2%.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

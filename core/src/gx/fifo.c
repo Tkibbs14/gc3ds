@@ -82,6 +82,7 @@ u32 gx_vertex_size(const GXCore* gx, u32 vat) {
 // only when it issues it. Every command that would change that state (any register value, palette loads, PE signals,
 // EFB copies) first lets the backend issue the open draw.
 bool g_gxMergeOpen;
+volatile u8 g_gxWhere;
 static inline void merge_break(System* s, GXCore* gx) {
     if (g_gxMergeOpen && gx->backend && gx->backend->flush) gx->backend->flush(gx->backendCtx, s);
 }
@@ -340,8 +341,12 @@ MemStamps g_memStamps;
 #define DL_SLOTS 2048
 static struct { u32 addr, size, bytes, arrays; } g_dl[DL_SLOTS];
 static u32 dl_hash(const u8* p, u32 n, u32 h) { for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }
+// The decoder's measurement-only work (display-list hashes, the command-class profile): off unless profiling (main.c
+// --profile on): dl_note's hashes alone were 3.9% of the GX thread (2DS job 432).
+bool g_gxDiag;
 static void dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
     g_dlStats[0]++;
+    if (!g_gxDiag) return;
     u32 slot = (addr >> 5) & (DL_SLOTS - 1);
     if (g_dl[slot].addr != addr || g_dl[slot].size != size) {
         g_dl[slot].addr = addr; g_dl[slot].size = size; g_dl[slot].bytes = dl_hash(p, size, 2166136261u);
@@ -494,17 +499,16 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
 
 // Executes one command at p; returns its length, or 0 if more bytes are needed.
 static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList);
-#ifdef GC3DS_NATIVE
-// Native mode's decoder profile (one command in 16, scaled): ticks by command class: draws, BP, XF, CP, Aurora commands
-// other than list calls, the rest; and how many commands of each class. List calls (0x40, Aurora 0x0060) are not timed
-// themselves: their commands are.
-u64 g_gxOpTicks[6], g_gxOpCount[6];
+// The decoder's profile (one command in 16, scaled): ticks by command class: draws, BP, XF, CP, Aurora commands other
+// than list calls, the rest; and how many commands of each class. List calls (0x40, Aurora 0x0060) are not timed
+// themselves: their commands are. [6] / [7]: runs of draws in display lists handed to the backend whole (draw_list).
+u64 g_gxOpTicks[8], g_gxOpCount[8];
 static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
     u8 op = (u8)rd8(p);
     u32 cls = op >= 0x80 && op < 0xC0 ? 0 : op == 0x61 ? 1 : op == 0x10 ? 2 : op == 0x08 ? 3 : op == 0x50 ? 4 : 5;
     bool call = op == 0x40 || (op == 0x50 && avail >= 3 && rd8(p + 1) == 0x00 && rd8(p + 2) == 0x60);
     static u32 n;
-    if (call || !g_profClock || (++n & 15)) {
+    if (call || !g_gxDiag || !g_profClock || (++n & 15)) {
         if (!call) g_gxOpCount[cls]++;
         return exec_one_(s, gx, p, avail, inList);
     }
@@ -514,9 +518,6 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
     g_gxOpTicks[cls] += (g_profClock() - t0) * 16;
     return r;
 }
-#else
-#define exec_one exec_one_
-#endif
 
 static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
     u8 op = (u8)rd8(p);
@@ -534,6 +535,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
     case 0x44: return 1;              // unknown metrics command, no payload
     case 0x08:
         if (avail < 6) return 0;
+        g_gxWhere = GW_DECCP;
         {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
             u32 v = rd32(p + 2), r = rd8(p + 1);
             if (gx->cp[r] != v) {
@@ -542,24 +544,31 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
             }
             gx->cp[r] = v;
         }
+        g_gxWhere = GW_FIFO;
         return 6;
     case 0x10: {
         if (avail < 5) return 0;
         u32 h = rd32(p + 1), n = (h >> 16) + 1, addr = h & 0xFFFF;
         if (avail < 5 + 4 * n) return 0;
+        g_gxWhere = GW_DECXF;
         for (u32 i = 0; i < n; i++) xf_write(s, gx, addr + i, rd32(p + 5 + 4 * i));
+        g_gxWhere = GW_FIFO;
         return 5 + 4 * n;
     }
     case 0x20: case 0x28: case 0x30: case 0x38:
         if (avail < 5) return 0;
+        g_gxWhere = GW_DECIDX;
         load_indexed(s, gx, (op - 0x20) >> 3, rd32(p + 1));
+        g_gxWhere = GW_FIFO;
         return 5;
     case 0x40: {
         if (avail < 9) return 0;
         u32 addr = rd32(p + 1) & 0x03FFFFE0, size = rd32(p + 5);
         if (inList) emu_log(LOG_GX, "nested display list call ignored\n");
         else if (size <= PA_MEM1_END && addr <= PA_MEM1_END - size) {  // no wrap
+            g_gxWhere = GW_DECNOTE;
             dl_note(gx, addr, s->mem1 + addr, size);
+            g_gxWhere = GW_FIFO;
             run_list(s, gx, s->mem1 + addr, size, true);
         }
         else emu_log(LOG_GX, "display list %08x+%x out of range\n", addr, size);
@@ -582,7 +591,9 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
         return 5;
     case 0x50: return aurora_cmd(s, gx, p, avail, inList);
 #else
+        g_gxWhere = GW_DECBP;
         bp_write(s, gx, rd8(p + 1), rd32(p + 1) & 0xFFFFFF);
+        g_gxWhere = GW_FIFO;
         return 5;
 #endif
     }
@@ -602,6 +613,7 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
     while (off < len) {
         u8 op = (u8)rd8(p + off);
         if (op >= 0x80 && op < 0xC0 && len - off >= 3 && off >= stop) {
+            g_gxWhere = GW_DECLIST;
             // A run: this draw and the draws (and NOPs) right after it in the same vertex format.
             u32 vat = op & 7, vsize = gx_vertex_size(gx, vat), end = off, draws = 0, verts = 0, cmds = 0;
             bool other = false;  // lines or points: not converted
@@ -622,8 +634,13 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
                 u8 o = (u8)rd8(p + end);
                 g_dlRun[o >= 0x80 && o < 0xC0 ? 9 : o == 0x08 ? 6 : o == 0x10 || (o >= 0x20 && o <= 0x38) ? 7 : o == 0x61 ? 8 : 10]++;
             }
-            if (draws && inList && !other && gx->backend && gx->backend->draw_list &&
-                gx->backend->draw_list(gx->backendCtx, s, vat, p + off, end - off)) {
+            static u32 nl;
+            u64 tl = draws && g_gxDiag && g_profClock && !(++nl & 15) ? g_profClock() : 0;
+            bool listed = draws && inList && !other && gx->backend && gx->backend->draw_list &&
+                          gx->backend->draw_list(gx->backendCtx, s, vat, p + off, end - off);
+            g_gxWhere = GW_FIFO;
+            if (listed) { g_gxOpCount[6]++; g_gxOpCount[7] += draws; if (tl) g_gxOpTicks[6] += (g_profClock() - tl) * 16; }
+            if (listed) {
                 for (u32 q = off; q < end;) {  // the statistics draw() keeps
                     if (rd8(p + q) == 0x00) { q++; continue; }
                     u32 n = rd16(p + q + 1);
@@ -652,7 +669,9 @@ static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
         gx->pending = p;
         gx->pendingCap = cap;
     }
+    g_gxWhere = GW_DECFEED;
     ram_from_be(gx->pending, gx->pendingLen, data, len);  // (in guest memory's layout, as display lists are)
+    g_gxWhere = GW_FIFO;
     gx->pendingLen += len;    u32 off = 0;
     for (;;) {
         u32 n = off < gx->pendingLen ? exec_one(s, gx, gx->pending + off, gx->pendingLen - off, false) : 0;

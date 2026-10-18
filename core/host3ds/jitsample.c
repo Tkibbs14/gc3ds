@@ -15,6 +15,9 @@
 #define MAX_SAMPLES 200000
 static u32* g_samples;
 static volatile u32 g_n, g_outside, g_whereN[WH_N];
+extern volatile u8 g_gxWhere;  // the GX thread's position (pica.c GW_*), sampled with core 0
+#define GXW_N 32
+static volatile u32 g_gxwN[GXW_N];
 static volatile bool g_quit;
 static Thread g_thread;
 static const Gekko* g_g;
@@ -75,6 +78,7 @@ static void sampler(void* arg) {
             unsigned char w = g_where;
             g_whereN[w < WH_N ? w : 0]++;
         }
+        { u8 gw = g_gxWhere; g_gxwN[gw < GXW_N ? gw : GXW_N - 1]++; }
         svcSleepThread(100000);
     }
 }
@@ -149,6 +153,19 @@ void jitsample_report(FILE* f, const Jit* j) {
         static const char* const kWh[WH_N] = { "none", "gekko_run", "dispatch", "compile", "sys_run", "events", "gx_poll", "hle",
                                                "interp", "frontend", "present", "vblank_wait", "perf_log",
                                                "perf_csv", "perf_reports" };
+        static const char* const kGw[] = { "idle/ring", "draw", "drawcall", "vwwait", "vwalloc", "splitwait", "framebegin",
+                                           "frameend", "split", "tex", "copy", "shapes", "fifo", "merge", "flush", "tev",
+                                           "batchkey", "vprep", "vqueue", "state2", "drawtail", "dlist", "dec_bp",
+                                           "dec_xf", "dec_cp", "dec_idx", "dec_list", "dec_feed", "dec_dlnote" };
+        u32 gt = 0;
+        for (int k = 0; k < GXW_N; k++) gt += g_gxwN[k];
+        fprintf(f, "# gx thread where 10s (%u samples):", (unsigned)gt);
+        for (int k = 0; k < GXW_N; k++) {
+            if (g_gxwN[k]) fprintf(f, " %s %.1f%%", k < (int)(sizeof kGw / sizeof kGw[0]) ? kGw[k] : "?",
+                                   gt ? 100.0 * g_gxwN[k] / gt : 0.0);
+            g_gxwN[k] = 0;
+        }
+        fprintf(f, "\n");
         fprintf(f, "# core0 outside compiled code 10s:");
         for (int k = 0; k < WH_N; k++) {
             if (g_whereN[k]) fprintf(f, " %s %.1f%%", kWh[k], tot > 0 ? 100.0 * g_whereN[k] / tot : 0.0);

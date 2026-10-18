@@ -75,11 +75,7 @@ bool pica_cmdpld(void);
 void pica_set_rawstate(bool on);
 bool pica_rawstate(void);
 void pica_set_rawplant(bool on);  // the raw draw comparison's self-test: the next compared state differs
-// Where the GX thread is (one byte it sets at each wait and in the draw call), for the watchdog: a stalled run says
-// whether the GX thread waits for the GPU (frame begin / end / split), the vertex worker, or is in a draw.
-enum { GW_RING, GW_DRAW, GW_DRAWCALL, GW_VWWAIT, GW_VWALLOC, GW_SPLITWAIT, GW_FRAMEBEGIN, GW_FRAMEEND, GW_SPLIT,
-       GW_TEX, GW_COPY, GW_SHAPES, GW_N };
-extern volatile u8 g_gxWhere;
+// (The GX thread's position, GW_* and g_gxWhere, is in gx.h.)
 // The GX thread's state as text for a watchdog line: its position, draw calls made, the vertex worker's queue.
 void pica_watch(char* buf, u32 size);
 // The vertex worker on core 3 (on by default when it starts): the second half of each triangle draw's vertex work

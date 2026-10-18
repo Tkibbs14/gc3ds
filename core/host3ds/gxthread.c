@@ -64,6 +64,7 @@ static void gx_main(void* arg) {
         }
         idle = 0;
         dmb();
+        g_gxWhere = GW_FIFO;
         u64 t0 = prof_begin();
         u32 at = tail % RING_BYTES, hdr;
         memcpy(&hdr, g_ring + at, 4);

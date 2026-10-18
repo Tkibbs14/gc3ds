@@ -227,7 +227,7 @@ void gc3ds_gx_stats(char* out, u32 size) {
     // palette, lights, XFB copy; drawn alone on the CPU for want of palette room) and what the vertex work was made of
     // (vfast.c: draws, vertices, setups, CPU light evaluations, texgens, compositions). Totals since start.
     extern u64 g_picaDrawPaths[8];
-    extern u64 g_gxOpTicks[6], g_gxOpCount[6];
+    extern u64 g_gxOpTicks[8], g_gxOpCount[8];
     extern u64 g_vwInline, g_vwInlineVerts;
     const VFastStats* v = &g_vfastStats;
     if (n > 0 && (u32)n < size)
