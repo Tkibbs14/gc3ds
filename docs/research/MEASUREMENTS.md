@@ -702,6 +702,15 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   (TX_SETMODE0 mip mode, TX_SETMODE1 max LOD; power-of-two sizes from 16; down to 8 x 8): **GPU 100.6 -> 55.4 ms a
   frame, speed 11.50 -> 13.73% (+2.207 +- 0.019 points over 7 phase pairs, +19.2%)**, core 0's GX wait 40 -> 30%.
   Screenshots of both arms match (distant ground slightly smoother). Default on.
+- **Mipmaps in the other scenes:** Ordon walk (job 390): **+1.138 +- 0.023 points (+5.3%)**, GPU 10.9 -> 8.3 ms a
+  frame; title / cutscene (job 389, ab_split): cutscene 25.0 -> 27.3% (phase pairs +10.9% +-21, within that
+  benchmark's noise), later 13.6 -> 13.8%, GPU 17.2 -> 10.8 ms. No scene got slower.
+- **Smaller texel formats (C17; jobs 391-392, tp_area2, mips on):** level 1 (`--smalltex 1`: the smallest PICA format
+  that holds level 0 exactly): only grey textures converted (LA4 170, LA8 62, L8 10 of 1,049; CMPR's blended colours are
+  never exactly 5-6-5): +0.062 +- 0.028 points, neutral. **Level 2 (`--smalltex 2`: CMPR / RGB5A3 sources, and RGB5A3
+  palettes, rounded to RGB565, RGBA5551 or RGBA4; RGBA8 sources stay): RGB565 187, RGBA5551 48, RGBA4 46 more; GPU
+  55.2 -> 43.5 ms a frame, +0.849 +- 0.020 points (+6.2%)** over 6 phase pairs. Screenshots unchanged at the 3DS's
+  resolution. Default level 2.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

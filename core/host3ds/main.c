@@ -427,6 +427,7 @@ typedef struct {
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
+    u32 smalltex; bool abSmalltex;  // --smalltex on|off, --ab smalltex: textures in the smallest exact PICA format (smalltex column; --ab starts off)
     bool mips, abMips;        // --mips on|off, --ab mips: mipmaps from the game's textures (pica.c; mips column; --ab starts off)
     u32 texdiv; bool abTexdiv;  // --texdiv N (measurement): textures at 1/N size; --ab texdiv: N and 1 (texdiv column)
     bool abGfskip;            // --gfskip ADDR: the game's renderer at ADDR runs every other call (guest frame skip, experiment); --ab gfskip: on and off (gfskip column; starts off)
@@ -470,6 +471,7 @@ static void opts_default(RunOpts* o) {
     o->rawdraw = true;   // batches' draw calls as raw words: Ordon +0.2% (job 364, phases after 40 s), 0 of 481 compared differed
     o->rawstate = true;  // and their state blocks without C3Di_UpdateContext: call 8.1 -> 5.3 us, Ordon +0.73% (job 367)
     o->mips = true;      // the game's mip levels: heavy Ordon area GPU 100.6 -> 55.4 ms a frame, +19.2% (job 388)
+    o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
     o->hle = true;     // shadow-scan stand-in: Link / Epona stretch 10.6% -> 12.4%, cutscene within noise (job 145)
@@ -498,7 +500,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abMips = !strcmp(v, "mips"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -511,6 +513,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         }
         else if (!strcmp(a, "--texdiv")) o->texdiv = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--mips")) o->mips = !strcmp(v, "on");
+        else if (!strcmp(a, "--smalltex")) o->smalltex = !strcmp(v, "on") ? 1 : !strcmp(v, "off") ? 0 : (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--gfskip-ok")) {  // PTR+OFF=VAL,... (hex)
             const char* q = v;
             for (int k = 0; k < 4 && *q; k++) {
@@ -633,7 +636,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -986,6 +989,7 @@ static const char* run(const char* path) {
         if (g_opt.abGfskip) g_gfskipOn = false;  // --ab gfskip starts off
         if (g_pica) pica_set_texdiv(g_opt.abTexdiv ? 1 : g_opt.texdiv);  // --ab texdiv starts at 1
         if (g_pica) pica_set_mips(g_opt.mips && !g_opt.abMips);  // --ab mips starts off
+        if (g_pica) pica_set_smalltex(g_opt.abSmalltex ? 0 : g_opt.smalltex);  // --ab smalltex starts off
         g_psgxOn = g_opt.psgx && !g_opt.abPsgx;  // off by default (job 375); --ab psgx starts off
         hle_ps_set_group(kPsGx, g_psgxOn);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
@@ -1168,6 +1172,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_gfskipOn ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)pica_texdiv() : 1u);
                 fprintf(g_perf, ",%d", g_pica && pica_mips() ? 1 : 0);
+                fprintf(g_perf, ",%u", g_pica ? (unsigned)pica_smalltex() : 0u);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1222,6 +1227,7 @@ static const char* run(const char* path) {
                 }
                 if (g_opt.abGfskip && perfRows % AB_SECS == 0) g_gfskipOn = !g_gfskipOn;  // (the hook reads it per call)
                 if (g_opt.abMips && g_pica && perfRows % AB_SECS == 0) pica_set_mips(!pica_mips());
+                if (g_opt.abSmalltex && g_pica && perfRows % AB_SECS == 0) pica_set_smalltex(pica_smalltex() ? 0 : (g_opt.smalltex ? g_opt.smalltex : 1));
                 if (g_opt.abTexdiv && g_pica && perfRows % AB_SECS == 0) pica_set_texdiv(pica_texdiv() > 1 ? 1 : (g_opt.texdiv > 1 ? g_opt.texdiv : 4));
                 if (g_opt.abSkipfn && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     jit_skip_on = !jit_skip_on;
@@ -1335,6 +1341,13 @@ static const char* run(const char* path) {
                     fprintf(g_perf, "# new frames 10s: %.1f/s, gap mean %.1f ms, sd %.1f ms, largest %.1f ms\n", n / 10.0, m,
                             v > 0 ? sqrt(v) : 0.0, g_xfbGap[3]);
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
+                }
+                if (g_pica) {  // textures decoded per PICA format (all time): RGBA8 RGB565 RGBA5551 RGBA4 LA8 L8 LA4
+                    fprintf(g_perf, "# tex formats: rgba8 %llu rgb565 %llu rgba5551 %llu rgba4 %llu la8 %llu l8 %llu la4 %llu\n",
+                            (unsigned long long)g_texFmtCount[GPU_RGBA8], (unsigned long long)g_texFmtCount[GPU_RGB565],
+                            (unsigned long long)g_texFmtCount[GPU_RGBA5551], (unsigned long long)g_texFmtCount[GPU_RGBA4],
+                            (unsigned long long)g_texFmtCount[GPU_LA8], (unsigned long long)g_texFmtCount[GPU_L8],
+                            (unsigned long long)g_texFmtCount[GPU_LA4]);
                 }
                 if (g_gfskipAddr) {  // game frames: the renderer's calls (run + skipped) per second of real time
                     static u64 lastGf[2];

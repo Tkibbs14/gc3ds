@@ -148,6 +148,70 @@ static volatile bool g_mipsWant;
 static bool g_mips;
 void pica_set_mips(bool on) { g_mipsWant = on; }
 bool pica_mips(void) { return g_mipsWant; }
+// Smaller texel formats (--smalltex, C17): each texture in the smallest PICA format that holds every texel of its level 0
+// exactly (the decoder's 5- and 6-bit channels expand by bit replication, so the test is exact), else RGBA8 as before.
+// A cache-missing texture is fetched at 27 Mpixel/s in RGB565 against 17 in RGBA8 (gpuprobe, job 180).
+// Level 2 (lossy): CMPR and RGB5A3 sources (and palettes of RGB5A3) that are not exact in a small format go to RGB565
+// when opaque, RGBA5551 with 1-bit alpha, else RGBA4 (CMPR's blended colours are never exactly 5-6-5: job 391 left 807 of
+// 1,049 textures in RGBA8 at level 1); RGBA8 sources stay RGBA8.
+static volatile u32 g_smallWant;
+static u32 g_small;
+void pica_set_smalltex(u32 level) { g_smallWant = level <= 2 ? level : 2; }
+u32 pica_smalltex(void) { return g_smallWant; }
+u64 g_texFmtCount[16];  // textures decoded per PICA format
+
+static u8 g_morton[64];  // (defined below: the tile order)
+static inline bool ex5(u32 v) { return (((v >> 3) << 3) | (v >> 5)) == v; }  // 8-bit value that a 5-bit one expands to
+static inline bool ex6(u32 v) { return (((v >> 2) << 2) | (v >> 6)) == v; }
+static inline bool ex4(u32 v) { return (v >> 4) * 17 == v; }
+
+static GPU_TEXCOLOR small_format(const u32* p, u32 n, u32 gxFmt, u32 tlutFmt) {
+    bool grey = true, opaque = true, a1 = true, c565 = true, c555 = true, c4 = true, l4 = true;
+    for (u32 i = 0; i < n; i++) {
+        u32 c = p[i], r = c >> 24, gg = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF, a = c & 0xFF;
+        grey &= r == gg && gg == b;
+        opaque &= a == 255;
+        a1 &= a == 0 || a == 255;
+        c565 &= ex5(r) && ex6(gg) && ex5(b);
+        c555 &= ex5(r) && ex5(gg) && ex5(b);
+        c4 &= ex4(r) && ex4(gg) && ex4(b) && ex4(a);
+        l4 &= ex4(r) && ex4(a);
+    }
+    if (grey) {
+        if (opaque) return GPU_L8;
+        return l4 ? GPU_LA4 : GPU_LA8;  // (alpha equal to grey, as GX intensity textures, or its own)
+    }
+    if (opaque && c565) return GPU_RGB565;
+    if (a1 && c555) return GPU_RGBA5551;
+    if (c4) return GPU_RGBA4;
+    bool pal = gxFmt == 8 || gxFmt == 9 || gxFmt == 10;
+    if (g_small >= 2 && (gxFmt == 14 || gxFmt == 5 || (pal && tlutFmt == 2)))  // CMPR, RGB5A3, an RGB5A3 palette
+        return opaque ? GPU_RGB565 : a1 ? GPU_RGBA5551 : GPU_RGBA4;
+    return GPU_RGBA8;
+}
+
+// One level in a small format: rgba (w x h, 0xRRGGBBAA) into W x H tiles at dst (bytes per texel bpp).
+static void upload_level_fmt(u8* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h, GPU_TEXCOLOR f) {
+    u32 bpp = f == GPU_RGBA8 ? 4 : f == GPU_L8 || f == GPU_LA4 ? 1 : 2;
+    for (u32 y = 0; y < H; y++) {
+        const u32* row = rgba + ((H - 1 - y) * h / H) * w;
+        u8* tiles = dst + (y >> 3) * (W >> 3) * 64 * bpp;
+        const u8* m = &g_morton[(y & 7) * 8];
+        for (u32 x = 0; x < W; x++) {
+            u32 c = row[x * w / W], r = c >> 24, gg = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF, a = c & 0xFF;
+            u8* o = tiles + ((x >> 3) * 64 + m[x & 7]) * bpp;
+            switch (f) {
+            case GPU_L8: o[0] = (u8)r; break;
+            case GPU_LA4: o[0] = (u8)(((r >> 4) << 4) | (a >> 4)); break;
+            case GPU_LA8: o[0] = (u8)a; o[1] = (u8)r; break;
+            case GPU_RGB565: { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 2) << 5) | (b >> 3)); memcpy(o, &v, 2); break; }
+            case GPU_RGBA5551: { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 3) << 6) | ((b >> 3) << 1) | (a >> 7)); memcpy(o, &v, 2); break; }
+            case GPU_RGBA4: { u16 v = (u16)(((r >> 4) << 12) | ((gg >> 4) << 8) | ((b >> 4) << 4) | (a >> 4)); memcpy(o, &v, 2); break; }
+            default: memcpy(o, &c, 4); break;
+            }
+        }
+    }
+}
 static u8 g_morton[64];
 static SVert* g_sv;
 static PVert* g_pv;
@@ -748,6 +812,7 @@ static void begin_frame(void) {
     g.nGrave = 0;
     if (g_texDiv != g_texDivWant) { g_texDiv = g_texDivWant; g.resetPending = true; }  // (--texdiv: every texture again)
     if (g_mips != g_mipsWant) { g_mips = g_mipsWant; g.resetPending = true; }  // (--mips: every texture again)
+    if (g_small != g_smallWant) { g_small = g_smallWant; g.resetPending = true; }  // (--smalltex: every texture again)
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
     ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
     g.natAttr = false;
@@ -983,20 +1048,33 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     if (g_texDiv > 1) { W = W / g_texDiv < 8 ? 8 : W / g_texDiv; H = H / g_texDiv < 8 ? 8 : H / g_texDiv; }
     u32 bytes = W * H * 4;
     u32 lv = g_texDiv == 1 && e->levels > 1 ? e->levels : 1;
+    u32 n = e->w * e->h;
+    if (!scratch_reserve(n)) { g_picaStats.texFails++; return false; }
+    gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
+    GPU_TEXCOLOR tf = g_small && g_texDiv == 1 ? small_format(g_scratch, n, e->fmt, e->tlutFmt) : GPU_RGBA8;
+    g_texFmtCount[tf & 15]++;
+    if (tf != GPU_RGBA8) bytes = W * H * (tf == GPU_L8 || tf == GPU_LA4 ? 1 : 2);
     if (lv > 1) bytes = C3D_TexCalcTotalSize(bytes, (int)lv - 1);
     g_picaStats.texDecodes++;
     g_picaStats.texDecodeBytes += bytes;
     evict_unused(bytes);
     C3D_Tex nt;
-    C3D_TexInitParams ip = { (u16)W, (u16)H, (u8)(lv - 1), GPU_RGBA8, GPU_TEX_2D, false };
+    C3D_TexInitParams ip = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, false };
     if (!C3D_TexInitWithParams(&nt, NULL, ip)) {
         evict_unused(TEX_BUDGET);  // linear memory short of the budget: every texture this frame does not use goes
         if (!C3D_TexInitWithParams(&nt, NULL, ip)) { g_picaStats.texFails++; return false; }
     }
-    u32 n = e->w * e->h;
-    if (!scratch_reserve(n)) { C3D_TexDelete(&nt); g_picaStats.texFails++; return false; }
-    gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
-    if (lv == 1) {
+    if (tf != GPU_RGBA8) {  // (a smaller format: level by level through the converter; lower levels quantized alike)
+        u32 src = e->addr;
+        for (u32 L = 0; L < lv; L++) {
+            u32 wl = e->w >> L, hl = e->h >> L;
+            if (L) gx_decode_texture(s->mem1 + src, e->fmt, wl, hl, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
+            upload_level_fmt((u8*)C3D_Tex2DGetImagePtr(&nt, (int)L, NULL), W >> L, H >> L, g_scratch, L ? wl : e->w, L ? hl : e->h, tf);
+            src += gx_texture_size(e->fmt, wl, hl);
+        }
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)nt.data, bytes);
+        g_texEpoch++;
+    } else if (lv == 1) {
         upload(&nt, g_scratch, e->w, e->h);
     } else {  // level L follows level L - 1 in RAM, each in the format's tiles (power-of-two sizes: no resampling)
         u32 src = e->addr;
