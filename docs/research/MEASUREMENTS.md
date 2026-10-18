@@ -896,6 +896,27 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   neither leaves MEM1 nor wraps before its last byte, and whole runs in gp_fifo_write (`--gpbulk`, hw/gx.c): PC state
   hash unchanged over 400 fields and 62.7 MB of pipe bytes; heavy area +0.64 +- 0.03 points (+3.2%), Ordon +1.07 +-
   0.03 (+4.5%), 9 phases each (jobs 477-478), the GX thread 6-10% busier.** On by default.
+- **The material port doing less (jobs 481-488):** each structure's fields read with plain loads after one range check,
+  pipe bytes stored through a pointer (the call's counts bounded before it starts), bpSentNot and the dirty bits kept
+  aside and applied once. **PMU (job 482): ~15,700 cycles and ~4,500 ARM instructions a call, from ~35,600 and ~16,300;
+  instruction-fetch stalls ~7,200 cycles are now the largest part.** -Os on top: 18,400 cycles (job 485), so -O2 stays.
+  Exact (job 481). Ordon **+0.81 +- 0.05 (+3.6%)** (job 484); with the emulated-time charge scaled to the interpreter's
+  count (x1.27) **+1.33 +- 0.43 (+5.9%)** (job 487). Heavy area **-0.06 +- 0.07, +0.00 +- 0.05** (jobs 483, 488): since
+  gpbulk that scene waits on the GX thread (core 0's ring waits +1.4-1.7 points with the port on, the GX thread 85-91%
+  busy), so core 0's saving does not show there.
+- **J2DPictureEx::drawSelf ported (jobs 490-493):** the material, GXClearVtxDesc / GXSetVtxDesc / GXSetVtxAttrFmt,
+  PSMTXConcat (multiply-adds rounded once, as the interpreter), GXLoadPosMtxImm, GXBegin with the SDK's dirty-state
+  flush (__GXSetSUTexRegs, __GXSetGenMode, __GXSetVCD, __GXSetVAT, __GXCalculateVLim) and dummy primitive, the quad.
+  **Exact over 84,402 calls on the device**, ~2% refused (float edge cases); 2,739 guest instructions a call. **Ordon
+  +1.16 +- 0.42 (+4.5%) on top of the material port; heavy area -0.10 +- 0.07.** On by default. Ordon's off arm read
+  25.8% speed (21.9% at the day's start).
+- **J3DShapeMtxConcatView::loadMtxConcatView_PNGP ported (jobs 494-495, PC checks):** concat, position matrix, normal
+  matrix (as is, or J3DPSCalcInverseTranspose: fres taken as the correctly rounded single reciprocal, as the interpreter
+  does, then two Newton steps), for either class's loadNrmMtx. The check caught two guest effects a port must copy:
+  **PSMTXConcat leaves ps1 of f14, f15 and f31 changed (it saves them with stfd and restores with lfd, which loads ps0
+  only)**, and **with MSR.FP off the guest's first float instruction takes the FP-unavailable exception (the OS's lazy
+  FP switch)**, so a float port is not taken then. Exact: PC 223,652 + 146,753 calls over the title sequence; device
+  ~72,000 (Ordon and the heavy area). Only ~209 guest instructions a call, ~3,500 calls a second in Ordon.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

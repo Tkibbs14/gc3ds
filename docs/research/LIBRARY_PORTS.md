@@ -50,10 +50,14 @@ headroom.
 
 ## Status (2026-10-18)
 
-- **J2DMaterial::setGX is ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"): exact on the
-  device over ~200,000 calls (`--port check`, which runs on the 2DS as well as the PC; `--port plant` proves it reports
-  a difference), on by default, heavy area +1.6-1.7%, Ordon +0.5%. Not yet: J2DTevBlock1/4/8/16 (the title screen uses
-  16), indirect stages.
+- **Ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"), each checked exact on the device
+  (`--port check` runs on the 2DS as well as the PC; `--port plant` proves it reports a difference):
+  J2DMaterial::setGX (on; Ordon +3.6-5.9%), J2DPictureEx::drawSelf (on; Ordon +4.5% more), J3DShapeMtxConcatView's
+  matrix load (`--port-hooks 7` / `--ab j3dhook`, being measured). The heavy area is GX-thread bound since gpbulk, so
+  core 0 savings show in Ordon. Not yet: J2DTevBlock1/4/8/16 (the title screen uses 16), indirect stages.
+- **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
+  changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
+  would take (MSR.FP off: the OS's lazy FP switch).
 - **Lesson: a port that repeats the SDK's work step by step costs what the JIT's translation does** (~35,600 cycles and
   ~16,300 ARM instructions a call against the guest's 1,920 instructions). What pays is doing less: fields read once
   without a checked read each, pipe bytes stored as words into a buffer the size is known for, the SDK's per-call
