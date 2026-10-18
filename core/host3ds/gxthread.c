@@ -124,8 +124,33 @@ static void ring_commit(u32 bytes) {
     g_head = g_head + bytes;
 }
 
+// Record batching (g_ringBatch, --ringbatch, --ab ringbatch): the pipe's 32-byte bursts go into one open data record of
+// up to RING_BATCH bytes, published when it is full and before anything that waits for or reads from the GX thread
+// (poll, which the CPU thread runs every event slice, sync, a present, a drain). Fewer, larger records: the GX thread
+// parses each one apart, and a command split between two records is carried over and parsed again.
+#define RING_BATCH 512
+bool g_ringBatch;
+static u8* g_openRec;  // the open record's header in the ring (NULL: none)
+static u32 g_openLen;
+static void close_open(void) {
+    if (!g_openRec) return;
+    u32 hdr = ((u32)REC_DATA << 24) | g_openLen;
+    memcpy(g_openRec, &hdr, 4);
+    g_openRec = NULL;
+    ring_commit(4 + ((g_openLen + 3) & ~3u));
+}
+
 static void feed(System* s, const u8* data, u32 len) {
     (void)s;
+    if (g_ringBatch && len <= RING_BATCH) {
+        if (g_openRec && g_openLen + len > RING_BATCH) close_open();
+        if (!g_openRec) { g_openRec = ring_reserve(4 + RING_BATCH); g_openLen = 0; }
+        memcpy(g_openRec + 4 + g_openLen, data, len);
+        g_openLen += len;
+        if (g_openLen == RING_BATCH) close_open();
+        return;
+    }
+    close_open();
     u32 bytes = 4 + ((len + 3) & ~3u);
     u8* p = ring_reserve(bytes);
     u32 hdr = ((u32)REC_DATA << 24) | len;
@@ -147,7 +172,10 @@ static u32 apply_events(System* s) {
     return n;
 }
 
-static void poll(System* s) { apply_events(s); }
+static void poll(System* s) {
+    close_open();
+    apply_events(s);
+}
 
 // Everything fed so far executed, including the draw held open for merging (the GX thread issues it once the ring is
 // empty, and sets g_gxMergeOpen before it publishes g_tail) and the vertex worker's reads of guest memory (its draws
@@ -161,6 +189,7 @@ static bool drained(void) {
 }
 
 static void wait_drained(void) {
+    close_open();
     if (drained()) return;
     u64 t0 = prof_begin();
     u64 limit = svcGetSystemTick() + 2 * SYSCLOCK_ARM11;
@@ -198,6 +227,7 @@ bool gxthread_start(System* s, void (*present)(System* s, const GXPresent* p)) {
 }
 
 void gxthread_present(const GXPresent* p) {
+    close_open();
     u32 bytes = 4 + ((sizeof *p + 3) & ~3u);
     u8* r = ring_reserve(bytes);
     u32 hdr = ((u32)REC_PRESENT << 24) | sizeof *p;

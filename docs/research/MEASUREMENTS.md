@@ -927,6 +927,10 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   position (job 499): fifo 8%, vprep 8.2%, drawtail 7%, drawcall 6.7%, vwalloc 5.7%, batchkey 5.3%, tex 4.2%, tev 3.7%,
   copy 3.6%, split 3.2%, idle 7-8% (dec_dlnote and dec_op, ~9% together, are the profile's own decoder statistics:
   `--profile on` turns gxdiag on).
+- **Baselines with the ports and gpbulk (jobs 500-502, plain runs):** Ordon walk 60-300 s **28.03%** (22.64% in job 397
+  this morning; ~23.5% before the ports), heavy area 30-240 s **20.64%** (~20.0%), title cutscene 25-250 s **28.94%**
+  (~26.8%), THP movie 370-420 s 12.82%. The GX thread is 94.9% busy in the heavy area and 89.3% in Ordon: it is the
+  next limit in both.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
