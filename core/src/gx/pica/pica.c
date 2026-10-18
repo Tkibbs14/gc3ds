@@ -144,6 +144,21 @@ static u32 g_texDiv = 1;
 // Mipmaps (--mips): textures whose GX filter samples mip levels get the levels the game stores after level 0 (decoded
 // from RAM like level 0), so minified textures hit the PICA's texture cache. Without them the heavy Ordon area's GPU
 // took ~100 ms a frame (job 386); textures at 1/4 size took 28 ms (+38% speed, job 387).
+// --gpudiag (measurement only, wrong pictures): bits that take GPU work away to find what the GPU's time is spent on.
+// 1 EFB -> texture copies not drawn (the texture keeps what it had); 2 blending off (logic op copy); 4 depth test off;
+// 8 every game draw scissored to 16x16 pixels (what is left is vertex and setup work); 16 XFB copies not made;
+// 32 EFB -> texture copy and present quads scissored to 16x16. (Bit 1 froze the 2DS within 7 s, job 403.)
+static volatile int g_shlightWant = -1;  // pica_want_shader_light: applied by this thread at the next frame (-1: none)
+void pica_want_shader_light(bool on) { g_shlightWant = on; }
+void pica_set_shader_light(bool on);
+static volatile bool g_deflitWant;  // pica_set_deflit: g_vfDeferCpu (vfast.c) from the next frame
+void pica_set_deflit(bool on) { g_deflitWant = on; }
+bool pica_deflit(void) { return g_deflitWant; }
+static volatile u32 g_gpuDiagWant;
+static u32 g_gpuDiag;
+void pica_set_gpudiag(u32 bits) { g_gpuDiagWant = bits; }
+u32 pica_gpudiag(void) { return g_gpuDiagWant; }
+u64 g_copyPix[4];  // EFB -> texture copies: target texels, source EFB pixels (scaled); XFB copies; copies not drawn
 static volatile bool g_mipsWant;
 static bool g_mips;
 void pica_set_mips(bool on) { g_mipsWant = on; }
@@ -193,28 +208,46 @@ static GPU_TEXCOLOR small_format(const u32* p, u32 n, u32 gxFmt, u32 tlutFmt) {
 }
 
 // One level in a small format: rgba (w x h, 0xRRGGBBAA) into W x H tiles at dst (bytes per texel bpp).
+// Nearest resampling's source column for each of W target columns, floor(x * w / W), found by stepping (the ARM11 has no
+// divide instruction: a division per texel cost ~100 cycles, ~30 ms for one 512 x 512 movie frame). W <= 1024.
+static u16 g_cols[1024];
+static const u16* col_map(u32 W, u32 w) {
+    u32 q = 0, r = 0;
+    for (u32 x = 0; x < W && x < 1024; x++) {
+        g_cols[x] = (u16)q;
+        for (r += w; r >= W; r -= W) q++;
+    }
+    return g_cols;
+}
+
+#define TEXEL_LOOP(BPP, BODY) do { \
+    for (u32 y = 0; y < H; y++) { \
+        const u32* row = rgba + ((H - 1 - y) * h / H) * w; \
+        u8* tiles = dst + (y >> 3) * (W >> 3) * 64 * (BPP); \
+        const u8* m = &g_morton[(y & 7) * 8]; \
+        for (u32 x = 0; x < W; x++) { \
+            u32 c = row[cols[x]], r = c >> 24, gg = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF, a = c & 0xFF; \
+            u8* o = tiles + ((x >> 3) * 64 + m[x & 7]) * (BPP); \
+            (void)r; (void)gg; (void)b; (void)a; \
+            BODY; \
+        } \
+    } \
+} while (0)
+
 static void upload_level_fmt(u8* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h, GPU_TEXCOLOR f) {
-    u32 bpp = f == GPU_RGBA8 ? 4 : f == GPU_RGB8 ? 3 : f == GPU_L8 || f == GPU_LA4 ? 1 : 2;
-    for (u32 y = 0; y < H; y++) {
-        const u32* row = rgba + ((H - 1 - y) * h / H) * w;
-        u8* tiles = dst + (y >> 3) * (W >> 3) * 64 * bpp;
-        const u8* m = &g_morton[(y & 7) * 8];
-        for (u32 x = 0; x < W; x++) {
-            u32 c = row[x * w / W], r = c >> 24, gg = (c >> 16) & 0xFF, b = (c >> 8) & 0xFF, a = c & 0xFF;
-            u8* o = tiles + ((x >> 3) * 64 + m[x & 7]) * bpp;
-            switch (f) {
-            case GPU_L8: o[0] = (u8)r; break;
-            case GPU_RGB8: o[0] = (u8)b; o[1] = (u8)gg; o[2] = (u8)r; break;
-            case GPU_LA4: o[0] = (u8)(((r >> 4) << 4) | (a >> 4)); break;
-            case GPU_LA8: o[0] = (u8)a; o[1] = (u8)r; break;
-            case GPU_RGB565: { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 2) << 5) | (b >> 3)); memcpy(o, &v, 2); break; }
-            case GPU_RGBA5551: { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 3) << 6) | ((b >> 3) << 1) | (a >> 7)); memcpy(o, &v, 2); break; }
-            case GPU_RGBA4: { u16 v = (u16)(((r >> 4) << 12) | ((gg >> 4) << 8) | ((b >> 4) << 4) | (a >> 4)); memcpy(o, &v, 2); break; }
-            default: memcpy(o, &c, 4); break;
-            }
-        }
+    const u16* cols = col_map(W, w);
+    switch (f) {
+    case GPU_L8: TEXEL_LOOP(1, o[0] = (u8)r); break;
+    case GPU_RGB8: TEXEL_LOOP(3, (o[0] = (u8)b, o[1] = (u8)gg, o[2] = (u8)r)); break;
+    case GPU_LA4: TEXEL_LOOP(1, o[0] = (u8)(((r >> 4) << 4) | (a >> 4))); break;
+    case GPU_LA8: TEXEL_LOOP(2, (o[0] = (u8)a, o[1] = (u8)r)); break;
+    case GPU_RGB565: TEXEL_LOOP(2, { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 2) << 5) | (b >> 3)); memcpy(o, &v, 2); }); break;
+    case GPU_RGBA5551: TEXEL_LOOP(2, { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 3) << 6) | ((b >> 3) << 1) | (a >> 7)); memcpy(o, &v, 2); }); break;
+    case GPU_RGBA4: TEXEL_LOOP(2, { u16 v = (u16)(((r >> 4) << 12) | ((gg >> 4) << 8) | ((b >> 4) << 4) | (a >> 4)); memcpy(o, &v, 2); }); break;
+    default: TEXEL_LOOP(4, memcpy(o, &c, 4)); break;
     }
 }
+#undef TEXEL_LOOP
 static u8 g_morton[64];
 static SVert* g_sv;
 static PVert* g_pv;
@@ -815,6 +848,9 @@ static void begin_frame(void) {
     g.nGrave = 0;
     if (g_texDiv != g_texDivWant) { g_texDiv = g_texDivWant; g.resetPending = true; }  // (--texdiv: every texture again)
     if (g_mips != g_mipsWant) { g_mips = g_mipsWant; g.resetPending = true; }  // (--mips: every texture again)
+    g_gpuDiag = g_gpuDiagWant;
+    g_vfDeferCpu = g_deflitWant;  // this thread prepares the jobs (vfast_prepare reads it)
+    if (g_shlightWant >= 0) { pica_set_shader_light(g_shlightWant != 0); g_shlightWant = -1; }
     if (g_small != g_smallWant) { g_small = g_smallWant; g.resetPending = true; }  // (--smalltex: every texture again)
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
     ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
@@ -1004,23 +1040,19 @@ static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; 
 // every wrap mode correct.
 // One level: rgba (w x h) into W x H tiles at dst (resampled nearest when the sizes differ).
 static void upload_level(u32* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h) {
+    const u16* cols = col_map(W, w);
     for (u32 y = 0; y < H; y++) {
         const u32* row = rgba + ((H - 1 - y) * h / H) * w;
         u32* tiles = dst + (y >> 3) * (W >> 3) * 64;
         const u8* m = &g_morton[(y & 7) * 8];
-        for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[x * w / W];
+        for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[cols[x]];
     }
 }
 
 static void upload(C3D_Tex* t, const u32* rgba, u32 w, u32 h) {
     u32 W = t->width, H = t->height;
     u32* dst = (u32*)t->data;
-    for (u32 y = 0; y < H; y++) {
-        const u32* row = rgba + ((H - 1 - y) * h / H) * w;
-        u32* tiles = dst + (y >> 3) * (W >> 3) * 64;
-        const u8* m = &g_morton[(y & 7) * 8];
-        for (u32 x = 0; x < W; x++) tiles[(x >> 3) * 64 + m[x & 7]] = row[x * w / W];
-    }
+    upload_level(dst, W, H, rgba, w, h);
     svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)t->data, t->size);
     g_texEpoch++;  // new texels (bind_tex)
 }
@@ -1303,7 +1335,7 @@ static void apply_frag(const GXCore* gx) {
     int mask = 0;
     if (cmode & 8) mask |= GPU_WRITE_RED | GPU_WRITE_GREEN | GPU_WRITE_BLUE;
     if ((cmode & 16) && hasAlpha) mask |= GPU_WRITE_ALPHA;
-    bool zen = zmode & 1;
+    bool zen = (zmode & 1) && !(g_gpuDiag & 4);
     if (zen && (zmode & 16)) mask |= GPU_WRITE_DEPTH;
     C3D_DepthTest(zen, zen ? kFunc[(zmode >> 1) & 7] : GPU_ALWAYS, (GPU_WRITEMASK)mask);
     // Two GX alpha comparisons and a logic op reduced to the PICA's single comparison.
@@ -1312,7 +1344,7 @@ static void apply_frag(const GXCore* gx) {
     else if ((op == 0 && c1 == 7) || (op == 1 && c1 == 0)) C3D_AlphaTest(true, kFunc[c0], (int)r0);
     else if ((op == 0 && c0 == 7) || (op == 1 && c0 == 0)) C3D_AlphaTest(true, kFunc[c1], (int)r1);
     else { note_approx(1u << 31); C3D_AlphaTest(true, kFunc[c0], (int)r0); }
-    if (cmode & 1) {
+    if ((cmode & 1) && !(g_gpuDiag & 2)) {
         static const GPU_BLENDFACTOR srcF[8] = { GPU_ZERO, GPU_ONE, GPU_DST_COLOR, GPU_ONE_MINUS_DST_COLOR, GPU_SRC_ALPHA,
                                                  GPU_ONE_MINUS_SRC_ALPHA, GPU_DST_ALPHA, GPU_ONE_MINUS_DST_ALPHA };
         static const GPU_BLENDFACTOR dstF[8] = { GPU_ZERO, GPU_ONE, GPU_SRC_COLOR, GPU_ONE_MINUS_SRC_COLOR, GPU_SRC_ALPHA,
@@ -1346,6 +1378,7 @@ static void apply_frag(const GXCore* gx) {
         t = t < 0 ? 0 : t > TH ? TH : t; b = b < t ? t : b > TH ? TH : b;
         C3D_SetScissor(GPU_SCISSOR_NORMAL, (u32)l, (u32)t, (u32)rr, (u32)b);
     }
+    if (g_gpuDiag & 8) C3D_SetScissor(GPU_SCISSOR_NORMAL, 0, 0, 16, 16);
 }
 
 // ---- vertices ----
@@ -2227,7 +2260,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             emu_log(LOG_GX, "pica: draw of %u vertices too large, dropped\n", (unsigned)count);
             return;
         }
-        bool defer = gpuPos || indexed || kVwGather, deferLit = defer && g.batchGpuLight;
+        bool defer = gpuPos || indexed || kVwGather, deferLit = defer && (g.batchGpuLight || g_vfDeferCpu);
         // Job memory only for what the draw uses: a deferred indexed job finishes straight into the arena (no vertex
         // copy), and GPU-transformed draws are culled by the PICA (no NDC).
         bool needPv = !(deferLit && indexed), needNd = !gpuPos && (cull == 1 || cull == 2);
@@ -2269,7 +2302,7 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
             w.nTri = workVerts / 3;
             at += workVerts * 2;
         }
-        w.deferred = deferLit;  // vfast_prepare defers shader-lit draws only
+        w.deferred = deferLit;  // vfast_prepare defers shader-lit draws (and CPU-lit ones with g_vfDeferCpu)
         if (g_vcGx) vfast_set_sources(g_vcGx, pac, w.seg, nSeg ? nSeg : 1);
         u64 tp = dprof_begin();
         w.job = vfast_prepare(s, gx, vat, &f, &g.sel, raw, count, vsize, g.batchGpuLight, defer, mem + front, w.pv);
@@ -2486,6 +2519,7 @@ static void quad_state(C3D_Tex* src, bool linear) {
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_ColorLogicOp(GPU_LOGICOP_COPY);
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    if (g_gpuDiag & 32) C3D_SetScissor(GPU_SCISSOR_NORMAL, 0, 0, 16, 16);  // (diagnostic: copy and present quads tiny)
     C3D_TexSetFilter(src, linear ? GPU_LINEAR : GPU_NEAREST, linear ? GPU_LINEAR : GPU_NEAREST);
     C3D_TexSetWrap(src, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
     g_texEpoch++;  // copies and present read and write textures: every unit binds again afterwards
@@ -2532,12 +2566,15 @@ static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
         }
         g_xfbLast = now;
     }
+    g_copyPix[2]++;
     PXfb* x = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) if (g.xfb[i].seq && g.xfb[i].addr == dest) x = &g.xfb[i];
     if (!x) for (u32 i = 0; i < MAX_XFB; i++) if (!x || g.xfb[i].seq < x->seq) x = &g.xfb[i];
-    split(1);  // the draws so far reach the EFB before the copy reads it
-    GX_TextureCopy((u32*)g.efbTex.data, 0, (u32*)x->tex.data, 0, TW * TH * 4, GX_TRANSFER_RAW_COPY(1));
-    queue_run();
+    if (!(g_gpuDiag & 16)) {
+        split(1);  // the draws so far reach the EFB before the copy reads it
+        GX_TextureCopy((u32*)g.efbTex.data, 0, (u32*)x->tex.data, 0, TW * TH * 4, GX_TRANSFER_RAW_COPY(1));
+        queue_run();
+    }
     x->addr = dest; x->x0 = x0; x->y0 = y0; x->w = w; x->h = h; x->seq = ++g.xfbSeq;
 }
 
@@ -2563,6 +2600,18 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
         c = p;
     }
     if (!c) { emu_log(LOG_GX, "pica: no free EFB copy texture for %08x %ux%u\n", (unsigned)dest, (unsigned)ow, (unsigned)oh); return; }
+    g_copyPix[0] += W * H;
+    g_copyPix[1] += (u64)(w * SX * h * SY);
+    if (g_gpuDiag & 1) {
+        g_copyPix[3]++;
+        c->addr = dest; c->w = ow; c->h = oh; c->used = true;
+        u32 bpp = fmt == 0 ? 4 : fmt == 6 ? 32 : (fmt == 3 || fmt == 4 || fmt == 5 || fmt >= 11) ? 16 : 8;
+        c->ramBytes = ow * oh * bpp / 8;
+        if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
+        c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
+        c->texVersion = g.xfbSeq;
+        return;
+    }
     split(0);
     need(6);
     C3D_FrameDrawOn(c->rt);

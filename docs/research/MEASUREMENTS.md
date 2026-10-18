@@ -718,6 +718,41 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   registers tev_pica_key reads (outside GXCore: save states keep their layout): update_tev 41 -> 34 ms/s (TEV registers
   really change on most batches), **+0.074 +- 0.027 points (+0.5%)**. Exact; default on.
 
+### Three scenes after the texture work, and what limits each (jobs 396-401, device, 2026-10-18)
+
+- **Baselines (all of today's defaults):** Ordon walk (job 397) **22.64%** (21.45% in job 360); heavy area
+  (tp_area2, job 398) **14.57%** (11.47% in job 386); title cutscene 25-303 s (job 396, `--profile on`) 26.3%.
+- **The title's later stretch is the THP movie, not a regression.** Its first ~60 s shift with the cutscene's speed (a
+  faster cutscene reaches the movie earlier), so 303-420 s means mislead; over the movie's steady 370-420 s jobs 350,
+  355 and 389 read 12.3-12.8% and job 396 11.8% (profiling on). The movie: 34 draws/s, **10.6 texture decodes/s of ~512
+  KB (texdec_kb 5,447/s), the GX thread 33% in texture decode**, core 0 waiting on it 13-17% (the idle hook drains the
+  GX thread). smalltex level 2 costs the movie 13.18 -> 12.52% (job 400: each frame's textures scanned and converted
+  again); level 2 stays (gameplay decodes ~0 textures/s: cached).
+- **What limits each scene:** Ordon walk: core 0 (97% busy, waits 0.9% on the GX thread; the GX thread 85% busy: vertex
+  work 32.5% of which gather 9.4% and CPU lighting 7.1%, state 16%). Heavy area: the GPU (43.6 ms a frame, gxsync 19%,
+  core 0 waits 25%). Movie: texture uploads.
+- **Texture size in Ordon (job 399, `--texdiv 4 --ab texdiv`):** textures at 1/4 size gain only **+0.364 +- 0.030
+  points (+1.6%)**: Ordon's walk has little texture headroom (GPU 4.5 ms a frame).
+- **Texture uploads without a divide per texel (job 408 against 402, title):** upload_level / upload_level_fmt resampled
+  with `x * w / W` per texel (for --texdiv), a library call on the ARM11 (no divide instruction); now a column table
+  built per level by stepping (col_map: exact against the division for every w 1-1024 and power-of-two W 8-1024,
+  2,088,960 columns) and the format switch outside the texel loop. **Movie 12.05 -> 12.76% (+5.9%)**, texture decode
+  33 -> 24% of the GX thread at 11.5 decodes/s; cutscene 26.63 -> 26.64% (unchanged). Default (no switch).
+- **Where the heavy area's GPU time goes (jobs 404-406, tp_area2, `--gpudiag BITS --ab gpudiag`, measurement only):**
+  every game draw scissored to 16 x 16 (bit 8): **GPU 42.7 -> 20.9 ms a frame**, speed 14.77 -> 16.37%: about half is
+  fragment work and **~21 ms is not** (vertex shading with the lighting shader, EFB copies and clears, transfers).
+  Blending off (bit 2): 42.9 -> 43.0 ms; depth test off (bit 4): 42.7 -> 43.1 ms: neither costs anything. Bit 1 (EFB
+  -> texture copies not drawn) **froze the 2DS ~7 s after it took effect (job 403**; the log stopped mid-line, no
+  watchdog report; cause not found); bit 16 (XFB copies not made) was not run. EFB -> texture copies there: ~2.6-2.9
+  million target texels/s (~1.7-1.8 M source pixels), ~45 copies/s.
+- **CPU-lit draws' gather and lighting on the vertex worker (`--deflit`, off until measured):** vfast_prepare gathers and
+  lights CPU-lit draws on the GX thread (gather 9.4% and lighting 7.1% of it in Ordon, job 397) while the worker (core
+  3) is 19% busy. With g_vfDeferCpu they are deferred like shader-lit draws: the lighting set-up (only the lights each
+  half uses) is copied into the job after its matrices and vfast_finish lights in runs of 32 vertices from the job's
+  own matrix copies. PC (VFAST_CHECK + VFAST_DEFLIT_CHECK, TP 1,500 frames): **4,682,498 CPU-lit draws done both ways,
+  0 differed** (4.1 M lit halves); self-tests caught: lit draws' colour flipped 4,101,790 differ, lights left out
+  3,881,137 differ (leaving out only each half's last light changed nothing: TP's last enabled light is black).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

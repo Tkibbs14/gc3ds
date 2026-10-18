@@ -318,6 +318,11 @@ struct VJob {
     // `raw`; vfast_finish gathers the attributes (reading guest memory) before it transforms.
     bool gathered, nrmUsed, nbt, index3, pnDirect;
     u8 rasChan, pnDefault, tmDefault[8];
+    // A deferred CPU-lit job (g_vfDeferCpu): vfast_finish lights it from these copies of the lighting set-up (only the
+    // lights each half uses), packed after the matrices; half[ch][k] NULL for a half the outputs do not need.
+    bool cpuLit, eyeUsed;
+    u8 chans, numChans;
+    const VHalf* half[2][2];
     u32 texUsed, tmDirect, vsize;
     const u8* mem1;
     const u8* raw;
@@ -357,8 +362,14 @@ static u32 align8(u32 v) { return (v + 7) & ~7u; }
 // ring allocator can take the rest back (the 3DS vertex worker's job ring: most draws use a few of the 64 matrices).
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
     return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize + 4) +
-           align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4);
+           align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4) + 4 * align8((u32)sizeof(VHalf));
 }
+// Written only by the thread that prepares jobs (pica.c begin_frame, soft.c): CPU-lit draws leave their gather and
+// lighting to vfast_finish as shader-lit ones do (with defer).
+bool g_vfDeferCpu;
+bool g_vfDeferCheck;     // PC (VFAST_DEFLIT_CHECK): vfast_run does each CPU-lit draw both ways and compares
+int g_vfDeferPlant;      // PC (VFAST_DEFLIT_PLANT=1 or 2): the check's self-tests (vfast.h)
+u64 g_vfDeferChecked, g_vfDeferFails, g_vfDeferLitHalves, g_vfDeferJobs;
 u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
 
 // The vertices' matrix indices (pn, tm) from the stream or the defaults.
@@ -1023,9 +1034,11 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
         }
     }
     memcpy(job->tmDefault, tmDefault, 8);
-    // Shader-lit draws may leave the gather to vfast_finish (another core): only the matrix indices are read here,
-    // and the stream is copied into the job (it does not outlive the draw).
-    job->gathered = !(defer && gpuLight);
+    // Shader-lit draws (and CPU-lit ones with g_vfDeferCpu) may leave the gather to vfast_finish (another core): only
+    // the matrix indices are read here, and the stream is copied into the job (it does not outlive the draw).
+    job->gathered = !(defer && (gpuLight || g_vfDeferCpu));
+    job->cpuLit = !job->gathered && !gpuLight;
+    if (job->cpuLit) { job->eyeUsed = eyeUsed; job->chans = (u8)chans; job->numChans = (u8)numChans; }
     u64 t0;
     if (!job->gathered) {
         gather_indices(job);
@@ -1115,6 +1128,19 @@ matrices:
     if (packed != job->tex && job->nTex) memmove(packed, job->tex, job->nTex * 12 * 4);
     job->tex = packed;
     job->end = (u8*)(job->tex + job->nTex);
+    if (job->cpuLit) {  // the halves vfast_finish lights with, each with only its lights
+        u8* m = (u8*)job + align8((u32)(job->end - (u8*)job));
+        for (u32 ch = 0; ch < 2; ch++)
+            for (u32 k = 0; k < 2; k++) {
+                job->half[ch][k] = NULL;
+                if (!(chans & (1u << ch)) || ch >= numChans) continue;
+                u32 nb = (u32)offsetof(VHalf, l) + (half[ch][k].lit ? half[ch][k].n : 0) * (u32)sizeof(VLight);
+                memcpy(m, &half[ch][k], nb);
+                job->half[ch][k] = (const VHalf*)(void*)m;
+                m += align8(nb);
+            }
+        job->end = m;
+    }
     job->originDone = false;
     return job;
 }
@@ -1129,11 +1155,62 @@ static void job_origin(VJob* job);
 // Per-phase time of vfast_finish on calls the caller marks (g_vfPhaseTimed: the 3DS vertex worker, one job in 16):
 // [0] the deferred gather and colours, [1] positions and normals, [2] texture coordinates.
 
+// A deferred CPU-lit job's colours: vfast_prepare's lighting, from the job's matrix and lighting copies (the same
+// values in the same order: bit-identical), in runs of 32 vertices so the lighting state stays on the stack.
+static void cpu_colours(VJob* job, PVert* out) {
+    g_vfDeferJobs++;
+    VLit lv[32];
+    u32 count = job->count, chans = job->chans, numChans = job->numChans, rc = job->rasChan & 1;
+    for (u32 b = 0; b < count; b += 32) {
+        u32 n = count - b < 32 ? count - b : 32;
+        bool plant = false;
+        for (u32 i = 0; i < n; i++) {
+            const VIn* in = VIN(job, b + i);
+            VLit* v = &lv[i];
+            if (job->eyeUsed) {
+                const float* M = job->pos[job->ix[b + i].pn];
+                const float* N = M + 12;
+                float* nn = v->n;
+                for (int r = 0; r < 3; r++)
+                    v->eye[r] = M[4 * r] * in->p[0] + M[4 * r + 1] * in->p[1] + M[4 * r + 2] * in->p[2] + M[4 * r + 3];
+                for (int r = 0; r < 3; r++) nn[r] = N[3 * r] * in->n[0] + N[3 * r + 1] * in->n[1] + N[3 * r + 2] * in->n[2];
+                float nl = sqrtf(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]), inl = nl > 0 ? 1.0f / nl : 0.0f;
+                if (nl > 0) { nn[0] *= inl; nn[1] *= inl; nn[2] *= inl; }
+            }
+            for (u32 ch = 0; ch < 2; ch++)
+                if (chans & (1u << ch)) unpack(ch == 1 && !(in->hasColor & 2) && (in->hasColor & 1) ? in->col[0] : in->col[ch], v->vc[ch]);
+        }
+        for (u32 ch = 0; ch < 2; ch++) {
+            if (!(chans & (1u << ch))) continue;
+            if (ch >= numChans) { for (u32 i = 0; i < n; i++) memcpy(lv[i].lc[ch], lv[i].vc[ch], sizeof lv[i].vc[ch]); continue; }
+            if (job->half[ch][0]->lit && job->half[ch][0]->n) g_vfDeferLitHalves++;
+            if (g_vfDeferPlant == 1 && job->half[ch][0]->lit && job->half[ch][0]->n) plant = true;  // the check's self-test
+            if (g_vfDeferPlant == 2 && job->half[ch][0]->lit && job->half[ch][0]->n) {  // self-test: no lights
+                VHalf h = *job->half[ch][0];
+                h.n = 0;
+                light_half(&h, ch, false, lv, n);
+                light_half(job->half[ch][1], ch, true, lv, n);
+                continue;
+            }
+            light_half(job->half[ch][0], ch, false, lv, n);
+            light_half(job->half[ch][1], ch, true, lv, n);
+        }
+        for (u32 i = 0; i < n; i++) {
+            const float* oc = lv[i].lc[rc];
+            PVert* o = &out[b + i];
+            o->col[0] = c8(oc[0]); o->col[1] = c8(oc[1]); o->col[2] = c8(oc[2]); o->col[3] = c8(oc[3]);
+            if (plant) o->col[0] ^= 1;
+            if (chans & 1) { VIN(job, b + i)->c0[0] = lv[i].lc[0][0]; VIN(job, b + i)->c0[1] = lv[i].lc[0][1]; }
+        }
+    }
+}
+
 void vfast_finish(VJob* job, PVert* out) {
     u64 tp0 = vf_clock(), tp1, tp2;
     if (!job->gathered) {
         gather_cached(job, false);
-        gpu_colours(job, out);
+        if (job->cpuLit) cpu_colours(job, out);
+        else gpu_colours(job, out);
         job->gathered = true;
     }
     tp1 = vf_clock();
@@ -1320,6 +1397,24 @@ void vfast_run(System* s, const GXCore* gx, u32 vat, const VFold* f, const VSel*
         g_jobCap = bytes;
     }
     // Deferred like the 3DS vertex worker (finish right after), so the PC checks that path.
+    if (g_vfDeferCheck && !gpuLight && count) {  // CPU-lit: lit in vfast_prepare, then deferred; outputs compared
+        static PVert* ref;
+        static u32 refCap;
+        if (count > refCap) { PVert* n = realloc(ref, count * sizeof *n); if (!n) return; ref = n; refCap = count; }
+        memset(ref, 0, count * sizeof *ref);
+        memset(out, 0, count * sizeof *out);
+        bool was = g_vfDeferCpu;
+        g_vfDeferCpu = false;
+        VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, true, g_jobMem, ref);
+        if (job) vfast_finish(job, ref);
+        g_vfDeferCpu = true;
+        job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, true, g_jobMem, out);
+        if (job) vfast_finish(job, out);
+        g_vfDeferCpu = was;
+        g_vfDeferChecked++;
+        if (memcmp(ref, out, count * sizeof *out)) g_vfDeferFails++;
+        return;
+    }
     VJob* job = vfast_prepare(s, gx, vat, f, sel, raw, count, vsize, gpuLight, true, g_jobMem, out);
     if (job) vfast_finish(job, out);
 }

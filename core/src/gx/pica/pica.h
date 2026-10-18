@@ -20,6 +20,7 @@ void pica_capture(const char* path);
 extern void (*pica_capture_done)(const void* bmp, u32 bytes);
 // Lighting in the vertex shader (on by default when the shader provides it); off lights on the CPU (comparison).
 void pica_set_shader_light(bool on);
+void pica_want_shader_light(bool on);  // the same, from another thread: applied at the GX thread's next frame
 bool pica_shader_light(void);
 // Position transform in the vertex shader with a palette of matrices (on by default when the shader provides it;
 // lines, points and Z-texture draws stay on the CPU); off transforms and culls every vertex on the CPU (comparison).
@@ -56,6 +57,11 @@ void pica_set_tevver(bool on);  // update_tev skips the key while no TEV registe
 bool pica_tevver(void);
 void pica_set_mips(bool on);  // mip levels from the game's textures (applied at the next frame: every texture again)
 bool pica_mips(void);
+void pica_set_deflit(bool on);  // CPU-lit draws' gather and lighting on the vertex worker (next frame)
+bool pica_deflit(void);
+void pica_set_gpudiag(u32 bits);  // measurement only: GPU work taken away (pica.c, g_gpuDiagWant)
+u32 pica_gpudiag(void);
+extern u64 g_copyPix[4];
 void pica_set_texdiv(u32 n);  // measurement only: textures decoded at 1/n size (applied at the next frame)
 u32 pica_texdiv(void);
 void pica_set_cmdpld(bool on);

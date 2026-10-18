@@ -1036,6 +1036,12 @@ static void vcache_check_draw(System* s, GXCore* gx, u32 vat, const u8* raw, u32
     }
 }
 
+static void deflit_report(void) {
+    fprintf(stderr, "VFAST_DEFLIT_CHECK: %llu CPU-lit draws done both ways, %llu differed (%llu deferred CPU-lit jobs, %llu lit halves)\n",
+            (unsigned long long)g_vfDeferChecked, (unsigned long long)g_vfDeferFails, (unsigned long long)g_vfDeferJobs,
+            (unsigned long long)g_vfDeferLitHalves);
+}
+
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {
     (void)ctx;
     GXCore* gx = &s->gx.core;
@@ -1099,7 +1105,12 @@ static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
         gx_to_screen(gx, &v[i]);
     }
     static int vchk = -1;
-    if (vchk < 0) vchk = getenv("VFAST_CHECK") != NULL;
+    if (vchk < 0) {
+        vchk = getenv("VFAST_CHECK") != NULL;
+        // VFAST_DEFLIT_CHECK (with VFAST_CHECK): CPU-lit draws lit in vfast_prepare and deferred to vfast_finish
+        // (g_vfDeferCpu, the 3DS --deflit) give the same vertices; VFAST_DEFLIT_PLANT: its self-test (one light off).
+        if (getenv("VFAST_DEFLIT_CHECK")) { g_vfDeferCheck = true; g_vfDeferPlant = getenv("VFAST_DEFLIT_PLANT") ? atoi(getenv("VFAST_DEFLIT_PLANT")) : 0; atexit(deflit_report); }
+    }
     if (vchk) vfast_check(s, gx, prim, vat, raw, count, vsize, v);
     if (gx->traceDraws)
         emu_log(LOG_GX, "draw prim %u x%u vat %u zmode %02x blend %04x tev %u gens %u chans %u v0 %.1f,%.1f,%.0f w %.3g "
