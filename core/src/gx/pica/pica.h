@@ -51,7 +51,9 @@ bool pica_rawdraw(void);
 // command buffer are prefetched so the following calls do not miss to FCRAM.
 void pica_set_smalltex(u32 level);  // 1: textures in the smallest PICA format that holds them exactly; 2: also lossy
 u32 pica_smalltex(void);             // for CMPR / RGB5A3 sources (applied at the next frame)
-extern u64 g_texFmtCount[16];
+extern u64 g_texFmtCount[16], g_texRgba8By[16];
+void pica_set_tevver(bool on);  // update_tev skips the key while no TEV register changed (on by default)
+bool pica_tevver(void);
 void pica_set_mips(bool on);  // mip levels from the game's textures (applied at the next frame: every texture again)
 bool pica_mips(void);
 void pica_set_texdiv(u32 n);  // measurement only: textures decoded at 1/n size (applied at the next frame)

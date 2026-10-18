@@ -159,6 +159,7 @@ static u32 g_small;
 void pica_set_smalltex(u32 level) { g_smallWant = level <= 2 ? level : 2; }
 u32 pica_smalltex(void) { return g_smallWant; }
 u64 g_texFmtCount[16];  // textures decoded per PICA format
+u64 g_texRgba8By[16];   // of those left in RGBA8, by GX source format
 
 static u8 g_morton[64];  // (defined below: the tile order)
 static inline bool ex5(u32 v) { return (((v >> 3) << 3) | (v >> 5)) == v; }  // 8-bit value that a 5-bit one expands to
@@ -187,12 +188,13 @@ static GPU_TEXCOLOR small_format(const u32* p, u32 n, u32 gxFmt, u32 tlutFmt) {
     bool pal = gxFmt == 8 || gxFmt == 9 || gxFmt == 10;
     if (g_small >= 2 && (gxFmt == 14 || gxFmt == 5 || (pal && tlutFmt == 2)))  // CMPR, RGB5A3, an RGB5A3 palette
         return opaque ? GPU_RGB565 : a1 ? GPU_RGBA5551 : GPU_RGBA4;
+    if (opaque) return GPU_RGB8;  // (24 bits, exact)
     return GPU_RGBA8;
 }
 
 // One level in a small format: rgba (w x h, 0xRRGGBBAA) into W x H tiles at dst (bytes per texel bpp).
 static void upload_level_fmt(u8* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h, GPU_TEXCOLOR f) {
-    u32 bpp = f == GPU_RGBA8 ? 4 : f == GPU_L8 || f == GPU_LA4 ? 1 : 2;
+    u32 bpp = f == GPU_RGBA8 ? 4 : f == GPU_RGB8 ? 3 : f == GPU_L8 || f == GPU_LA4 ? 1 : 2;
     for (u32 y = 0; y < H; y++) {
         const u32* row = rgba + ((H - 1 - y) * h / H) * w;
         u8* tiles = dst + (y >> 3) * (W >> 3) * 64 * bpp;
@@ -202,6 +204,7 @@ static void upload_level_fmt(u8* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 
             u8* o = tiles + ((x >> 3) * 64 + m[x & 7]) * bpp;
             switch (f) {
             case GPU_L8: o[0] = (u8)r; break;
+            case GPU_RGB8: o[0] = (u8)b; o[1] = (u8)gg; o[2] = (u8)r; break;
             case GPU_LA4: o[0] = (u8)(((r >> 4) << 4) | (a >> 4)); break;
             case GPU_LA8: o[0] = (u8)a; o[1] = (u8)r; break;
             case GPU_RGB565: { u16 v = (u16)(((r >> 3) << 11) | ((gg >> 2) << 5) | (b >> 3)); memcpy(o, &v, 2); break; }
@@ -1053,7 +1056,8 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     gx_decode_texture(s->mem1 + e->addr, e->fmt, e->w, e->h, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
     GPU_TEXCOLOR tf = g_small && g_texDiv == 1 ? small_format(g_scratch, n, e->fmt, e->tlutFmt) : GPU_RGBA8;
     g_texFmtCount[tf & 15]++;
-    if (tf != GPU_RGBA8) bytes = W * H * (tf == GPU_L8 || tf == GPU_LA4 ? 1 : 2);
+    if (tf == GPU_RGBA8) g_texRgba8By[e->fmt & 15]++;
+    if (tf != GPU_RGBA8) bytes = W * H * (tf == GPU_RGB8 ? 3 : tf == GPU_L8 || tf == GPU_LA4 ? 1 : 2);
     if (lv > 1) bytes = C3D_TexCalcTotalSize(bytes, (int)lv - 1);
     g_picaStats.texDecodes++;
     g_picaStats.texDecodeBytes += bytes;
@@ -1261,7 +1265,20 @@ static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev*
 }
 
 // Recompiles the TEV program only when a register it depends on changed, and only when the cache does not hold it.
+extern u32 g_gxTevVersion;  // fifo.c bp_write
+static volatile bool g_tevVerWant = true;  // pica_set_tevver (--tevver, --ab tevver)
+void pica_set_tevver(bool on) { g_tevVerWant = on; }
+bool pica_tevver(void) { return g_tevVerWant; }
+static u32 g_tevVerSeen, g_tevFmtsSeen;
+
 static void update_tev(const GXCore* gx) {
+    // Nothing the key reads changed since it was built (no TEV register write that changed a value, the same texture
+    // formats): the program stands. (The formats come from TX_SETIMAGE0, which changes with every texture.)
+    u32 fmts = 0;
+    for (u8 map = 0; map < 8; map++) fmts |= ((gx->bp[0x88 + (map & 3) + (map >= 4 ? 0x20 : 0)] >> 20) & 15u) << (4 * map);
+    if (g_tevVerWant && g.tevValid && g_tevVerSeen == g_gxTevVersion && g_tevFmtsSeen == fmts) return;
+    g_tevVerSeen = g_gxTevVersion;
+    g_tevFmtsSeen = fmts;
     u32 k[72], n = tev_key(gx, k);
     if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
     memcpy(g.tevKey, k, n * 4);

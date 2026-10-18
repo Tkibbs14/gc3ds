@@ -269,6 +269,11 @@ static void efb_copy(System* s, GXCore* gx, u32 ctl) {
     }
 }
 
+// Bumped when a BP register the TEV key reads (tev_pica_key: 0x00, 0x28-0x2F, 0xC0-0xE7, 0xF6-0xFD) changes value, so
+// the PICA backend can skip rebuilding and comparing the 72-word key when none did. Outside GXCore: a save state's
+// layout stays (backends reset their cached TEV on a load, pica_reset).
+u32 g_gxTevVersion;
+
 static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     u32 mask = gx->bpMask;
     if (reg != BP_MASK) gx->bpMask = 0xFFFFFF;
@@ -276,7 +281,11 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     if (nv != gx->bp[reg] || reg == BP_PE_DONE || reg == BP_PE_TOKEN || reg == BP_PE_TOKEN_INT || reg == BP_COPY_EXEC ||
         reg == 0x65)
         merge_break(s, gx);
-    if (nv != gx->bp[reg]) gx->bpVersion++;
+    if (nv != gx->bp[reg]) {
+        gx->bpVersion++;
+        if (reg == 0 || (reg >= 0x28 && reg <= 0x2F) || (reg >= 0xC0 && reg <= 0xE7) || (reg >= 0xF6 && reg <= 0xFD))
+            g_gxTevVersion++;
+    }
     gx->bp[reg] = nv;
     if (gx->bp[reg]) gx->bpNonZero[reg >> 5] |= 1u << (reg & 31);
     if (reg >= 0xE0 && reg <= 0xE7) {

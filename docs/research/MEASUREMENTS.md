@@ -711,6 +711,12 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   palettes, rounded to RGB565, RGBA5551 or RGBA4; RGBA8 sources stay): RGB565 187, RGBA5551 48, RGBA4 46 more; GPU
   55.2 -> 43.5 ms a frame, +0.849 +- 0.020 points (+6.2%)** over 6 phase pairs. Screenshots unchanged at the 3DS's
   resolution. Default level 2.
+- **What is left (job 393, new defaults):** textures at 1/4 size would still take the GPU 43.4 -> 28.0 ms (14.6 -> 15.9%);
+  with tiny textures core 0 still waits ~21% on the GX thread (vertex work ~23%, state ~21% of it). RGB8 for opaque
+  RGBA8 sources (lossless, 24 bits) added: none in this scene (job 394, same +0.89 points as job 392).
+- **TEV key skipped while no TEV register changed (job 395, `--ab tevver`):** a counter bumped by bp_write for the
+  registers tev_pica_key reads (outside GXCore: save states keep their layout): update_tev 41 -> 34 ms/s (TEV registers
+  really change on most batches), **+0.074 +- 0.027 points (+0.5%)**. Exact; default on.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
