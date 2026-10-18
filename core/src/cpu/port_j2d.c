@@ -1000,8 +1000,9 @@ const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::d
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP : -1;
 }
-u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX;  // --port-hooks MASK (bit per PORT_*); drawSelf: Ordon
-// +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493); J3D off until measured
+// --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
+// J3D: Ordon +5.8%, the title cutscene +7.3%, heavy area -0.7 +- 0.4% (jobs 496-498).
+u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP;
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
     return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);

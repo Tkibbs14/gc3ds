@@ -917,6 +917,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   only)**, and **with MSR.FP off the guest's first float instruction takes the FP-unavailable exception (the OS's lazy
   FP switch)**, so a float port is not taken then. Exact: PC 223,652 + 146,753 calls over the title sequence; device
   ~72,000 (Ordon and the heavy area). Only ~209 guest instructions a call, ~3,500 calls a second in Ordon.
+  **Speed (`--ab j3dhook`, jobs 496-498): Ordon +1.46 +- 0.33 (+5.8%), the title cutscene +1.86 +- 0.98 (+7.3%), heavy
+  area -0.13 +- 0.07 (-0.7%).** On by default. (One call stands in for three of the existing stand-ins' calls and the
+  glue between them.)
+- **The heavy area is the GX thread's now (job 499, `--profile on`):** core 0's "dispatch" bucket rose to 10.2% (4.1% in
+  job 451) and Ordon's to 7.9% (job 489): it holds the idle hook's wait for the GX thread to drain (gekko_idle_hook ->
+  sync runs from the dispatcher loop, outside compiled code), i.e. core 0 idling for the GX thread. Every port and
+  gpbulk measured -0.5 to -0.7% there, each within ~2 sigma: core 0's saving turns into waiting. The GX thread's
+  position (job 499): fifo 8%, vprep 8.2%, drawtail 7%, drawcall 6.7%, vwalloc 5.7%, batchkey 5.3%, tex 4.2%, tev 3.7%,
+  copy 3.6%, split 3.2%, idle 7-8% (dec_dlnote and dec_op, ~9% together, are the profile's own decoder statistics:
+  `--profile on` turns gxdiag on).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
