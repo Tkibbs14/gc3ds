@@ -1806,6 +1806,88 @@ static u32 ps_GXSetTevColor(Gekko* g) {  // 24 instructions
 #undef Hr2
 #undef Hr4
 #undef Hd1
+#define FPGATE() (fpin || (FPOK() && (fpin = 1)))
+#define FWB(k) do { fw |= 1u << (k); } while (0)
+#define FWB0(k) do { fw0 |= 1u << (k); } while (0)
+static u32 ps___GXSendFlushPrim(Gekko* g) {  // 34 instructions (direct: stops where an access is not in MEM1)
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r0 = g->gpr[0], r2 = g->gpr[2], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r6 = g->gpr[6], r7 = g->gpr[7];
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ctr = g->ctr;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)
+    const u32 xsz = g_size;
+    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, fw0 = 0, frs = 0, fpin = 0;
+    (void)r0; (void)r2; (void)r3; (void)r4; (void)r5; (void)r6; (void)r7; (void)cr0; (void)ca; (void)spc; (void)fw; (void)fw0; (void)frs; (void)fpin;
+    n++; r3 = BE32(XH(r2 + 0xffffcb80u, 4, 0x8035c834u));
+    n++; r0 = 0x98u;
+    n++; r5 = 0xcc010000u;
+    n++; r6 = BE16(XH(r3 + 0x4u, 2, 0x8035c840u));
+    n++; r4 = 0x0u;
+    n++; r3 = BE16(XH(r3 + 0x6u, 2, 0x8035c848u));
+    n++; r7 = r6 * r3;
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE8(r0);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE16(r6);
+    n++; r3 = r7 + 0x3u;
+    n++; cr0 = CMPU(r7, 0x0u) | xso;
+    n++; r3 = ROTL(r3, 30) & 0x3fffffffu;
+    n++; if (!(cr0 & 4)) goto L_8035c8ac;
+    n++; r0 = ROTL(r3, 29) & 0x1fffffffu; cr0 = CMPS(r0, 0) | xso;
+    n++; ctr = r0;
+    n++; if ((cr0 & 2)) goto L_8035c8a0;
+L_8035c874:;
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; ctr--; if ((ctr != 0)) goto L_8035c874;
+    n++; r3 = r3 & 0x7u; cr0 = CMPS(r3, 0) | xso;
+    n++; if ((cr0 & 2)) goto L_8035c8ac;
+L_8035c8a0:;
+    n++; ctr = r3;
+L_8035c8a4:;
+    n++; if (pn > PIPE_MAX - 8) { PIPE_OUT(); pn = 0; } PIPE32(r4);
+    n++; ctr--; if ((ctr != 0)) goto L_8035c8a4;
+L_8035c8ac:;
+    n++; r3 = BE32(XH(r2 + 0xffffcb80u, 4, 0x8035c8acu));
+    n++; r0 = 0x1u;
+    n++; STW16(XH(r3 + 0x2u, 2, 0x8035c8b4u), r0);
+    n++;
+    PIPE_OUT(); pn = 0;
+    g->gpr[0] = r0;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[6] = r6;
+    g->gpr[7] = r7;
+    g->cr = (g->cr & 0x0fffffffu) | (cr0 << 28);
+    g->ctr = ctr;
+    return n;
+stop:
+    n--;  // (the instruction that stopped did not run)
+    if (!n) return 0;
+    PIPE_OUT(); pn = 0;
+    g->gpr[0] = r0;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[6] = r6;
+    g->gpr[7] = r7;
+    g->cr = (g->cr & 0x0fffffffu) | (cr0 << 28);
+    g->ctr = ctr;
+    g->pc = spc;
+    g_psMid = true;
+    return n;
+}
+#undef FPGATE
+#undef FWB
+#undef FWB0
 static const PsDef g_psDefs[] = {
     { "PSMTXConcat", 0xcc, 0x9421ffc0u, 0x9395f0d5c0fe75d4ull, ps_PSMTXConcat, false, false, true, false },
     { "PSMTXCopy", 0x34, 0xe0030000u, 0x077d9e23e845819bull, ps_PSMTXCopy, false, false, true, false },
@@ -1839,4 +1921,5 @@ static const PsDef g_psDefs[] = {
     { "GXSetArray", 0x44, 0x2c030019u, 0xea9d2c4d8f6dd9aeull, ps_GXSetArray, true, false, false, false },
     { "__GXSetMatrixIndex", 0x84, 0x2c030005u, 0x58db30c7ab5b1833ull, ps___GXSetMatrixIndex, true, false, false, false },
     { "GXSetTevColor", 0x60, 0x5466083cu, 0x49827a2bb28c55aaull, ps_GXSetTevColor, true, false, false, false },
+    { "__GXSendFlushPrim", 0x88, 0x8062cb80u, 0xe90bfbe1d2494d54ull, ps___GXSendFlushPrim, true, false, false, true },
 };
