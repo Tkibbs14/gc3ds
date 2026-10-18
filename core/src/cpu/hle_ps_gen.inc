@@ -974,6 +974,838 @@ stop:
 #undef FPGATE
 #undef FWB
 #undef FWB0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+#define Hx0(o) (hx0 + ((o) - (304)))
+static u32 ps_GXSetTevColorIn(Gekko* g) {  // 17 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r2 = g->gpr[2];
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r5 = g->gpr[5];
+    u32 r6 = g->gpr[6];
+    u32 r7 = g->gpr[7];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + (ROTL(g->gpr[3], 2) & 0xfffffffcu)) + (u32)(304), 4);
+    if (!hx0) return 0;
+    u32 r0, r8, r9, r10;
+    (void)r2; (void)r3; (void)r4; (void)r5; (void)r6; (void)r7; (void)r0; (void)r8; (void)r9; (void)r10;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r9 = BE32(Hr2(-13440));
+    n++; r3 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; r0 = 0x61u;
+    n++; r8 = r9 + r3;
+    n++; r10 = BE32(Hx0(304));
+    n++; r3 = 0xcc010000u;
+    n++; r10 = (ROTL(r4, 12) & 0x0000f000u) | (r10 & 0xffff0fffu);
+    n++; PIPE8(r0);
+    n++; r4 = r10 + 0x0u;
+    n++; r4 = (ROTL(r5, 8) & 0x00000f00u) | (r4 & 0xfffff0ffu);
+    n++; r4 = (ROTL(r6, 4) & 0x000000f0u) | (r4 & 0xffffff0fu);
+    n++; r4 = (ROTL(r7, 0) & 0x0000000fu) | (r4 & 0xfffffff0u);
+    n++; PIPE32(r4);
+    n++; r0 = 0x0u;
+    n++; STW32(Hx0(304), r4);
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[8] = r8; g->gpr[9] = r9; g->gpr[10] = r10; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#undef Hx0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+#define Hx0(o) (hx0 + ((o) - (368)))
+static u32 ps_GXSetTevAlphaIn(Gekko* g) {  // 17 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r2 = g->gpr[2];
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r5 = g->gpr[5];
+    u32 r6 = g->gpr[6];
+    u32 r7 = g->gpr[7];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + (ROTL(g->gpr[3], 2) & 0xfffffffcu)) + (u32)(368), 4);
+    if (!hx0) return 0;
+    u32 r0, r8, r9, r10;
+    (void)r2; (void)r3; (void)r4; (void)r5; (void)r6; (void)r7; (void)r0; (void)r8; (void)r9; (void)r10;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r9 = BE32(Hr2(-13440));
+    n++; r3 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; r0 = 0x61u;
+    n++; r8 = r9 + r3;
+    n++; r10 = BE32(Hx0(368));
+    n++; r3 = 0xcc010000u;
+    n++; r10 = (ROTL(r4, 13) & 0x0000e000u) | (r10 & 0xffff1fffu);
+    n++; PIPE8(r0);
+    n++; r4 = r10 + 0x0u;
+    n++; r4 = (ROTL(r5, 10) & 0x00001c00u) | (r4 & 0xffffe3ffu);
+    n++; r4 = (ROTL(r6, 7) & 0x00000380u) | (r4 & 0xfffffc7fu);
+    n++; r4 = (ROTL(r7, 4) & 0x00000070u) | (r4 & 0xffffff8fu);
+    n++; PIPE32(r4);
+    n++; r0 = 0x0u;
+    n++; STW32(Hx0(368), r4);
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[8] = r8; g->gpr[9] = r9; g->gpr[10] = r10; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#undef Hx0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+#define Hx0(o) (hx0 + ((o) - (304)))
+static u32 ps_GXSetTevColorOp(Gekko* g) {  // 26 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r2 = g->gpr[2];
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r6 = g->gpr[6];
+    u32 r5 = g->gpr[5];
+    u32 r7 = g->gpr[7];
+    u32 r8 = g->gpr[8];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + (ROTL(g->gpr[3], 2) & 0xfffffffcu)) + (u32)(304), 4);
+    if (!hx0) return 0;
+    u32 r0, r9, r10;
+    (void)r2; (void)r3; (void)r4; (void)r6; (void)r5; (void)r7; (void)r8; (void)r0; (void)r9; (void)r10;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r0 = BE32(Hr2(-13440));
+    n++; r9 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; cr0 = CMPS(r4, 0x1u) | xso;
+    n++; r3 = r0 + r9;
+    n++; r3 = BE32(Hx0(304));
+    n++; r3 = (ROTL(r4, 18) & 0x00040000u) | (r3 & 0xfffbffffu);
+    n++; r10 = r3 + 0x0u;
+    n++; if ((cr0 & 4)) goto L_8035f2d8;
+    n++; r10 = (ROTL(r6, 20) & 0x00300000u) | (r10 & 0xffcfffffu);
+    n++; r10 = (ROTL(r5, 16) & 0x00030000u) | (r10 & 0xfffcffffu);
+    n++; goto L_8035f2e4;
+L_8035f2d8:;
+    n++; r0 = 0x3u;
+    n++; r10 = (ROTL(r4, 19) & 0x00300000u) | (r10 & 0xffcfffffu);
+    n++; r10 = (ROTL(r0, 16) & 0x00030000u) | (r10 & 0xfffcffffu);
+L_8035f2e4:;
+    n++; r0 = 0x61u;
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r10 = (ROTL(r7, 19) & 0x00080000u) | (r10 & 0xfff7ffffu);
+    n++; r10 = (ROTL(r8, 22) & 0x00c00000u) | (r10 & 0xff3fffffu);
+    n++; PIPE32(r10);
+    n++; r3 = r4 + r9;
+    n++; r0 = 0x0u;
+    n++; STW32(Hx0(304), r10);
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[9] = r9; g->gpr[10] = r10; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#undef Hx0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+#define Hx0(o) (hx0 + ((o) - (368)))
+static u32 ps_GXSetTevAlphaOp(Gekko* g) {  // 26 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r2 = g->gpr[2];
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r6 = g->gpr[6];
+    u32 r5 = g->gpr[5];
+    u32 r7 = g->gpr[7];
+    u32 r8 = g->gpr[8];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + (ROTL(g->gpr[3], 2) & 0xfffffffcu)) + (u32)(368), 4);
+    if (!hx0) return 0;
+    u32 r0, r9, r10;
+    (void)r2; (void)r3; (void)r4; (void)r6; (void)r5; (void)r7; (void)r8; (void)r0; (void)r9; (void)r10;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r0 = BE32(Hr2(-13440));
+    n++; r9 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; cr0 = CMPS(r4, 0x1u) | xso;
+    n++; r3 = r0 + r9;
+    n++; r3 = BE32(Hx0(368));
+    n++; r3 = (ROTL(r4, 18) & 0x00040000u) | (r3 & 0xfffbffffu);
+    n++; r10 = r3 + 0x0u;
+    n++; if ((cr0 & 4)) goto L_8035f340;
+    n++; r10 = (ROTL(r6, 20) & 0x00300000u) | (r10 & 0xffcfffffu);
+    n++; r10 = (ROTL(r5, 16) & 0x00030000u) | (r10 & 0xfffcffffu);
+    n++; goto L_8035f34c;
+L_8035f340:;
+    n++; r0 = 0x3u;
+    n++; r10 = (ROTL(r4, 19) & 0x00300000u) | (r10 & 0xffcfffffu);
+    n++; r10 = (ROTL(r0, 16) & 0x00030000u) | (r10 & 0xfffcffffu);
+L_8035f34c:;
+    n++; r0 = 0x61u;
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r10 = (ROTL(r7, 19) & 0x00080000u) | (r10 & 0xfff7ffffu);
+    n++; r10 = (ROTL(r8, 22) & 0x00c00000u) | (r10 & 0xff3fffffu);
+    n++; PIPE32(r10);
+    n++; r3 = r4 + r9;
+    n++; r0 = 0x0u;
+    n++; STW32(Hx0(368), r10);
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[9] = r9; g->gpr[10] = r10; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#undef Hx0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hx0(o) (hx0 + ((o) - (1364)))
+#define Hd1(o) (hd1 + ((o) - (2)))
+#define Hx1(o) (hx1 + ((o) - (0)))
+#define Hx2(o) (hx2 + ((o) - (0)))
+#define Hx3(o) (hx3 + ((o) - (0)))
+static u32 ps_GXSetTevOrder(Gekko* g) {  // 103 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r2 = g->gpr[2];
+    u32 r5 = g->gpr[5];
+    u32 r4 = g->gpr[4];
+    u32 r6 = g->gpr[6];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + (ROTL(g->gpr[3], 2) & 0xfffffffcu)) + (u32)(1364), 4);
+    if (!hx0) return 0;
+    u8* const hd1 = region(BE32(Hr2(-13440)) + (u32)(2), 1454);
+    if (!hd1) return 0;
+    u8* const hx1 = region((u32)(BE32(Hr2(-13440)) + 0x598u) + (u32)(0), 4);
+    if (!hx1) return 0;
+    u8* const hx2 = region((u32)(BE32(Hr2(-13440)) + ((ROTL(((u32)((s32)g->gpr[3] >> 1) + (u32)((s32)g->gpr[3] < 0 && (g->gpr[3] & 0x1u) != 0)), 2) & 0xfffffffcu) + 0x100u)) + (u32)(0), 4);
+    if (!hx2) return 0;
+    u8* const hx3 = region((u32)(0x803d2810u + (ROTL(g->gpr[6], 2) & 0xfffffffcu)) + (u32)(0), 4);
+    if (!hx3) return 0;
+    if (Hr2(-13440) < Hx0(1368) && Hr2(-13440) + 4 > Hx0(1364)) return 0;
+    if (Hr2(-13440) < Hx1(4) && Hr2(-13440) + 4 > Hx1(0)) return 0;
+    if (Hr2(-13440) < Hx2(4) && Hr2(-13440) + 4 > Hx2(0)) return 0;
+    if (Hr2(-13440) < Hd1(1456) && Hr2(-13440) + 4 > Hd1(2)) return 0;
+    u32 r0, r7, r8, r9, r10;
+    (void)r3; (void)r2; (void)r5; (void)r4; (void)r6; (void)r0; (void)r7; (void)r8; (void)r9; (void)r10;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = (g->xer >> 29) & 1, n = 0;
+    (void)ca;
+    n++; { u32 v_ = r3; r7 = (u32)((s32)v_ >> 1); ca = (s32)v_ < 0 && (v_ & 0x1u) != 0; }
+    n++; r9 = BE32(Hr2(-13440));
+    n++; r10 = ROTL(r5, 0) & 0xfffffeffu;
+    n++; { u64 t_ = (u64)r7 + ca; r7 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; r0 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; r8 = r9 + r0;
+    n++; r7 = ROTL(r7, 2) & 0xfffffffcu;
+    n++; STW32(Hx0(1364), r5);
+    n++; r7 = r7 + 0x100u;
+    n++; cr0 = CMPU(r10, 0x8u) | xso;
+    n++; r0 = r10 + 0x0u;
+    n++; r7 = r9 + r7;
+    n++; if ((cr0 & 8)) goto L_8035f730;
+    n++; r9 = 0x0u;
+    n++; goto L_8035f734;
+L_8035f730:;
+    n++; r9 = r0 | r0;
+L_8035f734:;
+    n++; cr0 = CMPS(r4, 0x8u) | xso;
+    n++; if ((cr0 & 8)) goto L_8035f760;
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r0 = 0x1u;
+    n++; r0 = (r3 & 0x20) ? 0u : r0 << (r3 & 31);
+    n++; r8 = BE32(Hd1(1432));
+    n++; r10 = r4 + 0x598u;
+    n++; r4 = 0x0u;
+    n++; r0 = r8 & ~ r0;
+    n++; STW32(Hx1(0), r0);
+    n++; goto L_8035f77c;
+L_8035f760:;
+    n++; r8 = BE32(Hr2(-13440));
+    n++; r0 = 0x1u;
+    n++; r0 = (r3 & 0x20) ? 0u : r0 << (r3 & 31);
+    n++; r10 = r8 + 0x598u;
+    n++; r8 = BE32(Hd1(1432));
+    n++; r0 = r8 | r0;
+    n++; STW32(Hx1(0), r0);
+L_8035f77c:;
+    n++; r0 = ROTL(r3, 0) & 0x00000001u; cr0 = CMPS(r0, 0) | xso;
+    n++; if ((cr0 & 2)) goto L_8035f7f4;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r9, 12) & 0x00007000u) | (r0 & 0xffff8fffu);
+    n++; cr0 = CMPS(r6, 0xffu) | xso;
+    n++; STW32(Hx2(0), r0);
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r4, 15) & 0x00038000u) | (r0 & 0xfffc7fffu);
+    n++; STW32(Hx2(0), r0);
+    n++; if (!(cr0 & 2)) goto L_8035f7ac;
+    n++; r3 = 0x7u;
+    n++; goto L_8035f7c0;
+L_8035f7ac:;
+    n++; r3 = 0x803d0000u;
+    n++; r4 = ROTL(r6, 2) & 0xfffffffcu;
+    n++; r0 = r3 + 0x2810u;
+    n++; r3 = r0 + r4;
+    n++; r3 = BE32(Hx3(0));
+L_8035f7c0:;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r3, 19) & 0x00380000u) | (r0 & 0xffc7ffffu);
+    n++; cr0 = CMPS(r5, 0xffu) | xso;
+    n++; STW32(Hx2(0), r0);
+    n++; r3 = 0x0u;
+    n++; if ((cr0 & 2)) goto L_8035f7e4;
+    n++; r0 = ROTL(r5, 0) & 0x00000100u; cr0 = CMPS(r0, 0) | xso;
+    n++; if (!(cr0 & 2)) goto L_8035f7e4;
+    n++; r3 = 0x1u;
+L_8035f7e4:;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r3, 18) & 0x00040000u) | (r0 & 0xfffbffffu);
+    n++; STW32(Hx2(0), r0);
+    n++; goto L_8035f860;
+L_8035f7f4:;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r9, 0) & 0x00000007u) | (r0 & 0xfffffff8u);
+    n++; cr0 = CMPS(r6, 0xffu) | xso;
+    n++; STW32(Hx2(0), r0);
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r4, 3) & 0x00000038u) | (r0 & 0xffffffc7u);
+    n++; STW32(Hx2(0), r0);
+    n++; if (!(cr0 & 2)) goto L_8035f81c;
+    n++; r3 = 0x7u;
+    n++; goto L_8035f830;
+L_8035f81c:;
+    n++; r3 = 0x803d0000u;
+    n++; r4 = ROTL(r6, 2) & 0xfffffffcu;
+    n++; r0 = r3 + 0x2810u;
+    n++; r3 = r0 + r4;
+    n++; r3 = BE32(Hx3(0));
+L_8035f830:;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r3, 7) & 0x00000380u) | (r0 & 0xfffffc7fu);
+    n++; cr0 = CMPS(r5, 0xffu) | xso;
+    n++; STW32(Hx2(0), r0);
+    n++; r3 = 0x0u;
+    n++; if ((cr0 & 2)) goto L_8035f854;
+    n++; r0 = ROTL(r5, 0) & 0x00000100u; cr0 = CMPS(r0, 0) | xso;
+    n++; if (!(cr0 & 2)) goto L_8035f854;
+    n++; r3 = 0x1u;
+L_8035f854:;
+    n++; r0 = BE32(Hx2(0));
+    n++; r0 = (ROTL(r3, 6) & 0x00000040u) | (r0 & 0xffffffbfu);
+    n++; STW32(Hx2(0), r0);
+L_8035f860:;
+    n++; r0 = 0x61u;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x0u;
+    n++; r4 = BE32(Hx2(0));
+    n++; PIPE32(r4);
+    n++; STW16(Hd1(2), r0);
+    n++; r0 = BE32(Hd1(1452));
+    n++; r0 = r0 | 0x1u;
+    n++; STW32(Hd1(1452), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[7] = r7; g->gpr[8] = r8; g->gpr[9] = r9; g->gpr[10] = r10; }
+    return n;
+}
+#undef Hr2
+#undef Hx0
+#undef Hd1
+#undef Hx1
+#undef Hx2
+#undef Hx3
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+#define Hx0(o) (hx0 + ((o) - (0)))
+static u32 ps_GXSetTevSwapMode(Gekko* g) {  // 18 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r2 = g->gpr[2];
+    u32 r4 = g->gpr[4];
+    u32 r5 = g->gpr[5];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + ((ROTL(g->gpr[3], 2) & 0xfffffffcu) + 0x170u)) + (u32)(0), 4);
+    if (!hx0) return 0;
+    u32 r0, r6, r7, r8;
+    (void)r3; (void)r2; (void)r4; (void)r5; (void)r0; (void)r6; (void)r7; (void)r8;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r3 = ROTL(r3, 2) & 0xfffffffcu;
+    n++; r7 = BE32(Hr2(-13440));
+    n++; r8 = r3 + 0x170u;
+    n++; r8 = r7 + r8;
+    n++; r0 = BE32(Hx0(0));
+    n++; r0 = (ROTL(r4, 0) & 0x00000003u) | (r0 & 0xfffffffcu);
+    n++; r3 = 0x61u;
+    n++; STW32(Hx0(0), r0);
+    n++; r4 = 0xcc010000u;
+    n++; r0 = 0x0u;
+    n++; r6 = BE32(Hx0(0));
+    n++; r6 = (ROTL(r5, 2) & 0x0000000cu) | (r6 & 0xfffffff3u);
+    n++; STW32(Hx0(0), r6);
+    n++; PIPE8(r3);
+    n++; r3 = BE32(Hx0(0));
+    n++; PIPE32(r3);
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#undef Hx0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hx0(o) (hx0 + ((o) - (0)))
+#define Hd2(o) (hd2 + ((o) - (2)))
+static u32 ps_GXSetTevKColorSel(Gekko* g) {  // 23 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r2 = g->gpr[2];
+    u32 r4 = g->gpr[4];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + ((ROTL((u32)((s32)g->gpr[3] >> 1), 2) & 0xfffffffcu) + 0x1b0u)) + (u32)(0), 4);
+    if (!hx0) return 0;
+    u8* const hd2 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd2) return 0;
+    if (Hr2(-13440) < Hx0(4) && Hr2(-13440) + 4 > Hx0(0)) return 0;
+    if (Hr2(-13440) < Hd2(4) && Hr2(-13440) + 4 > Hd2(2)) return 0;
+    u32 r0, r5, r6, r7;
+    (void)r3; (void)r2; (void)r4; (void)r0; (void)r5; (void)r6; (void)r7;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; { u32 v_ = r3; r5 = (u32)((s32)v_ >> 1); ca = (s32)v_ < 0 && (v_ & 0x1u) != 0; }
+    n++; r6 = BE32(Hr2(-13440));
+    n++; r0 = ROTL(r3, 0) & 0x00000001u; cr0 = CMPS(r0, 0) | xso;
+    n++; r3 = ROTL(r5, 2) & 0xfffffffcu;
+    n++; r7 = r3 + 0x1b0u;
+    n++; r7 = r6 + r7;
+    n++; if ((cr0 & 2)) goto L_8035f4d0;
+    n++; r0 = BE32(Hx0(0));
+    n++; r0 = (ROTL(r4, 14) & 0x0007c000u) | (r0 & 0xfff83fffu);
+    n++; STW32(Hx0(0), r0);
+    n++; goto L_8035f4dc;
+L_8035f4d0:;
+    n++; r0 = BE32(Hx0(0));
+    n++; r0 = (ROTL(r4, 4) & 0x000001f0u) | (r0 & 0xfffffe0fu);
+    n++; STW32(Hx0(0), r0);
+L_8035f4dc:;
+    n++; r0 = 0x61u;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x0u;
+    n++; r4 = BE32(Hx0(0));
+    n++; PIPE32(r4);
+    n++; STW16(Hd2(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; }
+    return n;
+}
+#undef Hr2
+#undef Hx0
+#undef Hd2
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hx0(o) (hx0 + ((o) - (0)))
+#define Hd2(o) (hd2 + ((o) - (2)))
+static u32 ps_GXSetTevKAlphaSel(Gekko* g) {  // 23 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r2 = g->gpr[2];
+    u32 r4 = g->gpr[4];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hx0 = region((u32)(BE32(Hr2(-13440)) + ((ROTL((u32)((s32)g->gpr[3] >> 1), 2) & 0xfffffffcu) + 0x1b0u)) + (u32)(0), 4);
+    if (!hx0) return 0;
+    u8* const hd2 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd2) return 0;
+    if (Hr2(-13440) < Hx0(4) && Hr2(-13440) + 4 > Hx0(0)) return 0;
+    if (Hr2(-13440) < Hd2(4) && Hr2(-13440) + 4 > Hd2(2)) return 0;
+    u32 r0, r5, r6, r7;
+    (void)r3; (void)r2; (void)r4; (void)r0; (void)r5; (void)r6; (void)r7;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; { u32 v_ = r3; r5 = (u32)((s32)v_ >> 1); ca = (s32)v_ < 0 && (v_ & 0x1u) != 0; }
+    n++; r6 = BE32(Hr2(-13440));
+    n++; r0 = ROTL(r3, 0) & 0x00000001u; cr0 = CMPS(r0, 0) | xso;
+    n++; r3 = ROTL(r5, 2) & 0xfffffffcu;
+    n++; r7 = r3 + 0x1b0u;
+    n++; r7 = r6 + r7;
+    n++; if ((cr0 & 2)) goto L_8035f52c;
+    n++; r0 = BE32(Hx0(0));
+    n++; r0 = (ROTL(r4, 19) & 0x00f80000u) | (r0 & 0xff07ffffu);
+    n++; STW32(Hx0(0), r0);
+    n++; goto L_8035f538;
+L_8035f52c:;
+    n++; r0 = BE32(Hx0(0));
+    n++; r0 = (ROTL(r4, 9) & 0x00003e00u) | (r0 & 0xffffc1ffu);
+    n++; STW32(Hx0(0), r0);
+L_8035f538:;
+    n++; r0 = 0x61u;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x0u;
+    n++; r4 = BE32(Hx0(0));
+    n++; PIPE32(r4);
+    n++; STW16(Hd2(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; }
+    return n;
+}
+#undef Hr2
+#undef Hx0
+#undef Hd2
+#define Hr1(o) (hr1 + ((o) - (11)))
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+static u32 ps_GXSetTevIndirect(Gekko* g) {  // 27 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r1 = g->gpr[1];
+    u32 r4 = g->gpr[4];
+    u32 r31 = g->gpr[31];
+    u32 r5 = g->gpr[5];
+    u32 r6 = g->gpr[6];
+    u32 r2 = g->gpr[2];
+    u32 r7 = g->gpr[7];
+    u32 r8 = g->gpr[8];
+    u32 r9 = g->gpr[9];
+    u32 r3 = g->gpr[3];
+    u32 r10 = g->gpr[10];
+    u8* const hr1 = region(g->gpr[1] + (u32)(11), 5);
+    if (!hr1) return 0;
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u32 r0, r11, r12;
+    (void)r1; (void)r4; (void)r31; (void)r5; (void)r6; (void)r2; (void)r7; (void)r8; (void)r9; (void)r3; (void)r10; (void)r0; (void)r11; (void)r12;
+    u8 stk[64] __attribute__((aligned(4)));  // the frame and the LR save word above it (dead after the call)
+#define STK(i) (stk + 48 + (i))
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; SBE32(STK(-48), g->gpr[1] + 0); /* stwu r1 (the frame: -48) */
+    n++; r0 = 0x0u;
+    n++; r0 = (ROTL(r4, 0) & 0x00000003u) | (r0 & 0xfffffffcu);
+    n++; SBE32(STK(-4), r31);
+    n++; r11 = r0 | r0;
+    n++; r11 = (ROTL(r5, 2) & 0x0000000cu) | (r11 & 0xfffffff3u);
+    n++; r12 = BE32(Hr1(12));
+    n++; r31 = BE8(Hr1(11));
+    n++; r11 = (ROTL(r6, 4) & 0x00000070u) | (r11 & 0xffffff8fu);
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r11 = (ROTL(r12, 7) & 0x00000180u) | (r11 & 0xfffffe7fu);
+    n++; r11 = (ROTL(r7, 9) & 0x00001e00u) | (r11 & 0xffffe1ffu);
+    n++; r11 = (ROTL(r8, 13) & 0x0000e000u) | (r11 & 0xffff1fffu);
+    n++; r11 = (ROTL(r9, 16) & 0x00070000u) | (r11 & 0xfff8ffffu);
+    n++; r11 = (ROTL(r31, 19) & 0x00080000u) | (r11 & 0xfff7ffffu);
+    n++; r0 = 0x61u;
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = r3 + 0x10u;
+    n++; r11 = (ROTL(r10, 20) & 0x00100000u) | (r11 & 0xffefffffu);
+    n++; r11 = (ROTL(r0, 24) & 0xff000000u) | (r11 & 0x00ffffffu);
+    n++; PIPE32(r11);
+    n++; r0 = 0x0u;
+    n++; STW16(Hd0(2), r0);
+    n++; r31 = BE32(STK(-4));
+    n++; /* addi r1 (the frame: 0) */
+    n++;
+    PIPE_OUT();
+    g->gpr[31] = r31;
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[11] = r11; g->gpr[12] = r12; }
+#undef STK
+    return n;
+}
+#undef Hr1
+#undef Hr2
+#undef Hd0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+static u32 ps_GXSetChanCtrl(Gekko* g) {  // 44 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r4 = g->gpr[4];
+    u32 r6 = g->gpr[6];
+    u32 r9 = g->gpr[9];
+    u32 r5 = g->gpr[5];
+    u32 r3 = g->gpr[3];
+    u32 r8 = g->gpr[8];
+    u32 r7 = g->gpr[7];
+    u32 r2 = g->gpr[2];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd0) return 0;
+    u32 r0, r10, r11;
+    (void)r4; (void)r6; (void)r9; (void)r5; (void)r3; (void)r8; (void)r7; (void)r2; (void)r0; (void)r10; (void)r11;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = (g->xer >> 29) & 1, n = 0;
+    (void)ca;
+    n++; r0 = ROTL(r4, 0) & 0x000000ffu;
+    n++; r4 = 0x0u;
+    n++; r4 = (ROTL(r0, 1) & 0x00000002u) | (r4 & 0xfffffffdu);
+    n++; r10 = r4 + 0x0u;
+    n++; r10 = (ROTL(r6, 0) & 0x00000001u) | (r10 & 0xfffffffeu);
+    n++; cr0 = CMPS(r9, 0x0u) | xso;
+    n++; r10 = (ROTL(r5, 6) & 0x00000040u) | (r10 & 0xffffffbfu);
+    n++; r11 = ROTL(r3, 0) & 0x00000003u;
+    n++; if (!(cr0 & 2)) goto L_8035db94;
+    n++; r8 = 0x0u;
+L_8035db94:;
+    n++; { u64 t_ = (u64)(u32)~r9 + 0x2u + 1u; r4 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; { u64 t_ = (u64)r4 + 0xffffffffu; r0 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; { u64 t_ = (u64)(u32)~r0 + r4 + ca; r0 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; r9 = (u32)-(s32)r9;
+    n++; r10 = (ROTL(r8, 7) & 0x00000180u) | (r10 & 0xfffffe7fu);
+    n++; { u64 t_ = (u64)r9 + 0xffffffffu; r6 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; r10 = (ROTL(r0, 9) & 0x00000200u) | (r10 & 0xfffffdffu);
+    n++; { u64 t_ = (u64)(u32)~r6 + r9 + ca; r6 = (u32)t_; ca = (u32)(t_ >> 32); }
+    n++; r10 = (ROTL(r6, 10) & 0x00000400u) | (r10 & 0xfffffbffu);
+    n++; r10 = (ROTL(r7, 2) & 0x0000003cu) | (r10 & 0xffffffc3u);
+    n++; r5 = 0x10u;
+    n++; r4 = 0xcc010000u;
+    n++; PIPE8(r5);
+    n++; r0 = r11 + 0x100eu;
+    n++; r10 = (ROTL(r7, 7) & 0x00007800u) | (r10 & 0xffff87ffu);
+    n++; PIPE32(r0);
+    n++; cr0 = CMPS(r3, 0x4u) | xso;
+    n++; PIPE32(r10);
+    n++; if (!(cr0 & 2)) goto L_8035dbf4;
+    n++; PIPE8(r5);
+    n++; r0 = 0x1010u;
+    n++; PIPE32(r0);
+    n++; PIPE32(r10);
+    n++; goto L_8035dc0c;
+L_8035dbf4:;
+    n++; cr0 = CMPS(r3, 0x5u) | xso;
+    n++; if (!(cr0 & 2)) goto L_8035dc0c;
+    n++; PIPE8(r5);
+    n++; r0 = 0x1011u;
+    n++; PIPE32(r0);
+    n++; PIPE32(r10);
+L_8035dc0c:;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r0 = 0x1u;
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[8] = r8; g->gpr[9] = r9; g->gpr[10] = r10; g->gpr[11] = r11; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+static u32 ps_GXSetArray(Gekko* g) {  // 17 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r5 = g->gpr[5];
+    u32 r0, r6, r7;
+    (void)r3; (void)r4; (void)r5; (void)r0; (void)r6; (void)r7;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; cr0 = CMPS(r3, 0x19u) | xso;
+    n++; if (!(cr0 & 2)) goto L_8035bb34;
+    n++; r3 = 0xau;
+L_8035bb34:;
+    n++; r7 = 0x8u;
+    n++; r3 = r3 + 0xfffffff7u;
+    n++; r6 = 0xcc010000u;
+    n++; PIPE8(r7);
+    n++; r0 = r3 | 0xa0u;
+    n++; r4 = ROTL(r4, 0) & 0x3fffffffu;
+    n++; PIPE8(r0);
+    n++; r3 = r3 | 0xb0u;
+    n++; r0 = ROTL(r5, 0) & 0x000000ffu;
+    n++; PIPE32(r4);
+    n++; PIPE8(r7);
+    n++; PIPE8(r3);
+    n++; PIPE32(r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[6] = r6; g->gpr[7] = r7; }
+    return n;
+}
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hd0(o) (hd0 + ((o) - (2)))
+static u32 ps___GXSetMatrixIndex(Gekko* g) {  // 33 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r2 = g->gpr[2];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hd0 = region(BE32(Hr2(-13440)) + (u32)(2), 134);
+    if (!hd0) return 0;
+    u32 r0, r4, r5;
+    (void)r3; (void)r2; (void)r0; (void)r4; (void)r5;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    const u32 xso = g->xer >> 31;  // XER[SO] into each compare
+    u32 cr0 = (g->cr >> 28) & 15;
+    (void)cr0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; cr0 = CMPS(r3, 0x5u) | xso;
+    n++; if (!(cr0 & 8)) goto L_80360638;
+    n++; r0 = 0x8u;
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x30u;
+    n++; r3 = 0x10u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x1018u;
+    n++; r4 = BE32(Hd0(128));
+    n++; PIPE32(r4);
+    n++; PIPE8(r3);
+    n++; PIPE32(r0);
+    n++; PIPE32(r4);
+    n++; goto L_8036066c;
+L_80360638:;
+    n++; r0 = 0x8u;
+    n++; r4 = BE32(Hr2(-13440));
+    n++; r5 = 0xcc010000u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x40u;
+    n++; r3 = 0x10u;
+    n++; PIPE8(r0);
+    n++; r0 = 0x1019u;
+    n++; r4 = BE32(Hd0(132));
+    n++; PIPE32(r4);
+    n++; PIPE8(r3);
+    n++; PIPE32(r0);
+    n++; PIPE32(r4);
+L_8036066c:;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r0 = 0x1u;
+    n++; STW16(Hd0(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; }
+    return n;
+}
+#undef Hr2
+#undef Hd0
+#define Hr2(o) (hr2 + ((o) - (-13440)))
+#define Hr4(o) (hr4 + ((o) - (0)))
+#define Hd1(o) (hd1 + ((o) - (2)))
+static u32 ps_GXSetTevColor(Gekko* g) {  // 24 instructions
+    if (!g_pipeWrite) return 0;  // (no GP to take the bytes)
+    u32 r3 = g->gpr[3];
+    u32 r4 = g->gpr[4];
+    u32 r2 = g->gpr[2];
+    u8* const hr2 = region(g->gpr[2] + (u32)(-13440), 4);
+    if (!hr2) return 0;
+    u8* const hr4 = region(g->gpr[4] + (u32)(0), 4);
+    if (!hr4) return 0;
+    u8* const hd1 = region(BE32(Hr2(-13440)) + (u32)(2), 2);
+    if (!hd1) return 0;
+    u32 r0, r5, r6, r7, r8;
+    (void)r3; (void)r4; (void)r2; (void)r0; (void)r5; (void)r6; (void)r7; (void)r8;
+    u8 pb[PIPE_MAX];
+    u32 pn = 0;
+    u32 ca = 0, n = 0;
+    (void)ca;
+    n++; r6 = ROTL(r3, 1) & 0xfffffffeu;
+    n++; r8 = BE32(Hr4(0));
+    n++; r4 = r6 + 0xe0u;
+    n++; r3 = BE32(Hr2(-13440));
+    n++; r7 = ROTL(r4, 24) & 0xff000000u;
+    n++; r5 = 0x61u;
+    n++; r4 = 0xcc010000u;
+    n++; r7 = (ROTL(r8, 8) & 0x000000ffu) | (r7 & 0xffffff00u);
+    n++; PIPE8(r5);
+    n++; r7 = (ROTL(r8, 12) & 0x000ff000u) | (r7 & 0xfff00fffu);
+    n++; PIPE32(r7);
+    n++; r6 = r6 + 0xe1u;
+    n++; r6 = ROTL(r6, 24) & 0xff000000u;
+    n++; r6 = (ROTL(r8, 24) & 0x000000ffu) | (r6 & 0xffffff00u);
+    n++; PIPE8(r5);
+    n++; r6 = (ROTL(r8, 28) & 0x000ff000u) | (r6 & 0xfff00fffu);
+    n++; PIPE32(r6);
+    n++; r0 = 0x0u;
+    n++; PIPE8(r5);
+    n++; PIPE32(r6);
+    n++; PIPE8(r5);
+    n++; PIPE32(r6);
+    n++; STW16(Hd1(2), r0);
+    n++;
+    PIPE_OUT();
+    if (g_psNested) { g->gpr[0] = r0; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; }
+    return n;
+}
+#undef Hr2
+#undef Hr4
+#undef Hd1
 static const PsDef g_psDefs[] = {
     { "PSMTXConcat", 0xcc, 0x9421ffc0u, 0x9395f0d5c0fe75d4ull, ps_PSMTXConcat, false, false, true, false },
     { "PSMTXCopy", 0x34, 0xe0030000u, 0x077d9e23e845819bull, ps_PSMTXCopy, false, false, true, false },
@@ -994,4 +1826,17 @@ static const PsDef g_psDefs[] = {
     { "J3DFifoLoadNrmMtxImm3x3", 0x6c, 0x38000010u, 0xd10f9cca0222e80cull, ps_J3DFifoLoadNrmMtxImm3x3, true, false, false, false },
     { "GXLoadLightObjImm", 0x7c, 0x7c800034u, 0xab7271f388ab8c76ull, ps_GXLoadLightObjImm, true, false, true, false },
     { "calcWeightEnvelopeMtx", 0x1f8, 0x9421ff90u, 0x8f049fe618934525ull, ps_calcWeightEnvelopeMtx, false, true, true, true },
+    { "GXSetTevColorIn", 0x44, 0x8122cb80u, 0x58a1609443f9fbe4ull, ps_GXSetTevColorIn, true, false, false, false },
+    { "GXSetTevAlphaIn", 0x44, 0x8122cb80u, 0x43aa8e08b78bc9f3ull, ps_GXSetTevAlphaIn, true, false, false, false },
+    { "GXSetTevColorOp", 0x68, 0x8002cb80u, 0xa746b8174b902396ull, ps_GXSetTevColorOp, true, false, false, false },
+    { "GXSetTevAlphaOp", 0x68, 0x8002cb80u, 0x5a5ad7abc8d59696ull, ps_GXSetTevAlphaOp, true, false, false, false },
+    { "GXSetTevOrder", 0x19c, 0x7c670e70u, 0x16a5384d88626727ull, ps_GXSetTevOrder, true, false, false, false },
+    { "GXSetTevSwapMode", 0x48, 0x5463103au, 0xf17badc31c2ef797ull, ps_GXSetTevSwapMode, true, false, false, false },
+    { "GXSetTevKColorSel", 0x5c, 0x7c650e70u, 0x2dbdf1467b80bc64ull, ps_GXSetTevKColorSel, true, false, false, false },
+    { "GXSetTevKAlphaSel", 0x5c, 0x7c650e70u, 0x7428c34790da64a0ull, ps_GXSetTevKAlphaSel, true, false, false, false },
+    { "GXSetTevIndirect", 0x6c, 0x9421ffd0u, 0xcfe709875e92653dull, ps_GXSetTevIndirect, true, true, false, false },
+    { "GXSetChanCtrl", 0xb0, 0x5480063eu, 0x7e06d32e4d6cee9aull, ps_GXSetChanCtrl, true, false, false, false },
+    { "GXSetArray", 0x44, 0x2c030019u, 0xea9d2c4d8f6dd9aeull, ps_GXSetArray, true, false, false, false },
+    { "__GXSetMatrixIndex", 0x84, 0x2c030005u, 0x58db30c7ab5b1833ull, ps___GXSetMatrixIndex, true, false, false, false },
+    { "GXSetTevColor", 0x60, 0x5466083cu, 0x49827a2bb28c55aaull, ps_GXSetTevColor, true, false, false, false },
 };

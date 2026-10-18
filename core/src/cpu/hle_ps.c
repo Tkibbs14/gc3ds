@@ -260,6 +260,19 @@ void hle_ps_disable(const char* prefixes) {
         }
     }
 }
+// A group of stand-ins on or off (names starting with any of the comma-separated prefixes; --ab psgx): drop compiled
+// code after a change, as for hle_ps_set_enabled.
+void hle_ps_set_group(const char* prefixes, bool on) {
+    for (u32 d = 0; d < NDEF && d < 256; d++) {
+        const char* p = prefixes;
+        while (*p) {
+            const char* e = strchr(p, ',');
+            size_t n = e ? (size_t)(e - p) : strlen(p);
+            if (n && !strncmp(g_psDefs[d].name, p, n)) g_defOff[d] = !on;
+            p += n + (e ? 1 : 0);
+        }
+    }
+}
 bool hle_ps_enabled(void) { return g_on; }
 u32 hle_ps_count(void) { return (u32)NDEF; }
 const char* hle_ps_name(u32 k) { return k < NDEF ? g_psDefs[k].name : "all"; }

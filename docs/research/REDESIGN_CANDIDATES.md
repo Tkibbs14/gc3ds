@@ -327,7 +327,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C21. GX register setters as in-place stand-ins (logged mode)
 
-- **Status:** rejected 2026-10-17 (jobs 321-326); exact on the PC.
+- **Status:** rejected 2026-10-17 (jobs 321-326); exact on the PC. Re-tested without the log (job 375, entry-checked
+  computed ranges in ps_translate.py): -0.7%, still rejected: the call boundary, not the log, is the cost.
 - **What:** GXSetArray, GXSetTevOrder, __GXSetMatrixIndex, the GXSetTev* family, GXSetChanCtrl, GXLoadPosMtxImm,
   GXSetTevIndirect (~9% of the cutscene together, job 311): computed addresses into __GXData, so stores go through a
   log applied at the end.

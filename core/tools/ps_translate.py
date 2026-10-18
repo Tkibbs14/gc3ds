@@ -69,6 +69,9 @@ class St:
         self.stored, self.frame, self.live = False, 0, True
         self.gd, self.cd = set(), set()  # direct mode: GPRs / CR fields written since the last call's sync
         self.fpck = False  # direct mode: the FP state (MSR[FP], RN, HID2, GQR0) checked on every path to here
+        # Static mode: a GPR's value as a C expression of entry values (g->gpr[N] before anything ran), a GPR that is a
+        # checked base plus such an offset (key, expression), and srawi's carry as an expression (for addze).
+        self.expr, self.ptr, self.caex = {}, {}, None
 
     def copy(self):
         s = St()
@@ -78,6 +81,7 @@ class St:
         s.fmust, s.fmay = set(self.fmust), set(self.fmay)
         s.wmust, s.stkw = set(self.wmust), set(self.stkw)
         s.stored, s.frame, s.live = self.stored, self.frame, self.live
+        s.expr, s.ptr, s.caex = dict(self.expr), dict(self.ptr), self.caex
         return s
 
 
@@ -96,6 +100,9 @@ def merge(a, b, path):
     s.stored, s.frame = a.stored or b.stored, a.frame
     s.gd, s.cd = a.gd | b.gd, a.cd | b.cd
     s.fpck = a.fpck and b.fpck
+    s.expr = {k: v for k, v in a.expr.items() if b.expr.get(k) == v}
+    s.ptr = {k: v for k, v in a.ptr.items() if b.ptr.get(k) == v}
+    s.caex = a.caex if a.caex == b.caex else None
     return s
 
 
@@ -146,6 +153,11 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
     st = St()
     pending = {}  # label offset -> St of the branches to it
     access, dsrc = {}, {}
+    # x keys: a checked base (an entry GPR, a constant, a fetched pointer) plus an offset computed from entry values
+    # (__GXData + 4 * stage in the SDK's GX setters), checked at entry as one range. korder: d and x keys as created
+    # (each one's base exists before it). late: d keys fetched after a store, through r2 / r13 (the SDK reloads __GXData
+    # from small data): fetched at entry, which holds when no store of the function overlaps the word (checked at entry).
+    xsrc, korder, late, stores = {}, [], {}, {}
     gpr_in, fpr_in, cr_in, gpr_used = [], [], set(), set()
     flags = {'pipe': False, 'stack': 0, 'ca_in': False, 'lr': False, 'lr_w': False, 'xso': False, 'fsave': False,
              'branch': False, 'logged': False, 'fpu': False}
@@ -180,6 +192,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         st.wmust.add(r)
         st.gd.add(r)
         st.derived.pop(r, None)
+        st.expr.pop(r, None)
+        st.ptr.pop(r, None)
         if const is None:
             st.const.pop(r, None)
         else:
@@ -232,15 +246,53 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             return f'c{st.const[base]:08x}', st.const[base]
         if base in st.derived:
             return st.derived[base], None
+        if base in st.ptr and not direct and not logged:
+            bk, oe = st.ptr[base]
+            if oe == '0':
+                return bk, None  # (an entry GPR's key is its value at entry, whatever the GPR holds now)
+            for k, v in xsrc.items():
+                if v == (bk, oe):
+                    return k, None
+            xk = f'x{len(xsrc)}'
+            xsrc[xk] = (bk, oe)
+            korder.append(xk)
+            return xk, None
         if base in st.wr:
             raise SystemExit(f'{path}: memory through {base} after it changed')
         rd(base)
         return base, None
 
-    def checked(k, off, size):  # a range checked at entry: C for its host address
+    def checked(k, off, size, store=False):  # a range checked at entry: C for its host address
         lo, hi = access.get(k, (off, off + size))
         access[k] = (min(lo, off), max(hi, off + size))
+        if store:
+            lo, hi = stores.get(k, (off, off + size))
+            stores[k] = (min(lo, off), max(hi, off + size))
         return f'H{k}({off})'
+
+    def ex(r):  # r's value as a C expression of entry values, or None
+        if direct or logged:
+            return None
+        if r in st.expr:
+            return st.expr[r]
+        if r in st.const:
+            return f'{st.const[r]:#x}u'
+        if r not in st.wr and r not in ('r1',):
+            return f'g->gpr[{r[1:]}]'
+        return None
+
+    def base_of(r):  # r as a pointer: (key, offset expression), or None; strong: a pointer the code made (not an entry GPR)
+        if direct or logged or r == 'r1':
+            return None, False
+        if r in st.ptr:
+            return st.ptr[r], True
+        if r in st.derived:
+            return (st.derived[r], '0'), True
+        if r in st.const:
+            return (f'c{st.const[r]:08x}', '0'), False
+        if r not in st.wr:
+            return (r, '0'), False
+        return None, False
 
     def addr(base, off, size, store):
         """(kind, C): 'H' a host address checked at entry, 'STK' the private frame, 'PIPE', or (logged mode) 'D' a
@@ -280,7 +332,7 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         k, cv = key_of(base)
         if store:
             st.stored = True
-        return 'H', checked(k, off, size)
+        return 'H', checked(k, off, size, store)
 
     def load(base, off, size):  # C for the loaded value (u32); sign extension is the caller's
         kind, e = addr(base, off, size, False)
@@ -353,19 +405,29 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
                 st.frame += v
                 return f'/* addi r1 (the frame: {st.frame}) */'
             c = st.const.get(rA)
+            (b_, _s), xa = base_of(rA), ex(rA)
             e = f'{rd(rA)} + {v & 0xFFFFFFFF:#x}u'
             wr(rD, None if c is None else c + v)
+            if c is None and b_ is not None:
+                st.ptr[rD] = (b_[0], f'{b_[1]} + {v & 0xFFFFFFFF:#x}u' if b_[1] != '0' else f'{v & 0xFFFFFFFF:#x}u')
+            if c is None and xa is not None:
+                st.expr[rD] = f'({xa} + {v & 0xFFFFFFFF:#x}u)'
             return f'{rD} = {e};'
         if op in (12, 13):  # addic, addic.
+            st.caex = None
             e = rd(rA)
             wr(rD)
             s = f'{{ u64 t_ = (u64){e} + {simm & 0xFFFFFFFF:#x}u; {rD} = (u32)t_; ca = (u32)(t_ >> 32); }}'
             return s + (cmp0(rD) if op == 13 else '')
         if op == 7:
+            xa = ex(rA)
             e = f'{rd(rA)} * (u32){simm}'
             wr(rD)
+            if xa is not None:
+                st.expr[rD] = f'({xa} * (u32){simm})'
             return f'{rD} = {e};'
         if op == 8:  # subfic: ~rA + simm + 1
+            st.caex = None
             e = rd(rA)
             wr(rD)
             return f'{{ u64 t_ = (u64)(u32)~{e} + {simm & 0xFFFFFFFF:#x}u + 1u; {rD} = (u32)t_; ca = (u32)(t_ >> 32); }}'
@@ -390,11 +452,14 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         if op in (20, 21):  # rlwimi, rlwinm
             sh, mb, me = (word >> 11) & 31, (word >> 6) & 31, (word >> 1) & 31
             m = rotl_mask(mb, me)
+            xs = ex(rD) if op == 21 else None
             if op == 21:
                 e = f'ROTL({rd(rD)}, {sh}) & {m:#010x}u'
             else:
                 e = f'(ROTL({rd(rD)}, {sh}) & {m:#010x}u) | ({rd(rA)} & {(~m) & 0xFFFFFFFF:#010x}u)'
             wr(rA)
+            if xs is not None:
+                st.expr[rA] = f'(ROTL({xs}, {sh}) & {m:#010x}u)'
             return f'{rA} = {e};' + (cmp0(rA) if rc else '')
         if op == 19 and direct and ((word >> 1) & 0x3FF) in (257, 129, 289, 225, 33, 449, 417, 193):
             xo = (word >> 1) & 0x3FF
@@ -450,6 +515,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
                 wr(rA)
                 return f'{rA} = {e};' + (cmp0(rA) if rc else '')
             if xo in (24, 536, 792):  # slw, srw, sraw
+                if xo == 792:
+                    st.caex = None
                 s, v = rd(rB), rd(rD)
                 if xo == 24:
                     e = f'({s} & 0x20) ? 0u : {v} << ({s} & 31)'
@@ -464,17 +531,36 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
                         f'ca = (s32)v_ < 0 && (s_ & 32 ? 1 : (v_ & ((1u << s_) - 1u)) != 0); }}') + (cmp0(rA) if rc else '')
             if xo == 824:  # srawi
                 sh = (word >> 11) & 31
+                xs = ex(rD)
                 v = rd(rD)
                 wr(rA)
+                if xs is not None:
+                    st.expr[rA] = f'(u32)((s32){xs} >> {sh})'
+                    st.caex = f'(u32)((s32){xs} < 0 && ({xs} & {(1 << sh) - 1:#x}u) != 0)'
+                else:
+                    st.caex = None
                 mask = (1 << sh) - 1
                 return (f'{{ u32 v_ = {v}; {rA} = (u32)((s32)v_ >> {sh}); ca = (s32)v_ < 0 && (v_ & {mask:#x}u) != 0; }}'
                         + (cmp0(rA) if rc else ''))
             if xo in (266, 40, 235, 104):  # add, subf, mullw, neg
                 if word & (1 << 10):
                     raise SystemExit(f'{path}: an OE form')
+                pa_ = pb_ = xa_ = xb_ = None
+                if xo == 266:
+                    (pa_, sa_), (pb_, sb_) = base_of(rA), base_of(rB)
+                    xa_, xb_ = ex(rA), ex(rB)
                 e = {266: f'{rd(rA)} + {rd(rB)}', 40: f'{rd(rB)} - {rd(rA)}', 235: f'{rd(rA)} * {rd(rB)}',
                      104: f'(u32)-(s32){rd(rA)}'}[xo]
                 wr(rD)
+                if xo == 266:
+                    cand = [(pa_, sa_, xb_), (pb_, sb_, xa_)]
+                    cand.sort(key=lambda t: not t[1])  # a pointer the code made first
+                    for p_, _s, x_ in cand:
+                        if p_ is not None and x_ is not None:
+                            st.ptr[rD] = (p_[0], x_ if p_[1] == '0' else f'{p_[1]} + {x_}')
+                            break
+                    if xa_ is not None and xb_ is not None:
+                        st.expr[rD] = f'({xa_} + {xb_})'
                 return f'{rD} = {e};' + (cmp0(rD) if rc else '')
             if direct and xo in (23, 87, 279, 343):  # lwzx, lbzx, lhzx, lhax
                 size = {23: 4, 87: 1, 279: 2, 343: 2}[xo]
@@ -498,6 +584,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             if xo in (10, 8, 138, 136, 202, 200, 234):  # addc, subfc, adde, subfe, addze, subfze, addme
                 if word & (1 << 10):
                     raise SystemExit(f'{path}: an OE form')
+                xz = ex(rA) if xo == 202 else None
+                cz = st.caex
                 a_, b_ = rd(rA), (rd(rB) if xo in (10, 8, 138, 136) else None)
                 if xo in (138, 136, 202, 200, 234):
                     flags['ca_in'] = True
@@ -505,6 +593,9 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
                      136: f'(u64)(u32)~{a_} + {b_} + ca', 202: f'(u64){a_} + ca', 200: f'(u64)(u32)~{a_} + ca',
                      234: f'(u64){a_} + ca + 0xFFFFFFFFu'}[xo]
                 wr(rD)
+                st.caex = None
+                if xz is not None and cz is not None:
+                    st.expr[rD] = f'({xz} + {cz})'
                 return f'{{ u64 t_ = {e}; {rD} = (u32)t_; ca = (u32)(t_ >> 32); }}' + (cmp0(rD) if rc else '')
             return None
         if direct and op in (33, 35, 41, 43):  # lwzu, lbzu, lhzu, lhau
@@ -531,12 +622,17 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
                 e = f'(u32)(s32)(s16){e}'
             # A pointer it may go through, loaded before any store to RAM from a range checked at entry: fetchable at
             # entry (static mode).
-            fetchable = op == 32 and not logged and not direct and rA != 'r1' and not st.stored
+            fetchable = op == 32 and not logged and not direct and rA != 'r1' and (not st.stored or rA in ('r2', 'r13'))
             k = key_of(rA)[0] if fetchable else None
             wr(rD)
             if fetchable:
-                dk = f'd{len(dsrc)}'
-                dsrc[dk] = (k, simm)
+                dk = next((d for d, v in dsrc.items() if v == (k, simm) and (d in late) == st.stored), None)
+                if dk is None:
+                    dk = f'd{len(dsrc)}'
+                    dsrc[dk] = (k, simm)
+                    korder.append(dk)
+                    if st.stored:
+                        late[dk] = (k, simm)
                 st.derived[rD] = dk
             return f'{rD} = {e};'
         if op in (36, 37, 38, 44):  # stw, stwu, stb, sth
@@ -956,20 +1052,35 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
 
     # ---- entry: range checks, then the pointers fetched through the checked ranges ----
     pre = []
-    order = sorted(k for k in access if k[0] != 'd') + sorted((k for k in access if k[0] == 'd'), key=lambda k: int(k[1:]))
+    for k in korder:  # a fetched pointer only bases x keys: it needs its source checked even when not accessed itself
+        if k[0] == 'x' and xsrc[k][0][0] == 'd' and xsrc[k][0] not in access:
+            access[xsrc[k][0]] = (0, 0)
+    order = sorted(k for k in access if k[0] in 'rc') + [k for k in korder if k in access]
+
+    def val(k):  # a base key's guest value at entry
+        if k[0] == 'r':
+            return f'g->gpr[{k[1:]}]'
+        if k[0] == 'c':
+            return f'0x{k[1:]}u'
+        src, so = dsrc[k]
+        if src not in access:
+            raise SystemExit(f'{path}: {k} from an unchecked base')
+        return f'BE32(H{src}({so}))'
     for k in order:
         lo, hi = access[k]
-        if k[0] == 'r':
-            ea = f'g->gpr[{k[1:]}]'
-        elif k[0] == 'c':
-            ea = f'0x{k[1:]}u'
+        if k[0] == 'x':
+            bk, oe = xsrc[k]
+            ea = f'(u32)({val(bk)} + {oe})'
         else:
-            src, so = dsrc[k]
-            if src not in access:
-                raise SystemExit(f'{path}: {k} from an unchecked base')
-            ea = f'BE32(H{src}({so}))'
+            ea = val(k)
+        if hi == lo:  # (only the base of x keys: its value, no access through it)
+            continue
         pre.append(f'    u8* const h{k} = region({ea} + (u32)({lo}), {hi - lo});')
         pre.append(f'    if (!h{k}) return 0;')
+    for dk, (src, so) in late.items():  # fetched at entry for a load after a store: no store may overlap that word
+        for sk, (slo, shi) in stores.items():
+            pre.append(f'    if (H{src}({so}) < H{sk}({shi}) && H{src}({so}) + 4 > H{sk}({slo})) return 0;')
+    order = [k for k in order if access[k][1] > access[k][0]]
     defs = [f'#define H{k}(o) (h{k} + ((o) - ({access[k][0]})))' for k in order]
     undefs = [f'#undef H{k}' for k in order]
     # FPRs written back (f1, f14-f31) that some path leaves unwritten: their guest value is the starting value.

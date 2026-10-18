@@ -117,6 +117,9 @@ static void present(System* s) {
 }
 
 static u64 prof_clock(void) { return svcGetSystemTick(); }
+// The GX register setters' stand-ins (hle_ps_gen.inc, static mode with computed ranges checked at entry): --ab psgx.
+static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixIndex";
+static bool g_psgxOn = true;
 
 // CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
 // iteration on the ARM11), timed with the system tick. Tells 268 MHz from 804 MHz apart, not more.
@@ -424,6 +427,7 @@ typedef struct {
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
+    bool abPsgx;              // --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
     bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
@@ -489,7 +493,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -601,7 +605,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -950,6 +954,7 @@ static const char* run(const char* path) {
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
+        if (g_opt.abPsgx) { g_psgxOn = false; hle_ps_set_group(kPsGx, false); }  // --ab psgx starts off
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         if (g_pica) pica_set_lean(g_opt.abLean ? 0 : g_opt.lean);  // --ab lean starts off
@@ -1125,6 +1130,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_rawdraw() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_cmdpld() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_rawstate() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_psgxOn ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1175,6 +1181,11 @@ static const char* run(const char* path) {
                 }
                 if (g_opt.abPs && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     hle_ps_set_enabled(!hle_ps_enabled());
+                    jit_invalidate_all(g_jit);
+                }
+                if (g_opt.abPsgx && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    g_psgxOn = !g_psgxOn;
+                    hle_ps_set_group(kPsGx, g_psgxOn);
                     jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abHle && g_jit && g_useJit && g_abGpuPos && perfRows % AB_SECS == 0) {

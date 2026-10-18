@@ -51,6 +51,7 @@ void hle_ps_invalidate(u32 pa);
 bool hle_ps_is_hook(u32 pc);
 void hle_ps_set_enabled(bool on);  // --ab ps / --ps off; drop compiled code after a change
 void hle_ps_disable(const char* prefixes);  // --psoff A,B: stand-ins named A* or B* stay off (set before code compiles)
+void hle_ps_set_group(const char* prefixes, bool on);  // a group on or off at run time (drop compiled code after)
 bool hle_ps_enabled(void);
 u32 hle_ps_run(Gekko* g);
 u32 hle_ps_count(void);            // functions in the table

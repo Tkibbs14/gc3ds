@@ -657,6 +657,15 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   use J2DScreen::draw. Core 0 spends ~3.5x as long building the frame's GX commands as running the game, and the 2D
   UI library is the largest self-contained part of it (this frame has the villager's talk prompt open; the HUD meter
   is always on).
+- **GX register setters as stand-ins without the store log (job 375, `--ab psgx`):** ps_translate.py now tracks values
+  computed from entry registers and bases with such offsets (`x` keys: __GXData + 4 * stage), checks those ranges once
+  at entry, and fetches __GXData again after a store when no store range overlaps the word (checked at entry): 13 GX
+  setters translate in static mode (GXSetTev* x 10, GXSetChanCtrl, GXSetArray, __GXSetMatrixIndex); the 19 existing
+  stand-ins regenerate byte-identical. PC HLE_CHECK, TP fields 900-1500: **4,384,272 calls, 0 differed** (each setter
+  34k-293k calls, 0 refused). Device: **-0.143 +- 0.032 points (-0.7%)** over 8 phase pairs: still slower than the
+  JIT's code. The stand-in call's fixed cost (state checks, arguments from guest state, range checks, the pipe flush
+  call) exceeds what a ~20-instruction function does; with C20 / C21 / C23: per-function native code pays only for
+  large functions. Off (the group is `--ab psgx`).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
