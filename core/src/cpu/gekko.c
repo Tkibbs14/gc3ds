@@ -366,6 +366,26 @@ u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop) {
 
 u64 g_gekkoRuns;
 
+u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why) {
+    GkPriv* p = GKP(g);
+    u32 pc = g->pc, n = 0;
+    *why = 2;
+    while (n < max) {
+        if (pc == retPc && g->gpr[1] == sp) { *why = 0; break; }
+        if ((pc >> GK_BLK_SHIFT) != p->fetchBlk && !fetch_refill(g, pc)) { pc = p->npc; n++; *why = 1; break; }
+        u32 inst = p->fetchHost ? ram_rd32(p->fetchHost, pc & GK_BLK_MASK) : g->bus->fetch(g->bus->ctx, p->fetchPa | (pc & GK_BLK_MASK));
+        p->brk = false;
+        p->curPc = pc;
+        p->npc = pc + 4;
+        gk_prim[inst >> 26](g, inst);
+        pc = p->npc;
+        n++;
+        if (p->brk || p->stopReq) { *why = 1; break; }
+    }
+    g->pc = pc;
+    return n;
+}
+
 u32 gekko_run(Gekko* g, u32 cycles) {
     g_gekkoRuns++;
     GkPriv* p = GKP(g);

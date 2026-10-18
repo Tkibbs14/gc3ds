@@ -847,6 +847,18 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   heavy area +0.420 +- 0.200 points over 5 phases with equal arm means (18.6 / 18.5%), Ordon **-0.017 +- 0.054
   (neutral)**: its cost is the pipe bytes (the same either way), not the stores. Off (`--psflush on`). Each switch of a
   stand-in flushes all compiled code: these A/Bs run ~1.5 points below plain runs in both arms.
+- **Function memoization probe (jobs 454-456, Ordon walk, `--memo ADDR`; memo.c, measurement only):** each call of the
+  hooked function runs in the interpreter with every data access recorded (inputs: words read before written, with
+  their values; outputs: words written above the stack pointer; gather-pipe bytes), compared with the previous call's
+  for the same r3. **J2DScreen::draw (802f8ed4): ~200 calls / 10 s, ~110,000-120,000 instructions, ~3,600-3,900 input
+  words, ~1,500 output words, ~15-16 KB of pipe bytes a call; dMeter2Draw_c::draw (the HUD, 8021151c): ~38 calls / 10 s,
+  ~640,000-710,000 instructions, ~18,000 input words, ~7,900 output words, ~88 KB of pipe bytes a call.** No aborts
+  (no hardware reads, exceptions or overflow). **Hits 0**: of 1,474 misses, all had a floating-point / quantizer
+  register in the key differ (garbage in unused argument registers: the key should hold only registers read), and
+  1,460 had **~11 of the ~3,900 input words changed**: animated floats (126.0, 124.0, 153.0), colours, and words of GX
+  state left by earlier drawing. Verifying the inputs would cost ~30x less than running the call, but a screen's
+  inputs change every frame (some pane animates), so replay at the screen or HUD level never applies; per pane it would
+  need nested recordings split at child calls, coupled to the GX state earlier draws leave. Not pursued.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

@@ -418,6 +418,7 @@ static void zero_line(Gekko* g, u32 ea) {
     u32 pa;
     ea &= ~31u;
     if (!gk_translate(g, ea, true, true, &pa, true)) return;
+    MEMO_NOTE(ea, 32, true);
     if (g->bus->dcbz) {
         g->bus->dcbz(g->bus->ctx, pa);
     } else {

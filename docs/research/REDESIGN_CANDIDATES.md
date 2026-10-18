@@ -410,3 +410,16 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   unchanged), +0.3% at 1.9 SE (job 372) with the calls down by ~45,000/s: a C call costs core 0 only ~50 cycles.
 - **Re-evaluate when:** something makes the remaining pipe traffic expensive again (e.g. a pipe flush per burst), or
   together with other changes to the stubs; the code stays behind the switch.
+
+## C28. Function memoization (record a call's inputs and effects, replay while the inputs hold)
+
+- **Idea (2026-10-18):** a call's effects are fixed by what it reads: record once (input words with values, output
+  words, gather-pipe bytes, result registers), and while every input still holds, apply the effects instead of running
+  it. Exact by construction; general to any game.
+- **Evidence (jobs 454-456, memo.c probe):** the TP HUD (dMeter2Draw_c::draw) is ~700,000 instructions a frame against
+  ~18,000 input words, but its inputs change every frame (~11 animated words in J2DScreen::draw's ~3,900): 0 hits at the
+  screen and HUD level.
+- **Status:** probe built (`--memo ADDR`), replay not built.
+- **Re-evaluate when:** a candidate function with stable inputs shows up (the probe reports hits), or per-pane
+  (nested) recording is designed: the HUD's panes mostly do not change, the screen around them always does.
+

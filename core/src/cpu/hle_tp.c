@@ -18,6 +18,7 @@
 #include <string.h>
 #include "gekko_internal.h"
 #include "hle.h"
+#include "memo.h"
 
 #define PC_ENTRY 0x8007FB48u
 #define PC_NEXT 0x8007FEA4u
@@ -109,6 +110,7 @@ static bool gfskip_guarded(void) {
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
     if (g_gfskipAddr && pc == g_gfskipAddr) return true;
+    if (g_memoAddr && pc == g_memoAddr) return true;
     if (!g_on) return false;
     if (pc != PC_ENTRY && pc != PC_NEXT) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
     return known();
@@ -618,6 +620,7 @@ u32 hle_run(Gekko* g, u32 budget) {
         g_gfskipStats[0]++;
         return 0;  // declined: the renderer runs
     }
+    if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
         u32 n = hle_ps_run(g);  // (first: on the PC it checks the generated GD writers before hle_gd.c's own)

@@ -18,6 +18,7 @@
 #include "../src/gx/gx.h"
 #include "../src/gx/pica/pica.h"
 #include "../src/gx/vfast.h"
+#include "../src/cpu/memo.h"
 #include "../src/jit/jit.h"
 #include "gxthread.h"
 #include "pmu.h"
@@ -467,6 +468,7 @@ typedef struct {
     u32 texdiv; bool abTexdiv;  // --texdiv N (measurement): textures at 1/N size; --ab texdiv: N and 1 (texdiv column)
     bool abGfskip;            // --gfskip ADDR: the game's renderer at ADDR runs every other call (guest frame skip, experiment); --ab gfskip: on and off (gfskip column; starts off)
     bool abSkipfn;            // --skipfn ADDR,..: (measurement) these guest functions return at once; --ab skipfn: on and off (skipfn column; starts off)
+    u32 memo;  // --memo ADDR: function memoization's probe on the function at ADDR (memo.c; measurement only)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
@@ -553,6 +555,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
+        else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }
         else if (!strcmp(a, "--gfskip-guard")) {
             const char* q = v;
@@ -1063,6 +1066,7 @@ static const char* run(const char* path) {
         g_psgxOn = g_opt.psgx && !g_opt.abPsgx;  // off by default (job 375); --ab psgx starts off
         hle_ps_set_group(kPsGx, g_psgxOn);
         g_psflushOn = g_opt.psflush && !g_opt.abPsflush;  // --ab psflush starts off
+        g_memoAddr = g_opt.memo;
         hle_ps_set_group(kPsFlush, g_psflushOn);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
@@ -1448,6 +1452,39 @@ static const char* run(const char* path) {
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
                 }
                 {  // the GX decoder's time by command class (fifo.c, one command in 16)
+                    {  // function memoization's probe (memo.c)
+                        static MemoStats lastM;
+                        MemoStats d = g_memoStats;
+                        u64* a = (u64*)&d; const u64* b = (const u64*)&lastM;
+                        for (u32 q = 0; q < sizeof d / 8; q++) a[q] -= b[q];
+                        lastM = g_memoStats;
+                        if (g_memoAddr) {
+                            double r = d.recorded ? (double)d.recorded : 1.0;
+                            fprintf(g_perf, "# memo 10s (%08lx): %llu calls, %llu recorded, hits %llu misses %llu new %llu; per recorded call "
+                                    "%.0f instructions, %.0f input words, %.0f output words, %.0f pipe bytes; aborts mmio %llu exception %llu long %llu full %llu\n",
+                                    (unsigned long)g_memoAddr, (unsigned long long)d.calls, (unsigned long long)d.recorded,
+                                    (unsigned long long)d.hits, (unsigned long long)d.misses, (unsigned long long)d.firsts,
+                                    (double)d.insns / (d.calls ? (double)d.calls : 1.0), (double)d.reads / r, (double)d.writes / r,
+                                    (double)d.pipe / r, (unsigned long long)d.abort[0], (unsigned long long)d.abort[1],
+                                    (unsigned long long)d.abort[2], (unsigned long long)d.abort[3]);
+                            extern u64 g_memoDiag[16];
+                            extern u32 g_memoDiff[64][3];
+                            fprintf(g_perf, "# memo misses (all time): key regs differ %llu (r1 %llu r2 %llu r3 %llu r4 %llu r5 %llu r6 %llu r7 %llu "
+                                    "r8 %llu r9 %llu r10 %llu r13 %llu fpr/gqr/fpscr/msr %llu), input count differs %llu, words differ %llu "
+                                    "(%.1f words each); words most often different:", (unsigned long long)g_memoDiag[0],
+                                    (unsigned long long)g_memoDiag[4], (unsigned long long)g_memoDiag[5], (unsigned long long)g_memoDiag[6],
+                                    (unsigned long long)g_memoDiag[7], (unsigned long long)g_memoDiag[8], (unsigned long long)g_memoDiag[9],
+                                    (unsigned long long)g_memoDiag[10], (unsigned long long)g_memoDiag[11], (unsigned long long)g_memoDiag[12],
+                                    (unsigned long long)g_memoDiag[13], (unsigned long long)g_memoDiag[14], (unsigned long long)g_memoDiag[15],
+                                    (unsigned long long)g_memoDiag[1], (unsigned long long)g_memoDiag[2],
+                                    g_memoDiag[2] ? (double)g_memoDiag[3] / (double)g_memoDiag[2] : 0.0);
+                            for (int k = 0; k < 64 && g_memoDiff[k][1]; k++)
+                                if (g_memoDiff[k][1] * 4 >= g_memoDiag[2] && g_memoDiag[2])
+                                    fprintf(g_perf, " %08lx x%lu (=%08lx)", (unsigned long)g_memoDiff[k][0], (unsigned long)g_memoDiff[k][1],
+                                            (unsigned long)g_memoDiff[k][2]);
+                            fprintf(g_perf, "\n");
+                        }
+                    }
                     extern u64 g_endWhy[8];
                     static u64 lastE[8];
                     double e[8];

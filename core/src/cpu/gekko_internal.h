@@ -181,6 +181,9 @@ void gk_mtspr(Gekko* g, u32 spr, u32 v);
 u64 gk_timebase(const Gekko* g);
 bool gk_psq_load(Gekko* g, u32 ea, u32 w, u32 idx, u64* p0, u64* p1);   // aot.c
 bool gk_psq_store(Gekko* g, u32 ea, u32 w, u32 idx, u64 v0, u64 v1);
+// Runs instructions in the interpreter from g->pc until the call returns (pc == retPc with r1 == sp), with no hooks,
+// interrupts or idle skips; *why: 0 returned, 1 an exception or a stop, 2 more than max instructions. (memo.c)
+u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why);
 
 // ---- Data memory (gekko_mem.c). Each returns false after raising DSI; the caller must then stop. ----
 bool gk_read_slow(Gekko* g, u32 ea, u32 size, u64* out);
@@ -189,13 +192,20 @@ bool gk_translate(Gekko* g, u32 ea, bool write, bool data, u32* pa, bool raise);
 void gk_map_invalidate(Gekko* g, bool ibat, bool dbat);
 void gk_update_maps(Gekko* g);
 
+// Function memoization's recorder (memo.c): while g_memoRec is set, every data access is noted before it is made.
+extern void* g_memoRec;
+void memo_access(Gekko* g, u32 ea, u32 size, bool write);
+#define MEMO_NOTE(ea, n, w) do { if (__builtin_expect(g_memoRec != 0, 0)) memo_access(g, ea, n, w); } while (0)
+
 static inline bool gk_rd8(Gekko* g, u32 ea, u32* v) {
+    MEMO_NOTE(ea, 1, false);
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     if (h) { *v = ram_rd8(h, ea & GK_BLK_MASK); return true; }
     u64 t; if (!gk_read_slow(g, ea, 1, &t)) return false;
     *v = (u32)t; return true;
 }
 static inline bool gk_rd16(Gekko* g, u32 ea, u32* v) {
+    MEMO_NOTE(ea, 2, false);
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 2) { *v = ram_rd16(h, o); return true; }
@@ -203,6 +213,7 @@ static inline bool gk_rd16(Gekko* g, u32 ea, u32* v) {
     *v = (u32)t; return true;
 }
 static inline bool gk_rd32(Gekko* g, u32 ea, u32* v) {
+    MEMO_NOTE(ea, 4, false);
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 4) { *v = ram_rd32(h, o); return true; }
@@ -210,6 +221,7 @@ static inline bool gk_rd32(Gekko* g, u32 ea, u32* v) {
     *v = (u32)t; return true;
 }
 static inline bool gk_rd64(Gekko* g, u32 ea, u64* v) {
+    MEMO_NOTE(ea, 8, false);
     u8* h = GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 8) { *v = ram_rd64(h, o); return true; }
@@ -223,12 +235,14 @@ extern void (*g_gkStoreHook)(u32 ea, u32 size);  // aot.c's check mode: every st
 #endif
 static inline bool gk_wr8(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 1);
+    MEMO_NOTE(ea, 1, true);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     if (h) { ram_wr8(h, ea & GK_BLK_MASK, v); return true; }
     return gk_write_slow(g, ea, 1, v);
 }
 static inline bool gk_wr16(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 2);
+    MEMO_NOTE(ea, 2, true);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 2) { ram_wr16(h, o, v); return true; }
@@ -236,6 +250,7 @@ static inline bool gk_wr16(Gekko* g, u32 ea, u32 v) {
 }
 static inline bool gk_wr32(Gekko* g, u32 ea, u32 v) {
     GK_STORE_HOOK(ea, 4);
+    MEMO_NOTE(ea, 4, true);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 4) { ram_wr32(h, o, v); return true; }
@@ -243,6 +258,7 @@ static inline bool gk_wr32(Gekko* g, u32 ea, u32 v) {
 }
 static inline bool gk_wr64(Gekko* g, u32 ea, u64 v) {
     GK_STORE_HOOK(ea, 8);
+    MEMO_NOTE(ea, 8, true);
     u8* h = GKP(g)->dmap->whost[ea >> GK_BLK_SHIFT];
     u32 o = ea & GK_BLK_MASK;
     if (h && o <= GK_BLK_SIZE - 8) { ram_wr64(h, o, v); return true; }
