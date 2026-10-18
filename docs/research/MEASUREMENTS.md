@@ -666,6 +666,12 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   JIT's code. The stand-in call's fixed cost (state checks, arguments from guest state, range checks, the pipe flush
   call) exceeds what a ~20-instruction function does; with C20 / C21 / C23: per-function native code pays only for
   large functions. Off (the group is `--ab psgx`).
+- **The HUD's ceiling, and the two limits are balanced (job 376, `--skipfn 8021151C --ab skipfn`, measurement only):**
+  dMeter2Draw_c::draw (the HUD meter, 16.4% of core 0 inclusive, job 374) returning at once: **+1.129 +- 0.041 points
+  (+5.6%)** over 8 phase pairs from 60 s (19.84 -> 21.15%). Core 0's wait for the GX thread **0.93% -> 9.94%**, the GX
+  thread 79.9 -> 85.4% busy: once core 0 is faster the GX thread is the limit within ~6%. A lever on one side alone
+  is capped near that; full speed needs both core 0's and the GX thread's work per frame cut. (The HUD drawn at a
+  lower rate or replayed would be worth at most this +5.6%.)
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

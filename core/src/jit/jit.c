@@ -4064,6 +4064,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
         if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
         u32 inst = ram_rd32(j->ram, ipa);
+        if (jit_skip_on)  // measurement only (--skipfn): this function returns at once
+            for (u32 k = 0; k < 4; k++) if (jit_skip_fn[k] && c->pc == jit_skip_fn[k]) inst = 0x4E800020u;  // blr
         c->count = i + 1 + c->countExtra;
         c->gpc[i] = c->pc;
         c->gpa[i] = ipa;
@@ -5782,6 +5784,11 @@ void jit_set_mem_stamps(Jit* j, void* stamps) {
     jit_fill_fns(j);
     jit_invalidate_all(j);
 }
+
+// Measurement only (--skipfn, --ab skipfn): functions entered at these guest addresses return at once (their first block
+// is a blr), to measure what a subsystem costs core 0 (the HUD's draw: its work is simply not done, so not exact).
+u32 jit_skip_fn[4];
+volatile bool jit_skip_on;
 
 void jit_set_opt(Jit* j, u32 mask) {
     if (GC_SWAPRAM) mask &= ~(u32)OPT_BEFLOAT;  // (its stubs read big-endian RAM in big-endian data mode)

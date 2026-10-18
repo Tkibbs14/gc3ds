@@ -167,6 +167,9 @@ void jit_set_opt(Jit* j, u32 mask);
 // display-list vertex cache. NULL (the default): not tracked. Drops all compiled code.
 void jit_set_mem_stamps(Jit* j, void* stamps);
 u32 jit_opt(const Jit* j);
+// Measurement only: functions at these addresses return at once while jit_skip_on (drop compiled code after a change).
+extern u32 jit_skip_fn[4];
+extern volatile bool jit_skip_on;
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.
 void jit_set_slow_inline(Jit* j, bool on);
 // XER[SO] in CR updates: compares and record forms leave CR bit SO out while XER[SO] has never been seen set (games
