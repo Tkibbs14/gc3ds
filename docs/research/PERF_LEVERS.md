@@ -81,6 +81,9 @@ Parked redesign ideas, with their evidence and when to look again: REDESIGN_CAND
 - **AXI WRAM for hot data:** mapped kernel-only (SOURCED: 3dbrew System Flaws / Memory layout).
 - **Large pages (64 KB / 1 MB) for the JIT buffer:** no user SVC takes a page size (SOURCED: 3dbrew SVC page).
 - **L2C-310 prefetch tuning:** Secure-only register, no reachable SVC (SOURCED: DDI 0246H §3.3.14; 3dbrew SVC).
+  *Corrected 2026-10-18 (job 443): reachable through Luma3DS's physical-memory mirror at VA 0x97E10000 (read and written
+  from user mode); the kernel already enables instruction and data prefetch with offset 1 (prefetch control 74000001).
+  The offset is measured with `--l2pf N --ab l2pf` (MEASUREMENTS.md).*
 - **Vertex texture fetch / per-attribute indices on the PICA:** neither exists (SOURCED: picasso instruction list;
   3dbrew index-buffer register).
 

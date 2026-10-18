@@ -61,6 +61,8 @@ void pica_set_vramtex(bool on);  // textures in VRAM (from the next frame: every
 bool pica_vramtex(void);
 void pica_set_xfb_fcram(bool on);  // the XFBs in FCRAM, leaving their VRAM to textures (next frame)
 extern u64 g_vramTexStats[3];
+void pica_set_split_verts(u32 n);  // arena vertices between early splits (8192)
+u32 pica_split_verts(void);
 void pica_set_deflit(bool on);  // CPU-lit draws' gather and lighting on the vertex worker (next frame)
 bool pica_deflit(void);
 void pica_set_gpudiag(u32 bits);  // measurement only: GPU work taken away (pica.c, g_gpuDiagWant)

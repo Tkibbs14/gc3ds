@@ -40,6 +40,8 @@ void jit_host_sync_icache(void* start, u32 bytes) {
 // stack; it resumes the thread itself (flags, then r0-r15 in one load). Any other abort clears the handler and
 // re-runs the instruction, which then faults the default way. With ram below 0x40000000 - MEM1, every non-MEM1 guest
 // region lands at 0x40000000 or above, which user mode cannot access (3dbrew, "Memory layout"), so nothing is reserved.
+// Except 0x80000000-0xAFFFFFFF: Luma3DS maps physical memory there for everyone (uncached; job 443 read and wrote it),
+// so a guest address that lands there reads unrelated physical memory instead of faulting.
 static u8 g_faultStack[0x2000] __attribute__((aligned(8)));
 void jit_fault_resume(CpuRegisters* r) __attribute__((noreturn));
 __asm__(".text; .arm; .align 2; .global jit_fault_resume; .type jit_fault_resume, %function;"

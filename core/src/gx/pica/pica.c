@@ -1001,7 +1001,10 @@ static void split(u32 transfers) {
 // rest: C3D_FrameBegin waits for everything after the last split, and without these the main scene came after the
 // last EFB copy (2DS, 29a22f7: this thread waited for the GPU 7-14% of the time). Called between batches; keeps queue
 // entries for the frame's copies and clears.
-#define SPLIT_VERTS 8192
+#define SPLIT_VERTS g_splitVerts
+static volatile u32 g_splitVerts = 8192;  // pica_set_split_verts (--splitverts N, --ab splitverts)
+void pica_set_split_verts(u32 n) { g_splitVerts = n >= 1024 && n <= 65536 ? n : 8192; }
+u32 pica_split_verts(void) { return g_splitVerts; }
 static bool g_earlySplit = true;  // pica_set_early_split
 static bool g_indexed = true;     // pica_set_indexed (indexed triangle draws, g.idx)
 void pica_set_indexed(bool on) { g_indexed = on && g.idx; }

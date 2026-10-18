@@ -143,3 +143,47 @@ void fault_probe(FILE* f, const u8* mem1) {
     fprintf(f, "# fault probe: done, handler removed\n");
     fflush(f);
 }
+
+// Luma3DS's physical-memory mirror (k11_extension main.c: PA 0x00000000-0x30000000 at VA | 0x80000000, a supersection
+// of strongly-ordered memory, "rwx for all"): read-only checks, one load each, under the probe's handler (a fault above
+// 0x40000000 has crashed the kernel after a few hundred, so this takes at most a handful). (1) a linear buffer read
+// through the mirror; (2) a store through the mirror read back through the buffer; (3) the New 3DS L2C-310's registers
+// (PA 0x17E10000, 3dbrew "Memory layout"): ID, type, control, auxiliary control, latencies, prefetch and power control.
+void mirror_probe(FILE* f) {
+    if (!f) return;
+    fprintf(f, "# mirror probe: start (a crash here: the mirror is not mapped)\n");
+    fflush(f);
+    threadOnException(handler, g_hstack + sizeof g_hstack, WRITE_DATA_TO_HANDLER_STACK);
+    u32* buf = linearAlloc(64);
+    if (!buf) { fprintf(f, "# mirror probe: no linear memory\n"); threadOnException(NULL, NULL, NULL); return; }
+    buf[0] = 0xC0FFEE11u;
+    buf[1] = 0;
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)buf, 64);
+    u32 pa = osConvertVirtToPhys(buf), h0 = g_hits;
+    u32 v = pa ? fp_load(0x80000000u | pa) : 0;
+    fprintf(f, "# mirror probe: buffer va %08lx pa %08lx; read through %08lx -> %08lx (%s), faults %lu, fsr %08lx\n",
+            (unsigned long)(u32)buf, (unsigned long)pa, (unsigned long)(0x80000000u | pa), (unsigned long)v,
+            v == 0xC0FFEE11u ? "matches" : "differs", (unsigned long)(g_hits - h0), (unsigned long)g_fsr);
+    fflush(f);
+    if (g_hits == h0 && v == 0xC0FFEE11u) {
+        u32 r = fp_store(0x80000000u | (pa + 4), 0x5A5A1234u);
+        svcInvalidateProcessDataCache(CUR_PROCESS_HANDLE, (u32)buf, 64);
+        fprintf(f, "# mirror probe: store through the mirror -> %08lx; buffer word now %08lx (%s)\n", (unsigned long)r,
+                (unsigned long)buf[1], buf[1] == 0x5A5A1234u ? "written" : "not written");
+        static const u16 kRegs[] = { 0x000, 0x004, 0x100, 0x104, 0x108, 0x10C, 0xC00, 0xF40, 0xF60, 0xF80 };
+        static const char* const kNames[] = { "id", "type", "control", "aux", "tag_lat", "data_lat", "filter_start",
+                                              "debug", "prefetch", "power" };
+        fprintf(f, "# mirror probe: L2C-310 at 0x97E10000:");
+        for (u32 i = 0; i < sizeof kRegs / sizeof kRegs[0]; i++) {
+            h0 = g_hits;
+            u32 x = fp_load(0x97E10000u + kRegs[i]);
+            fprintf(f, " %s %08lx%s", kNames[i], (unsigned long)x, g_hits != h0 ? "(fault)" : "");
+            if (g_hits != h0) break;  // (no more faults above 0x40000000)
+        }
+        fprintf(f, "\n");
+    }
+    linearFree(buf);
+    threadOnException(NULL, NULL, NULL);
+    fprintf(f, "# mirror probe: done\n");
+    fflush(f);
+}

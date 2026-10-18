@@ -812,6 +812,18 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   per-draw timers and the worker's per-job timer one draw / job in 64 (scaled by 64): the clock's remaining cost in the
   heavy area **+0.434 +- 0.071 points (16 / 16) then +0.326 +- 0.053 (16 / 64), 1.7%** (job 437: 19.4% on, 19.7% off).
   The profile columns stay (sampled estimates). Earlier A/B verdicts stand (both arms carried the cost).
+- **Early split size (jobs 441-442, `--splitverts N --ab splitverts`, tp_area2):** 24,576 arena vertices between splits
+  **-0.462 +- 0.053 points** (GX thread's GPU wait 10.1 -> 14.3%), 4,096 **-0.824 +- 0.046 points** (more splits, 105 ->
+  123 a second, and a longer GPU wait): 8,192 stays.
+- **Luma3DS's physical-memory mirror is live and user-writable (job 443, `--probe-mirror on`):** Luma's k11_extension
+  (main.c, relocateAndSetupMMU) maps PA 0x00000000-0x30000000 at VA | 0x80000000 as strongly-ordered memory, "rwx for
+  all". A linear buffer (VA 30a09d00, PA 20a09d00) read through VA a0a09d00 matched, a store through it reached the
+  buffer, no fault. The New 3DS L2C-310 (PA 0x17E10000, 3dbrew) reads at VA 0x97E10000: ID 410000c9 (r3p3), control
+  00000001 (enabled), aux 32890000, tag / data latency 111 / 221, **prefetch control 74000001: instruction and data
+  prefetch and double linefill already on, prefetch offset 1**, power 00000000. This corrects two records: the L2C-310's
+  registers are reachable (PERF_LEVERS.md called its prefetch tuning "Secure-only, no reachable SVC"), and user mode
+  can reach VA 0x80000000-0xAFFFFFFF (jit_3ds.c's fault-mode comment says nothing at 0x40000000 and above is user
+  accessible). Guest RAM through the mirror would be uncached: not a lever.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

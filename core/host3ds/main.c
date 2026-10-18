@@ -50,6 +50,7 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
+void mirror_probe(FILE* f);  // faultprobe.c: --probe-mirror (Luma's physical-memory mirror, the L2C-310's registers)
 void jit_bench(Jit* j, System* s, FILE* f);  // jitbench.c: --jit-bench only
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
@@ -117,6 +118,22 @@ static void present(System* s) {
 }
 
 static u64 prof_clock(void) { return svcGetSystemTick(); }
+
+// The New 3DS L2C-310's Prefetch Control Register (PA 0x17E10F60), reached through Luma3DS's physical-memory mirror
+// (VA = PA | 0x80000000, user read/write: job 443 read and wrote it). The kernel leaves 0x74000001: instruction and data
+// prefetch and double linefill on, prefetch offset 1. --l2pf N sets the offset (bits 4:0; 0-7, 15, 23, 31 are valid)
+// for the run; the kernel's value is put back when the run ends (the register is system-wide until a reboot).
+static volatile u32* const g_l2pfReg = (volatile u32*)0x97E10F60u;
+static u32 g_l2pfOrig;  // the value found at the run's start (0: not touched)
+static int l2pf_get(void) { return (int)(*g_l2pfReg & 31); }
+static void l2pf_set(int off) {  // -1: the kernel's offset
+    if (!g_l2pfOrig) return;
+    u32 o = off < 0 ? (g_l2pfOrig & 31) : (u32)off;
+    if (!(o <= 7 || o == 15 || o == 23 || o == 31)) return;
+    *g_l2pfReg = (g_l2pfOrig & ~31u) | o;
+}
+static void l2pf_begin(void);
+static void l2pf_end(void) { if (g_l2pfOrig) { *g_l2pfReg = g_l2pfOrig; g_l2pfOrig = 0; } }
 // The GX register setters' stand-ins (hle_ps_gen.inc, static mode with computed ranges checked at entry): --ab psgx.
 static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixIndex";
 static bool g_psgxOn = true;
@@ -387,6 +404,7 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
+    bool probeMirror;    // --probe-mirror on: Luma's physical-memory mirror and the L2C-310's registers (read only)
     bool jitBench;       // --jit-bench only: JIT microbenchmarks (jitbench.c) after boot, instead of the run
     int timingProbe;     // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots; only: and nothing else
     char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
@@ -431,6 +449,8 @@ typedef struct {
     bool notevver, abTevver;  // --tevver off: update_tev always builds its key; --ab tevver: on and off (tevver column)
     bool mips, abMips;        // --mips on|off, --ab mips: mipmaps from the game's textures (pica.c; mips column; --ab starts off)
     bool vramtex, abVramtex;  // --vramtex on|off (on): textures in VRAM (XFBs in FCRAM); --ab vramtex (vramtex column)
+    int l2pf; bool abL2pf;  // --l2pf N: the L2C-310's prefetch offset (0-7, 15, 23, 31); --ab l2pf: N and the kernel's value
+    u32 splitVerts; bool abSplitverts;  // --splitverts N: arena vertices between early splits; --ab splitverts: N and 8192
     bool abProfclock;  // --ab profclock: the host profile's clock on and off (profclock column; off phases read 0 there)
     bool abGxdiag;  // --ab gxdiag: the decoder's statistics on and off (gxdiag column; measures their cost)
     bool abBlacklit;  // --ab blacklit: black lights left out and kept (blacklit column)
@@ -458,6 +478,13 @@ typedef struct {
     int aotCall, aotAbi, aotPipe;  // --aotcall N, --aotabi 0|1, --aotpipe 0|1 (-1: default); live: set aotcall / aotabi / aotpipe
 } RunOpts;
 static RunOpts g_opt;
+static void l2pf_begin(void) {  // (after g_opt: the run's --l2pf / --ab l2pf)
+    if (g_opt.l2pf <= 0 && !g_opt.abL2pf) return;
+    u32 v = *g_l2pfReg;
+    if ((v & 0xFFFFFFE0u) != 0x74000000u) return;  // not the value the probe found: leave it alone
+    g_l2pfOrig = v;
+    if (!g_opt.abL2pf) l2pf_set(g_opt.l2pf);  // (--ab l2pf starts with the kernel's offset)
+}
 static bool g_relayoutOn;  // the relayout arm (--relayout, --ab relayout)
 
 static u32 scripted_buttons(void) {
@@ -512,7 +539,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -527,6 +554,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--gpudiag")) o->gpudiag = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--deflit")) o->deflit = !strcmp(v, "on");
         else if (!strcmp(a, "--vramtex")) o->vramtex = !strcmp(v, "on");
+        else if (!strcmp(a, "--splitverts")) o->splitVerts = (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--l2pf")) o->l2pf = (int)strtol(v, NULL, 0);
         else if (!strcmp(a, "--shlight")) o->noshlight = !strcmp(v, "off");
         else if (!strcmp(a, "--mips")) o->mips = !strcmp(v, "on");
         else if (!strcmp(a, "--tevver")) o->notevver = !strcmp(v, "off");
@@ -560,6 +589,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
+        else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
         else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
         else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
         else if (!strcmp(a, "--probe-risky")) g_probeRisky = !strcmp(v, "on");  // timingprobe.c: the DMA engine too
@@ -653,7 +683,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -924,6 +954,7 @@ static const char* run(const char* path) {
     }
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
+    if (g_opt.probeMirror) mirror_probe(g_perf);
     if (timing && g_perf) {
         fputs(timing, g_perf);
         fflush(g_perf);
@@ -1013,6 +1044,8 @@ static const char* run(const char* path) {
         if (g_pica) pica_set_xfb_fcram(g_opt.vramtex || g_opt.abVramtex);
         if (g_pica) pica_set_vramtex(g_opt.vramtex && !g_opt.abVramtex);  // --ab vramtex starts off
         g_gxDiag = g_opt.profile && !g_opt.abGxdiag;  // --ab gxdiag starts off
+        if (g_pica) pica_set_split_verts(g_opt.splitVerts && !g_opt.abSplitverts ? g_opt.splitVerts : 8192);
+        l2pf_begin();
         if (g_pica) pica_set_mips(g_opt.mips && !g_opt.abMips);  // --ab mips starts off
         if (g_pica) pica_set_tevver(!g_opt.notevver && !g_opt.abTevver);  // --ab tevver starts off
         if (g_pica) pica_set_smalltex(g_opt.abSmalltex ? 0 : g_opt.smalltex);  // --ab smalltex starts off
@@ -1208,6 +1241,8 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_vramtex() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_gxDiag ? 1 : 0);
                 fprintf(g_perf, ",%d", g_profClock ? 1 : 0);
+                fprintf(g_perf, ",%u", g_pica ? (unsigned)pica_split_verts() : 0u);
+                fprintf(g_perf, ",%d", g_l2pfOrig ? l2pf_get() : -1);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1270,6 +1305,9 @@ static const char* run(const char* path) {
                 if (g_opt.abVramtex && g_pica && perfRows % AB_SECS == 0) pica_set_vramtex(!pica_vramtex());
                 if (g_opt.abGxdiag && perfRows % AB_SECS == 0) g_gxDiag = !g_gxDiag;
                 if (g_opt.abProfclock && perfRows % AB_SECS == 0) g_profClock = g_profClock ? NULL : prof_clock;
+                if (g_opt.abL2pf && g_l2pfOrig && perfRows % AB_SECS == 0) l2pf_set(l2pf_get() == (int)(g_l2pfOrig & 31) ? g_opt.l2pf : -1);
+                if (g_opt.abSplitverts && g_pica && perfRows % AB_SECS == 0)
+                    pica_set_split_verts(pica_split_verts() == 8192 && g_opt.splitVerts ? g_opt.splitVerts : 8192);
                 if (g_opt.abShlight && g_pica && perfRows % AB_SECS == 0) pica_want_shader_light((perfRows / AB_SECS) & 1);
                 if (g_opt.abGpudiag && g_pica && perfRows % AB_SECS == 0) pica_set_gpudiag(pica_gpudiag() ? 0 : g_opt.gpudiag);
                 if (g_opt.abTexdiv && g_pica && perfRows % AB_SECS == 0) pica_set_texdiv(pica_texdiv() > 1 ? 1 : (g_opt.texdiv > 1 ? g_opt.texdiv : 4));
@@ -1793,6 +1831,7 @@ static const char* run(const char* path) {
         }
     }
     g_wdArmed = false;
+    l2pf_end();  // the kernel's L2 prefetch setting back
     if (g_perf) { fclose(g_perf); g_perf = NULL; }
     gxthread_drain();
     if (g_opt.unattended) return result;
