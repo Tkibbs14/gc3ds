@@ -521,8 +521,10 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
 
 static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) {
     u8 op = (u8)rd8(p);
+    g_gxWhere = GW_DECOP;
     if (op >= 0x80 && op < 0xC0) {
         if (avail < 3) return 0;
+        g_gxWhere = GW_DECDRAW;
         u32 count = rd16(p + 1), vat = op & 7, vsize = gx_vertex_size(gx, vat);
         u32 total = 3 + count * vsize;
         if (avail < total) return 0;
@@ -653,6 +655,7 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
             }
             stop = end;
         }
+        g_gxWhere = GW_DECRUN;
         u32 n = exec_one(s, gx, p + off, len - off, inList);
         if (!n) { emu_log(LOG_GX, "display list ends mid-command\n"); return; }
         gx->commands++;

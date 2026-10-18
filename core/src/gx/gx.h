@@ -9,7 +9,7 @@
 // jitsample.c's table. Defined in fifo.c.
 enum { GW_RING, GW_DRAW, GW_DRAWCALL, GW_VWWAIT, GW_VWALLOC, GW_SPLITWAIT, GW_FRAMEBEGIN, GW_FRAMEEND, GW_SPLIT,
        GW_TEX, GW_COPY, GW_SHAPES, GW_FIFO, GW_MERGE, GW_FLUSH, GW_TEVUPD, GW_BATCHKEY, GW_VPREP, GW_VQUEUE, GW_STATE2,
-       GW_DRAWTAIL, GW_DLIST, GW_DECBP, GW_DECXF, GW_DECCP, GW_DECIDX, GW_DECLIST, GW_DECFEED, GW_DECNOTE, GW_N };
+       GW_DRAWTAIL, GW_DLIST, GW_DECBP, GW_DECXF, GW_DECCP, GW_DECIDX, GW_DECLIST, GW_DECFEED, GW_DECNOTE, GW_DECDRAW, GW_DECRUN, GW_DECOP, GW_N };
 extern volatile u8 g_gxWhere;
 extern bool g_gxDiag;  // the decoder's measurement-only statistics (fifo.c; on with --profile on)
 

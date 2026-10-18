@@ -156,7 +156,7 @@ void jitsample_report(FILE* f, const Jit* j) {
         static const char* const kGw[] = { "idle/ring", "draw", "drawcall", "vwwait", "vwalloc", "splitwait", "framebegin",
                                            "frameend", "split", "tex", "copy", "shapes", "fifo", "merge", "flush", "tev",
                                            "batchkey", "vprep", "vqueue", "state2", "drawtail", "dlist", "dec_bp",
-                                           "dec_xf", "dec_cp", "dec_idx", "dec_list", "dec_feed", "dec_dlnote" };
+                                           "dec_xf", "dec_cp", "dec_idx", "dec_list", "dec_feed", "dec_dlnote", "dec_draw", "dec_run", "dec_op" };
         u32 gt = 0;
         for (int k = 0; k < GXW_N; k++) gt += g_gxwN[k];
         fprintf(f, "# gx thread where 10s (%u samples):", (unsigned)gt);
