@@ -427,7 +427,7 @@ typedef struct {
     bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
-    bool abPsgx;              // --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
+    bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
     bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
     bool abInlmem;            // --ab inlmem: OPT_INLMEM on and off (opt column; each switch drops all compiled code)
@@ -498,6 +498,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
+        else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
@@ -954,7 +955,8 @@ static const char* run(const char* path) {
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
-        if (g_opt.abPsgx) { g_psgxOn = false; hle_ps_set_group(kPsGx, false); }  // --ab psgx starts off
+        g_psgxOn = g_opt.psgx && !g_opt.abPsgx;  // off by default (job 375); --ab psgx starts off
+        hle_ps_set_group(kPsGx, g_psgxOn);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         if (g_pica) pica_set_lean(g_opt.abLean ? 0 : g_opt.lean);  // --ab lean starts off
