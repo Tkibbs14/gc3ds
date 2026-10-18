@@ -2363,8 +2363,22 @@ static float efb_s(float x) { return x * SX / TW; }
 static float efb_t(float y) { return y * SY / TH; }
 static float ndc_y(float t) { return FLIP_Y ? 1.0f - 2.0f * t : 2.0f * t - 1.0f; }
 
+// New frames' pacing (perf.csv '# new frames 10s'): the gaps between EFB -> XFB copies in real time, the moment a new
+// picture exists (presents run every field whatever the picture): count, sum, sum of squares (ms), largest.
+double g_xfbGap[4];
+static u64 g_xfbLast;
+
 static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
     g_picaStats.xfbCopies++;
+    {
+        u64 now = svcGetSystemTick();
+        if (g_xfbLast) {
+            double ms = (double)(now - g_xfbLast) * 1000.0 / SYSCLOCK_ARM11;
+            g_xfbGap[0] += 1; g_xfbGap[1] += ms; g_xfbGap[2] += ms * ms;
+            if (ms > g_xfbGap[3]) g_xfbGap[3] = ms;
+        }
+        g_xfbLast = now;
+    }
     PXfb* x = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) if (g.xfb[i].seq && g.xfb[i].addr == dest) x = &g.xfb[i];
     if (!x) for (u32 i = 0; i < MAX_XFB; i++) if (!x || g.xfb[i].seq < x->seq) x = &g.xfb[i];

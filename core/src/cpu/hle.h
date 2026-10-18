@@ -20,6 +20,11 @@ void hle_set_enabled(bool on);
 extern u32 g_gfskipAddr;
 extern volatile bool g_gfskipOn;
 extern u64 g_gfskipStats[2];
+extern u32 g_gfskipEvery;  // one call in this many runs (2: every other)
+extern u32 g_gfskipGuard[4];  // guest bytes that must be zero for a skip (TP: the fade's state)
+typedef struct { u32 ptr, off, val; } GfskipOk;  // the word at *(u32*)ptr + off must equal val for a skip
+extern GfskipOk g_gfskipOk[4];
+extern u64 g_gfskipGuarded;
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

@@ -80,6 +80,31 @@ u32 g_gfskipAddr;
 volatile bool g_gfskipOn;
 u64 g_gfskipStats[2];  // calls run, calls skipped
 static u32 g_gfskipN;
+u32 g_gfskipEvery = 2;  // --gfskip-n: the renderer runs one call in this many
+// --gfskip-guard: guest bytes that must all be zero for a call to be skipped. TP's fade advances inside the renderer
+// (mDoGph_gInf_c::calcFade): skipping calls during a fade left an area transition black for good (James, job 379), so
+// with mFade (0x80450BE6) and the fade colour's alpha (0x80450597) as guards the renderer runs every frame then.
+u32 g_gfskipGuard[4];
+u64 g_gfskipGuarded;  // calls run because a guard byte was set
+// --gfskip-ok: words reached through a pointer that must hold a value for a skip. TP's JUTFader (mDoGph_gInf_c::mFader,
+// a pointer at 0x80450BC8) advances once per rendered frame while the scene change counts game frames: skipping left a
+// fade half done at the area change and finished it late (James, job 382). Only with its mStatus (+4) 1 (faded in,
+// idle) and mEStatus (+0x20) -1 (nothing pending) may a call be skipped.
+GfskipOk g_gfskipOk[4];
+
+static bool gfskip_guarded(void) {
+    if (!g_mem) return true;
+    for (u32 k = 0; k < 4; k++) {
+        u32 a = g_gfskipGuard[k];
+        if (a && a - 0x80000000u < 0x01800000u && ram_rd8(g_mem, a - 0x80000000u)) return true;
+        const GfskipOk* o = &g_gfskipOk[k];
+        if (!o->ptr) continue;
+        if (o->ptr - 0x80000000u >= 0x01800000u - 4) return true;
+        u32 p = ram_rd32(g_mem, o->ptr - 0x80000000u) + o->off;
+        if (p - 0x80000000u >= 0x01800000u - 4 || (p & 3) || ram_rd32(g_mem, p - 0x80000000u) != o->val) return true;
+    }
+    return false;
+}
 
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
@@ -588,7 +613,8 @@ static void sk_after(const Gekko* g) {
 
 u32 hle_run(Gekko* g, u32 budget) {
     if (g_gfskipAddr && g->pc == g_gfskipAddr) {
-        if (g_gfskipOn && (++g_gfskipN & 1)) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr
+        if (g_gfskipOn && gfskip_guarded()) { g_gfskipGuarded++; g_gfskipStats[0]++; return 0; }  // a fade: draw every frame
+        if (g_gfskipOn && (++g_gfskipN % g_gfskipEvery) != 0) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr
         g_gfskipStats[0]++;
         return 0;  // declined: the renderer runs
     }

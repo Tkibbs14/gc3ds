@@ -502,6 +502,20 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }
+        else if (!strcmp(a, "--gfskip-guard")) {
+            const char* q = v;
+            for (int k = 0; k < 4 && *q; k++) { g_gfskipGuard[k] = (u32)strtoul(q, (char**)&q, 16); if (*q == ',') q++; }
+        }
+        else if (!strcmp(a, "--gfskip-ok")) {  // PTR+OFF=VAL,... (hex)
+            const char* q = v;
+            for (int k = 0; k < 4 && *q; k++) {
+                g_gfskipOk[k].ptr = (u32)strtoul(q, (char**)&q, 16);
+                if (*q == '+') g_gfskipOk[k].off = (u32)strtoul(q + 1, (char**)&q, 16);
+                if (*q == '=') g_gfskipOk[k].val = (u32)strtoul(q + 1, (char**)&q, 16);
+                if (*q == ',') q++;
+            }
+        }
+        else if (!strcmp(a, "--gfskip-n")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipEvery = k >= 2 && k <= 8 ? k : 2; }
         else if (!strcmp(a, "--skipfn")) {
             const char* q = v;
             for (int k = 0; k < 4 && *q; k++) { jit_skip_fn[k] = (u32)strtoul(q, (char**)&q, 16); if (*q == ',') q++; }
@@ -1304,12 +1318,21 @@ static const char* run(const char* path) {
                     memcpy(lastRaw, g_rawStats, sizeof lastRaw);
                     memcpy(lastRs, g_rawStateStats, sizeof lastRs);
                 }
+                {  // new frames' pacing (pica.c g_xfbGap): stutter shows as a large spread or largest gap
+                    extern double g_xfbGap[4];
+                    double n = g_xfbGap[0], m = n > 0 ? g_xfbGap[1] / n : 0, v = n > 1 ? g_xfbGap[2] / n - m * m : 0;
+                    fprintf(g_perf, "# new frames 10s: %.1f/s, gap mean %.1f ms, sd %.1f ms, largest %.1f ms\n", n / 10.0, m,
+                            v > 0 ? sqrt(v) : 0.0, g_xfbGap[3]);
+                    memset(g_xfbGap, 0, sizeof g_xfbGap);
+                }
                 if (g_gfskipAddr) {  // game frames: the renderer's calls (run + skipped) per second of real time
                     static u64 lastGf[2];
-                    fprintf(g_perf, "# guest frames 10s: %.1f/s (renderer run %.1f/s, skipped %.1f/s); gfskip %s\n",
+                    static u64 lastGuarded;
+                    fprintf(g_perf, "# guest frames 10s: %.1f/s (renderer run %.1f/s, skipped %.1f/s, guarded %.1f/s); gfskip %s\n",
                             (double)(g_gfskipStats[0] + g_gfskipStats[1] - lastGf[0] - lastGf[1]) / 10.0,
                             (double)(g_gfskipStats[0] - lastGf[0]) / 10.0, (double)(g_gfskipStats[1] - lastGf[1]) / 10.0,
-                            g_gfskipOn ? "on" : "off");
+                            (double)(g_gfskipGuarded - lastGuarded) / 10.0, g_gfskipOn ? "on" : "off");
+                    lastGuarded = g_gfskipGuarded;
                     memcpy(lastGf, g_gfskipStats, sizeof lastGf);
                 }
                         static u64 lastHleRuns, lastHleInsns;

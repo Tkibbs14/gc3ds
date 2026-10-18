@@ -679,6 +679,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   without, ~12.8-13.4 with (+55-65%); frames drawn ~8.2 -> ~6.5/s.** The game runs ~60% faster toward its 30 frames a
   second, at a lower display rate. Visual side effects (effects that copy the previous frame) not yet checked. Off
   by default (needs the game's renderer address); `# guest frames 10s` reports the rates.
+- **Pacing and draw 1 in N (jobs 380-381, `# new frames 10s`: gaps between EFB -> XFB copies):** in Ordon's steady
+  play the gaps are as even with skipping as without (sd 9-21 ms against 12-24 ms): fewer pictures, no added stutter.
+  1 in 2: game frames ~12-13.6/s against ~7.3-8.9, pictures ~6-6.8/s; **1 in 3 (`--gfskip-n 3`): game frames
+  ~14.4-17.4/s, pictures ~4.9-5.8/s**.
+- **Transitions (jobs 379, 382-383, James playing):** skipping broke TP's area change (faded to black, never back):
+  the scene change counts game frames while TP's JUTFader (mDoGph_gInf_c::mFader) advances once per rendered frame. A
+  guard on the mFade byte (job 382) never triggered (TP's transitions use the JUTFader); `--gfskip-ok
+  80450BC8+4=1,80450BC8+20=ffffffff` (skip only while the fader's mStatus is 1, faded in and idle, and mEStatus -1)
+  fixed it (job 383: the transition drew every frame, 7.8 guarded calls/s, and faded correctly). Past the transition
+  (a heavier area): ~6 game frames/s with skipping, speed_pct ~9%; state saved there as tp_area2.state (job 384).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
