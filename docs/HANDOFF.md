@@ -15,6 +15,11 @@
 > - Limits now: Ordon is core 0 (the game's own code, ~56% of it building GX commands); the heavy area is the GX
 >   thread (~92% busy). `--gpudiag 1` (skip EFB copy draws) froze the 2DS: do not run it.
 >
+> - **Next: native library ports** (owner decision 10-18; plan in [research/LIBRARY_PORTS.md](research/LIBRARY_PORTS.md)): J2D first
+>   (J2DPane::draw + J2DPicture), hand-written from the zeldaret/tp decompilation (sparse clone at /root/tpdecomp in WSL).
+>   Since 10-18 evening: 2 MB command buffer (heavy area ~20.0%); memoization probe (`--memo`, C28) showed the HUD's
+>   inputs change every frame.
+>
 > The older notes: the sections below are the 2026-10-10 snapshot and the running log after it (newest at the end);
 > the newest numbers are in [research/MEASUREMENTS.md](research/MEASUREMENTS.md).
 > - The repository is **public** now.
