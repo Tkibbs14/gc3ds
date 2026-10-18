@@ -1,5 +1,6 @@
 // Graphics: command processor (CP) and pixel engine (PE) registers, and the write-gather FIFO input.
 // Milestone 1 only accepts and counts FIFO data; command parsing and rendering come next.
+#include <string.h>
 #include "../sys/system.h"
 
 void gx_reset(System* s) {
@@ -54,14 +55,22 @@ void pe_write16(System* s, u32 off, u16 v) {
 }
 
 // One 32-byte burst reaches the FIFO: mirrored into the CPU-side FIFO in RAM, the write pointer advanced, and the
-// GP executes it.
+// GP executes it. g_gpBulk (--gpbulk, --ab gpbulk): a burst that neither leaves MEM1 nor wraps the FIFO before its
+// last byte is mirrored with one copy, and gp_fifo_write moves whole runs of bytes (the same bytes as the loops).
+bool g_gpBulk = true;  // on: heavy area +3.2%, Ordon +4.5% (jobs 477-478); PC state hash unchanged over 400 fields
 static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
     u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29);
-    for (u32 i = 0; i < 32; i++) {
-        if (wp < PA_MEM1_END) ram_wr8(s->mem1, wp, data[i]);
-        wp++;
+    if (g_gpBulk && !GC_SWAPRAM && wp + 32 <= PA_MEM1_END && (!pi->fifoEnd || wp + 32 <= pi->fifoEnd)) {
+        memcpy(s->mem1 + wp, data, 32);
+        wp += 32;
         if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
+    } else {
+        for (u32 i = 0; i < 32; i++) {
+            if (wp < PA_MEM1_END) ram_wr8(s->mem1, wp, data[i]);
+            wp++;
+            if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
+        }
     }
     pi->fifoWrite = wp | wrap;
     s->gx.bytesReceived += 32;
@@ -77,6 +86,18 @@ void (*gp_capture)(const u8* data, u32 len);
 void gp_fifo_write(System* s, const u8* data, u32 len) {
     if (gp_capture) { gp_capture(data, len); return; }
     GXState* gx = &s->gx;
+    if (g_gpBulk) {
+        while (len) {
+            if (!gx->wgpLen && len >= 32) { gp_burst(s, data); data += 32; len -= 32; continue; }
+            u32 n = 32 - gx->wgpLen < len ? 32 - gx->wgpLen : len;
+            memcpy(gx->wgp + gx->wgpLen, data, n);
+            gx->wgpLen += n;
+            data += n;
+            len -= n;
+            if (gx->wgpLen == 32) { gx->wgpLen = 0; gp_burst(s, gx->wgp); }
+        }
+        return;
+    }
     for (u32 i = 0; i < len; i++) {
         gx->wgp[gx->wgpLen++] = data[i];
         if (gx->wgpLen == 32) { gx->wgpLen = 0; gp_burst(s, gx->wgp); }

@@ -142,6 +142,7 @@ static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixInde
 // in the heavy Ordon area (3.4% of core 0, job 451): its words go to the pipe as one block. --psflush, --ab psflush.
 static const char kPsFlush[] = "__GXSendFlushPrim";
 static bool g_psflushOn;  // off: neutral on the 2DS (jobs 452-453); --psflush on
+extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
 static bool g_psgxOn = true;
 
 // CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
@@ -403,7 +404,7 @@ typedef struct {
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
     bool gxInline;       // --gx inline|thread: GX on the CPU thread instead of core 2
     bool slowInline;     // --slow inline|stub: memory slow paths per site (old) or through the shared stubs
-    int pmuSplit;        // --pmu-split on: performance counters split between compiled code and the rest (# pmu split); hle: the ShdwDraw stand-in; fast: its fast cells; empty: a bracket around nothing there (the bracket's own cost)
+    int pmuSplit;        // --pmu-split on: performance counters split between compiled code and the rest (# pmu split); hle: the ShdwDraw stand-in; fast: its fast cells; empty: a bracket around nothing there (the bracket's own cost); port / portcommit: the J2D port building its context / committing it
     bool profile;        // --profile on: blocks store their start for the sampler (# hot guest code); one store per block
     struct { u32 from, to; u32 bits; } press[48];  // --press A@200-206,START@900-905: buttons held over field ranges
     u32 nPress;          // (fields counted from the run's start, as gcemu's --press counts from boot)
@@ -470,10 +471,11 @@ typedef struct {
     bool abGfskip;            // --gfskip ADDR: the game's renderer at ADDR runs every other call (guest frame skip, experiment); --ab gfskip: on and off (gfskip column; starts off)
     bool abSkipfn;            // --skipfn ADDR,..: (measurement) these guest functions return at once; --ab skipfn: on and off (skipfn column; starts off)
     u32 memo;  // --memo ADDR: function memoization's probe on the function at ADDR (memo.c; measurement only)
-    int port;     // --port off|on|check|plant: the native J2D material port (port_j2d.c; check: each call compared with the
+    int port;     // --port off|on|check|plant (on): the native J2D material port (port_j2d.c; check: each call compared with the
                   // interpreter, whose result is kept; plant: check with one pipe bit flipped in the port, which must be reported)
     bool abPort;  // --ab port: the port on and off (hle column bit 4)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
+    bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
     bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
@@ -523,6 +525,8 @@ static void opts_default(RunOpts* o) {
     o->deflit = true;    // CPU-lit draws on the vertex worker: heavy area +6.8%, Ordon +0.7% (jobs 409-410)
     o->noshlight = true; // lighting on the CPU (worker), not the vertex shader: heavy area GPU 43.6 -> 27.1 ms, +2.9%; Ordon +0.35% (jobs 412, 415)
     o->vramtex = true;   // textures in VRAM (XFBs to FCRAM): heavy area GPU 33.8 -> 14.4 ms, +12%; Ordon +0.4% (jobs 424-425)
+    o->gpbulk = true;    // pipe bursts with one copy (hw/gx.c): heavy area +3.2%, Ordon +4.5% (jobs 477-478), byte-identical
+    o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
     o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
@@ -552,14 +556,16 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
+        else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
+        else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port")) o->port = !strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0;
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }
         else if (!strcmp(a, "--gfskip-guard")) {
@@ -603,7 +609,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
-        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : 0;
+        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : !strcmp(v, "port") ? 5 : !strcmp(v, "portcommit") ? 6 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
@@ -700,7 +706,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -1011,6 +1017,12 @@ static const char* run(const char* path) {
         hle_shdw_fast_begin_hook = g_opt.pmuSplit == 3 ? pmu_split_begin : g_opt.pmuSplit == 4 ? pmu_split_empty : NULL;
         hle_shdw_fast_end_hook = g_opt.pmuSplit == 3 ? pmu_split_end : NULL;
         if (g_opt.pmuSplit == 3) pmu_split_what("ShdwDraw's fast cells");
+        g_portPmuBegin = g_opt.pmuSplit == 5 ? pmu_split_begin : NULL;
+        g_portPmuEnd = g_opt.pmuSplit == 5 ? pmu_split_end : NULL;
+        g_portCommitBegin = g_opt.pmuSplit == 6 ? pmu_split_begin : NULL;
+        g_portCommitEnd = g_opt.pmuSplit == 6 ? pmu_split_end : NULL;
+        if (g_opt.pmuSplit == 5) pmu_split_what("the J2D port building its context");
+        if (g_opt.pmuSplit == 6) pmu_split_what("the J2D port committing");
         if (g_opt.pmuSplit == 4) pmu_split_what("an empty bracket where the fast cells run");
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);
@@ -1072,6 +1084,7 @@ static const char* run(const char* path) {
         g_psgxOn = g_opt.psgx && !g_opt.abPsgx;  // off by default (job 375); --ab psgx starts off
         hle_ps_set_group(kPsGx, g_psgxOn);
         g_psflushOn = g_opt.psflush && !g_opt.abPsflush;  // --ab psflush starts off
+        g_gpBulk = g_opt.gpbulk && !g_opt.abGpbulk;  // --ab gpbulk starts off
         g_memoAddr = g_opt.memo;
         hle_ps_set_group(kPsFlush, g_psflushOn);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
@@ -1269,6 +1282,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_qbig() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_cmdbuf_big() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_psflushOn ? 1 : 0);
+                fprintf(g_perf, ",%d", g_gpBulk ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1347,6 +1361,7 @@ static const char* run(const char* path) {
                     jit_skip_on = !jit_skip_on;
                     jit_invalidate_all(g_jit);
                 }
+                if (g_opt.abGpbulk && perfRows % AB_SECS == 0) g_gpBulk = !g_gpBulk;  // (read per burst: no code to drop)
                 if (g_opt.abPsflush && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     g_psflushOn = !g_psflushOn;
                     hle_ps_set_group(kPsFlush, g_psflushOn);
@@ -1471,6 +1486,18 @@ static const char* run(const char* path) {
                                 (double)(p.pipe - lastP.pipe) / (double)((p.calls + p.checked - lastP.calls - lastP.checked) ? (p.calls + p.checked - lastP.calls - lastP.checked) : 1),
                                 (unsigned long long)p.bad);
                         if (p.badHash) fprintf(g_perf, "; OFF: the code at %08lx differs from the ported", (unsigned long)p.badHash);
+                        if (p.timed != lastP.timed)
+                            fprintf(g_perf, "; us per call: building %.2f, committing %.2f", (double)(p.tRun - lastP.tRun) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed),
+                                    (double)(p.tCommit - lastP.tCommit) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed));
+                        if (p.timed != lastP.timed) {
+                            fprintf(g_perf, " (set-up, colour, texgens, TEV textures, TEV stages, indirect + PE:");
+                            for (int q = 0; q < 6; q++)
+                                fprintf(g_perf, " %.2f", (double)(p.tSub[q] - lastP.tSub[q]) / SYSCLOCK_ARM11 * 1e6 / (double)(p.timed - lastP.timed));
+                            fprintf(g_perf, ")");
+                        }
+                        if (p.checked)
+                            fprintf(g_perf, "; instructions per call: interpreter %.1f, port's estimate %.1f", (double)p.insReal / (double)p.checked,
+                                    (double)p.insEst / (double)p.checked);
                         fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, tev block %08lx, texgens, indirect):",
                                 (unsigned long)p.otherTev);
                         for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(p.refusedBy[q] - lastP.refusedBy[q]));

@@ -864,6 +864,39 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   inputs change every frame (some pane animates), so replay at the screen or HUD level never applies; per pane it would
   need nested recordings split at child calls, coupled to the GX state earlier draws leave. Not pursued.
 
+### The first library port, J2DMaterial::setGX, and pipe bursts with one copy (jobs 457-480, device, 2026-10-18)
+
+- **The port (core/src/cpu/port_j2d.c, `--port off|on|check|plant`):** J2DMaterial::setGX with its colour, texgen,
+  TevBlock2, indirect and PE blocks, JUTTexture / JUTPalette loads and the 42 GX SDK functions they reach, as one native
+  call: __GXData's words loaded at first touch, pipe bytes in one buffer, texture-object stores logged, everything
+  committed at the end; anything else (another TEV block type, indirect stages, a non-default region callback) is
+  refused before the commit and the guest code runs. Code hashes of all 47 guest functions and tables gate it.
+- **Exactness, on the device (`--port check`: each call run by the port without committing, then by the interpreter
+  for real, its stores and pipe bytes recorded and compared, registers too):** job 459 heavy area ~45,000 calls, job
+  463 heavy area (palettes ported) ~47,000, job 464 Ordon walk ~105,000, job 474 (-Os build) **0 differed**, 0 refused
+  after the palette path. **The checker is not blind: `--port plant` (one pipe bit flipped in the port, job 460)
+  flagged every call, at the flipped byte (the last of 419).** The title screen (job 465) uses J2DTevBlock16
+  (802f132c): refused, guest code. Interpreter: **1,920 guest instructions a call** (job 470); the port's timing
+  estimate was 1,510.
+- **Speed (`--ab port`, phase-paired, each switch drops all compiled code):** heavy area **+0.42 +- 0.03** (job 461,
+  6 phases from 20 s), **+0.32 +- 0.09 (+1.7%)** (job 467), **+0.30 +- 0.08 (+1.6%)** (job 475); Ordon **-0.05 +- 0.05**
+  (job 462), **+0.10 +- 0.04 (+0.5%)** (job 468), **+0.11 +- 0.05 (+0.5%)** (job 476). In Ordon core 0's guest-CPU time
+  falls 2.7-4.8% with the port on (cpu_pct) for a smaller speed gain. On by default.
+- **Why so little: the port costs nearly what the guest code does.** Timed one call in 16 (job 471): **~40 us building,
+  ~20 us committing** (~1,300 calls a second in Ordon: ~8% of core 0, the hook's block 8.1-8.4% of samples in job 466).
+  PMU split around each half (jobs 479-480, less the bracket's ~1,140 cycles): **building ~35,600 cycles, ~16,300 ARM
+  instructions, ~10,100 data-stall and ~4,200 instruction-stall cycles; committing ~17,500 cycles, ~10,500
+  instructions.** The work matches the JIT's translation of the same 1,920 guest instructions (per-byte pipe writes, a
+  checked read per field, the SDK's bookkeeping kept word for word), so a port that copies the SDK step by step is not
+  structurally cheaper. -Os (code 24.5 -> 10.6 KB) did not help (job 473: 46 / 20 us): not instruction-cache bound.
+  Parts (job 472, `--port-parts on`, each with ~1.2 us of clock read): set-up 1.3, colour 4.2, texgens 5.6, TEV
+  textures 7.2, TEV stages 20.1, indirect + PE 3.7 us.
+- **The commit's cost was the pipe path every game uses:** `gp_burst` mirrored each 32-byte burst into the FIFO in RAM
+  byte by byte with a wrap test per byte, and `gp_fifo_write` moved bytes one at a time. **One copy per burst when it
+  neither leaves MEM1 nor wraps before its last byte, and whole runs in gp_fifo_write (`--gpbulk`, hw/gx.c): PC state
+  hash unchanged over 400 fields and 62.7 MB of pipe bytes; heavy area +0.64 +- 0.03 points (+3.2%), Ordon +1.07 +-
+  0.03 (+4.5%), 9 phases each (jobs 477-478), the GX thread 6-10% busier.** On by default.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

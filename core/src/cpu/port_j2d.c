@@ -1,14 +1,17 @@
 // Native library ports (docs/research/LIBRARY_PORTS.md): JSystem J2D's material set-up (J2DMaterial::setGX) with the
 // Dolphin GX SDK functions it reaches, as one native call. The guest code makes ~30-100 small SDK calls per pane, each
 // a call and return around a few bit inserts into the SDK's shadow state (__GXData) and a register write to the gather
-// pipe; here they share one context: __GXData copied in once, the pipe bytes collected in one buffer, the other stores
-// (texture objects and cache regions) logged, all committed at the end. Anything not handled (another block type, a
-// palette texture, a callback that is not the SDK's default, an address outside MEM1) gives up before the commit and
+// pipe; here they share one context: __GXData's words loaded at first touch, the pipe bytes collected in one buffer,
+// the other stores (texture objects) logged, all committed at the end. Anything not handled (another TEV block type,
+// indirect stages, a callback that is not the SDK's default, an address outside MEM1) gives up before the commit and
 // the guest code runs instead.
 //   Each function follows the game's machine code (Twilight Princess, GZ2E01: addresses below), so integer results are
 // exact; the code bytes of every guest function this replaces are hashed at first use and the port stays off unless
 // they all match. Check mode (--port check; PORT_CHECK=1 on the PC) runs the guest code in the interpreter after each
 // port call and compares every word it wrote above the stack pointer, the pipe bytes and the registers the ABI keeps.
+// Compiled for size: one call runs through every setter once, so its time is the instruction fetch of its code (each
+// setter ~0.7 us at -O2 with the whole path ~20 KB, past the 16 KB L1 I-cache: job 472).
+#pragma GCC optimize("Os")
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,7 @@ void port_set_memory(u8* mem1, u32 size) {
 }
 void port_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx) { g_ppipe = write; g_pctx = ctx; }
 PortStats g_portStats;
+void (*g_portPmuBegin)(void), (*g_portPmuEnd)(void), (*g_portCommitBegin)(void), (*g_portCommitEnd)(void);
 
 // ---- the guest functions (GZ2E01) ----
 enum {
@@ -73,8 +77,11 @@ static bool port_valid(void) {
 typedef struct {
     Gekko* g;
     u32 gxd;               // __GXData's guest address
-    u32 gx[GXD_BYTES / 4]; // its words (working copy) and as found
+    u32 gx[GXD_BYTES / 4]; // its words the call touches (working copy) and as found: loaded at first touch (gxw)
     u32 gx0[GXD_BYTES / 4];
+    u8 have[GXD_BYTES / 4];
+    u16 touched[GXD_BYTES / 4];
+    u32 nt;
     u8 pipe[PIPE_CAP];
     u32 pn;
     u32 log[LOG_MAX][2];   // other stores: address, value (in order; reads see the newest)
@@ -83,14 +90,22 @@ typedef struct {
     u32 fail;              // why it gives up (the first reason; PortStats.refusedBy)
 } Pc;
 
-// Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 palette / TLUT, 5 TEV block type,
+// Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
 // 6 texgens, 7 indirect stages; 0 the set-up.
 static inline void give_up(Pc* c, u32 why) { if (!c->fail) c->fail = why; }
 static inline bool in_mem1(u32 a, u32 len) { return a >= 0x80000000u && a - 0x80000000u + len <= g_psz; }
+static inline u32* gxw(Pc* c, u32 i) {
+    if (!c->have[i]) {
+        c->have[i] = 1;
+        c->gx[i] = c->gx0[i] = ram_rd32(g_pm, c->gxd - 0x80000000u + 4 * i);
+        c->touched[c->nt++] = (u16)i;
+    }
+    return &c->gx[i];
+}
 static u32 rd8(Pc* c, u32 a);
 static u32 rd32(Pc* c, u32 a) {
     if (a & 3) return rd8(c, a) << 24 | rd8(c, a + 1) << 16 | rd8(c, a + 2) << 8 | rd8(c, a + 3);  // (lwz at J2DTevBlock2 + 18)
-    if (a - c->gxd < GXD_BYTES) return c->gx[(a - c->gxd) >> 2];
+    if (a - c->gxd < GXD_BYTES) return *gxw(c, (a - c->gxd) >> 2);
     for (u32 i = c->nlog; i-- > 0;) if (c->log[i][0] == a) return c->log[i][1];
     if (!in_mem1(a, 4)) { give_up(c, 1); return 0; }
     return ram_rd32(g_pm, a - 0x80000000u);
@@ -101,14 +116,14 @@ static u32 rd16(Pc* c, u32 a) {
     return (rd32(c, a & ~3u) >> (a & 2 ? 0 : 16)) & 0xFFFF;
 }
 static void wr32(Pc* c, u32 a, u32 v) {
-    if (a - c->gxd < GXD_BYTES && !(a & 3)) { c->gx[(a - c->gxd) >> 2] = v; return; }
+    if (a - c->gxd < GXD_BYTES && !(a & 3)) { *gxw(c, (a - c->gxd) >> 2) = v; return; }
     if ((a & 3) || !in_mem1(a, 4) || c->nlog >= LOG_MAX) { give_up(c, 1); return; }
     c->log[c->nlog][0] = a;
     c->log[c->nlog][1] = v;
     c->nlog++;
 }
 // __GXData fields by offset.
-#define GX(off) (c->gx[(off) >> 2])
+#define GX(off) (*gxw(c, (off) >> 2))
 static inline void bp_sent_not(Pc* c, u32 v) { GX(0) = (GX(0) & 0xFFFF0000u) | (v & 0xFFFF); }  // sth at +2
 #define DIRTY 1452
 static inline void p8(Pc* c, u32 v) { if (c->pn < PIPE_CAP) c->pipe[c->pn++] = (u8)v; else give_up(c, 1); }
@@ -429,11 +444,44 @@ static void gx_load_tex_obj(Pc* c, u32 obj, u32 id) {  // GXLoadTexObj 0x8035E41
     c->n += 110;
 }
 
+static void gx_flush_texture_state(Pc* c) {  // __GXFlushTextureState 0x8035F174
+    bp(c, GX(292));
+    bp_sent_not(c, 0);
+    c->n += 9;
+}
+static void gx_load_tlut(Pc* c, u32 obj, u32 name) {  // GXLoadTlut 0x8035E4A0, the default TLUT region callback
+    if (GX(1228) != A_GXDEFAULT_TLUTREGION || name >= 20) { give_up(c, 4); return; }  // (the guest would use a NULL region)
+    u32 r = c->gxd + 904 + name * 16;
+    gx_flush_texture_state(c);
+    bp(c, rd32(c, obj + 4));
+    bp(c, rd32(c, r));
+    gx_flush_texture_state(c);
+    wr32(c, obj, rlwimi(rd32(c, obj), rd32(c, r), 0, 22, 31));
+    wr32(c, r + 4, rd32(c, obj));
+    wr32(c, r + 8, rd32(c, obj + 4));
+    wr32(c, r + 12, rd32(c, obj + 8));
+    c->n += 40;
+}
+
 // ---- J2D (libs/JSystem/src/J2DGraph) ----
 static void jut_texture_load(Pc* c, u32 tex, u32 id) {  // JUTTexture::load 0x802DE840
-    if (rd32(c, tex + 44)) { give_up(c, 4); return; }  // (an embedded palette: JUTPalette::load, not ported)
+    u32 pal = rd32(c, tex + 44);
+    if (pal) {  // JUTPalette::load 0x802DE95C
+        if (rd16(c, pal + 20)) gx_load_tlut(c, pal, rd8(c, pal + 12));
+        c->n += 12;
+    }
     gx_load_tex_obj(c, tex, id);
     c->n += 20;
+}
+// Part timers (one call in 16 when timed, port_run_hook): the time since the last mark goes to tSub[k].
+static bool g_tOn;
+bool g_portParts;  // --port-parts on: the timed calls also time each part (five more clock reads each)
+static u64 g_tm;
+static inline void tmark(int k) {
+    if (!g_tOn) return;
+    u64 t = g_profClock();
+    g_portStats.tSub[k] += t - g_tm;
+    g_tm = t;
 }
 static void tev_block2_set_gx(Pc* c, u32 b) {  // J2DTevBlock2::setGX 0x802ED584
     u32 vt = rd32(c, b);
@@ -443,6 +491,7 @@ static void tev_block2_set_gx(Pc* c, u32 b) {  // J2DTevBlock2::setGX 0x802ED584
         if (tex && rd32(c, tex + 32)) jut_texture_load(c, tex, i);
         c->n += 12;
     }
+    tmark(3);
     u32 ns = rd8(c, b + 50);
     for (u32 i = 0; i < ns; i++) gx_set_tev_order(c, i, rd8(c, b + 10 + 4 * i), rd8(c, b + 11 + 4 * i), rd8(c, b + 12 + 4 * i));
     for (u32 i = 0; i < 4; i++) gx_set_tev_color_s10(c, i == 3 ? 0 : i + 1, rd32(c, b + 18 + 8 * i), rd32(c, b + 22 + 8 * i));
@@ -491,6 +540,7 @@ static void material_set_gx(Pc* c, u32 m) {  // J2DMaterial::setGX 0x802EA38C
         gx_set_cull_mode(c, rd8(c, b + 18));
         c->n += 40;
     }
+    tmark(1);
     {  // J2DTexGenBlock::setGX 0x802EB570 (this = m + 40)
         u32 b = m + 40, n = rd32(c, b);
         gx_set_num_tex_gens(c, n & 0xFF);
@@ -503,12 +553,14 @@ static void material_set_gx(Pc* c, u32 m) {  // J2DMaterial::setGX 0x802EA38C
         }
         c->n += 30;
     }
+    tmark(2);
     u32 tev = rd32(c, m + 112);
     if (tev) {
         u32 fn = rd32(c, rd32(c, tev) + 12);
         if (fn == A_TEVBLOCK2_SETGX) tev_block2_set_gx(c, tev);
         else { give_up(c, 5); g_portStats.otherTev = fn; return; }
     }
+    tmark(4);
     u32 ind = rd32(c, m + 116);
     if (ind) {
         u32 fn = rd32(c, rd32(c, ind) + 12);
@@ -540,13 +592,18 @@ static bool port_run(Pc* c, Gekko* g) {
     if (!in_mem1(A_GXDATA_PTR, 4)) return false;
     c->gxd = ram_rd32(g_pm, A_GXDATA_PTR - 0x80000000u);
     if (c->gxd != ram_rd32(g_pm, g->gpr[2] - 13440u - 0x80000000u) || !in_mem1(c->gxd, GXD_BYTES) || (c->gxd & 3)) return false;
-    for (u32 i = 0; i < GXD_BYTES / 4; i++) c->gx[i] = c->gx0[i] = ram_rd32(g_pm, c->gxd - 0x80000000u + 4 * i);
+    for (u32 k = 0; k < c->nt; k++) c->have[c->touched[k]] = 0;
+    c->nt = 0;
+    tmark(0);
     material_set_gx(c, g->gpr[3]);
+    tmark(5);
     return !c->fail;
 }
 static void port_commit(Pc* c) {
-    for (u32 i = 0; i < GXD_BYTES / 4; i++)
+    for (u32 k = 0; k < c->nt; k++) {
+        u32 i = c->touched[k];
         if (c->gx[i] != c->gx0[i]) ram_wr32(g_pm, c->gxd - 0x80000000u + 4 * i, c->gx[i]);
+    }
     for (u32 i = 0; i < c->nlog; i++) ram_wr32(g_pm, c->log[i][0] - 0x80000000u, c->log[i][1]);
     if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pipe, c->pn);
 }
@@ -596,6 +653,8 @@ static u32 port_check(Gekko* g) {
     gp_capture = NULL;
     if (g_icapN && g_ppipe) g_ppipe(g_pctx, g_icap, g_icapN);
     g_portStats.checked++;
+    g_portStats.insReal += n;
+    g_portStats.insEst += c->n;
     g_portStats.pipe += c->pn;
     if (why) { chk_bad(&g0, c, 1, g->pc, 0, 0); return n ? n : 1; }
     if (g_icapN != c->pn || memcmp(g_icap, c->pipe, c->pn)) {
@@ -613,11 +672,12 @@ static u32 port_check(Gekko* g) {
         u32 a = g_chkW[i][0];
         if (a < sp || a == sp + 4) continue;
         u32 want = ram_rd32(g_pm, a - 0x80000000u), mine = g_chkW[i][1];
-        if (a - c->gxd < GXD_BYTES) mine = c->gx[(a - c->gxd) >> 2];
+        if (a - c->gxd < GXD_BYTES) { if (c->have[(a - c->gxd) >> 2]) mine = c->gx[(a - c->gxd) >> 2]; }
         else for (u32 k = 0; k < c->nlog; k++) if (c->log[k][0] == a) mine = c->log[k][1];
         if (want != mine) { chk_bad(&g0, c, 3, a, want, mine); return n ? n : 1; }
     }
-    for (u32 i = 0; i < GXD_BYTES / 4; i++) {
+    for (u32 k = 0; k < c->nt; k++) {
+        u32 i = c->touched[k];
         u32 want = ram_rd32(g_pm, c->gxd - 0x80000000u + 4 * i);
         if (c->gx[i] != c->gx0[i] && want != c->gx[i]) { chk_bad(&g0, c, 4, c->gxd + 4 * i, want, c->gx[i]); return n ? n : 1; }
     }
@@ -649,8 +709,23 @@ u32 port_run_hook(Gekko* g) {
 #endif
     if (g_portMode >= 2) return port_check(g);
     Pc* c = &g_pc;
-    if (!port_run(c, g)) { g_portStats.refused++; g_portStats.refusedBy[c->fail & 7]++; return 0; }
+    u64 t0 = prof_begin();
+    g_tOn = t0 && g_portParts;
+    g_tm = t0;
+    if (g_portPmuBegin) g_portPmuBegin();
+    bool took = port_run(c, g);
+    if (g_portPmuEnd) g_portPmuEnd();
+    g_tOn = false;
+    if (!took) { g_portStats.refused++; g_portStats.refusedBy[c->fail & 7]++; return 0; }
+    u64 t1 = t0 ? g_profClock() : 0;
+    if (g_portCommitBegin) g_portCommitBegin();
     port_commit(c);
+    if (g_portCommitEnd) g_portCommitEnd();
+    if (t0) {
+        g_portStats.timed++;
+        g_portStats.tRun += t1 - t0;
+        g_portStats.tCommit += g_profClock() - t1;
+    }
     g_portStats.calls++;
     g_portStats.pipe += c->pn;
     g->pc = g->lr;

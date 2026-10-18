@@ -45,3 +45,6 @@
     { 0x803D2810, 0x28, 0x439883E74AE84B58ull },  // GXSetTevOrder's c2r
     { 0x8035E258, 0x8, 0xE259FF2E6B854C39ull },  // GXGetTexObjFmt
     { 0x8035E278, 0x18, 0x6DFE80F73227223Dull },  // GXGetTexObjMipMap
+    { 0x802DE95C, 0x44, 0x111D29DB66059E7Cull },  // load__10JUTPaletteFv
+    { 0x8035E4A0, 0x98, 0xF4EA4FB0385A2570ull },  // GXLoadTlut
+    { 0x8035F174, 0x24, 0xDE78835FDD992411ull },  // __GXFlushTextureState

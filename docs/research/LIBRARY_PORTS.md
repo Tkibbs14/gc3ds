@@ -48,5 +48,19 @@ headroom.
 4. Then J3D's packet draw (J3DDrawBuffer, J3DShapePacket::draw, J3DMaterial) and the matrix work, and the same JSystem
    libraries in other EAD games (GAMES.md: Wind Waker, Sunshine, Pikmin share JSystem).
 
+## Status (2026-10-18)
+
+- **J2DMaterial::setGX is ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"): exact on the
+  device over ~200,000 calls (`--port check`, which runs on the 2DS as well as the PC; `--port plant` proves it reports
+  a difference), on by default, heavy area +1.6-1.7%, Ordon +0.5%. Not yet: J2DTevBlock1/4/8/16 (the title screen uses
+  16), indirect stages.
+- **Lesson: a port that repeats the SDK's work step by step costs what the JIT's translation does** (~35,600 cycles and
+  ~16,300 ARM instructions a call against the guest's 1,920 instructions). What pays is doing less: fields read once
+  without a checked read each, pipe bytes stored as words into a buffer the size is known for, the SDK's per-call
+  bookkeeping (bpSentNot, dirty bits) folded into one final value, and the pipe path itself (one copy per burst: +3.2% /
+  +4.5% for every game). The next ports are written that way from the start.
+- **Tools:** core/tools/porthash.py makes the code-hash table from main.dol and the symbol map; `--port-parts on` times
+  each part of a call; `--pmu-split port` / `portcommit` count cycles and events around each half.
+
 Sources: zeldaret/tp `libs/JSystem/src/J2DGraph` (18 files, ~11,600 lines), `libs/JSystem/src/JUtility`,
 `libs/dolphin/src/gx` (sparse clone at `/root/tpdecomp` in WSL Debian).
