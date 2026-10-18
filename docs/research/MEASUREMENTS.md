@@ -752,6 +752,10 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   own matrix copies. PC (VFAST_CHECK + VFAST_DEFLIT_CHECK, TP 1,500 frames): **4,682,498 CPU-lit draws done both ways,
   0 differed** (4.1 M lit halves); self-tests caught: lit draws' colour flipped 4,101,790 differ, lights left out
   3,881,137 differ (leaving out only each half's last light changed nothing: TP's last enabled light is black).
+  **Device: heavy area (job 410) +1.008 +- 0.025 points (+6.8%, 14.73 -> 15.74%)**, core 0's GX wait 26.5 -> 20.6%,
+  the GX thread's vertex work 23.7 -> 17.1%, the worker 13.6 -> 18.8%; **Ordon walk (job 409) +0.165 +- 0.029 points
+  (+0.7%)**, the GX thread 86.6 -> 79.4% busy (vertex work 34.4 -> 17.6%), worker 19 -> 25% (core 0 limits Ordon).
+  Default on.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
