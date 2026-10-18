@@ -786,6 +786,13 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   (heavy area), ring waits 10.3 -> 6.3% and 7.8 -> 4.6%, but speed **-0.048 +- 0.020 (Ordon) and -0.044 +- 0.048
   points (heavy area): neutral**; the GX thread stays the limit (its freed wait turns into GPU wait). Kept on (exact,
   less work, worker headroom for the next offload).
+- **Textures in VRAM (jobs 424-425, `--ab vramtex`; the XFBs moved to FCRAM in both arms, freeing 1.5 MB of VRAM):**
+  each new texture goes to VRAM while more than 512 KB stays free (for EFB copies): tiled into a linear staging buffer
+  (freed at the next frame) and DMA-copied by GX_TextureCopy in the GX queue ahead of the draws that sample it (the CPU
+  cannot write VRAM). Switching re-decodes every texture. **Heavy area (job 424): GPU 33.8 -> 14.4 ms a frame, +1.952
+  +- 0.040 points (+12%, 16.2 -> 18.0%)**, core 0's GX wait 17.5 -> 10.7%; 346 textures in VRAM, 177 left in FCRAM
+  for want of room; frames of both arms match. **Ordon (job 425): +0.088 +- 0.029 points (+0.4%)**. The XFBs in FCRAM
+  cost nothing measurable (the FCRAM arm read 16.2%, as job 421). Default on. Which textures get VRAM is first come.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

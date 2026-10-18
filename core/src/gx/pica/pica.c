@@ -159,6 +159,23 @@ static u32 g_gpuDiag;
 void pica_set_gpudiag(u32 bits) { g_gpuDiagWant = bits; }
 u32 pica_gpudiag(void) { return g_gpuDiagWant; }
 u64 g_copyPix[4];  // EFB -> texture copies: target texels, source EFB pixels (scaled); XFB copies; copies not drawn
+// Textures in VRAM (--vramtex): the PICA samples linear FCRAM 2.5-3.6x slower, and its FCRAM texture reads double core
+// 0's memory latency (job 192). Each new texture goes to VRAM while more than VRAM_RESERVE stays free (EFB copies
+// allocate there too): tiled into a linear staging buffer, then DMA-copied in the GX queue ahead of the draws that use
+// it (the CPU cannot write VRAM). Staging buffers are freed at the next frame, once the GPU has done the copy. With it on
+// at start the XFBs go to FCRAM (1.5 MB of VRAM: sampled once per present).
+#define VRAM_RESERVE (512u << 10)
+#define MAX_STAGING 96
+static volatile bool g_vramTexWant;
+static bool g_vramTex;
+static void* g_staging[MAX_STAGING];
+static u32 g_nStaging;
+u64 g_vramTexStats[3];  // textures put in VRAM, their bytes, textures left in FCRAM for want of VRAM
+static volatile bool g_xfbFcramWant;  // pica_set_xfb_fcram: applied at the next frame (begin_frame)
+static bool g_xfbFcram;
+void pica_set_xfb_fcram(bool on) { g_xfbFcramWant = on; }
+void pica_set_vramtex(bool on) { g_vramTexWant = on; }
+bool pica_vramtex(void) { return g_vramTexWant; }
 static volatile bool g_mipsWant;
 static bool g_mips;
 void pica_set_mips(bool on) { g_mipsWant = on; }
@@ -852,6 +869,18 @@ static void begin_frame(void) {
     g_vfDeferCpu = g_deflitWant;  // this thread prepares the jobs (vfast_prepare reads it)
     if (g_shlightWant >= 0) { pica_set_shader_light(g_shlightWant != 0); g_shlightWant = -1; }
     if (g_small != g_smallWant) { g_small = g_smallWant; g.resetPending = true; }  // (--smalltex: every texture again)
+    for (u32 i = 0; i < g_nStaging; i++) linearFree(g_staging[i]);  // (the previous submit's copies are done)
+    g_nStaging = 0;
+    if (g_vramTex != g_vramTexWant) { g_vramTex = g_vramTexWant; g.resetPending = true; }  // (every texture again)
+    if (g_xfbFcram != g_xfbFcramWant) {  // the XFBs moved (the GPU is done with them: C3D_FrameBegin waited); pictures lost
+        g_xfbFcram = g_xfbFcramWant;
+        for (u32 i = 0; i < MAX_XFB; i++) {
+            C3D_TexDelete(&g.xfb[i].tex);
+            if ((g_xfbFcram || !C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8))
+                emu_log(LOG_GX, "pica: XFB %u could not be allocated again\n", (unsigned)i);
+            g.xfb[i].seq = 0;
+        }
+    }
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
     ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
     g.natAttr = false;
@@ -1049,14 +1078,6 @@ static void upload_level(u32* dst, u32 W, u32 H, const u32* rgba, u32 w, u32 h) 
     }
 }
 
-static void upload(C3D_Tex* t, const u32* rgba, u32 w, u32 h) {
-    u32 W = t->width, H = t->height;
-    u32* dst = (u32*)t->data;
-    upload_level(dst, W, H, rgba, w, h);
-    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)t->data, t->size);
-    g_texEpoch++;  // new texels (bind_tex)
-}
-
 static void evict_unused(u32 want) {
     while (g.texBytes + want > TEX_BUDGET) {
         PTex* old = NULL;
@@ -1095,33 +1116,59 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     g_picaStats.texDecodeBytes += bytes;
     evict_unused(bytes);
     C3D_Tex nt;
-    C3D_TexInitParams ip = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, false };
-    if (!C3D_TexInitWithParams(&nt, NULL, ip)) {
-        evict_unused(TEX_BUDGET);  // linear memory short of the budget: every texture this frame does not use goes
-        if (!C3D_TexInitWithParams(&nt, NULL, ip)) { g_picaStats.texFails++; return false; }
+    bool vram = g_vramTex && vramSpaceFree() > bytes + VRAM_RESERVE;
+    u8* staging = NULL;
+    if (vram) {
+        if (g_nStaging == MAX_STAGING) { end_frame(); begin_frame(); }
+        C3D_TexInitParams vp = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, true };
+        staging = linearAlloc(bytes);
+        if (!staging || !C3D_TexInitWithParams(&nt, NULL, vp)) {
+            if (staging) linearFree(staging);
+            staging = NULL;
+            vram = false;
+        }
+    } else if (g_vramTex) {
+        g_vramTexStats[2]++;
     }
+    if (!vram) {
+        C3D_TexInitParams ip = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, false };
+        if (!C3D_TexInitWithParams(&nt, NULL, ip)) {
+            evict_unused(TEX_BUDGET);  // linear memory short of the budget: every texture this frame does not use goes
+            if (!C3D_TexInitWithParams(&nt, NULL, ip)) { g_picaStats.texFails++; return false; }
+        }
+    }
+    // Where the texels are written: the texture itself, or (VRAM) the staging buffer laid out the same way.
+    u8* base = staging ? staging : (u8*)nt.data;
+#define LEVEL_PTR(L) (base + ((u8*)C3D_Tex2DGetImagePtr(&nt, (int)(L), NULL) - (u8*)nt.data))
     if (tf != GPU_RGBA8) {  // (a smaller format: level by level through the converter; lower levels quantized alike)
         u32 src = e->addr;
         for (u32 L = 0; L < lv; L++) {
             u32 wl = e->w >> L, hl = e->h >> L;
             if (L) gx_decode_texture(s->mem1 + src, e->fmt, wl, hl, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
-            upload_level_fmt((u8*)C3D_Tex2DGetImagePtr(&nt, (int)L, NULL), W >> L, H >> L, g_scratch, L ? wl : e->w, L ? hl : e->h, tf);
+            upload_level_fmt(LEVEL_PTR(L), W >> L, H >> L, g_scratch, L ? wl : e->w, L ? hl : e->h, tf);
             src += gx_texture_size(e->fmt, wl, hl);
         }
-        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)nt.data, bytes);
-        g_texEpoch++;
     } else if (lv == 1) {
-        upload(&nt, g_scratch, e->w, e->h);
+        upload_level((u32*)(void*)base, W, H, g_scratch, e->w, e->h);
     } else {  // level L follows level L - 1 in RAM, each in the format's tiles (power-of-two sizes: no resampling)
         u32 src = e->addr;
         for (u32 L = 0; L < lv; L++) {
             u32 wl = e->w >> L, hl = e->h >> L;
             if (L) gx_decode_texture(s->mem1 + src, e->fmt, wl, hl, gx->tmem + (e->tlutAddr & 0xFFFFF), e->tlutFmt, g_scratch);
-            upload_level((u32*)C3D_Tex2DGetImagePtr(&nt, (int)L, NULL), W >> L, H >> L, g_scratch, wl, hl);
+            upload_level((u32*)(void*)LEVEL_PTR(L), W >> L, H >> L, g_scratch, wl, hl);
             src += gx_texture_size(e->fmt, wl, hl);
         }
-        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)nt.data, bytes);
-        g_texEpoch++;
+    }
+#undef LEVEL_PTR
+    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)base, bytes);
+    g_texEpoch++;
+    if (staging) {  // to VRAM by DMA, queued ahead of the draws that will sample it
+        split(1);
+        GX_TextureCopy((u32*)(void*)staging, 0, (u32*)nt.data, 0, bytes, GX_TRANSFER_RAW_COPY(1));
+        queue_run();
+        g_staging[g_nStaging++] = staging;
+        g_vramTexStats[0]++;
+        g_vramTexStats[1] += bytes;
     }
     if (e->live) { retire(&e->tex, e->lastUse == g.frameNo); g.texBytes -= e->bytes; }
     e->tex = nt;
@@ -3643,8 +3690,8 @@ bool pica_attach(System* s) {
         if (!g.efb) return false;
         g.efbDepthTex = g.efbTex;
         g.efbDepthTex.data = g.efb->frameBuf.depthBuf;
-        for (u32 i = 0; i < MAX_XFB; i++)
-            if (!C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) return false;
+        for (u32 i = 0; i < MAX_XFB; i++)  // (with --vramtex in FCRAM: their VRAM goes to textures)
+            if ((g_xfbFcram || !C3D_TexInitVRAM(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) && !C3D_TexInit(&g.xfb[i].tex, TW, TH, GPU_RGBA8)) return false;
         g.screen = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);  // a depth buffer even though unused: a NULL one reads as physical address 0
         if (!g.screen) return false;
         C3D_RenderTargetSetOutput(g.screen, GFX_TOP, GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
