@@ -756,6 +756,18 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   the GX thread's vertex work 23.7 -> 17.1%, the worker 13.6 -> 18.8%; **Ordon walk (job 409) +0.165 +- 0.029 points
   (+0.7%)**, the GX thread 86.6 -> 79.4% busy (vertex work 34.4 -> 17.6%), worker 19 -> 25% (core 0 limits Ordon).
   Default on.
+- **The lighting vertex shader is most of the heavy area's GPU time (jobs 411-416, `--ab shlight`):** lighting on the
+  CPU instead of in the shader: **GPU 43.6 -> 17.1 ms a frame** (job 411, deflit off: the lighting then lands on the GX
+  thread, vertex work 23 -> 36%, speed +0.192 +- 0.036 points). With deflit (lighting on the worker, job 412): **+0.452
+  +- 0.036 points (+2.9%, 15.75 -> 16.20%)**, GPU 43.6 -> 27.1 ms, the worker 19 -> 28%, the GX thread again the limit
+  (93%; 8% waiting on the worker, whose 128 KB job ring is full 178 times a second with ~19 jobs in flight). Ordon
+  (job 415): **+0.081 +- 0.015 points (+0.35%)**; title (job 416): cutscene and movie within noise. CPU lighting is
+  vfast's lighting, the reference's order (the shader's 24-bit floats are not). Default off (`--shlight on` restores
+  the shader). EFB -> texture copy and present quads scissored to 16 x 16 (job 413, gpudiag 32): GPU 43.8 -> 43.9 ms,
+  copies cost the GPU nothing.
+- **Mipmaps and small formats, pictures (job 414 against 398, tp_area2):** with both off and with both on the frames
+  match at the 3DS's resolution (the distant ground slightly smoother with mips); the minimap's blocky shapes are
+  older (job 386 has them).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

@@ -430,7 +430,7 @@ typedef struct {
     u32 smalltex; bool abSmalltex;  // --smalltex on|off, --ab smalltex: textures in the smallest exact PICA format (smalltex column; --ab starts off)
     bool notevver, abTevver;  // --tevver off: update_tev always builds its key; --ab tevver: on and off (tevver column)
     bool mips, abMips;        // --mips on|off, --ab mips: mipmaps from the game's textures (pica.c; mips column; --ab starts off)
-    bool noshlight, abShlight;  // --shlight off: lighting on the CPU, not in the vertex shader; --ab shlight
+    bool noshlight, abShlight;  // --shlight on|off (off): lighting in the vertex shader or on the CPU; --ab shlight
     bool deflit, abDeflit;  // --deflit on|off (on): CPU-lit draws' gather and lighting on the vertex worker; --ab deflit
     u32 gpudiag; bool abGpudiag;  // --gpudiag BITS (measurement, pica.c); --ab gpudiag: BITS and 0 (gpudiag column)
     u32 texdiv; bool abTexdiv;  // --texdiv N (measurement): textures at 1/N size; --ab texdiv: N and 1 (texdiv column)
@@ -476,6 +476,7 @@ static void opts_default(RunOpts* o) {
     o->rawstate = true;  // and their state blocks without C3Di_UpdateContext: call 8.1 -> 5.3 us, Ordon +0.73% (job 367)
     o->mips = true;      // the game's mip levels: heavy Ordon area GPU 100.6 -> 55.4 ms a frame, +19.2% (job 388)
     o->deflit = true;    // CPU-lit draws on the vertex worker: heavy area +6.8%, Ordon +0.7% (jobs 409-410)
+    o->noshlight = true; // lighting on the CPU (worker), not the vertex shader: heavy area GPU 43.6 -> 27.1 ms, +2.9%; Ordon +0.35% (jobs 412, 415)
     o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
     o->shapes = true;  // converted shapes: cutscene 21.09 -> 27.20% speed, later stretch unchanged (job 276, --ab shapes)
