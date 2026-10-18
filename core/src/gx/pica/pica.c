@@ -38,7 +38,13 @@
 // Whether NDC y = +1 lands on texture row 0 of a render-target texture. Fixed by the Azahar check: with the wrong
 // value every frame is upside down.
 #define FLIP_Y 0
-#define CMDBUF_BYTES (1u << 20)
+// The GPU command buffer: a frame that fills it past g_cmdbufLimit is ended early, and the next C3D_FrameBegin waits
+// for the GPU to finish everything. With 1 MB the heavy area did that ~6 times a second (job 448: ~2,000 draw calls of
+// ~100 words a frame). 2 MB; --ab cmdbuf alternates the limit between 0.4 (as 1 MB) and 0.8.
+#define CMDBUF_BYTES (2u << 20)
+static volatile float g_cmdbufLimit = 0.8f;
+void pica_set_cmdbuf_big(bool on) { g_cmdbufLimit = on ? 0.8f : 0.4f; }
+bool pica_cmdbuf_big(void) { return g_cmdbufLimit > 0.5f; }
 #define ARENA_VERTS ((6u << 20) / sizeof(PVert))
 #define IDX_MAX (512u << 10)  // u16 indices in the index arena (1 MB)
 #ifndef VBASE_SPAN
@@ -49,7 +55,21 @@
 #define MAX_GRAVE 128
 #define MAX_COPIES 32
 #define MAX_XFB 3
-#define GXQUEUE_BUDGET 26  // of citro3d's 32 GX queue entries; C3D_FrameEnd adds its own
+// Entries a frame may queue (C3D_FrameEnd adds its own): of citro3d's 32, or with --qbig of the 128 the queue is given
+// at a frame's start (citro3d sets maxEntries = 32 in C3D_Init and never reads it again; libctru's queue functions
+// bound by it). A frame that runs out is ended and a new one begun, and C3D_FrameBegin then waits for the GPU to finish
+// everything: the heavy area did that ~5 times a second (10.9 submits against 5.8 pictures, job 440).
+#define GXQUEUE_BUDGET g_qBudget
+#define QBIG_ENTRIES 128
+static u32 g_qBudget = 26;
+// Frames ended before their picture, by cause: [0] GX queue entries, [1] vertex arena, [2] command buffer, [3] index
+// buffer, [4] texture graveyard, [5] VRAM staging buffers, [6] converted-shape graveyard, [7] converted shapes' commands.
+u64 g_endWhy[8];
+static volatile bool g_qBigWant;  // pica_set_qbig
+static bool g_qBigDone;
+void pica_set_qbig(bool on) { g_qBigWant = on; }
+bool pica_qbig(void) { return g_qBigWant; }
+static gxCmdQueue_s* g_q;  // (citro3d's GX queue, found at the first splits: below)
 #define PAL_SLOTS 14       // position matrices in the shader's palette (pal[42] in gen_gxpass.sh)
 
 #define DISPLAY_TRANSFER_FLAGS (GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) | \
@@ -856,6 +876,12 @@ static void begin_frame(void) {
     C3D_FrameBegin(0);  // waits for the previous submit: the arena and retired textures are free again
     GW_LEAVE();
     prof_end(PROF_GXSYNC, t0);
+    if (g_qBigWant && !g_qBigDone && g_q && g_q->numEntries == 0 && g_q->maxEntries < QBIG_ENTRIES) {
+        // (the queue is stopped and cleared here: C3D_FrameBegin waited for it)
+        gxCmdEntry_s* e = malloc(QBIG_ENTRIES * sizeof *e);
+        if (e) { free(g_q->entries); g_q->entries = e; g_q->maxEntries = QBIG_ENTRIES; g_qBigDone = true; }
+    }
+    g_qBudget = g_qBigWant && g_qBigDone ? QBIG_ENTRIES - 8 : 26;
     g.frame = true;
     g.frameNo++;
     g.arenaUsed = g.arenaFlushed = g.queued = g.splitArena = g.idxUsed = g.idxFlushed = g.vbase = 0;
@@ -983,7 +1009,7 @@ static u32 g_nsSince;
 static void split(u32 transfers) {
     begin_frame();
     flush_batch();
-    if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { end_frame(); begin_frame(); }
+    if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { g_endWhy[0]++; end_frame(); begin_frame(); }
     flush_arena();
     verify_queue(true);
     GW_ENTER(GW_SPLIT);
@@ -1024,7 +1050,11 @@ static bool need(u32 verts) {
     if (verts > ARENA_VERTS) return false;
     begin_frame();
     vw_sync();  // this thread writes the arena itself, after the worker's variable-length draws
-    if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+    if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
+        g_endWhy[g.arenaUsed + verts > ARENA_VERTS ? 1 : 2]++;
+        end_frame();
+        begin_frame();
+    }
     return true;
 }
 
@@ -1032,7 +1062,8 @@ static bool need(u32 verts) {
 static bool need_work(u32 verts, u32 indices) {
     if (verts > ARENA_VERTS || indices > IDX_MAX) return false;
     begin_frame();
-    if (g.arenaUsed + g_vwReserved + verts > ARENA_VERTS || g.idxUsed + indices > IDX_MAX || C3D_GetCmdBufUsage() > 0.8f) {
+    if (g.arenaUsed + g_vwReserved + verts > ARENA_VERTS || g.idxUsed + indices > IDX_MAX || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
+        g_endWhy[g.arenaUsed + g_vwReserved + verts > ARENA_VERTS ? 1 : g.idxUsed + indices > IDX_MAX ? 3 : 2]++;
         end_frame();
         begin_frame();
     }
@@ -1041,7 +1072,7 @@ static bool need_work(u32 verts, u32 indices) {
 
 static void retire(C3D_Tex* t, bool usedThisFrame) {
     if (!usedThisFrame) { C3D_TexDelete(t); return; }
-    if (g.nGrave == MAX_GRAVE) { end_frame(); begin_frame(); }
+    if (g.nGrave == MAX_GRAVE) { g_endWhy[4]++; end_frame(); begin_frame(); }
     g.grave[g.nGrave++] = *t;
 }
 
@@ -1121,7 +1152,7 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     bool vram = g_vramTex && vramSpaceFree() > bytes + VRAM_RESERVE;
     u8* staging = NULL;
     if (vram) {
-        if (g_nStaging == MAX_STAGING) { end_frame(); begin_frame(); }
+        if (g_nStaging == MAX_STAGING) { g_endWhy[5]++; end_frame(); begin_frame(); }
         C3D_TexInitParams vp = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, true };
         staging = linearAlloc(bytes);
         if (!staging || !C3D_TexInitWithParams(&nt, NULL, vp)) {
@@ -2926,7 +2957,7 @@ static void ns_grave_free(void) {
 }
 
 static void ns_kill(NShape* e) {
-    if (g_nsGraveN == NS_GRAVE) { end_frame(); begin_frame(); }  // begin_frame frees the grave
+    if (g_nsGraveN == NS_GRAVE) { g_endWhy[6]++; end_frame(); begin_frame(); }  // begin_frame frees the grave
     g_nsGrave[g_nsGraveN++] = e->mem;
     g_nsBytes -= e->bytes;
     u32 pos = e->live, last = g_nsLive[--g_nsLiveN];
@@ -3318,7 +3349,7 @@ static bool ns_draw(System* s, const NsReq* q) {
     if (g_gxMergeOpen) merge_issue(s);
     vw_apply();
     begin_frame();
-    if (C3D_GetCmdBufUsage() > 0.8f) { end_frame(); begin_frame(); }
+    if (C3D_GetCmdBufUsage() > g_cmdbufLimit) { g_endWhy[7]++; end_frame(); begin_frame(); }
 #ifdef GC3DS_NATIVE
     ns_dirty();
 #endif

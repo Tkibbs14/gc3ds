@@ -827,6 +827,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **L2C-310 prefetch offset (jobs 444-445, Ordon walk, `--l2pf N --ab l2pf`, the kernel's value restored after each
   run):** offset 7 against the kernel's 1: **+0.008 +- 0.015 points (neutral)**, instruction-fetch stalls 21.5 -> 20.5 M/s;
   offset 15: **-0.193 +- 0.015 points**. The kernel's setting stands; L2 prefetch tuning is not a lever for core 0.
+- **Frames ended early, and the command buffer (jobs 446-450, tp_area2 and Ordon):** the heavy area submitted 10.9-11.9
+  frames a second against 5.8-5.9 pictures; each early end makes the next C3D_FrameBegin wait for the GPU to finish
+  everything (the GX thread's 'framebegin' ~7%). A 128-entry GX queue (`--qbig`, citro3d's 32-entry array swapped while
+  the queue is empty; citro3d never reads maxEntries after C3D_Init): +0.055 +- 0.046 (heavy area), +0.031 +- 0.012
+  (Ordon), submits unchanged: not the cause; off. A count of causes (`# frames ended early 10s`, job 448): **all ~6 a
+  second from the 1 MB command buffer passing 80%** (~2,000 draw calls of ~100 words a frame). **2 MB (job 449, `--ab
+  cmdbuf`: the limit at 0.4 and 0.8 of 2 MB): +0.506 +- 0.039 points (+2.6%, 19.6 -> 20.0%), submits 11.9 -> 5.9 a
+  second (one a picture), the GX thread's GPU wait 11.0 -> 0.1%, its busy time 95.7 -> 87.7%**: core 0 is now the
+  heavy area's limit too. Linear memory free stays 12.1 MB. Ordon (job 450): +0.033 +- 0.017 (it never filled 1 MB).
+  Default 2 MB at 0.8.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

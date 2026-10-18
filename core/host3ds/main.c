@@ -449,6 +449,8 @@ typedef struct {
     bool notevver, abTevver;  // --tevver off: update_tev always builds its key; --ab tevver: on and off (tevver column)
     bool mips, abMips;        // --mips on|off, --ab mips: mipmaps from the game's textures (pica.c; mips column; --ab starts off)
     bool vramtex, abVramtex;  // --vramtex on|off (on): textures in VRAM (XFBs in FCRAM); --ab vramtex (vramtex column)
+    bool abCmdbuf;  // --ab cmdbuf: the command buffer's limit 0.4 and 0.8 of 2 MB (cmdbuf column)
+    bool qbig, abQbig;  // --qbig on|off: a 128-entry GX queue; --ab qbig (qbig column)
     int l2pf; bool abL2pf;  // --l2pf N: the L2C-310's prefetch offset (0-7, 15, 23, 31); --ab l2pf: N and the kernel's value
     u32 splitVerts; bool abSplitverts;  // --splitverts N: arena vertices between early splits; --ab splitverts: N and 8192
     bool abProfclock;  // --ab profclock: the host profile's clock on and off (profclock column; off phases read 0 there)
@@ -539,7 +541,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -556,6 +558,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--vramtex")) o->vramtex = !strcmp(v, "on");
         else if (!strcmp(a, "--splitverts")) o->splitVerts = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--l2pf")) o->l2pf = (int)strtol(v, NULL, 0);
+        else if (!strcmp(a, "--qbig")) o->qbig = !strcmp(v, "on");
         else if (!strcmp(a, "--shlight")) o->noshlight = !strcmp(v, "off");
         else if (!strcmp(a, "--mips")) o->mips = !strcmp(v, "on");
         else if (!strcmp(a, "--tevver")) o->notevver = !strcmp(v, "off");
@@ -683,7 +686,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -1046,6 +1049,8 @@ static const char* run(const char* path) {
         g_gxDiag = g_opt.profile && !g_opt.abGxdiag;  // --ab gxdiag starts off
         if (g_pica) pica_set_split_verts(g_opt.splitVerts && !g_opt.abSplitverts ? g_opt.splitVerts : 8192);
         l2pf_begin();
+        if (g_pica) pica_set_qbig(g_opt.qbig && !g_opt.abQbig);  // --ab qbig starts off
+        if (g_pica) pica_set_cmdbuf_big(!g_opt.abCmdbuf);  // --ab cmdbuf starts at 0.4
         if (g_pica) pica_set_mips(g_opt.mips && !g_opt.abMips);  // --ab mips starts off
         if (g_pica) pica_set_tevver(!g_opt.notevver && !g_opt.abTevver);  // --ab tevver starts off
         if (g_pica) pica_set_smalltex(g_opt.abSmalltex ? 0 : g_opt.smalltex);  // --ab smalltex starts off
@@ -1243,6 +1248,8 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_profClock ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)pica_split_verts() : 0u);
                 fprintf(g_perf, ",%d", g_l2pfOrig ? l2pf_get() : -1);
+                fprintf(g_perf, ",%d", g_pica && pica_qbig() ? 1 : 0);
+                fprintf(g_perf, ",%d", g_pica && pica_cmdbuf_big() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1305,6 +1312,8 @@ static const char* run(const char* path) {
                 if (g_opt.abVramtex && g_pica && perfRows % AB_SECS == 0) pica_set_vramtex(!pica_vramtex());
                 if (g_opt.abGxdiag && perfRows % AB_SECS == 0) g_gxDiag = !g_gxDiag;
                 if (g_opt.abProfclock && perfRows % AB_SECS == 0) g_profClock = g_profClock ? NULL : prof_clock;
+                if (g_opt.abQbig && g_pica && perfRows % AB_SECS == 0) pica_set_qbig(!pica_qbig());
+                if (g_opt.abCmdbuf && g_pica && perfRows % AB_SECS == 0) pica_set_cmdbuf_big(!pica_cmdbuf_big());
                 if (g_opt.abL2pf && g_l2pfOrig && perfRows % AB_SECS == 0) l2pf_set(l2pf_get() == (int)(g_l2pfOrig & 31) ? g_opt.l2pf : -1);
                 if (g_opt.abSplitverts && g_pica && perfRows % AB_SECS == 0)
                     pica_set_split_verts(pica_split_verts() == 8192 && g_opt.splitVerts ? g_opt.splitVerts : 8192);
@@ -1425,6 +1434,12 @@ static const char* run(const char* path) {
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
                 }
                 {  // the GX decoder's time by command class (fifo.c, one command in 16)
+                    extern u64 g_endWhy[8];
+                    static u64 lastE[8];
+                    double e[8];
+                    for (int q = 0; q < 8; q++) { e[q] = (double)(g_endWhy[q] - lastE[q]) / 10.0; lastE[q] = g_endWhy[q]; }
+                    fprintf(g_perf, "# frames ended early 10s (/s): queue %.1f, arena %.1f, cmdbuf %.1f, indices %.1f, grave %.1f, "
+                            "staging %.1f, shape grave %.1f, shape cmds %.1f\n", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
                     extern u64 g_gxOpTicks[8], g_gxOpCount[8];
                     static u64 lastT[8], lastC[8];
                     double ms[8], c[8];
