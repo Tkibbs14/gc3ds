@@ -1,0 +1,47 @@
+// Generated (core/tools/porthash.py DOL SYMBOLS ADDR[:SIZE]..., over the GZ2E01 main.dol and its symbol map): each guest function or table the J2D port
+// replaces or reads, as address, size, FNV-1a over its big-endian words.
+    { 0x802EA38C, 0x84, 0x37C95A5C2AA297CAull },  // setGX__11J2DMaterialFv
+    { 0x802EB424, 0xEC, 0xE03745D22D270F13ull },  // setGX__13J2DColorBlockFv
+    { 0x802EB570, 0xB0, 0xEB52A59D73C9B788ull },  // setGX__14J2DTexGenBlockFv
+    { 0x802ED584, 0x2F0, 0x98993F401E171312ull },  // setGX__12J2DTevBlock2Fv
+    { 0x802ED874, 0x48, 0x64A2FDAD6BCDF196ull },  // loadTexture__12J2DTevBlock2F11_GXTexMapIDUl
+    { 0x802F1840, 0x60, 0x2EF0AA9C45EEE22Dull },  // setGX__10J2DPEBlockFv
+    { 0x802EB1CC, 0x4, 0x2F639DC45181817Full },  // setGX__11J2DIndBlockFv
+    { 0x802EB1E0, 0x4, 0x2F639DC45181817Full },  // setGX__15J2DIndBlockNullFv
+    { 0x802F1730, 0xCC, 0x6C12D69B885C715Bull },  // setGX__15J2DIndBlockFullFv
+    { 0x802DE840, 0x50, 0x25A833A2783D2003ull },  // load__10JUTTextureF11_GXTexMapID
+    { 0x802E9C90, 0x34, 0x14396D8D15E7E899ull },  // load__9J2DTexMtxFUl
+    { 0x802EA044, 0x54, 0x68457DCFC280E73Cull },  // load__14J2DIndTevStageFUc
+    { 0x8035921C, 0xFC, 0xEA429FD12B4B31B7ull },  // __GXDefaultTexRegionCallback
+    { 0x80359318, 0x24, 0xF969AF3F3583A8E1ull },  // __GXDefaultTlutRegionCallback
+    { 0x8035DA48, 0xE8, 0x5833F00F19B9CE39ull },  // GXSetChanMatColor
+    { 0x8035DB30, 0x3C, 0xA496914F83902853ull },  // GXSetNumChans
+    { 0x8035DB6C, 0xB0, 0x8E16CD53B4B00771ull },  // GXSetChanCtrl
+    { 0x8035C984, 0x28, 0x6F5169DD47C213C1ull },  // GXSetCullMode
+    { 0x8035BDFC, 0x3C, 0xB98A8B146AD6961Dull },  // GXSetNumTexGens
+    { 0x803605F8, 0x84, 0x8A8F4A8C2E726B3Cull },  // __GXSetMatrixIndex
+    { 0x8035BB7C, 0x280, 0x3FBE1BCDF4816752ull },  // GXSetTexCoordGen2
+    { 0x80360320, 0xB4, 0x266FEF8722822DC8ull },  // GXLoadTexMtxImm
+    { 0x8035F6F4, 0x19C, 0x62A166665401BC69ull },  // GXSetTevOrder
+    { 0x8035F3DC, 0x64, 0x7CED5EA78496F822ull },  // GXSetTevColorS10
+    { 0x8035F890, 0x28, 0xDDD6FF294C21AD1Aull },  // GXSetNumTevStages
+    { 0x8035F224, 0x44, 0x6C72923FC285BD1Dull },  // GXSetTevColorIn
+    { 0x8035F268, 0x44, 0x5984A73C79516F6Dull },  // GXSetTevAlphaIn
+    { 0x8035F2AC, 0x68, 0x2AB7ECF5A93883CDull },  // GXSetTevColorOp
+    { 0x8035F314, 0x68, 0x16D102C0D0517ACDull },  // GXSetTevAlphaOp
+    { 0x8035F4A4, 0x5C, 0x9AA9E6312FB31172ull },  // GXSetTevKColorSel
+    { 0x8035F500, 0x5C, 0xAC395B3FED85D0D2ull },  // GXSetTevKAlphaSel
+    { 0x8035F440, 0x64, 0x316275D300DD36AAull },  // GXSetTevKColor
+    { 0x8035F55C, 0x48, 0x88AD706668631D0Dull },  // GXSetTevSwapMode
+    { 0x8035F5A4, 0x80, 0x0A6DC526FF093032ull },  // GXSetTevSwapModeTable
+    { 0x8035ECC0, 0x6C, 0xDFCE91B0739EBE68ull },  // GXSetTevIndirect
+    { 0x8035F0D4, 0x24, 0xD66C5631943EA1E9ull },  // GXSetNumIndStages
+    { 0x8035F624, 0x44, 0x7919E46192BB1D0Bull },  // GXSetAlphaCompare
+    { 0x8035FBF0, 0x54, 0xA1E46141207CB124ull },  // GXSetBlendMode
+    { 0x8035FDD8, 0x2C, 0xEF15FE4079A20381ull },  // GXSetDither
+    { 0x8035E414, 0x54, 0x648A3F39BCE1BF05ull },  // GXLoadTexObj
+    { 0x8035E298, 0x17C, 0xE2608FDFCF3B0F39ull },  // GXLoadTexObjPreLoaded
+    { 0x803A1C00, 0x10, 0x3BCF197F93FB31C3ull },  // J2DColorBlock::setGX's channel table
+    { 0x803D2810, 0x28, 0x439883E74AE84B58ull },  // GXSetTevOrder's c2r
+    { 0x8035E258, 0x8, 0xE259FF2E6B854C39ull },  // GXGetTexObjFmt
+    { 0x8035E278, 0x18, 0x6DFE80F73227223Dull },  // GXGetTexObjMipMap

@@ -63,7 +63,30 @@ static void note_word(Gekko* g, u32 w, bool write, bool whole) {
     if (write && w >= g_sp && !(s->state & 4)) { s->state |= 4; g_nwr++; }  // (an output: above the stack pointer)
 }
 
+// The port checker's recorder (port_j2d.c, PORT_CHECK on the PC; g_memoRec == 2): each word the interpreter writes,
+// with its value before, once.
+u32 g_chkW[CHK_MAX][2];
+u32 g_chkN;
+bool g_chkOn;
+static u32 g_chkSet[CHK_MAX * 2], g_chkSetGen[CHK_MAX * 2], g_chkGen = 1;
+static void chk_note(Gekko* g, u32 ea, u32 size) {
+    if (!GKP(g)->dmap->rhost[ea >> GK_BLK_SHIFT]) return;  // (the gather pipe: its bytes are captured)
+    if (g_chkN == 0) g_chkGen++;
+    for (u32 w = ea & ~3u, last = (ea + size - 1) & ~3u; w <= last; w += 4) {
+        u32 k = (w >> 2) * 2654435761u & (CHK_MAX * 2 - 1);
+        while (g_chkSetGen[k] == g_chkGen && g_chkSet[k] != w) k = (k + 1) & (CHK_MAX * 2 - 1);
+        if (g_chkSetGen[k] == g_chkGen || g_chkN >= CHK_MAX) continue;
+        g_chkSetGen[k] = g_chkGen;
+        g_chkSet[k] = w;
+        u8* h = GKP(g)->dmap->rhost[w >> GK_BLK_SHIFT];
+        g_chkW[g_chkN][0] = w;
+        g_chkW[g_chkN][1] = h ? ram_rd32(h, w & GK_BLK_MASK) : 0;
+        g_chkN++;
+    }
+}
+
 void memo_access(Gekko* g, u32 ea, u32 size, bool write) {
+    if (g_memoRec == (void*)2) { if (write) chk_note(g, ea, size); return; }
     u32 blk = ea >> GK_BLK_SHIFT;
     if (!GKP(g)->dmap->rhost[blk]) {
         u32 pa;

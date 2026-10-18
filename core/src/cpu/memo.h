@@ -9,3 +9,8 @@ typedef struct {
 extern MemoStats g_memoStats;
 extern u32 g_memoAddr;  // the hooked function's entry (0: off)
 u32 memo_probe(Gekko* g);  // runs the call at g->pc in the interpreter, recorded; returns its instructions
+// The port checker's recorder (port_j2d.c): the words the interpreter wrote, with their values before.
+#define CHK_MAX 16384u
+extern u32 g_chkW[CHK_MAX][2];
+extern u32 g_chkN;
+extern bool g_chkOn;

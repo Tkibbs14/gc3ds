@@ -1,5 +1,6 @@
 #include "system.h"
 #include "../cpu/hle.h"
+#include "../cpu/port.h"
 #include "../cpu/aot.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -307,6 +308,8 @@ bool sys_init(System* s) {
     hle_thp_set_memory(s->mem1, MEM1_SIZE, s->lockedCache);
     hle_ps_set_memory(s->mem1, MEM1_SIZE, s->lockedCache);
     hle_ps_set_pipe(ps_pipe_write, s);
+    port_set_memory(s->mem1, MEM1_SIZE);
+    port_set_pipe(ps_pipe_write, s);
     aot_set_memory(s->mem1);
     s->bus = (GekkoBus){
         .ctx = s,
