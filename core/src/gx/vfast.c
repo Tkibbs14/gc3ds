@@ -370,6 +370,7 @@ bool g_vfDeferCpu;
 bool g_vfDeferCheck;     // PC (VFAST_DEFLIT_CHECK): vfast_run does each CPU-lit draw both ways and compares
 int g_vfDeferPlant;      // PC (VFAST_DEFLIT_PLANT=1 or 2): the check's self-tests (vfast.h)
 u64 g_vfDeferChecked, g_vfDeferFails, g_vfDeferLitHalves, g_vfDeferJobs;
+u64 g_vfLightStats[3];  // PC: lights lit with, black ones, black ones with attenuation
 u32 vfast_job_used(const VJob* job) { return (u32)(job->end - (const u8*)job); }
 
 // The vertices' matrix indices (pn, tm) from the stream or the defaults.
@@ -496,7 +497,13 @@ typedef struct {
     VHalf half[2][2];
     VAttr pos, nrm, col[2], tex[8];
 } VSetup;
-static VSetup g_vs[2];  // by lighting mode (CPU, shader), which draws can alternate
+// The last VS_WAYS set-ups, each kept while its key holds: draws alternate between a few vertex formats, and with one
+// set-up per lighting mode 74% of the heavy area's draws computed theirs again (job 418: 44,830 of 60,908 a second,
+// 41,503 for a different format). g_vsWays 1: one set-up (the A/B's other arm).
+#define VS_WAYS 8
+static VSetup g_vs[VS_WAYS];
+static u32 g_vsNext, g_vsLast;
+u32 g_vsWays = VS_WAYS;
 static u32 g_vsGen;
 void vfast_reset_cache(void) { g_vsGen++; }
 
@@ -945,17 +952,23 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     // The draw's setup (decode layout, outputs needed, texture units, lighting halves, projection) depends only on
     // registers, so it is kept until one of them changes value (GXCore versions) or the draw's format, the TEV's
     // selection or the lighting mode differ.
-    VSetup* S = &g_vs[gpuLight ? 1 : 0];
     u32 key[6] = { gx->cpVersion, gx->xfRegVersion, gpuLight ? 0 : gx->xfLightVersion,  // lights: CPU lighting only
                    vat | (gpuLight ? 0x100u : 0) | ((u32)sel->rasChan << 16) | ((u32)sel->numTex << 24),
                    (u32)sel->texCoord[0] | ((u32)sel->texCoord[1] << 8) | ((u32)sel->texCoord[2] << 16), g_vsGen };
-    if (!S->valid || memcmp(key, S->key, sizeof key)) {
-        for (int i = 0; i < 6; i++) if (!S->valid || key[i] != S->key[i]) g_vfastStats.setupWhy[i]++;
+    u32 ways = g_vsWays >= 2 && g_vsWays <= VS_WAYS ? g_vsWays : 1;
+    VSetup* S = NULL;
+    for (u32 i = 0; i < ways && !S; i++) if (g_vs[i].valid && !memcmp(key, g_vs[i].key, sizeof key)) S = &g_vs[i];
+    if (!S) {
+        const VSetup* L = &g_vs[g_vsLast < ways ? g_vsLast : 0];  // the reasons, against the set-up used last
+        for (int i = 0; i < 6; i++) if (!L->valid || key[i] != L->key[i]) g_vfastStats.setupWhy[i]++;
+        S = &g_vs[g_vsNext % ways];
+        g_vsNext = (g_vsNext + 1) % ways;
         setup_compute(S, gx, vat, f, sel, gpuLight);
         memcpy(S->key, key, sizeof key);
         S->valid = true;
         g_vfastStats.setups++;
     }
+    g_vsLast = (u32)(S - g_vs);
     memcpy(job->P, S->P, sizeof job->P);
     memcpy(job->unit, S->unit, sizeof job->unit);
     // The job's memory (vfast_job_bytes reserved it for a full VIn per vertex; the vertices take only inStride).
@@ -1184,6 +1197,15 @@ static void cpu_colours(VJob* job, PVert* out) {
             if (!(chans & (1u << ch))) continue;
             if (ch >= numChans) { for (u32 i = 0; i < n; i++) memcpy(lv[i].lc[ch], lv[i].vc[ch], sizeof lv[i].vc[ch]); continue; }
             if (job->half[ch][0]->lit && job->half[ch][0]->n) g_vfDeferLitHalves++;
+            if (g_vfDeferCheck) for (u32 k = 0; k < 2; k++) {  // (PC: which lights could be skipped)
+                const VHalf* hh = job->half[ch][k];
+                if (!hh->lit) continue;
+                for (u32 li = 0; li < hh->n; li++) {
+                    const float* c = hh->l[li].lc;
+                    bool black = k ? c[3] == 0 : c[0] == 0 && c[1] == 0 && c[2] == 0;
+                    g_vfLightStats[0]++; if (black) { g_vfLightStats[1]++; if (hh->atten) g_vfLightStats[2]++; }
+                }
+            }
             if (g_vfDeferPlant == 1 && job->half[ch][0]->lit && job->half[ch][0]->n) plant = true;  // the check's self-test
             if (g_vfDeferPlant == 2 && job->half[ch][0]->lit && job->half[ch][0]->n) {  // self-test: no lights
                 VHalf h = *job->half[ch][0];

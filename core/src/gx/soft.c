@@ -1040,6 +1040,8 @@ static void deflit_report(void) {
     fprintf(stderr, "VFAST_DEFLIT_CHECK: %llu CPU-lit draws done both ways, %llu differed (%llu deferred CPU-lit jobs, %llu lit halves)\n",
             (unsigned long long)g_vfDeferChecked, (unsigned long long)g_vfDeferFails, (unsigned long long)g_vfDeferJobs,
             (unsigned long long)g_vfDeferLitHalves);
+    fprintf(stderr, "VFAST_DEFLIT_CHECK lights: %llu lit with, %llu black (%llu of those with attenuation)\n",
+            (unsigned long long)g_vfLightStats[0], (unsigned long long)g_vfLightStats[1], (unsigned long long)g_vfLightStats[2]);
 }
 
 static void soft_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32 vsize) {

@@ -768,6 +768,17 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Mipmaps and small formats, pictures (job 414 against 398, tp_area2):** with both off and with both on the frames
   match at the 3DS's resolution (the distant ground slightly smoother with mips); the minimap's blocky shapes are
   older (job 386 has them).
+- **The job ring with CPU lighting (job 417, `--shlight off --ab vwmem`, tp_area2):** 256 KB 16.16%, 1 MB 15.86%,
+  against 16.20% at the default 128 KB (job 412): the ring's size is not the lever (the GX thread still waits on the
+  worker 3-6% with 1 MB). 128 KB stays.
+- **Vertex set-ups kept for the last 8 keys (job 421, `--ab vscache`, tp_area2):** vfast_prepare kept one set-up per
+  lighting mode and recomputed it for 74% of draws (45,744 of 62,300 a second, 42,350 for a different vertex format:
+  draws alternate between a few). With 8 kept: **4,746 a second, vertex prep 8.0 -> 6.7% of the GX thread, +0.179 +-
+  0.039 points (+1.1%)**. Exact (the same key decides; PC VFAST_CHECK summary identical over 4,682,498 draws). Default.
+- **Three scenes on today's defaults (jobs 418-420):** heavy area **15.96%** (`--profile on`; 14.57% this morning),
+  Ordon walk **23.43%** (22.64%), title cutscene 26.67% (26.63%), movie 12.70% (12.05%). In game frames a second
+  (TP runs at 30): Ordon ~7, the heavy area ~5. With CPU lighting on the worker, Ordon's GX thread waits for ring
+  space 10.3% (1.4% before): the worker's gather and lighting are 85% of its time and it falls behind in bursts.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
