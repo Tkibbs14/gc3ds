@@ -643,6 +643,10 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   not the 100+ assumed. Not a clear gain: off. JIT fuzzer (new cases: lis + addi -0x8000, then psq_st with random GQRs,
   one or two elements, some past the pipe's 32 bytes): 0 fails at masks 201331, 70259, 4723, 7, fault mode off, seeds
   1 and 3; planted bugs caught.
+- **Relaxed floats in gameplay (job 373, `--ab fastfloat`, OPT_FASTFLOAT):** no rounding to single, no 25-bit frC cut,
+  hardware conversions on stores: **+0.100 +- 0.058 points (+0.5%, 1.7 SE)** over 8 phase pairs from 60 s (18.3-18.6%
+  in this run's scene). As on the title benchmark (job 338): float rounding is not what limits core 0. This bounds
+  C8 (single precision in the JIT) too: making the rounding cheaper cannot gain more than removing it.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

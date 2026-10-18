@@ -1198,12 +1198,12 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
 - **Profile with the new defaults (job 370):** GX SDK 23%, J3D 14%, J2D / JUT 13%, flat (top function 3.5%). psq_st
   to the pipe through the shared stubs (OPT_PIPEPS, C27) cut ~45,000 jit_gather calls a second for +0.3% (not kept);
   the per-site version lost 2.3%. Targeted GX-side fixes are now worth <= 1% each.
-- **Full speed needs ~7.7 cycles per guest instruction against ~22 (MEASUREMENTS "What full speed needs on core 0").**
-  The two levers James approved on 10-17 that are large enough (memory notes gc3ds-jit-three-levers,
-  gc3ds-relaxed-float-approved):
-  1. **Relaxed floats as an option first** (default stays exact; the PC checks count how often results differ):
-     no round-to-single pairs, no 25-bit frC cut, plain conversions on stores. Cheap to build, and it measures the
-     ceiling of float work on the device.
-  2. **Then C8, single precision in the JIT** (REDESIGN_CANDIDATES C8: Dolphin's fprIsSingle analysis, fadds / fsubs /
-     fdivs exact in single on known singles, fmuls only on known-single frC, fmadds last) if (1) shows the ceiling is
-     worth it. Gate every step with the JIT fuzzer and an in-run A/B scored with `core/tools/ab_phases.py LOG opt 60 ON`.
+- **Float work is ruled out as the next lever (corrected the same night).** Relaxed floats were already built
+  (OPT_FASTFLOAT) and measured: no gain on the title benchmark (job 338) and +0.5% at 1.7 SE in gameplay (job 373).
+  Removing all rounding to single gains nothing, so C8 (cheaper rounding) cannot either; it is not the next step.
+- **What core 0's time is (job 279 and the synthesis):** ~11 of ~22 cycles per guest instruction are the JIT's code in
+  cache; the rest is instruction fetch at scale (hot code ~16x L1), data stalls and block boundaries. Every lever that
+  grew code lost (traces, float lanes, per-site inlining tonight); peephole shaving was neutral. Full speed (~7.7
+  cycles) needs less guest work or a different execution model, not cheaper instructions: the candidates are
+  frame skip (C9, +10%, visual glitches, a user option), native code for whole subsystems (NATIVE_PORT_PLAN.md; the
+  profile is flat, so whole subsystems, not functions), and the owner's call on timing / exactness trade-offs.

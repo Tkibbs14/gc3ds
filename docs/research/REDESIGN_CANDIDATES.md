@@ -100,7 +100,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C8. Single-precision floats in the JIT (PERF_LEVERS lever 2)
 
-- **Status:** **next, top priority** (2026-10-13): job 128 showed core 0 is the wall once the GX side is relieved.
+- **Status:** parked 2026-10-17 (was next, top priority since 2026-10-13): relaxed floats (OPT_FASTFLOAT), which remove
+  all rounding to single, gained nothing on the title benchmark (job 338) and +0.5% at 1.7 SE in gameplay (job 373), so
+  cheaper rounding cannot gain more. Re-evaluate when core 0 is no longer bound by instruction fetch.
   Research done 2026-10-13 (Haiku pass on Dolphin's sources).
 - **Plan from the research:** port Dolphin's per-op analysis (`fprIsSingle`, `fprIsDuplicated`, `fprIsStoreSafe`,
   PPCAnalyst.cpp); fadds/fsubs/fdivs on known-single inputs are exact in single (double rounding is innocuous when
