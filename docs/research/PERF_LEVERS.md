@@ -4,6 +4,11 @@ Written 2026-10-13 from six research passes (Haiku agents, each fact tagged SOUR
 against the measurements in HANDOFF.md, FINDINGS.md, OPT_JIT_PLAN.md and research/*.md. Load-bearing claims were
 re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full speed later, on the New 2DS XL.
 
+> **Status 2026-10-18:** this page is the 10-13 snapshot. Since then the GX side and the GPU were taken off the critical
+> path (MEASUREMENTS.md from "Three scenes after the texture work"): core 0 is the limit in every scene, and native
+> library ports are next (LIBRARY_PORTS.md). The display-list vertex cache below (lever 1) was built and measured no
+> gain (REDESIGN_CANDIDATES C3).
+
 ## Where TP's time goes today (2DS, measured)
 
 - TP runs ~20-21% in the heavy scenes. Core 0 alone would run ~22-24% (`speed / (1 - gxwait)`): the GX side (core 2 +
@@ -78,7 +83,9 @@ Parked redesign ideas, with their evidence and when to look again: REDESIGN_CAND
 - **DSP as a coprocessor:** loads only RSA-signed firmware (SOURCED: 3dbrew DSP Services, snippet).
 - **ARM9 at run time:** no homebrew path while an app runs (SOURCED: arm9loaderhax, Luma3DS docs).
 - **MVD hardware video:** H.264 only, no JPEG (SOURCED: 3dbrew MVD Services).
-- **AXI WRAM for hot data:** mapped kernel-only (SOURCED: 3dbrew System Flaws / Memory layout).
+- **AXI WRAM for hot data:** mapped kernel-only (SOURCED: 3dbrew System Flaws / Memory layout). *Corrected 2026-10-18:
+  reachable through Luma3DS's physical-memory mirror (PA | 0x80000000, job 443), but only uncached (strongly
+  ordered): no use for hot data.*
 - **Large pages (64 KB / 1 MB) for the JIT buffer:** no user SVC takes a page size (SOURCED: 3dbrew SVC page).
 - **L2C-310 prefetch tuning:** Secure-only register, no reachable SVC (SOURCED: DDI 0246H §3.3.14; 3dbrew SVC).
   *Corrected 2026-10-18 (job 443): reachable through Luma3DS's physical-memory mirror at VA 0x97E10000 (read and written

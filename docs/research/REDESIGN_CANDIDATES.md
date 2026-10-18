@@ -86,10 +86,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Risk:** 96 vec4 uniforms shared with the palette; `a0` relative addressing for per-vertex matrix choice is
   unverified on hardware; variants per texgen setup; a 4th attribute costs ~45% of the vertex rate (rule 2).
 - **Re-evaluate when:** the worker is still the cap after C7 and C2's follow-up.
+- **2026-10-18:** the opposite direction measured better: lighting moved out of the shader onto the worker (the
+  lighting shader was 26 of the heavy area's 43.6 ms of GPU a frame; jobs 411-416, +2.9%). More shader work is a
+  GPU cost; the worker has headroom (~25-35% busy).
 
 ## C7. Queue counters on their own cache lines
 
-- **Status:** next (cheap).
+- **Status:** built (pica.c: `g_vwHeadL` / `g_vwTailL`, one 32-byte line each, `VwLine`).
 - **What:** `g_vwHead` (GX thread writes) and `g_vwTail` (worker writes) are declared together (pica.c:140), so they
   share a 32-byte line that moves between cores 2 and 3 on every job, even with one worker; with C2, `g_vwClaim` too.
   ARM11 MPCore: 32-byte lines, MESI, the SCU moves modified lines core to core (ARM DDI 0360F §1.3.4, §7.1.1, read by a
@@ -129,6 +132,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   little more. The JIT (C8 and the optimizing stages) is what 30-40% needs. Visible glitches: skipped frames repeat
   the previous image and render-to-texture effects lag (owner saw "rendering bugs and jitters").
 - **Status now:** parked as a user option for later (needs the EFB-copy glitches fixed); not the main lever.
+- **2026-10-18, guest frame skip instead (`--gfskip ADDR`):** the game's renderer itself (TP: mDoGph_Painter) returns at
+  once on every Nth call, so game logic runs every frame and only drawing is skipped (no stale render-to-texture):
+  game frames a second +55-65% in Ordon, +48% in the heavy area; area transitions need the fade guards
+  (`--gfskip-ok`, JUTFader idle), which fixed them (owner-checked). Off by default; the owner wants full speed before
+  frame skipping.
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
@@ -231,7 +239,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C17. Smaller texture formats on the PICA200 (and mipmaps)
 
-- **Status:** parked (2026-10-15).
+- **Status:** built 2026-10-18, default on (MEASUREMENTS.md "The heavy Ordon area is GPU-bound by texture fetch"):
+  mipmaps from the game's levels (heavy area +19%, GPU 100.6 -> 55.4 ms a frame), small formats at level 2 (exact for
+  grey sources, CMPR / RGB5A3 rounded to 16 bits: +6%), then textures in VRAM by DMA (+12%, GPU 33.8 -> 14.4 ms).
+  ETC1 not built. (Was parked 2026-10-15; the trigger was the heavy Ordon area, GPU-bound at ~100 ms a frame.)
 - **What:** gc3ds decodes every GameCube texture to RGBA8 with level 0 only (`src/gx/pica/pica.c`, `C3D_TexInit(...,
   GPU_RGBA8)`). Decode to the smallest format that holds the source instead (RGB565 / RGBA4 / RGBA5551 / LA8 / L8, or
   ETC1 for CMPR), and upload the mip levels the GameCube texture already carries.

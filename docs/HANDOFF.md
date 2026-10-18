@@ -1,19 +1,19 @@
 # gc3ds handoff (2026-10-10)
 
 > **▶ Current state (2026-10-18).** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
-> area (`sdmc:/gc3ds/states/tp_area2.state`) ~19.4% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439). In game
+> area (`sdmc:/gc3ds/states/tp_area2.state`) ~20.0% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439, 449). In game
 > frames a second (TP runs at 30): ~7 and ~6. The owner's goal: a steady 30 before any frame skipping, with the work
 > balanced across the cores (move busy work to idle cores). What 10-18 found and kept (MEASUREMENTS.md, "Three scenes
 > after the texture work" onward):
 > - Lighting off the GPU's vertex shader and off the GX thread, onto the vertex worker (core 3): the shader was 26 of
 >   the heavy area's 43.6 ms of GPU a frame. Textures in VRAM (DMA from a staging buffer; XFBs moved to FCRAM): GPU
->   33.8 -> 14.4 ms. Vertex set-ups cached for 8 keys; black lights skipped; uploads without a divide per texel.
+>   33.8 -> 14.4 ms. Vertex set-ups cached for 8 keys; black lights skipped; uploads without a divide per texel. A 2 MB command buffer (no more frames ended early).
 > - Measurement overhead was real: display-list hashes (3.9% of the GX thread) and the host profile's clock reads (8%
 >   of the heavy area's speed) now run sampled or only with `--profile on`.
 > - `--profile on` now also samples the GX thread's position ('# gx thread where 10s'): in the heavy area the decoder
 >   (outside the backend) is ~22% of the GX thread, vertex prep ~7%, draw calls ~5%, batch key ~4.5%, TEV ~3%.
-> - Limits now: Ordon is core 0 (the game's own code, ~56% of it building GX commands); the heavy area is the GX
->   thread (~92% busy). `--gpudiag 1` (skip EFB copy draws) froze the 2DS: do not run it.
+> - Limits now: **core 0 in every scene** (the game's own code: rendering ~39%, the 2D UI ~22%, logic ~19%); the GX
+>   thread ~81-88% busy. `--gpudiag 1` (skip EFB copy draws) froze the 2DS: do not run it.
 >
 > - **Next: native library ports** (owner decision 10-18; plan in [research/LIBRARY_PORTS.md](research/LIBRARY_PORTS.md)): J2D first
 >   (J2DPane::draw + J2DPicture), hand-written from the zeldaret/tp decompilation (sparse clone at /root/tpdecomp in WSL).
@@ -24,9 +24,10 @@
 > the newest numbers are in [research/MEASUREMENTS.md](research/MEASUREMENTS.md).
 > - The repository is **public** now.
 > - Twilight Princess plays into gameplay: a 2DS state with Link in Ordon (`sdmc:/gc3ds/states/tp_ordon.state`) is
->   the benchmark (a stick walk, AGENTS.md "Measuring"): ~22% speed. The older `tp850` state is the title / attract
+>   the benchmark (a stick walk, AGENTS.md "Measuring"; ~22% on 10-17, ~23.5% now). The older `tp850` state is the title / attract
 >   sequence.
-> - The GX thread (~88% busy in gameplay) is the next limit; core 0 is ~98%.
+> - (10-17: the GX thread, ~88% busy, was the next limit; since 10-18 core 0 is, see above.) Heavy-area state:
+>   `sdmc:/gc3ds/states/tp_area2.state`.
 > - The PC input sequence below has drifted: with its presses up to field 2636 the game is still at the memory card
 >   prompt at 3250; adding `A@3410` (no memory card), `SLEFT@3660`, `A@3700` (continue without saving), `START@4000`,
 >   `A@4030` (name) and `A@4310` (horse name) reaches the opening by field ~4800 (2026-10-17, the current PC build).

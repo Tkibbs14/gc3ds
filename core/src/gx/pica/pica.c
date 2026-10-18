@@ -7,17 +7,22 @@
 // so the vertex arena and textures retired during a frame are reused only once the GPU is idle.
 //
 // EFB. A 512x256 RGBA8 texture with a D24S8 depth buffer in VRAM: the GameCube's 640x528 EFB scaled by 0.625 x 0.5,
-// so a 640x480 frame lands 1:1 on the 400x240 top screen. Rows past 512 (PAL 528-line EFBs) are cut. Vertices are
-// transformed on the CPU by gx/vfast.c (checked against the reference gx/xform.c) straight into PICA clip space, so
-// the hardware clips them (GX viewport and depth range included); culling is done on the CPU with the reference
-// renderer's rule. Consecutive draws with the same GPU state are batched into one C3D_DrawArrays.
+// so a 640x480 frame lands 1:1 on the 400x240 top screen. Rows past 512 (PAL 528-line EFBs) are cut. Vertices go
+// through gx/vfast.c (checked against the reference gx/xform.c): positions mostly transformed by the vertex shader
+// from a palette of the draw's matrices (GPU transform), else on the CPU straight into PICA clip space; lighting on the
+// CPU (the vertex worker) by default. The hardware clips (GX viewport and depth range included); CPU-transformed draws
+// are culled on the CPU with the reference renderer's rule. Consecutive draws with the same GPU state are batched, and
+// draws are merged into one vertex job where nothing changes between them.
 //
 // Copies. EFB -> XFB copies the render target into one of three XFB textures tagged with the destination address;
 // present shows the one the VI is scanning out ("virtual XFB": the XFB in RAM is not written). EFB -> texture renders
 // the source rectangle into a GPU texture registered under the destination address, used in place of decoding RAM.
 //
-// Not yet: fog, Z textures, indirect texturing, depth copies (white), partial clears (whole EFB cleared), mipmaps,
-// textures in VRAM (they live in linear FCRAM, 2.5-3.6x slower to sample).
+// Textures: decoded with the game's mip levels, in the smallest PICA format that holds them (CMPR / RGB5A3 rounded to
+// 16 bits), into VRAM by DMA while it has room (decode).
+//
+// Not yet: fog, indirect texturing, depth copies (white), partial clears (whole EFB cleared); Z textures only as a
+// uniform depth (ztex_value).
 #include <3ds.h>
 #define GC3DS_HOST_TYPES
 #include <citro3d.h>

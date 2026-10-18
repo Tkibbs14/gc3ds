@@ -6,23 +6,23 @@ PICA200 GPU doing the drawing. Every design decision here was measured on a real
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
 boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
-On a New 2DS XL it runs at about **22% of full speed in Ordon gameplay**, ~30% in the intro cutscene and ~12% in the
-THP movie (October 2026). Most of the work so far went into finding out where the time goes and what does and does not
+On a New 2DS XL it runs at about **23.5% of full speed walking in Ordon and ~20% in its heaviest area** (roughly 6-7 of
+the game's 30 frames a second), ~27% in the intro cutscene and ~13% in the THP movie (18 October 2026). Most of the work so far went into finding out where the time goes and what does and does not
 help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
 
 **Bring your own games.** gc3ds contains no game data, BIOS or firmware, and never will. Use dumps of discs you own.
 
 ## Where the time goes (New 2DS XL, Twilight Princess gameplay in Ordon)
 
-- **Both sides are near their limit.** Core 0 (the emulated CPU, JIT) is ~98% busy and the GX thread (core 2) ~88%;
-  the vertex worker on core 3 is ~16% busy.
-- **Core 0** is bound by instruction fetch and memory waits, not by any one guest function: the profile is flat. The
-  GameCube's graphics library (the game building its command stream) is ~30% of it, the 3D model library ~13%.
-  Compiling the game's stores to the graphics pipe straight into appends gained 7%; levers that only cut executed
-  instructions (byte-swapped guest RAM, float and compare tricks) measured 0-5%.
-- **The GX thread** now limits gameplay: per draw, state work (citro3d's draw call and state upload, combiner setup)
-  and vertex preparation; nearly every draw starts a new GPU batch.
-- Full speed is still ~4.5x away. `docs/research/MEASUREMENTS.md` holds every measurement, and `docs/research/REDESIGN_CANDIDATES.md` every idea that was tried, kept or rejected, with its numbers.
+- **Core 0 (the emulated CPU, JIT) is the limit everywhere.** It is ~98% busy and bound by instruction fetch, not by
+  any one guest function: the profile is flat. By subsystem: rendering ~39% (the game building its command stream),
+  the 2D UI ~22% (the HUD alone ~12%), game logic ~19%, 3D model work ~10-20%. Levers that only cut executed
+  instructions (byte-swapped guest RAM, float and compare tricks) measured 0-5%; native ports of whole libraries are
+  next (`docs/research/LIBRARY_PORTS.md`).
+- **The other cores have headroom:** the GX thread (core 2) ~81-88% busy, the vertex worker (core 3, which now also
+  lights vertices) ~25-35%, and the GPU ~5-15 ms a frame since textures moved to VRAM and lighting off the vertex
+  shader.
+- Full speed is still ~4-5x away. `docs/research/MEASUREMENTS.md` holds every measurement, and `docs/research/REDESIGN_CANDIDATES.md` every idea that was tried, kept or rejected, with its numbers.
 
 ## How it works
 

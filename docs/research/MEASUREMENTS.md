@@ -11,6 +11,10 @@ probe, add the result here in the same commit as the change, and mark what it su
 (cutscene / later stretch / movie, or the native scene) and the trust level: `device` numbers decide; `pc`, `qemu_model`,
 `azahar` and `estimate` only explain.
 
+**Newest first (2026-10-18):** the sections from "Three scenes after the texture work, and what limits each" onward
+(gameplay ~20-23.5%, core 0 the limit everywhere, the GPU and GX side off the critical path). The verdict and headline
+numbers below are the 10-16 audit's and describe that state (GX thread ~80-88% busy, the GPU slow on FCRAM textures).
+
 ## Verdict: is it enough to work with?
 
 Yes for choosing a direction, no for predicting what a given redesign will gain. The hardware is measured well and the measurements repeat. The probes repeat within 1% across jobs 176-196, and the PMU is validated on the device. The data rules out most incremental JIT and GX ideas, and it shows the scale of the problem. Core 0 is 4.7x short of full speed in the cutscene and 8.7x short in the later stretch. The JIT's touched hot code is about 1.9 MB against a 16 KB L1I. The CPU vertex path caps at about 300-340k vertices/s in both modes while the PICA can do about 20 M. Five things stop the data from ranking or pricing specific redesigns. (1) About 21% of core-0 cycles land in no PMU event: VFP latency and taken-branch bubbles. (2) The cutscene A/B noise floor is 2-3x larger than ab_split reports, so most verdicts of 0.5-3% are unresolved. (3) Native mode's converted-shapes path has no number because it deadlocks. (4) Everything comes from one save state (tp850, the title attract demo) with no player-controlled gameplay and no emulated audio. (5) No emulator-mode run has been made since the native commits changed the shared GX code. Most gaps can be closed cheaply with existing tools, and several of them offline.

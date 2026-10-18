@@ -79,15 +79,19 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--game SUBSTR` | the first program whose path contains SUBSTR (case-insensitive) |
 | `--state PATH` / `--save-state FIELD:PATH` | load a save state after boot / save one when the VI reaches FIELD |
 | `--seconds N` | end after N real seconds (relay jobs default to 600) |
-| `--ab NAME` | alternate one setting every 20 s within the run: `opt`, `kstore`, `fcache`, `dlcache`, `vw2`, `fskip`, `merge`, `traces`, `sched`, `pld`, `splitopen`, `vtrim`, `faultmem`, `hle` (its column in perf.csv says which half each row is in) |
-| `--opt`, `--kstore`, `--fcache`, `--dlcache`, `--vw2`, `--fskip`, `--merge`, `--traces`, `--sched`, `--faultmem`, `--hle` `on\|off` | start values (see `host3ds/main.c` `RunOpts` for the defaults) |
+| `--ab NAME` | alternate one setting every 20 s within the run (its column in perf.csv says which half each row is in). The names are the `abXxx` fields in `host3ds/main.c`'s `RunOpts` (parsed at `--ab`); among them `opt`, `kstore`, `merge`, `hle`, `ps`, `psgx`, `psflush`, `rawdraw`, `rawstate`, `mips`, `smalltex`, `tevver`, `deflit`, `shlight`, `vscache`, `blacklit`, `vramtex`, `cmdbuf`, `qbig`, `splitverts`, `l2pf`, `gxdiag`, `profclock`, `gpudiag`, `texdiv`, `gfskip` |
+| `--opt`, `--kstore`, `--merge`, `--hle`, `--mips`, `--deflit`, `--shlight`, `--vramtex`, ... `on\|off`; `--smalltex N`, `--splitverts N`, `--l2pf N`, `--gpudiag BITS`, `--texdiv N` | start values (see `host3ds/main.c` `opts_default` for the defaults) |
+| `--gfskip ADDR`, `--gfskip-n N`, `--gfskip-ok PTR+OFF=VAL,..` | guest frame skip: the game's renderer at ADDR every Nth call, only while the guards hold (TP: `--gfskip 8000A604 --gfskip-ok 80450BC8+4=1,80450BC8+20=ffffffff`) |
+| `--memo ADDR` | function memoization probe on the function at ADDR (measurement only; `# memo 10s`) |
+| `--probe-faults on`, `--probe-mirror on` | the fault-delivery probe; Luma's physical-memory mirror and the L2C-310's registers (read only) |
 | `--trace-follow on\|off`, `--trace-side on\|off\|MASK`, `--trace-len N`, `--link on\|off` | JIT block shape |
-| `--profile on` | hot guest code sampling (`# hot guest code` lines) |
+| `--profile on` | hot guest code, guest stacks, the GX thread's position and the decoder's command classes (`# hot guest code`, `# guest stacks`, `# gx thread where`, `# gx decode`) |
 | `--fuzz CASES [SEED]` | the JIT differential fuzzer (tests/jit/jit_fuzz.c) on the console's own CPU |
 
-Read results with `python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by <column>`: mean and standard error of
-speed and of core 0's own speed (`speed / (1 - gxwait)`) over the heavy rows, split by the A/B column. Only compare
-within one run: the same build varies ~5% between runs.
+Score an A/B with `python3 core/tools/ab_phases.py core/out/relay_<job>.csv <column> 60 <on value>` (each phase
+against its neighbours, from 60 s; pooled means showed phantom gains), or `core/tools/ab_split.py --col <column>` for
+the tp850 state. `core/tools/perf_heavy.py --by <column>` gives means and standard errors over the heavy rows. Only
+compare within one run: the same build varies ~5% between runs.
 
 ## Save states
 
