@@ -9,6 +9,7 @@
 #define GC3DS_HOST_TYPES
 #include "../src/common.h"
 #include "../src/jit/jit.h"
+#include "../src/ramlayout.h"
 #include "jitsample.h"
 
 #define MAX_SAMPLES 200000
@@ -18,12 +19,57 @@ static volatile bool g_quit;
 static Thread g_thread;
 static const Gekko* g_g;
 
+// Guest call stacks (--profile on, jitsample_stacks): each sample in compiled code also walks the guest stack's back
+// chain from r1 (EABI: the back chain at 0(sp), a caller's saved LR at 4 of the frame above) and counts every return
+// address on it once, so a function's share includes everything it called (inclusive time: which subsystem's whole
+// call tree is worth running natively, HANDOFF 2026-10-17). Read while core 0 runs: r1 in guest state may be a block
+// behind, and a frame being built may give one wrong address; anything outside MEM1 ends the walk.
+#define STK_BITS 13
+#define STK_DEPTH 32
+static const u8* g_mem1;
+static u32 g_stkAddr[1u << STK_BITS], g_stkCount[1u << STK_BITS];
+static volatile u32 g_stkWalks, g_stkLost;
+
+static inline bool stk_ok(u32 a) { return a - 0x80000000u < 0x01800000u - 8 && !(a & 3); }
+
+static void stk_walk(void) {
+    u32 seen[STK_DEPTH + 1], ns = 0;
+    u32 sp = g_g->gpr[1];
+    for (u32 d = 0; d <= STK_DEPTH; d++) {
+        u32 ra;
+        if (d == 0) {
+            ra = g_g->lr;  // a leaf function's caller is only in LR (it saves nothing)
+        } else {
+            if (!stk_ok(sp)) break;
+            u32 up = ram_rd32(g_mem1, sp - 0x80000000u);
+            if (!stk_ok(up) || up <= sp) break;
+            ra = ram_rd32(g_mem1, up + 4 - 0x80000000u);
+            sp = up;
+        }
+        if (!stk_ok(ra)) continue;
+        bool dup = false;
+        for (u32 k = 0; k < ns; k++) if (seen[k] == ra) { dup = true; break; }
+        if (dup) continue;
+        seen[ns++] = ra;
+        u32 h = (ra >> 2) * 2654435761u >> (32 - STK_BITS);
+        for (u32 probe = 0; probe < 64; probe++, h = (h + 1) & ((1u << STK_BITS) - 1)) {
+            if (g_stkAddr[h] == ra) { g_stkCount[h]++; break; }
+            if (!g_stkAddr[h]) { g_stkAddr[h] = ra; g_stkCount[h] = 1; break; }
+            if (probe == 63) g_stkLost++;
+        }
+    }
+    g_stkWalks++;
+}
+
+void jitsample_stacks(const u8* mem1) { g_mem1 = mem1; }
+
 static void sampler(void* arg) {
     (void)arg;
     while (!g_quit) {
         if (jit_in_run) {
             u32 n = g_n;
             if (n < MAX_SAMPLES) { g_samples[n] = g_g->hostPc; g_n = n + 1; }
+            if (g_mem1) stk_walk();
         } else {
             g_outside = g_outside + 1;
             unsigned char w = g_where;
@@ -109,6 +155,26 @@ void jitsample_report(FILE* f, const Jit* j) {
             g_whereN[k] = 0;
         }
         fprintf(f, "\n");
+    }
+    if (g_mem1) {  // the return addresses on the sampled stacks, as a share of all samples (mapped to callers offline)
+        enum { TOP = 600 };
+        static u32 top[2 * TOP];
+        u32 nt = 0;
+        for (u32 h = 0; h < (1u << STK_BITS); h++) {
+            if (!g_stkAddr[h]) continue;
+            u32 c = g_stkCount[h], k = nt < TOP ? nt++ : TOP;
+            if (k == TOP && c <= top[2 * (TOP - 1) + 1]) continue;
+            if (k == TOP) k = TOP - 1;
+            while (k > 0 && top[2 * (k - 1) + 1] < c) { top[2 * k] = top[2 * (k - 1)]; top[2 * k + 1] = top[2 * (k - 1) + 1]; k--; }
+            top[2 * k] = g_stkAddr[h];
+            top[2 * k + 1] = c;
+        }
+        fprintf(f, "# guest stacks 10s (%u walks, %u addresses lost):", (unsigned)g_stkWalks, (unsigned)g_stkLost);
+        for (u32 i = 0; i < nt; i++)
+            fprintf(f, " %08lx %.3f%%", (unsigned long)top[2 * i], tot > 0 ? 100.0 * top[2 * i + 1] / tot : 0.0);
+        fprintf(f, "\n");
+        memset(g_stkAddr, 0, sizeof g_stkAddr);
+        g_stkWalks = g_stkLost = 0;
     }
     g_n = 0;
     g_outside = 0;

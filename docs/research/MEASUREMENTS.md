@@ -647,6 +647,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   hardware conversions on stores: **+0.100 +- 0.058 points (+0.5%, 1.7 SE)** over 8 phase pairs from 60 s (18.3-18.6%
   in this run's scene). As on the title benchmark (job 338): float rounding is not what limits core 0. This bounds
   C8 (single precision in the JIT) too: making the rounding cheaper cannot gain more than removing it.
+- **Inclusive profile (job 374, `--profile on`: each sample walks the guest stack's back chain from r1, plus LR, and
+  counts each return address once; core/tools/stack_funcs.py maps them to the calling functions; 22 reports from
+  60 s, 50,000 walks a report, 0 addresses lost).** Share of all core-0 samples taken under each function:
+  rendering (mDoGph_Painter) **56.5%**, game logic (fpcM_Execute: every actor's execute) 15.8%. Under the renderer:
+  **J2DScreen::draw 24.8%** (the 2D UI), of which the HUD meter (dMeter2Draw_c::draw) **16.4%** and the talk / message
+  screens (dMsgScrnBase_c::draw) 14.8% (overlapping); J3DDrawBuffer::draw 8.9%, particles (dPa_control_c::draw) 5.3%,
+  the minimap (renderingAmap_c::draw) 5.0%. J2DPane::draw reads 47% but recursion through two call sites counts twice:
+  use J2DScreen::draw. Core 0 spends ~3.5x as long building the frame's GX commands as running the game, and the 2D
+  UI library is the largest self-contained part of it (this frame has the villager's talk prompt open; the HUD meter
+  is always on).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

@@ -978,6 +978,7 @@ static const char* run(const char* path) {
         pica_set_job_ring(g_opt.vwmemKb << 10);
     }
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
+    if (g_jit && g_useJit && g_opt.profile) jitsample_stacks(g_sys.mem1);  // inclusive profile (# guest stacks)
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {

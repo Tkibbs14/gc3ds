@@ -1207,3 +1207,9 @@ check) only as quick correctness gates before a build reaches the card. Plan in 
   cycles) needs less guest work or a different execution model, not cheaper instructions: the candidates are
   frame skip (C9, +10%, visual glitches, a user option), native code for whole subsystems (NATIVE_PORT_PLAN.md; the
   profile is flat, so whole subsystems, not functions), and the owner's call on timing / exactness trade-offs.
+- **Inclusive profile (job 374, `core/tools/stack_funcs.py`):** rendering 56.5% of core 0 against game logic 15.8%;
+  the 2D UI (J2DScreen::draw) 24.8%, the HUD meter alone 16.4%. **Proposed first native subsystem: J2D** (panes,
+  pictures, text boxes, materials, J2DPrint and JUTResFont), a closed library whose output is GX commands, checkable
+  byte for byte against the JIT's FIFO output on the PC (as the stand-ins' HLE_CHECK). Design questions before code:
+  the game's own J2D subclasses (virtual drawSelf in dMsgScrn*), how a native call tree enters and leaves guest state
+  once (C23's lesson), and the decomp source (zeldaret/tp, matching) as the reference.
