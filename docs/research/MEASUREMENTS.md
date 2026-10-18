@@ -824,6 +824,9 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   registers are reachable (PERF_LEVERS.md called its prefetch tuning "Secure-only, no reachable SVC"), and user mode
   can reach VA 0x80000000-0xAFFFFFFF (jit_3ds.c's fault-mode comment says nothing at 0x40000000 and above is user
   accessible). Guest RAM through the mirror would be uncached: not a lever.
+- **L2C-310 prefetch offset (jobs 444-445, Ordon walk, `--l2pf N --ab l2pf`, the kernel's value restored after each
+  run):** offset 7 against the kernel's 1: **+0.008 +- 0.015 points (neutral)**, instruction-fetch stalls 21.5 -> 20.5 M/s;
+  offset 15: **-0.193 +- 0.015 points**. The kernel's setting stands; L2 prefetch tuning is not a lever for core 0.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
