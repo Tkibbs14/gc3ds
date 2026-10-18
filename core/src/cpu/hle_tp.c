@@ -72,8 +72,18 @@ static bool known(void) {
     return g_known == 1;
 }
 
+// Guest frame skip (experiment, --gfskip ADDR): the game's renderer (TP: mDoGph_Painter) returns at once on every other
+// call while g_gfskipOn, so its logic runs every frame and the frame it draws, every second one: core 0's rendering
+// work (56% of it in Ordon, job 374) and the GX thread's both halve. The skipped call does nothing at all; the screen
+// keeps the previous frame. Not exact by design (owner, 2026-10-17: whatever makes the game run better).
+u32 g_gfskipAddr;
+volatile bool g_gfskipOn;
+u64 g_gfskipStats[2];  // calls run, calls skipped
+static u32 g_gfskipN;
+
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
+    if (g_gfskipAddr && pc == g_gfskipAddr) return true;
     if (!g_on) return false;
     if (pc != PC_ENTRY && pc != PC_NEXT) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
     return known();
@@ -577,6 +587,11 @@ static void sk_after(const Gekko* g) {
 #endif
 
 u32 hle_run(Gekko* g, u32 budget) {
+    if (g_gfskipAddr && g->pc == g_gfskipAddr) {
+        if (g_gfskipOn && (++g_gfskipN & 1)) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr
+        g_gfskipStats[0]++;
+        return 0;  // declined: the renderer runs
+    }
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
         u32 n = hle_ps_run(g);  // (first: on the PC it checks the generated GD writers before hle_gd.c's own)

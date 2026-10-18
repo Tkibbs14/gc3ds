@@ -16,6 +16,10 @@ u32 hle_run(Gekko* g, u32 budget);
 void hle_invalidate(u32 pa);
 // Stand-ins on (default) or off (comparison); compiled code holds hooks, so drop it after a change (jit_invalidate_all).
 void hle_set_enabled(bool on);
+// Guest frame skip (experiment): the function at g_gfskipAddr returns at once on every other call while g_gfskipOn.
+extern u32 g_gfskipAddr;
+extern volatile bool g_gfskipOn;
+extern u64 g_gfskipStats[2];
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

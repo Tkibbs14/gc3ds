@@ -672,6 +672,13 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   thread 79.9 -> 85.4% busy: once core 0 is faster the GX thread is the limit within ~6%. A lever on one side alone
   is capped near that; full speed needs both core 0's and the GX thread's work per frame cut. (The HUD drawn at a
   lower rate or replayed would be worth at most this +5.6%.)
+- **Guest frame skip (jobs 377-378, `--gfskip 8000A604 --ab gfskip`; owner: whatever makes the game run better):** a
+  hook makes TP's renderer (mDoGph_Painter) return at once on every other call; its logic runs every frame. speed_pct
+  is the wrong ruler here: it fell (job 377: 21.1 -> 16.7%) because the game stops idling in the renderer's retrace
+  wait (polling-loop skips 2,699 -> 1,796/s). **Game frames per real second (renderer calls, job 378): ~7.4-8.9
+  without, ~12.8-13.4 with (+55-65%); frames drawn ~8.2 -> ~6.5/s.** The game runs ~60% faster toward its 30 frames a
+  second, at a lower display rate. Visual side effects (effects that copy the previous frame) not yet checked. Off
+  by default (needs the game's renderer address); `# guest frames 10s` reports the rates.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
