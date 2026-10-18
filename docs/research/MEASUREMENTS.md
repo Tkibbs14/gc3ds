@@ -779,6 +779,13 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   Ordon walk **23.43%** (22.64%), title cutscene 26.67% (26.63%), movie 12.70% (12.05%). In game frames a second
   (TP runs at 30): Ordon ~7, the heavy area ~5. With CPU lighting on the worker, Ordon's GX thread waits for ring
   space 10.3% (1.4% before): the worker's gather and lighting are 85% of its time and it falls behind in bursts.
+- **Black lights left out of deferred CPU lighting (jobs 422-423, `--ab blacklit`):** TP lights 54% of its light
+  evaluations with black lights (PC, 1,500 title frames: 15.6 M of 28.8 M, all attenuated); a black light adds 0 x da,
+  exactly nothing while da is finite, which holds with k0 > 0, k1 >= 0, k2 >= 0 (true for all of them). PC: all
+  15,560,545 left out, 4,682,498 draws compared, 0 differed. Device: the worker 36.4 -> 31.1% (Ordon) and 28.6 -> 24.4%
+  (heavy area), ring waits 10.3 -> 6.3% and 7.8 -> 4.6%, but speed **-0.048 +- 0.020 (Ordon) and -0.044 +- 0.048
+  points (heavy area): neutral**; the GX thread stays the limit (its freed wait turns into GPU wait). Kept on (exact,
+  less work, worker headroom for the next offload).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

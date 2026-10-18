@@ -60,6 +60,8 @@ const VCacheStats* vcache_stats(const VCache* vc);
 void vfast_set_sources(VCache* vc, const u32* pa, const u32* seg, u32 n);
 void vfast_job_set_cache(VJob* job, VCache* vc);
 extern bool g_vcacheOn;     // off: every draw gathers (A/B)
+extern bool g_vfSkipBlack;    // black lights with an exactly zero term left out of deferred CPU lighting
+extern u64 g_vfBlackSkipped;
 extern u32 g_vsWays;          // vertex set-ups kept (vfast.c: 8; 1 for the A/B's other arm)
 extern bool g_vfDeferCpu;    // CPU-lit draws' gather and lighting left to vfast_finish too (written by the preparing thread)
 extern bool g_vfDeferCheck;  // PC: vfast_run compares both ways on CPU-lit draws (g_vfDeferChecked, g_vfDeferFails)

@@ -367,6 +367,8 @@ u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
 // Written only by the thread that prepares jobs (pica.c begin_frame, soft.c): CPU-lit draws leave their gather and
 // lighting to vfast_finish as shader-lit ones do (with defer).
 bool g_vfDeferCpu;
+bool g_vfSkipBlack = true;  // deferred CPU-lit jobs leave out black lights whose term is exactly zero (A/B: --ab blacklit)
+u64 g_vfBlackSkipped;
 bool g_vfDeferCheck;     // PC (VFAST_DEFLIT_CHECK): vfast_run does each CPU-lit draw both ways and compares
 int g_vfDeferPlant;      // PC (VFAST_DEFLIT_PLANT=1 or 2): the check's self-tests (vfast.h)
 u64 g_vfDeferChecked, g_vfDeferFails, g_vfDeferLitHalves, g_vfDeferJobs;
@@ -1147,10 +1149,23 @@ matrices:
             for (u32 k = 0; k < 2; k++) {
                 job->half[ch][k] = NULL;
                 if (!(chans & (1u << ch)) || ch >= numChans) continue;
-                u32 nb = (u32)offsetof(VHalf, l) + (half[ch][k].lit ? half[ch][k].n : 0) * (u32)sizeof(VLight);
-                memcpy(m, &half[ch][k], nb);
-                job->half[ch][k] = (const VHalf*)(void*)m;
-                m += align8(nb);
+                // Black lights left out when their term is exactly zero: 0 * da adds nothing while da is finite, which
+                // holds without attenuation and, with it, when the divisor k0 + k1 d + k2 d^2 (d >= 0) cannot reach 0.
+                // TP: 54% of the lights lit with are black, all attenuated (PC, 1,500 title frames).
+                const VHalf* h = &half[ch][k];
+                VHalf* o = (VHalf*)(void*)m;
+                memcpy(o, h, offsetof(VHalf, l));
+                u32 n = 0;
+                for (u32 li = 0; h->lit && li < h->n; li++) {
+                    const VLight* l = &h->l[li];
+                    bool black = k ? l->lc[3] == 0 : l->lc[0] == 0 && l->lc[1] == 0 && l->lc[2] == 0;
+                    bool finite = !h->atten || (l->k[0] > 0 && l->k[1] >= 0 && l->k[2] >= 0);
+                    if (g_vfSkipBlack && black && finite) { g_vfBlackSkipped++; continue; }
+                    o->l[n++] = *l;
+                }
+                o->n = (u8)n;
+                job->half[ch][k] = o;
+                m += align8((u32)offsetof(VHalf, l) + n * (u32)sizeof(VLight));
             }
         job->end = m;
     }
