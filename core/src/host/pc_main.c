@@ -294,6 +294,7 @@ int main(int argc, char** argv) {
     // OPMIX=1: dynamic instruction mix of the interpreter, printed at exit (which instructions a JIT must cover).
     if (getenv("OPMIX")) g_gekkoOpMix = calloc(65536, sizeof(u64));
     if (getenv("GC3DS_NOGPBULK")) { extern bool g_gpBulk; g_gpBulk = false; }  // pipe bursts byte by byte (hw/gx.c)
+    if (getenv("GC3DS_FEEDDIRECT")) { extern bool g_feedDirect; g_feedDirect = true; }  // GX commands parsed in place (gx/fifo.c)
     // PCHIST=file: executed instructions by address (0x80000000-0x81FFFFFF), written at exit as raw u32 counts.
     const char* pcHistPath = getenv("PCHIST");
     if (pcHistPath) g_gekkoPcHist = calloc(1u << 23, sizeof(u32));

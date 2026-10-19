@@ -663,7 +663,54 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
     }
 }
 
+// g_feedDirect (--feeddirect, --ab feeddirect): commands are parsed straight from the bytes fed (the GX thread's ring
+// record) instead of from a copy of them, and only a command split across two feeds goes through the pending buffer,
+// topped up FEED_STEP bytes at a time until it completes. The same bytes in the same order (the layout is the stream's
+// own with GC_SWAPRAM off).
+bool g_feedDirect;
+#define FEED_STEP 128
+static bool pend_append(GXCore* gx, const u8* data, u32 len) {
+    if (gx->pendingLen + len > gx->pendingCap) {
+        u32 cap = gx->pendingCap ? gx->pendingCap : 4096;
+        while (cap < gx->pendingLen + len) cap *= 2;
+        u8* p = realloc(gx->pending, cap);
+        if (!p) { emu_error("GX FIFO buffer allocation failed\n"); return false; }
+        gx->pending = p;
+        gx->pendingCap = cap;
+    }
+    ram_from_be(gx->pending, gx->pendingLen, data, len);
+    gx->pendingLen += len;
+    return true;
+}
+static u32 run_cmds(System* s, GXCore* gx, const u8* p, u32 len) {
+    u32 off = 0;
+    for (;;) {
+        u32 n = off < len ? exec_one(s, gx, p + off, len - off, false) : 0;
+        if (!n) break;
+        gx->commands++;
+        off += n;
+    }
+    return off;
+}
+static void feed_direct(System* s, GXCore* gx, const u8* data, u32 len) {
+    while (gx->pendingLen && len) {  // a command the last feed ended inside: completed from these bytes
+        u32 take = len < FEED_STEP ? len : FEED_STEP;
+        if (!pend_append(gx, data, take)) return;
+        data += take;
+        len -= take;
+        u32 off = run_cmds(s, gx, gx->pending, gx->pendingLen);
+        if (off) {
+            memmove(gx->pending, gx->pending + off, gx->pendingLen - off);
+            gx->pendingLen -= off;
+        }
+    }
+    if (!len) return;
+    u32 off = run_cmds(s, gx, data, len);
+    if (off < len) pend_append(gx, data + off, len - off);
+}
+
 static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
+    if (g_feedDirect && !GC_SWAPRAM) { g_gxWhere = GW_FIFO; feed_direct(s, gx, data, len); return; }
     if (gx->pendingLen + len > gx->pendingCap) {
         u32 cap = gx->pendingCap ? gx->pendingCap : 4096;
         while (cap < gx->pendingLen + len) cap *= 2;

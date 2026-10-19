@@ -951,6 +951,24 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   1.1%, J2DPane::draw 1.2%. **The title's later stretch (job 504's last reports, past its ~150 s cutscene): core 0
   bound (dispatch 1.8%), the ShdwDraw stand-in ~38%** (its block 25.2% plus its neighbours), SetupNP 2.3%, GetTriPla
   2.3%, psdRealCallBack 2.3%, the J3D port 2.9%.
+- **The vertex worker's job ring re-tested in gameplay (jobs 508-509, `--vwmem 128 --vwmem-b 256 --ab vwmem`):** the GX
+  thread waits for job-ring space 7-10% of its time (valloc) while the worker is 30-34% busy. 256 KB against 128:
+  valloc -28% / -34%, the GX thread 6.4% / 5.6% less busy, but **heavy area -0.188 +- 0.017 points (-0.9%), its GPU
+  time a frame +22% and core 0's GX wait +1.9 points; Ordon -0.144 +- 0.383 (-0.5%)**. 128 KB stays: the waits are
+  where the GX thread's time goes, not what limits the frame.
+- **The GX thread's honest position (job 512, heavy area, `--profile on --gxdiag off`):** decode (fifo + dec_*) ~19%,
+  state (batch key 5.3, TEV 4.0, textures 4.6, state2 1.8, flush and draw ~4) ~21%, vertex (vprep 8.6, job-ring waits
+  7.7, queue, merge) ~18%, draw calls (drawcall 6.5, drawtail 7.4) ~14%, **framebegin 5.0-8.3%** (C3D_FrameBegin
+  waiting for the GPU's tail of the previous submit: REDESIGN_CANDIDATES C30), copies 4.6%, splits 2.3%, idle 7-10%.
+  Flat, like core 0's.
+- **The idle hook's sync with the GX thread (jobs 510-515, `--idlewait US --ab idlewait`; gxthread.c):** at a guest idle
+  loop core 0 waits until the GX thread has executed everything (as Dolphin's SyncOnSkipIdle). It does so **~3,900
+  times a second**, and nearly every wait ends drained within 200 us (job 514: 38,241 drained, 520 past 200 us).
+  Bounded waits of 2 ms and 200 us: neutral. **No wait (0 us): Ordon speed_pct +7.2%, heavy area +47%, but new game
+  frames (xfbcopy_s) only +2.4 +- 0.7% and +2.1 +- 0.7%:** with no wait, idle skips run emulated time ahead of the work,
+  so speed_pct inflates and stops measuring the frame rate. Timing drift of that kind would also move anything the game
+  or its audio clocks by time rather than by frames. Kept as an option (`--idlewait 0`), off by default; measure it by
+  xfbcopy_s, never speed_pct.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

@@ -448,3 +448,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Re-evaluate when:** the GX thread stops being gameplay's limit (then J2DPane::draw, text, the other TEV block
   types, J3D packet draw), or another JSystem game is the target (the same ports by code hash, GAMES.md).
 
+## C30. Double-buffered frames (record the next frame while the GPU draws this one)
+
+- **Idea (2026-10-19):** C3D_FrameBegin waits for the GPU to finish the previous submit because the vertex arena, the
+  index buffer and citro3d's command buffer are single-buffered. The GX thread starts the next frame at the first GX
+  work after the XFB copy, so it waits out the GPU's tail of the frame just submitted (what came after its last early
+  split, and the copy). Two arenas and two command buffers, swapped at each frame end (citro3d's context holds
+  cmdBuf / cmdBufSize and the queue: pica.c already reads that layout), would let it record on.
+- **Evidence (job 512, heavy area, `--profile on --gxdiag off`):** the GX thread at `framebegin` 5.0-8.3% of its samples
+  while the GPU is ~11% busy (c3d_gpu_ms ~19 ms a frame at ~6 frames a second); Ordon 0.1% (GPU frames ~4.6 ms).
+- **Against / risk:** a mistake in the GPU queue can freeze the console (`--gpudiag 1` did, job 403): run only when the
+  owner is home. Memory: a second arena and command buffer from linear memory (~12 MB free). Gain bounded by the wait:
+  heavy area up to ~5%.
+- **Status:** not built.
+- **Re-evaluate when:** GPU-heavier scenes become the target, or the frame-begin wait grows past ~10% of the GX thread.
+

@@ -213,7 +213,29 @@ static bool sync(System* s) {
 
 static const GXAsync kAsync = { feed, ev_post, poll, sync };
 
-static bool idle_hook(void* ctx) { return sync(ctx); }
+// The guest's idle loop. By default (g_idleWaitUs < 0) a full sync: core 0 waits until the GX thread has executed
+// everything, as Dolphin's SyncOnSkipIdle. With --idlewait N it waits at most N us, or until the GX thread posts an
+// event (a PE signal the program may be waiting for) or drains, and otherwise lets the skip go ahead while the GX thread
+// works on: the program still waits for whatever it waits for (events are applied only once the GX thread reaches
+// them), but core 0 runs events (retrace, audio) in the meantime instead of idling. Emulated time moves differently.
+int g_idleWaitUs = -1;
+u64 g_idleWaits[3];  // idle hooks: drained, an event arrived, the wait ran out
+static bool idle_hook(void* ctx) {
+    if (g_idleWaitUs < 0) return sync(ctx);
+    close_open();
+    u64 t0 = prof_begin();
+    u64 limit = svcGetSystemTick() + (u64)g_idleWaitUs * (SYSCLOCK_ARM11 / 1000000u);
+    u32 why = 2;
+    for (;;) {
+        if (drained()) { why = 0; break; }
+        if (g_evHead != g_evTail) { why = 1; break; }
+        if (svcGetSystemTick() > limit) break;
+    }
+    prof_end(PROF_GXWAIT, t0);
+    g_idleWaits[why]++;
+    dmb();
+    return apply_events(ctx) != 0;
+}
 
 bool gxthread_start(System* s, void (*present)(System* s, const GXPresent* p)) {
     g_s = s;

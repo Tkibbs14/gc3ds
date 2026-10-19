@@ -144,6 +144,9 @@ static const char kPsFlush[] = "__GXSendFlushPrim";
 static bool g_psflushOn;  // off: neutral on the 2DS (jobs 452-453); --psflush on
 extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
 extern bool g_ringBatch;  // gxthread.c: bursts batched into larger ring records
+extern bool g_feedDirect;  // gx/fifo.c: GX commands parsed in place
+extern int g_idleWaitUs;  // gxthread.c: the idle hook's wait for the GX thread (-1: a full sync)
+extern u64 g_idleWaits[3];
 static bool g_psgxOn = true;
 
 // CPU clock estimate: a loop of 17 dependent single-cycle instructions plus a taken branch (about 18 cycles per
@@ -464,6 +467,7 @@ typedef struct {
     u32 splitVerts; bool abSplitverts;  // --splitverts N: arena vertices between early splits; --ab splitverts: N and 8192
     bool abProfclock;  // --ab profclock: the host profile's clock on and off (profclock column; off phases read 0 there)
     bool abGxdiag;  // --ab gxdiag: the decoder's statistics on and off (gxdiag column; measures their cost)
+    bool nogxdiag;  // --gxdiag off: no decoder statistics even with --profile on (the GX thread's positions without them)
     bool abBlacklit;  // --ab blacklit: black lights left out and kept (blacklit column)
     bool abVscache;  // --ab vscache: 8 vertex set-ups kept, and 1 (vscache column)
     bool noshlight, abShlight;  // --shlight on|off (off): lighting in the vertex shader or on the CPU; --ab shlight
@@ -480,6 +484,8 @@ typedef struct {
     bool abJ3dhook;  // --ab j3dhook: the J3D concat-view matrix port on and off (hle column bit 6)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
+    bool feeddirect, abFeeddirect;  // --feeddirect on|off (off), --ab feeddirect: GX commands parsed in place (gx/fifo.c g_feedDirect)
+    int idlewait; bool abIdlewait;  // --idlewait US: the idle hook waits at most US for the GX thread (default: a full sync, -1); --ab idlewait: full and US
     bool ringbatch, abRingbatch;  // --ringbatch on|off (on), --ab ringbatch: bursts batched into larger GX-thread ring records (gxthread.c)
     bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
@@ -530,6 +536,7 @@ static void opts_default(RunOpts* o) {
     o->deflit = true;    // CPU-lit draws on the vertex worker: heavy area +6.8%, Ordon +0.7% (jobs 409-410)
     o->noshlight = true; // lighting on the CPU (worker), not the vertex shader: heavy area GPU 43.6 -> 27.1 ms, +2.9%; Ordon +0.35% (jobs 412, 415)
     o->vramtex = true;   // textures in VRAM (XFBs to FCRAM): heavy area GPU 33.8 -> 14.4 ms, +12%; Ordon +0.4% (jobs 424-425)
+    o->idlewait = -1;    // the idle hook syncs fully with the GX thread (Dolphin's SyncOnSkipIdle)
     o->ringbatch = true; // bursts batched into 512-byte ring records: heavy area +2.6%, Ordon +1.6% (jobs 505-506)
     o->gpbulk = true;    // pipe bursts with one copy (hw/gx.c): heavy area +3.2%, Ordon +4.5% (jobs 477-478), byte-identical
     o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
@@ -562,7 +569,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abRingbatch = !strcmp(v, "ringbatch"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -571,6 +578,9 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
         else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
         else if (!strcmp(a, "--ringbatch")) o->ringbatch = !strcmp(v, "on");
+        else if (!strcmp(a, "--idlewait")) o->idlewait = atoi(v);
+        else if (!strcmp(a, "--feeddirect")) o->feeddirect = !strcmp(v, "on");
+        else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
@@ -715,7 +725,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch,idlewait,feeddirect");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -1084,7 +1094,7 @@ static const char* run(const char* path) {
         if (g_opt.abBlacklit) g_vfSkipBlack = false;  // --ab blacklit starts with them
         if (g_pica) pica_set_xfb_fcram(g_opt.vramtex || g_opt.abVramtex);
         if (g_pica) pica_set_vramtex(g_opt.vramtex && !g_opt.abVramtex);  // --ab vramtex starts off
-        g_gxDiag = g_opt.profile && !g_opt.abGxdiag;  // --ab gxdiag starts off
+        g_gxDiag = g_opt.profile && !g_opt.abGxdiag && !g_opt.nogxdiag;  // --ab gxdiag starts off
         if (g_pica) pica_set_split_verts(g_opt.splitVerts && !g_opt.abSplitverts ? g_opt.splitVerts : 8192);
         l2pf_begin();
         if (g_pica) pica_set_qbig(g_opt.qbig && !g_opt.abQbig);  // --ab qbig starts off
@@ -1097,6 +1107,8 @@ static const char* run(const char* path) {
         g_psflushOn = g_opt.psflush && !g_opt.abPsflush;  // --ab psflush starts off
         g_gpBulk = g_opt.gpbulk && !g_opt.abGpbulk;  // --ab gpbulk starts off
         g_ringBatch = g_opt.ringbatch && !g_opt.abRingbatch;  // --ab ringbatch starts off
+        g_idleWaitUs = g_opt.abIdlewait ? -1 : g_opt.idlewait;  // --ab idlewait starts with the full sync
+        g_feedDirect = g_opt.feeddirect && !g_opt.abFeeddirect;  // --ab feeddirect starts off
         g_memoAddr = g_opt.memo;
         hle_ps_set_group(kPsFlush, g_psflushOn);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
@@ -1296,6 +1308,8 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_psflushOn ? 1 : 0);
                 fprintf(g_perf, ",%d", g_gpBulk ? 1 : 0);
                 fprintf(g_perf, ",%d", g_ringBatch ? 1 : 0);
+                fprintf(g_perf, ",%d", g_idleWaitUs);
+                fprintf(g_perf, ",%d", g_feedDirect ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1384,6 +1398,8 @@ static const char* run(const char* path) {
                 }
                 if (g_opt.abGpbulk && perfRows % AB_SECS == 0) g_gpBulk = !g_gpBulk;  // (read per burst: no code to drop)
                 if (g_opt.abRingbatch && perfRows % AB_SECS == 0) g_ringBatch = !g_ringBatch;  // (read per burst)
+                if (g_opt.abIdlewait && perfRows % AB_SECS == 0) g_idleWaitUs = g_idleWaitUs < 0 ? g_opt.idlewait : -1;
+                if (g_opt.abFeeddirect && perfRows % AB_SECS == 0) g_feedDirect = !g_feedDirect;  // (read per feed)
                 if (g_opt.abPsflush && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     g_psflushOn = !g_psflushOn;
                     hle_ps_set_group(kPsFlush, g_psflushOn);
@@ -1502,6 +1518,13 @@ static const char* run(const char* path) {
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
                 }
                 {  // the GX decoder's time by command class (fifo.c, one command in 16)
+                    if (g_opt.idlewait >= 0) {  // the idle hook's bounded waits (gxthread.c): how each ended
+                        static u64 lastW[3];
+                        fprintf(g_perf, "# idle waits 10s (%d us): drained %llu, an event %llu, ran out %llu\n", g_opt.idlewait,
+                                (unsigned long long)(g_idleWaits[0] - lastW[0]), (unsigned long long)(g_idleWaits[1] - lastW[1]),
+                                (unsigned long long)(g_idleWaits[2] - lastW[2]));
+                        memcpy(lastW, g_idleWaits, sizeof lastW);
+                    }
                     if (g_opt.port || g_opt.abPort) {  // the native library ports (port_j2d.c): a line per hooked function
                         static PortStats lastP;
                         PortStats p = g_portStats;
