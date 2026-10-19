@@ -965,10 +965,24 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   loop core 0 waits until the GX thread has executed everything (as Dolphin's SyncOnSkipIdle). It does so **~3,900
   times a second**, and nearly every wait ends drained within 200 us (job 514: 38,241 drained, 520 past 200 us).
   Bounded waits of 2 ms and 200 us: neutral. **No wait (0 us): Ordon speed_pct +7.2%, heavy area +47%, but new game
-  frames (xfbcopy_s) only +2.4 +- 0.7% and +2.1 +- 0.7%:** with no wait, idle skips run emulated time ahead of the work,
-  so speed_pct inflates and stops measuring the frame rate. Timing drift of that kind would also move anything the game
-  or its audio clocks by time rather than by frames. Kept as an option (`--idlewait 0`), off by default; measure it by
-  xfbcopy_s, never speed_pct.
+  frames a second ('# new frames 10s') 9.59 -> 9.73 (+1.5%) and 6.84 -> 6.81 (even):** with no wait, idle skips run
+  emulated time ahead of the work, so speed_pct inflates and stops measuring the frame rate. (The per-row xfbcopy_s
+  column is printed rounded to whole copies; its phase means read +2.4% / +2.1%: use the 10 s line.) Timing drift of
+  that kind would also move anything the game or its audio clocks by time rather than by frames. Not worth it: off
+  (`--idlewait 0` to try); judge any change to idle-time behaviour by new frames a second, never by speed_pct.
+- **GX commands parsed in place (jobs 516-517, `--ab feeddirect`; fifo.c):** the decoder reads the ring record itself
+  and only a command split across records goes through the pending buffer (PC state hash unchanged over 400 fields).
+  **Heavy area -0.080 +- 0.019 points (-0.4%), Ordon -0.013 +- 0.368: no gain.** The copy (dec_feed ~1.9% of the GX
+  thread's samples) was not where its time goes; off.
+- **TEV programs' citro3d stages cached with them (jobs 520-521, `--ab tevenv`; pica.c):** 7,500 program changes a
+  second cost update_tev 48 ms/s in the heavy area; with each cached program keeping its six built stages, **update_tev
+  still 48-50 ms/s, speed +0.025 +- 0.018 (heavy) and -0.006 +- 0.365 (Ordon)**: building the stages was not the cost
+  (the key, its hash and compare are). Off. **50 us idle waits (jobs 518-519): neutral** (new frames 6.88 / 6.90, 8.85 /
+  8.93).
+- **Where the GX thread stands after these (10-19):** five GX-thread changes measured neutral or worse in one day (a
+  256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; ring batching was the gain). Its time is
+  spread over ~15 items of 2-8% each; the one wait with a clear cause left is framebegin (C30, double-buffered frames,
+  5-8% in the heavy area). Frame rates now (10 s lines): Ordon ~8.9-9.6 game frames a second, heavy area ~6.9.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

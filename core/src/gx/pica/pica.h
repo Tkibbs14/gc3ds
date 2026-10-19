@@ -55,6 +55,8 @@ u32 pica_smalltex(void);             // for CMPR / RGB5A3 sources (applied at th
 extern u64 g_texFmtCount[16], g_texRgba8By[16];
 void pica_set_tevver(bool on);  // update_tev skips the key while no TEV register changed (on by default)
 bool pica_tevver(void);
+void pica_set_tevenv(bool on);  // the combiner-plan cache keeps each program's citro3d stages (off until measured)
+bool pica_tevenv(void);
 void pica_set_mips(bool on);  // mip levels from the game's textures (applied at the next frame: every texture again)
 bool pica_mips(void);
 void pica_set_vramtex(bool on);  // textures in VRAM (from the next frame: every texture again)

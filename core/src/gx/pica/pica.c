@@ -1327,24 +1327,33 @@ static const GPU_TESTFUNC kFunc[8] = { GPU_NEVER, GPU_LESS, GPU_EQUAL, GPU_LEQUA
 
 // Each stage is built aside and stored only when it differs from the stage citro3d holds (lean state): a TEV change
 // usually touches one or two of the six.
-static void apply_tev(const PicaTev* t) {
+// A program's six combiner stages as citro3d holds them.
+static void build_env(const PicaTev* t, C3D_TexEnv* env) {
     for (int i = 0; i < PICA_STAGES; i++) {
-        C3D_TexEnv e;
-        C3D_TexEnvInit(&e);
+        C3D_TexEnv* e = &env[i];
+        C3D_TexEnvInit(e);
         if (i < t->numStages) {
             const PicaStage* p = &t->st[i];
-            C3D_TexEnvSrc(&e, C3D_RGB, p->srcRgb[0], p->srcRgb[1], p->srcRgb[2]);
-            C3D_TexEnvSrc(&e, C3D_Alpha, p->srcA[0], p->srcA[1], p->srcA[2]);
-            C3D_TexEnvOpRgb(&e, p->opRgb[0], p->opRgb[1], p->opRgb[2]);
-            C3D_TexEnvOpAlpha(&e, p->opA[0], p->opA[1], p->opA[2]);
-            C3D_TexEnvFunc(&e, C3D_RGB, p->fnRgb);
-            C3D_TexEnvFunc(&e, C3D_Alpha, p->fnA);
-            C3D_TexEnvScale(&e, C3D_RGB, p->scaleRgb);
-            C3D_TexEnvScale(&e, C3D_Alpha, p->scaleA);
-            C3D_TexEnvColor(&e, p->konst);
+            C3D_TexEnvSrc(e, C3D_RGB, p->srcRgb[0], p->srcRgb[1], p->srcRgb[2]);
+            C3D_TexEnvSrc(e, C3D_Alpha, p->srcA[0], p->srcA[1], p->srcA[2]);
+            C3D_TexEnvOpRgb(e, p->opRgb[0], p->opRgb[1], p->opRgb[2]);
+            C3D_TexEnvOpAlpha(e, p->opA[0], p->opA[1], p->opA[2]);
+            C3D_TexEnvFunc(e, C3D_RGB, p->fnRgb);
+            C3D_TexEnvFunc(e, C3D_Alpha, p->fnA);
+            C3D_TexEnvScale(e, C3D_RGB, p->scaleRgb);
+            C3D_TexEnvScale(e, C3D_Alpha, p->scaleA);
+            C3D_TexEnvColor(e, p->konst);
         }
-        if ((g_lean & LEAN_STAGES) && !memcmp(&g_c3d->texEnv[i], &e, sizeof e)) continue;
-        *C3D_GetTexEnv(i) = e;
+    }
+}
+
+// `env`: the program's stages built already (the combiner-plan cache keeps them: --tevenv), else built here.
+static void apply_tev(const PicaTev* t, const C3D_TexEnv* env) {
+    C3D_TexEnv built[PICA_STAGES];
+    if (!env) { build_env(t, built); env = built; }
+    for (int i = 0; i < PICA_STAGES; i++) {
+        if ((g_lean & LEAN_STAGES) && !memcmp(&g_c3d->texEnv[i], &env[i], sizeof env[i])) continue;
+        *C3D_GetTexEnv(i) = env[i];
     }
     // C3D_TexEnvBufUpdate's bits: RGB in 8-11, alpha in 12-15.
     if ((g_lean & LEAN_TEVBUF) && ((g_c3d->texEnvBuf >> 8) & 0xFF) == ((t->bufRgb & 0xFu) | (t->bufA & 0xFu) << 4) &&
@@ -1361,15 +1370,23 @@ static void apply_tev(const PicaTev* t) {
 // as decomp ports build each material's combiner setup once (Mario Kart 64 on 3DS). Games alternate between materials
 // from draw to draw, which the one-entry check alone recompiled every time.
 #define TEVC_BITS 9
-typedef struct { u32 n, key[72]; PicaTev tev; } TevSlot;
+typedef struct { u32 n, key[72]; PicaTev tev; bool envReady; C3D_TexEnv env[PICA_STAGES]; } TevSlot;
 static TevSlot* g_tevCache;
+// --tevenv on (--ab tevenv): each cached program keeps its stages as citro3d holds them (build_env once), so a change
+// of program copies them instead of building them through citro3d's setters again (7,500 changes a second in the heavy
+// area, 48 ms/s in update_tev: job 501).
+static volatile bool g_tevEnvWant;
+void pica_set_tevenv(bool on) { g_tevEnvWant = on; }
+bool pica_tevenv(void) { return g_tevEnvWant; }
 
 // The TEV program of registers k (tev_key's n words): from the cache, else compiled into it (or into *tmp without one).
-static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev* tmp) {
+// *slotOut: its cache slot (NULL without one).
+static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev* tmp, TevSlot** slotOut) {
     if (!g_tevCache) g_tevCache = calloc(1u << TEVC_BITS, sizeof *g_tevCache);
     u32 h = 2166136261u;
     for (u32 i = 0; i < n; i++) h = (h ^ k[i]) * 16777619u;
     TevSlot* slot = g_tevCache ? &g_tevCache[(h ^ (h >> 15)) & ((1u << TEVC_BITS) - 1)] : NULL;
+    if (slotOut) *slotOut = slot;
     if (slot && slot->n == n && !memcmp(slot->key, k, n * 4)) return &slot->tev;
     tev_pica_compile(gx, tmp);
     g_picaStats.tevCompiles++;
@@ -1378,6 +1395,7 @@ static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev*
     slot->n = n;
     memcpy(slot->key, k, n * 4);
     slot->tev = *tmp;
+    slot->envReady = false;
     return &slot->tev;
 }
 
@@ -1401,8 +1419,14 @@ static void update_tev(const GXCore* gx) {
     memcpy(g.tevKey, k, n * 4);
     g_picaStats.tevChanges++;
     PicaTev tmp;
-    g.tev = *tev_lookup(gx, k, n, &tmp);
-    apply_tev(&g.tev);
+    TevSlot* slot = NULL;
+    g.tev = *tev_lookup(gx, k, n, &tmp, &slot);
+    const C3D_TexEnv* env = NULL;
+    if (g_tevEnvWant && slot) {
+        if (!slot->envReady) { build_env(&slot->tev, slot->env); slot->envReady = true; }
+        env = slot->env;
+    }
+    apply_tev(&g.tev, env);
     g.sel = (VSel){ g.tev.rasChan, g.tev.numTex, { g.tev.texCoord[0], g.tev.texCoord[1], g.tev.texCoord[2] } };
     g.tevValid = true;
 }
@@ -3376,7 +3400,7 @@ static bool ns_draw(System* s, const NsReq* q) {
     if (!same) {  // a native batch opens: its state must be one the native path supports
         u32 tk[72], tn = tev_key(gx, tk);
         PicaTev tmp;
-        const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, tk, tn, &tmp);
+        const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, tk, tn, &tmp, NULL);
         if (!ns_state_ok(gx, t, false)) { g_nsStats[3]++; return false; }
     }
     u32 frameBefore = g.frameNo;
