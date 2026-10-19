@@ -996,6 +996,29 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   Neutral: off by default. What it shows: in the heavy area neither thread now waits for the other or the GPU, and the
   frame rate does not move, so **core 0's own work sets the heavy area's frame rate** (it was the GX thread only in the
   sense of being busy); C3D_GetDrawingTime (c3d_gpu_ms) is not updated while it is on.
+- **Core 0 in the heavy area does not set its frame rate (jobs 526-543, 10-19):**
+  - **Two more ports, exact, off.** `__GXSendFlushPrim` (`--port-hooks` bit 3, `--ab flushhook`): PC 4,822 checked calls
+    and device 26,761, 0 differed; ~2,700 calls/s of 48 guest instructions (19 pipe words).
+    `J3DColorBlockLightOn::diffLightObj` (bit 4, `--ab lighthook`; each light's four XF loads, 72 bytes, appended to
+    `__GDCurrentDL` natively): PC 18,699 and device 3,973 checked, 0 differed; ~945 calls/s of ~3,800 guest
+    instructions; the port takes 7.3 + 8.7 us a call (building, committing byte by byte), ~1.5% of core 0, against
+    ~3.6% inclusive for the guest path (job 512 stacks).
+  - **A/B readings.** Heavy area, settled rows: flush -0.43 +- 0.13 and -0.50 +- 0.16 points (two runs); lights -0.28
+    +- 0.15; lights with overlapped frames -0.02 +- 0.17. Ordon: flush +1.2 +- 0.3 twice (the scripted walk is
+    deterministic, so a repeat gives the same alignment and cannot rule out a walk artifact); lights unreadable (+-0.9).
+  - **The heavy area's game frames are pinned at 6.90 a second.** Every 10 s line of every run since job 501
+    (gpbulk and ring batching) reads 6.9, while speed_pct ranges 20.65-21.13%. Separate whole runs: the three default
+    ports 6.9 frames at 21.13%, plus lights 6.9 at 21.12%, ports off 6.9 at 20.71% (jobs 539-541). **All HLE stand-ins
+    off (0 runs; core 0 runs ~3M more guest instructions a second natively): 6.9 frames at 21.14% (job 542)**; core 0
+    absorbs the extra work in its idle-loop waits. Slowing the GX side (gpbulk and ring batching off, job 543): 20.30%,
+    frames 6.6-6.9. So removing core 0 work cannot raise the heavy area's frame rate; its pace (one picture every
+    ~145 ms of real time, sd ~12 ms) is set on the GX side or by the waits between the threads, not by either thread's
+    busy time (both show 8-13% slack with overlapped frames on).
+  - **Method.** A port's A/B recompiles all JIT code at each switch (a multi-second stall: the first 10 s line of
+    each arm reads ~6.1 frames against 6.9). core/tools/ab_phases.py now drops each phase's first 12 s (SETTLE).
+    Even settled, port A/Bs in the heavy area read the on arm 1-2% lower while separate runs show the ports +2%
+    (ports off 20.71 against 21.13): treat a port A/B in the heavy area as biased, and confirm with separate runs.
+    The per-row xfbcopy_s column is rounded per ~1 s row and reads ~6.0 where the 10 s line reads 6.9: use the line.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

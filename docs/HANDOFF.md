@@ -10,9 +10,13 @@
 > measured neutral (a 256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; MEASUREMENTS.md "Where
 > the GX thread stands"); its time is flat. C30 (overlapped GPU frames, `--dblframe`) is built, stable and neutral
 > (jobs 522-525): it removes the GX thread's frame-begin wait (9 points less busy in the heavy area) and new frames stay
-> 6.91 / 6.90, so **core 0's own work now sets the heavy area's frame rate too**. Next: core 0 (its hot functions in
-> the heavy area, ShdwDraw for the title's later stretch, more ports: LIBRARY_PORTS.md), then the TEV key's cost
-> (48 ms/s) once the GX thread limits again. Texture sharpness is parked by the owner until full speed
+> 6.91 / 6.90. **But core 0 does not set it either: the heavy area reads exactly 6.9 game frames a second in every
+> run since job 501, whether the ports are on or off and even with every HLE stand-in off (job 542, speed unchanged);
+> only slowing the GX side moved it (job 543).** Two more exact ports (flush prim, J3D lights) are built and off.
+> Next: find what paces the heavy area at one picture per ~145 ms (a per-frame timeline of core 0's idle syncs, the
+> GX thread's drain, the vertex worker and the GPU queue), then ShdwDraw for the title's later stretch (core 0
+> bound) and the TEV key's cost (48 ms/s). Port A/Bs read 1-2% low in the heavy area (each switch recompiles): confirm
+> with separate runs (MEASUREMENTS.md "Core 0 in the heavy area does not set its frame rate"). Texture sharpness is parked by the owner until full speed
 > (REDESIGN_CANDIDATES C31). Judge frame-timing changes by '# new frames 10s', not speed_pct.
 >
 > **Earlier on 2026-10-18.** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon

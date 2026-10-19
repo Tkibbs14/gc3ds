@@ -57,6 +57,11 @@ shows its gain where core 0 limits.
   load (Ordon +5.8%; the title neutral), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). The
   heavy area is GX-thread bound since gpbulk, so each reads -0.5 to -0.7% there (within ~2 sigma). Not yet:
   J2DTevBlock1/4/8/16 (the title screen uses 16), indirect stages.
+- **Ported, off (2026-10-19, MEASUREMENTS.md "Core 0 in the heavy area does not set its frame rate"):**
+  `__GXSendFlushPrim` (`--port-hooks` bit 3) and `J3DColorBlockLightOn::diffLightObj` (bit 4: the lights' XF loads
+  appended to `__GDCurrentDL`; the context now carries a run of GD display-list bytes, committed and checked byte by
+  byte). Both exact on the PC and the device; no measured gain, because the heavy area's frame rate does not follow
+  core 0 (all stand-ins off left it unchanged). Ports pay where core 0 limits: the title's later stretch, Ordon.
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.

@@ -75,3 +75,9 @@
     { 0x8030FB60, 0x6C, 0x8AD5AC743F728149ull },  // J3DFifoLoadNrmMtxImm__FPA4_fUl
     { 0x8030FBCC, 0x6C, 0x1676E7739C7965FDull },  // J3DFifoLoadNrmMtxImm3x3__FPA3_fUl
     { 0x8031419C, 0x138, 0xBF3B95A8FDFDD030ull },  // loadNrmMtx__26J3DShapeMtxMultiConcatViewCFiUsPA4_f
+    { 0x8031A8E0, 0x68, 0x9BE56F023F35DEFFull },  // diffLightObj__20J3DColorBlockLightOnFUl
+    { 0x80323590, 0xB4, 0x1D3F2965FE028D17ull },  // load__11J3DLightObjCFUl
+    { 0x8030D364, 0x2F8, 0x09F1818B12862F7Bull },  // J3DGDSetLightAttn__F10_GXLightIDffffff
+    { 0x8030D65C, 0x110, 0x1DD0778310AE57C5ull },  // J3DGDSetLightColor__F10_GXLightID8_GXColor
+    { 0x8030D76C, 0x1CC, 0x0FA8D55F1572CE38ull },  // J3DGDSetLightPos__F10_GXLightIDfff
+    { 0x8030D938, 0x1CC, 0xE1A849DD6887E9B1ull },  // J3DGDSetLightDir__F10_GXLightIDfff

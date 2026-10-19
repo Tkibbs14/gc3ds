@@ -2,7 +2,8 @@
 // reach, each as one native call hooked at the guest function's entry (PORT_* in port.h): J2D's material set-up
 // (J2DMaterial::setGX), J2DPictureEx::drawSelf (the material, the vertex formats, GXBegin with the SDK's dirty-state
 // flush, the quad) and J3D's concat-view matrix load (J3DShapeMtxConcatView::loadMtxConcatView_PNGP with either
-// class's loadNrmMtx). The guest code makes tens of small SDK calls for each, each a call and return around a few bit
+// class's loadNrmMtx); off by default, __GXSendFlushPrim and J3D's light loads into the GD display list
+// (J3DColorBlockLightOn::diffLightObj). The guest code makes tens of small SDK calls for each, each a call and return around a few bit
 // inserts into the SDK's shadow state (__GXData) and a register write to the gather pipe; here they share one context:
 // __GXData's words loaded at first touch, the pipe bytes collected in one buffer, the other stores (texture objects)
 // logged, all committed at the end. Anything not handled (another TEV block type, indirect stages, a callback that is
@@ -52,6 +53,8 @@ enum {
     A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
     A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
+    A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0,
+    A_GDCURRENTDL = 0x80451980,  // (__GDCurrentDL: the GDLObj J3D's display-list writers append to)
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -100,6 +103,8 @@ typedef struct {
     // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
     bool leak;
     float l14, l15, l31;
+    u32 gdA, gdN;          // bytes written at a GD display list's write pointer (J3D's writers), from gdA
+    u8 gd[8 * 72];
 } Pc;
 
 // Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
@@ -953,13 +958,49 @@ static void j3d_load_mtx_concat_view_pngp(Pc* c, u32 self, u32 slot, u32 idx) {
     c->n += 90;
 }
 
+// ---- J3D lights: J3DColorBlockLightOn::diffLightObj 0x8031A8E0 (J3DLightObj::load 0x80323590 per light) ----
+// Each light set appends four XF loads to __GDCurrentDL: position, attenuation (cos then distance), colour, direction
+// (72 bytes, J3DGDSetLight* 0x8030D364-0x8030DB04). The guest code checks for room once per light and calls GDOverflowed
+// when there is none: the port is not taken then.
+static inline void gd8(Pc* c, u32 v) { c->gd[c->gdN++] = (u8)v; }
+static inline void gd16(Pc* c, u32 v) { gd8(c, v >> 8); gd8(c, v); }
+static inline void gd32(Pc* c, u32 v) { gd16(c, v >> 16); gd16(c, v); }
+static void gd_xf(Pc* c, u32 addr, u32 n, u32 src) {  // J3DGDWriteXFCmdHdr and n words (the floats' bits as stored)
+    gd8(c, 0x10);
+    gd16(c, n - 1);
+    gd16(c, addr);
+    for (u32 i = 0; i < n; i++) gd32(c, f32(src + 4 * i));
+}
+static void j3d_diff_light_obj(Pc* c, u32 blk, u32 n) {
+    if (n > 8 || !span(c, blk + 0x20, 32) || !span(c, A_GDCURRENTDL, 4)) { give_up(c, 1); return; }
+    u32 dl = f32(A_GDCURRENTDL), k = 0;
+    if (!span(c, dl, 16)) return;
+    for (u32 i = 0; i < n; i++) k += f32(blk + 0x20 + 4 * i) != 0;
+    u32 ptr = f32(dl + 8), top = f32(dl + 12);
+    if (ptr + 72 * k > top || !span(c, ptr, 72 * k)) { give_up(c, 1); return; }
+    c->gdA = ptr;
+    for (u32 i = 0; i < n; i++) {
+        u32 l = f32(blk + 0x20 + 4 * i), o = 16 * i;
+        c->n += 6;
+        if (!l) continue;
+        if (!span(c, l, 0x34)) return;
+        gd_xf(c, 0x060A + o, 3, l);         // position
+        gd_xf(c, 0x0604 + o, 6, l + 0x1C);  // cos attenuation, distance attenuation
+        gd8(c, 0x10); gd16(c, 0); gd16(c, 0x0603 + o); gd32(c, f32(l + 0x18));  // colour
+        gd_xf(c, 0x060D + o, 3, l + 0x0C);  // direction
+        c->n += 160;
+    }
+    wr32(c, dl + 8, ptr + c->gdN);
+    c->n += 12;
+}
+
 // ---- entry ----
 static Pc g_pc;
 
 // Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
 static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = c->dirty = 0;
+    c->pn = c->nlog = c->n = c->dirty = c->gdN = 0;
     c->pp = c->pipe;
     c->bpsn = ~0u;
     c->fail = 0;
@@ -972,8 +1013,10 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     tmark(0);
     // (Floating point off: the FPRs are another thread's until the OS takes the FP-unavailable exception, which the
     // guest code raises at its first float instruction: the float ports are not taken then.)
-    if (hook != PORT_MATERIAL && !(g->msr & MSR_FP)) { give_up(c, 2); return false; }
-    if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
+    if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { give_up(c, 2); return false; }
+    if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
+    else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
+    else if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
     else if (hook == PORT_PICTUREEX) picex_draw_self(c, g->gpr[3], g->gpr[4]);
     else material_set_gx(c, g->gpr[3]);
     tmark(5);
@@ -987,6 +1030,7 @@ static void port_commit(Pc* c) {
         if (c->gx[i] != c->gx0[i]) ram_wr32(g_pm, c->gxd - 0x80000000u + 4 * i, c->gx[i]);
     }
     for (u32 i = 0; i < c->nlog; i++) ram_wr32(g_pm, c->log[i][0] - 0x80000000u, c->log[i][1]);
+    for (u32 i = 0; i < c->gdN; i++) ram_wr8(g_pm, c->gdA - 0x80000000u + i, c->gd[i]);
     if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pipe, c->pn);
 }
 
@@ -999,12 +1043,17 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
 }
 
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
-                                          "J3DShapeMtxConcatView::loadMtxConcatView_PNGP" };
+                                          "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
+                                          "J3DColorBlockLightOn::diffLightObj" };
 static inline int hook_of(u32 pc) {
-    return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP : -1;
+    return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
+           pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
+// __GXSendFlushPrim (the dummy strip GXBegin and GXCallDisplayList send after BP writes, one guest store a word): off
+// until measured (--ab flushhook). diffLightObj (3.6% of the heavy area's core 0 inclusive, job 512): off until
+// measured (--ab lighthook).
 u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP;
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
@@ -1078,6 +1127,8 @@ static u32 port_check(Gekko* g, u32 hook) {
         u32 want = ram_rd32(g_pm, a - 0x80000000u), mine = g_chkW[i][1];
         if (a - c->gxd < GXD_BYTES) { if (c->have[(a - c->gxd) >> 2]) mine = c->gx[(a - c->gxd) >> 2]; }
         else for (u32 k = 0; k < c->nlog; k++) if (c->log[k][0] == a) mine = c->log[k][1];
+        for (u32 b = 0; b < 4; b++)  // (the GD bytes over the word as it was)
+            if (a + b - c->gdA < c->gdN) mine = (mine & ~(0xFF000000u >> 8 * b)) | (u32)c->gd[a + b - c->gdA] << (24 - 8 * b);
         if (want != mine) { chk_bad(&g0, c, hook, 3, a, want, mine); return n ? n : 1; }
     }
     for (u32 k = 0; k < c->nt; k++) {
@@ -1090,6 +1141,10 @@ static u32 port_check(Gekko* g, u32 hook) {
         for (u32 k = i + 1; k < c->nlog; k++) later |= c->log[k][0] == c->log[i][0];
         u32 want = ram_rd32(g_pm, c->log[i][0] - 0x80000000u);
         if (!later && want != c->log[i][1]) { chk_bad(&g0, c, hook, 5, c->log[i][0], want, c->log[i][1]); return n ? n : 1; }
+    }
+    for (u32 i = 0; i < c->gdN; i++) {
+        u32 want = ram_rd8(g_pm, c->gdA - 0x80000000u + i);
+        if (want != c->gd[i]) { chk_bad(&g0, c, hook, 3, c->gdA + i, want, c->gd[i]); return n ? n : 1; }
     }
     Gekko gw = g0;  // the registers as the port leaves them
     port_regs(c, &gw, hook);
@@ -1105,6 +1160,9 @@ static void port_report(void) {
         PortHook* s = &g_portStats.h[k];
         fprintf(stderr, "PORT: %s %llu taken, %llu checked, %llu not taken; %llu pipe bytes\n", g_portNames[k],
                 (unsigned long long)s->calls, (unsigned long long)s->checked, (unsigned long long)s->refused, (unsigned long long)s->pipe);
+        if (s->checked)
+            fprintf(stderr, "  guest instructions per checked call: interpreter %.1f, port estimate %.1f (kInsScale %.0f)\n",
+                    (double)s->insReal / s->checked, (double)s->insEst / s->checked, 100.0 * s->insReal / (s->insEst ? s->insEst : 1));
         fprintf(stderr, "  not taken by reason (setup, memory, floats, texregion, palette, block type, texgens, other):");
         for (int q = 0; q < 8; q++) fprintf(stderr, " %llu", (unsigned long long)s->refusedBy[q]);
         fputc('\n', stderr);
@@ -1113,9 +1171,10 @@ static void port_report(void) {
 }
 #endif
 // The estimates scaled to what the interpreter ran for the same calls (the material: 1,920 against 1,510 a call, job
-// 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495), so that the emulated
-// clock advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93 };
+// 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
+// 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
+// advances as the guest code would have.
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322 };
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;

@@ -482,6 +482,8 @@ typedef struct {
     bool abPort;  // --ab port: the port on and off (hle column bit 4)
     bool abPichook;  // --ab pichook: the J2DPictureEx::drawSelf port on and off (hle column bit 5)
     bool abJ3dhook;  // --ab j3dhook: the J3D concat-view matrix port on and off (hle column bit 6)
+    bool abFlushhook;  // --ab flushhook: the __GXSendFlushPrim port on and off (hle column bit 7)
+    bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
@@ -571,7 +573,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -1088,6 +1090,8 @@ static const char* run(const char* path) {
         g_portMode = g_opt.abPort ? 0 : g_opt.port;  // --ab port starts off
         if (g_opt.abPichook) g_portHooks &= ~(1u << PORT_PICTUREEX);  // --ab pichook starts off
         if (g_opt.abJ3dhook) g_portHooks &= ~(1u << PORT_J3DPNGP);  // --ab j3dhook starts off
+        if (g_opt.abFlushhook) g_portHooks &= ~(1u << PORT_FLUSHPRIM);  // --ab flushhook starts off
+        if (g_opt.abLighthook) g_portHooks &= ~(1u << PORT_LIGHTS);  // --ab lighthook starts off
         if (g_opt.abSkipfn) jit_skip_on = false;  // --ab skipfn starts off
         if (g_opt.abGfskip) g_gfskipOn = false;  // --ab gfskip starts off
         if (g_pica) pica_set_texdiv(g_opt.abTexdiv ? 1 : g_opt.texdiv);  // --ab texdiv starts at 1
@@ -1269,7 +1273,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_indexed() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_jit && jit_mem_stubs(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pipeFast ? 1 : 0);
-                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0) | (hle_thp_enabled() ? 4 : 0) | (hle_ps_enabled() ? 8 : 0) | (g_portMode ? 16 : 0) | (g_portMode && (g_portHooks >> PORT_PICTUREEX & 1) ? 32 : 0) | (g_portMode && (g_portHooks >> PORT_J3DPNGP & 1) ? 64 : 0));  // bit 0 all, bit 1 J3DGD, bit 2 THP, bit 3 PS library, bit 4 the ports, 5 drawSelf, 6 J3D PNGP
+                fprintf(g_perf, ",%d", (hle_enabled() ? 1 : 0) | (hle_gd_enabled() ? 2 : 0) | (hle_thp_enabled() ? 4 : 0) | (hle_ps_enabled() ? 8 : 0) | (g_portMode ? 16 : 0) | (g_portMode && (g_portHooks >> PORT_PICTUREEX & 1) ? 32 : 0) | (g_portMode && (g_portHooks >> PORT_J3DPNGP & 1) ? 64 : 0) | (g_portMode && (g_portHooks >> PORT_FLUSHPRIM & 1) ? 128 : 0) | (g_portMode && (g_portHooks >> PORT_LIGHTS & 1) ? 256 : 0));  // bit 0 all, bit 1 J3DGD, bit 2 THP, bit 3 PS library, bit 4 the ports, 5 drawSelf, 6 J3D PNGP, 7 flush prim, 8 J3D lights
                 fprintf(g_perf, ",%d", g_jit && jit_traces(g_jit) ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_merge() ? 1 : 0);
                 fprintf(g_perf, ",%u", g_pica ? (unsigned)(pica_job_ring() >> 10) : 0u);
@@ -1372,6 +1376,14 @@ static const char* run(const char* path) {
                 }
                 if (g_opt.abJ3dhook && g_jit && g_useJit && perfRows % AB_SECS == 0) {
                     g_portHooks ^= 1u << PORT_J3DPNGP;
+                    jit_invalidate_all(g_jit);
+                }
+                if (g_opt.abLighthook && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    g_portHooks ^= 1u << PORT_LIGHTS;
+                    jit_invalidate_all(g_jit);
+                }
+                if (g_opt.abFlushhook && g_jit && g_useJit && perfRows % AB_SECS == 0) {
+                    g_portHooks ^= 1u << PORT_FLUSHPRIM;
                     jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abPichook && g_jit && g_useJit && perfRows % AB_SECS == 0) {
