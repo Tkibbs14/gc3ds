@@ -126,6 +126,10 @@ bool hle_is_hook(Gekko* g, u32 pc) {
     if (g_memoAddr && pc == g_memoAddr) return true;
     if (port_is_hook(pc)) return true;
     if (!g_on) return false;
+#ifndef __3DS__
+    { static int bs = -1; if (bs < 0) bs = getenv("SHDW_BODYSTAT") != NULL;
+      if (bs && (pc == 0x8007FCE4u || pc == 0x8007FE94u)) return true; }
+#endif
     if (pc != PC_ENTRY && pc != PC_NEXT && pc != PC_LOOP) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
     return known();
 }
@@ -667,7 +671,11 @@ static void sk_after(const Gekko* g) {
 //   then the inputs (24 words) when stored, the changed registers, the changed frame words, the bitset word (at a
 //   triangle). Inputs are stored only where they differ from what the previous segments left (after a hole, or when
 //   guest code changed them): otherwise they are the running state's. A hole has no outputs.
-typedef struct { u64 key; u32 gen, nSeg, nw, use, lo, hi, hdr, node; bool done; u32* w; u32 in0[SHM_IN]; } ShRec;
+typedef struct { u64 key; u32 gen, nSeg, nw, use, lo, hi, hdr, node; bool done, own; u32* w; u32 in0[SHM_IN]; } ShRec;
+// Memory: a call is recorded into one scratch stream (SHM_WORDS) and copied out at its exact size when it finishes (the
+// long call in the later stretch ~80k words, the others a few thousand): five full-size records held 3.75 MB of linear
+// memory and left 1.6 MB free (job 618).
+static u32* g_shmScratch;
 static ShRec g_shm[SHM_RECS];
 static ShRec* g_shmCur;   // replaying: the next segment at g_shmPos
 static ShRec* g_shmRec;   // recording
@@ -748,10 +756,11 @@ static void shm_out(const ShRec* r, u32* pos, const u32* head, Gekko* g) {
     g->pc = pc;
 }
 
+static void shm_seal(ShRec* r);
 static void shm_note(const Gekko* g, const u32* in, u32 n) {
     ShRec* r = g_shmRec;
     if (!r || !n) return;
-    if (r->nw + 4 + SHM_IN + 24 + 5 + 1 > SHM_WORDS) { g_shmRec = NULL; r->key = 0; g_shTrack = false; g_shmMiss[5]++; return; }
+    if (r->nw + 4 + SHM_IN + 24 + 5 + 1 > SHM_WORDS) { g_shmRec = NULL; r->key = 0; r->w = NULL; g_shTrack = false; g_shmMiss[5]++; return; }
     u32 want[SHM_IN];
     if (r->nSeg == 0) memcpy(want, r->in0, sizeof want); else shm_expect(g->gpr[1], want);
     bool store = memcmp(want, in, sizeof want) != 0;
@@ -774,7 +783,7 @@ static void shm_note(const Gekko* g, const u32* in, u32 n) {
     r->nw = (u32)(w - r->w);
     r->nSeg++;
     if (!hole) g_shmLastPc = g->pc;
-    if (g->pc == PC_EXIT) { r->done = true; r->lo = g_shLo; r->hi = g_shHi; g_shmRec = NULL; g_shTrack = false; g_shmStats[4]++; }
+    if (g->pc == PC_EXIT) { r->done = true; r->lo = g_shLo; r->hi = g_shHi; g_shmRec = NULL; g_shTrack = false; g_shmStats[4]++; shm_seal(r); }
     if (r->nSeg > g_shmMiss[6]) g_shmMiss[6] = r->nSeg;
 }
 
@@ -787,10 +796,13 @@ static void shm_report(void) {
 }
 #endif
 #ifdef __3DS__
-void* linearAlloc(size_t size);  // (libctru: the records, ~3.8 MB, more than the heap has free)
+void* linearAlloc(size_t size);  // (libctru: the records, more than the heap has free)
+void linearFree(void* mem);
 static void* shm_alloc(size_t n) { return linearAlloc(n); }
+static void shm_free(void* p) { linearFree(p); }
 #else
 static void* shm_alloc(size_t n) { return malloc(n); }
+static void shm_free(void* p) { free(p); }
 // SHDW_MEMOCHECK=1: each replayed segment also runs the walk from the same state (to its natural stop) and the two are
 // compared (GPRs, CR, XER, PC, count, the frame); the walk's result stands.
 static int g_shmChk = -1;
@@ -800,6 +812,15 @@ static void shm_chk_report(void) {
             (unsigned long long)g_shmChkN, (unsigned long long)g_shmChkBad);
 }
 #endif
+
+// A finished record leaves the scratch stream for a block of its own size (none to be had: the record is dropped).
+static void shm_seal(ShRec* r) {
+    u32* b = r->nw ? shm_alloc(r->nw * 4) : NULL;
+    if (!b) { r->key = 0; r->w = NULL; r->own = false; r->done = false; return; }
+    memcpy(b, r->w, r->nw * 4);
+    r->w = b;
+    r->own = true;
+}
 
 // A record stays valid while no DMA since it was made (or last checked) wrote over the collision data its walk read or
 // the grid header (r15's 64 bytes, and the node they point to). More DMAs than the log holds: dropped.
@@ -819,6 +840,32 @@ static bool shm_valid(ShRec* r) {
 static u32 shm_run(Gekko* g, u32 budget) {
     u32 fa = g->gpr[1] + 156 - 0x80000000u;
     if (fa > g_memSize - 2232 || (fa & 3)) { g_shmCur = g_shmRec = NULL; g_shTrack = false; return scan_live(g, budget); }
+    // The common case first: replaying, a segment whose inputs are what the last one left (not stored, not a hole),
+    // compared register by register against the running state (no input arrays built: ~2.8 us a segment before, 2DS
+    // job 618).
+#ifndef __3DS__
+    if (g_shmChk == 0)
+#endif
+    if (g_shmCur && g->pc != PC_ENTRY && g_shmSeg && g_shmPos < g_shmCur->nw) {
+        ShRec* r = g_shmCur;
+        const u32* head = r->w + g_shmPos;
+        u32 h = head[0];
+        if (!(h >> 30) && head[1] <= budget + SHM_OVER && g->pc == (g_shmLastPc == PC_LOOP ? PC_LOOP : PC_NEXT) &&
+            g->gpr[1] == r->in0[1] && !memcmp(&g->gpr[14], g_shmOut + 7, 17 * 4)) {
+            const u8* f = g_mem + (g->gpr[1] + 2212 - 0x80000000u);
+            if (ld32(f) == g_shmFrm[0] && ld32(f + 4) == g_shmFrm[1] && ld32(f + 8) == g_shmFrm[2] &&
+                ld32(f + 12) == g_shmFrm[3] && ld32(f + 16) == g_shmFrm[4]) {
+                u32 pos = g_shmPos + 4, hd[4];
+                memcpy(hd, head, sizeof hd);
+                g_shmSeg++;
+                shm_out(r, &pos, hd, g);
+                g_shmPos = pos;
+                g_shmStats[2]++;
+                if (hd[2] == PC_EXIT) { g_shmCur = NULL; g_shmStats[1]++; }
+                return hd[1];
+            }
+        }
+    }
     u32 in[SHM_IN];
     if (g->pc == PC_ENTRY || g_shmCur || g_shmRec) shm_in(g, in);
     if (g->pc == PC_ENTRY) {
@@ -830,7 +877,7 @@ static u32 shm_run(Gekko* g, u32 budget) {
         u64 key = shm_key(in);
         if (g_shmRec) {  // the previous call's walk ended in guest code (after a hole): its record is a usable prefix
             ShRec* q = g_shmRec;
-            if (q->nSeg) { q->done = true; q->lo = g_shLo; q->hi = g_shHi; g_shmStats[4]++; } else q->key = 0;
+            if (q->nSeg) { q->done = true; q->lo = g_shLo; q->hi = g_shHi; g_shmStats[4]++; shm_seal(q); } else { q->key = 0; q->w = NULL; }
             g_shmRec = NULL; g_shTrack = false;
         }
         g_shmCur = NULL;
@@ -848,8 +895,11 @@ static u32 shm_run(Gekko* g, u32 budget) {
         if (!g_shmCur) {  // record this call (into the least recently used record)
             ShRec* v = &g_shm[0];
             for (int i = 1; i < SHM_RECS; i++) if (g_shm[i].use < v->use) v = &g_shm[i];
-            if (!v->w) v->w = shm_alloc(SHM_WORDS * 4);
-            if (v->w && shm_bits_clear(g)) {
+            if (!g_shmScratch) g_shmScratch = shm_alloc(SHM_WORDS * 4);
+            if (g_shmScratch && shm_bits_clear(g)) {
+                if (v->own) shm_free(v->w);
+                v->own = false;
+                v->w = g_shmScratch;
                 v->key = key; v->nSeg = v->nw = 0; v->done = false; v->use = ++g_shmUse; v->gen = g_dmaGen; v->hdr = g->gpr[15];
                 u32 ha = g->gpr[15] + 24 - 0x80000000u;
                 v->node = ha <= g_memSize - 4 && !(ha & 3) ? ld32(g_mem + ha) : 0;
@@ -924,7 +974,86 @@ static u32 scan_live(Gekko* g, u32 budget) {
 #endif
 }
 
+
+#ifndef __3DS__
+// SHDW_BODYSTAT=1 (PC, measurement): the triangle path (0x8007FCE4 .. the callback's bctrl at 0x8007FE94, or a skip back
+// to 0x8007FEA4): which registers it changes, its outcomes, and how many distinct (r15, triangle, r1) keys there are.
+#define PC_BODY 0x8007FCE4u
+#define PC_CBK 0x8007FE94u
+static int g_bsOn = -1;
+static bool g_bsPend;
+static Gekko g_bs0;
+static u32 g_bsGpr, g_bsFpr0, g_bsFpr1, g_bsMisc;  // changed GPRs / FPR ps0 / ps1 (bits), CR XER LR CTR FPSCR (bits 0-4)
+static u64 g_bsN[3], g_bsKeys;  // to the callback, skipped, keys seen
+// Memory: the frame window [r1 - 1024, r1 + 2240) snapshotted and diffed (stand-ins' stores included), and the
+// interpreter's recorded stores outside it.
+#define BS_LO 1024u
+#define BS_HI 2240u
+static u8 g_bsF0[BS_LO + BS_HI];
+static u8 g_bsFw[(BS_LO + BS_HI) / 4];  // frame words ever changed
+static u64 g_bsOut;  // stores outside the window
+static u32 g_bsOutA[8];
+#define BSN (1u << 20)
+static u64* g_bsSet;
+static void bs_report(void) {
+    fprintf(stderr, "SHDW_BODYSTAT frame words changed (offsets from r1):");
+    for (u32 i = 0; i < (BS_LO + BS_HI) / 4; i++) if (g_bsFw[i]) fprintf(stderr, " %d", (int)(i * 4) - (int)BS_LO);
+    fprintf(stderr, "; stores outside the window %llu:", (unsigned long long)g_bsOut);
+    for (u32 i = 0; i < 8 && i < g_bsOut; i++) fprintf(stderr, " %08x", g_bsOutA[i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "SHDW_BODYSTAT: %llu to the callback, %llu skipped, %llu distinct keys; changed GPRs %08x FPR ps0 %08x ps1 %08x misc %x" "\n",
+            (unsigned long long)g_bsN[0], (unsigned long long)g_bsN[1], (unsigned long long)g_bsKeys, g_bsGpr, g_bsFpr0, g_bsFpr1, g_bsMisc);
+}
+static bool bs_on(void) {
+    if (g_bsOn < 0) { g_bsOn = getenv("SHDW_BODYSTAT") != NULL; if (g_bsOn) { g_bsSet = calloc(BSN, 8); atexit(bs_report); } }
+    return g_bsOn;
+}
+static void bs_end(const Gekko* g, int kind) {
+    if (!g_bsPend) return;
+    g_bsPend = false;
+    g_memoRec = NULL;
+    u32 base = g_bs0.gpr[1] - BS_LO - 0x80000000u;
+    for (u32 i = 0; i < BS_LO + BS_HI; i += 4) if (memcmp(g_mem + base + i, g_bsF0 + i, 4)) g_bsFw[i / 4] = 1;
+    for (u32 i = 0; i < g_chkN; i++) {
+        u32 a = g_chkW[i][0], lo = g_bs0.gpr[1] - BS_LO;
+        if (a - lo >= BS_LO + BS_HI) { if (g_bsOut < 8) g_bsOutA[g_bsOut] = a; g_bsOut++; }
+    }
+    g_bsN[kind]++;
+    for (int k = 0; k < 32; k++) if (g->gpr[k] != g_bs0.gpr[k]) g_bsGpr |= 1u << k;
+    for (int k = 0; k < 32; k++) {
+        if (memcmp(&g->fpr[k].ps0, &g_bs0.fpr[k].ps0, sizeof g->fpr[k].ps0)) g_bsFpr0 |= 1u << k;
+        if (memcmp(&g->fpr[k].ps1, &g_bs0.fpr[k].ps1, sizeof g->fpr[k].ps1)) g_bsFpr1 |= 1u << k;
+    }
+    if (g->cr != g_bs0.cr) g_bsMisc |= 1;
+    if (g->xer != g_bs0.xer) g_bsMisc |= 2;
+    if (g->lr != g_bs0.lr) g_bsMisc |= 4;
+    if (g->ctr != g_bs0.ctr) g_bsMisc |= 8;
+    if (g->fpscr != g_bs0.fpscr) g_bsMisc |= 16;
+}
+static void bs_hook(const Gekko* g) {
+    if (!bs_on()) return;
+    if (g->pc == PC_BODY) {
+        g_bs0 = *g;
+        g_bsPend = true;
+        memcpy(g_bsF0, g_mem + (g->gpr[1] - BS_LO - 0x80000000u), BS_LO + BS_HI);
+        g_chkN = 0;
+        g_memoRec = (void*)2;
+        u32 a = g->gpr[16] - 0x80000000u, t = a < g_memSize - 2 ? ld16(g_mem + a) : 0;
+        u64 k = ((u64)g->gpr[15] * 0x9E3779B97F4A7C15ull) ^ ((u64)t << 32) ^ g->gpr[1];
+        k |= 1;
+        u32 h = (u32)(k >> 40) & (BSN - 1);
+        while (g_bsSet[h] && g_bsSet[h] != k) h = (h + 1) & (BSN - 1);
+        if (!g_bsSet[h]) { g_bsSet[h] = k; g_bsKeys++; }
+    } else if (g->pc == PC_CBK) bs_end(g, 0);
+    else if (g->pc == PC_NEXT) bs_end(g, 1);
+}
+#endif
+
 u32 hle_run(Gekko* g, u32 budget) {
+#ifndef __3DS__
+    bs_hook(g);
+    if (g_bsOn > 0 && (g->pc == PC_BODY || g->pc == PC_CBK)) return 0;  // (observed only: guest code runs)
+#endif
     if (g_gfskipAddr && g->pc == g_gfskipAddr) {
         if (g_gfskipOn && gfskip_guarded()) { g_gfskipGuarded++; g_gfskipStats[0]++; return 0; }  // a fade: draw every frame
         if (g_gfskipOn && (++g_gfskipN % g_gfskipEvery) != 0) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr

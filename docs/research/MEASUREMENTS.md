@@ -1088,6 +1088,23 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     (job 611, an earlier version).
   - The cutscene's shadows move every frame: its calls are recorded, not replayed (PC, tp_pc_900 -> 2100: 209 recorded, 1
     replayed), at no measured cost.
+  - **Replay fast path (job 621 against 618, title):** a replayed segment's expected inputs are compared register by
+    register with what the previous segment left (no unpack of the whole input set): the stand-in's time per report
+    1,085 -> 890 ms, later stretch **21.81 -> 21.94%**; cutscene and movie even.
+  - **Records copied out at their size (job 622):** a call is recorded into one 192k-word scratch stream and copied to a
+    block of its exact size when it finishes (the long call ~80k words, the others a few thousand). Linear memory free
+    1.6 -> 4.0 MB, later stretch 21.94% (even), and the later stretch still replays 184-190 of ~192 calls a report to the
+    end (2-5 recorded, 1-2 dropped by DMA). The cutscene's rows show "calls 102, recorded 102": recorded, not replayed,
+    as above.
+  - **What the replay still costs (job 623, `--pmu split`, the stand-in's share of core 0 in the later stretch):** cycles
+    12%, instructions 13-14%, **branch misses 37-44%**, I-cache misses 10%, D-cache read misses 7-9%. The remaining cost
+    is the replay loop itself (~425k segments per 10 s, data-dependent branches per segment) plus the triangle bodies'
+    compiled guest code (callbacks, GetTriPla), which run on every replayed triangle.
+  - **The triangle path, measured for a cache (PC, SHDW_BODYSTAT, tp_pc_5000 -> 5400):** 431,847 passes from 0x8007FCE4 to
+    the callback's bctrl (0x8007FE94) and 92,550 skips (to 0x8007FEA4), over **6,152 distinct (r15, triangle, r1) keys**.
+    It changes GPRs r0, r3-r8, r11, r12, r31; FPRs f0-f13 and f28-f31 (both halves); CR, LR, CTR, FPSCR; frame words at
+    r1 + 4, 12-32, 60-96, 100-116, 120-152, 2204, 2208; outside the frame it stores nothing but the interrupt handler's
+    context saves. That bounds a per-triangle cache (REDESIGN C32b): ~85 passes and skips per key.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

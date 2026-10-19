@@ -504,4 +504,25 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   elsewhere each frame (replays ended at the first); unbounded overruns stretched VI fields (fields are scheduled from
   the last one), which showed as more pictures but a slower game clock. Check the field gaps, not only speed.
 - **Re-evaluate when:** shadows move every frame in the target scene (the cutscene records every call and replays
-  none): a finer memo (per leaf or per cell row) would be the next step there.
+  none; but its shadow walks cost only ~1-18 ms per 10 s, under 0.2% of core 0, job 618).
+- **Next step, measured 2026-10-20 (C32b, the triangle path cache):** with the walk replayed, what is left of the shadow
+  system in the later stretch is the per-triangle path in ShdwDraw (0x8007FCE4 .. the callback's bctrl at 0x8007FE94, or
+  a skip back to 0x8007FEA4) and its callees: ShdwDraw's own blocks 22.4% of core 0, psdRealCallBack 3.5%, GetTriPla
+  3.1%, SetupNP 2.6%, getPolyCode 1.5% (job 620, `--profile on`). Facts for a cache of that path (PC, SHDW_BODYSTAT=1,
+  tp_pc_5000, 200 fields):
+  - 431,847 passes reached the callback and 92,550 skipped (through, or a near-zero dot), over **6,152 distinct keys**
+    (r15 the collision object, the triangle index lhz 0(r16), r1): each triangle repeats ~85 times.
+  - Everything up to the callback depends only on the collision data and the triangle index. The path writes r0,
+    r3-r8, r11, r12, r31; f0-f13 and f28-f31 (both paired-single lanes); CR, LR, CTR, FPSCR; and the frame words at
+    r1 + 4, 12-32, 60-96, 100-116, 120-152, 2204, 2208 (plus callee frames below r1, dead). Its only other stores are
+    interrupt context saves into mainThread (0x803DB420), not the path's own.
+  - The callback's arguments: r3 = lwz 8(r1) (the cBgS_ShdwDraw object, which differs between the four callers: load
+    it live), r4 = r1 + 120 (the three vertices), r5-r7 = 0, 1, 2, r8 = r1 + 80 (the plane), CTR = r12 = lwz 48(r3).
+  - Plan: a hook at 0x8007FCE4. On a miss, interpret the path to its exit to capture the outputs, then once more from
+    deliberately perturbed scratch registers to classify each register as written (same result both times) or passed
+    through (result equals its own input); a register that depends on its input makes the key uncacheable. On a hit:
+    check a guard of the collision words the path reads (the prism record, its position and normals), write the
+    written registers and the frame words, load r3 / r12 / CTR live, and continue at the bctrl or the skip address.
+    Memory: ~400 B a key (floats packed where exact), ~2.5 MB for 6,152 keys; the walk memo's records were compacted
+    to their exact size first (they held 3.75 MB and left 1.6 MB of linear memory free).
+  - Expected: most of the ~23% of core 0 the path costs, so the later stretch could gain ~20%+.
