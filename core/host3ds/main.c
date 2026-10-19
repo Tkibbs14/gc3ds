@@ -479,7 +479,7 @@ typedef struct {
     bool abJ3dhook;  // --ab j3dhook: the J3D concat-view matrix port on and off (hle column bit 6)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
-    bool ringbatch, abRingbatch;  // --ringbatch on|off (off), --ab ringbatch: bursts batched into larger GX-thread ring records (gxthread.c)
+    bool ringbatch, abRingbatch;  // --ringbatch on|off (on), --ab ringbatch: bursts batched into larger GX-thread ring records (gxthread.c)
     bool psgx, abPsgx;        // --psgx on|off (off: -0.7%, job 375), --ab psgx: the GX register setters' stand-ins (static mode, ranges checked at entry) on and off (psgx column; starts off)
     bool noPs, abPs;          // --ps off: the SDK matrix / vector stand-ins (hle_ps.c) never used; --ab ps: on and off (hle column bit 3)
     bool abThp;               // --ab thp: the THP movie decoder's inverse DCT stand-ins (hle_thp.c) on and off (hle column bit 2)
@@ -529,6 +529,7 @@ static void opts_default(RunOpts* o) {
     o->deflit = true;    // CPU-lit draws on the vertex worker: heavy area +6.8%, Ordon +0.7% (jobs 409-410)
     o->noshlight = true; // lighting on the CPU (worker), not the vertex shader: heavy area GPU 43.6 -> 27.1 ms, +2.9%; Ordon +0.35% (jobs 412, 415)
     o->vramtex = true;   // textures in VRAM (XFBs to FCRAM): heavy area GPU 33.8 -> 14.4 ms, +12%; Ordon +0.4% (jobs 424-425)
+    o->ringbatch = true; // bursts batched into 512-byte ring records: heavy area +2.6%, Ordon +1.6% (jobs 505-506)
     o->gpbulk = true;    // pipe bursts with one copy (hw/gx.c): heavy area +3.2%, Ordon +4.5% (jobs 477-478), byte-identical
     o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
     o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)

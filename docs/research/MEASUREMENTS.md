@@ -930,7 +930,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Baselines with the ports and gpbulk (jobs 500-502, plain runs):** Ordon walk 60-300 s **28.03%** (22.64% in job 397
   this morning; ~23.5% before the ports), heavy area 30-240 s **20.64%** (~20.0%), title cutscene 25-250 s **28.94%**
   (~26.8%), THP movie 370-420 s 12.82%. The GX thread is 94.9% busy in the heavy area and 89.3% in Ordon: it is the
-  next limit in both.
+  next limit in both (Ordon's dispatch bucket, core 0 idling for the GX thread, is 11.5% in job 503).
+- **GX-thread ring records batched (`--ringbatch`, gxthread.c, jobs 505-507):** the pipe's 32-byte bursts appended to
+  one open record of up to 512 bytes, published when full and before every poll (each event slice), sync, present and
+  drain. **Heavy area +0.54 +- 0.02 points (+2.6%), the GX thread 3.7% less busy; Ordon +0.45 +- 0.36 (+1.6%), the GX
+  thread 7.4% less busy; title cutscene -0.18 +- 0.61 and movie -0.05 +- 0.04 (neither GX-bound; the GX thread 6.5% and
+  39% less busy).** On by default.
+- **Where core 0 goes now (jobs 503-504, `--profile on`):** Ordon: the J3D port's block 5.0% and drawSelf's 4.3% of
+  samples (their commits wait for ring space when the GX thread is behind), GXLoadPosMtxImm 1.4%, __GXSendFlushPrim
+  1.1%, J2DPane::draw 1.2%. **Title cutscene: core 0 bound (dispatch 1.8%), the ShdwDraw stand-in ~38%** (its block
+  25.2% plus its neighbours), SetupNP 2.3%, GetTriPla 2.3%, psdRealCallBack 2.3%, the J3D port 2.9%.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

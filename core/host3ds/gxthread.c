@@ -129,7 +129,7 @@ static void ring_commit(u32 bytes) {
 // (poll, which the CPU thread runs every event slice, sync, a present, a drain). Fewer, larger records: the GX thread
 // parses each one apart, and a command split between two records is carried over and parsed again.
 #define RING_BATCH 512
-bool g_ringBatch;
+bool g_ringBatch = true;  // on: heavy area +2.6%, Ordon +1.6%, the GX thread 3.7-7.4% less busy (jobs 505-506)
 static u8* g_openRec;  // the open record's header in the ring (NULL: none)
 static u32 g_openLen;
 static void close_open(void) {
