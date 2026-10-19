@@ -1,6 +1,15 @@
 # gc3ds handoff (2026-10-10)
 
-> **▶ Current state (2026-10-18).** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
+> **▶ Current state (2026-10-18, night).** All defaults (jobs 500-502): **Ordon walk 28.0%, heavy area 20.6%, title
+> cutscene 28.9%, THP movie 12.8%.** Since the entry below: three native library ports (core/src/cpu/port_j2d.c:
+> J2DMaterial::setGX, J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load), each checked exact on the 2DS with
+> `--port check`; pipe bursts copied whole (gpbulk, +3-4.5% everywhere); GX-thread ring records batched (ringbatch,
+> heavy area +2.6%). **Limits now: the GX thread in Ordon and the heavy area (89-95% busy; core 0 idles 10-12% waiting
+> for it), core 0 in the title cutscene (the ShdwDraw stand-in ~38% of it).** Next: the GX thread's own work
+> (MEASUREMENTS.md "Where core 0 goes now"; its position profile: fifo 9%, vprep 8%, vwalloc 7.6%, drawtail 5%, split
+> 5%, copy 5%), ShdwDraw for the cutscene, then more ports (LIBRARY_PORTS.md).
+>
+> **Earlier on 2026-10-18.** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
 > area (`sdmc:/gc3ds/states/tp_area2.state`) ~20.0% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439, 449). In game
 > frames a second (TP runs at 30): ~7 and ~6. The owner's goal: a steady 30 before any frame skipping, with the work
 > balanced across the cores (move busy work to idle cores). What 10-18 found and kept (MEASUREMENTS.md, "Three scenes
