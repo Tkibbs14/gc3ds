@@ -460,6 +460,30 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Against / risk:** a mistake in the GPU queue can freeze the console (`--gpudiag 1` did, job 403): run only when the
   owner is home. Memory: a second arena and command buffer from linear memory (~12 MB free). Gain bounded by the wait:
   heavy area up to ~5%.
-- **Status:** not built.
-- **Re-evaluate when:** GPU-heavier scenes become the target, or the frame-begin wait grows past ~10% of the GX thread.
+- **Status:** built 2026-10-19 (`--dblframe on`, off by default; pica.c "overlapped frames"): halves of the existing
+  arenas plus one more 2 MB command buffer, a frame fenced on its slot's previous user, the screen swapped by the GX
+  thread. Stable and correct on the 2DS (jobs 522-525), **neutral in new frames everywhere** (heavy area 6.91 / 6.90,
+  Ordon 8.86 / 8.93, title sections even): the wait disappears (gxsync -98%, the GX thread 9 points less busy) but
+  core 0 then sets the frame rate (MEASUREMENTS.md "Overlapped frames").
+- **Re-evaluate when:** core 0 gets fast enough that the GX thread is the limit again (then turn it on and A/B once
+  more), GPU-heavier scenes become the target, or the frame-begin wait grows past ~10% of the GX thread.
+
+## C31. Sharper textures (after speed)
+
+- **Idea (2026-10-19, owner):** textures look soft on the 2DS. The owner wants them improved once full speed is reached;
+  speed and smoothness come first.
+- **Evidence / where the softness comes from (not yet measured one by one):** the whole picture is drawn into a
+  512x256 EFB (the GameCube's 640x528 scaled 0.625 x 0.5) and shown at 400x240, so every texture is minified on top of
+  the game's own sampling; `--smalltex 2` stores CMPR and RGB5A3 textures that are not exact in a 16-bit format as
+  RGB565 / RGBA5551 / RGBA4 (banding and lost detail); `--mips` makes minified textures sample lower levels (blur at
+  grazing angles, the PICA200 has no anisotropic filtering); sizes that are not powers of two are resampled nearest
+  (upload_level).
+- **Options to try then, cheapest first:** a per-texture choice that keeps RGBA8 for textures that lose most in 16 bits
+  (an error measure at decode); an LOD bias on the texture units (sharper, more aliasing); mips only for the textures
+  the screen minifies most; the 800-pixel-wide top screen mode (gfxSetWide: 800x240, twice the horizontal pixels; needs
+  a wider EFB, more GPU fill and VRAM); a light sharpening pass in the present quad's combiner.
+- **Against / risk:** each costs VRAM, texture bandwidth or GPU time, which the speed work has been buying back (VRAM
+  textures and smaller formats took the heavy area's GPU from 43.6 to ~14 ms a frame).
+- **Status:** parked by the owner until full speed.
+- **Re-evaluate when:** the target scenes run at full speed, or GPU time per frame has room to spare.
 

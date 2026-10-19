@@ -983,6 +983,19 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; ring batching was the gain). Its time is
   spread over ~15 items of 2-8% each; the one wait with a clear cause left is framebegin (C30, double-buffered frames,
   5-8% in the heavy area). Frame rates now (10 s lines): Ordon ~8.9-9.6 game frames a second, heavy area ~6.9.
+- **Overlapped frames, C30 (jobs 522-525, `--dblframe on` / `--ab dblframe`; pica.c):** citro3d's frame is never ended
+  after the first; a frame ends with a split and, at present, a screen transfer queued by pica.c; the vertex arena and
+  index arena alternate halves and the command buffer alternates with a second 2 MB one; a frame waits only for the
+  GPU to finish the frame before last; retired textures, staging buffers and converted shapes carry the frame that
+  retired them; the screen is swapped once the queue has passed the transfer; the queue (128 entries) is cleared only
+  when idle. **Stable through four runs and ~60 on / off switches; the picture is right (job 522's captures).** The
+  wait is gone: **heavy area gxsync -98%, the GX thread 96.6 -> 87.5% busy, core 0's GX wait 4.8 -> 0.4%; but new frames
+  a second 6.91 / 6.90 (on / off).** speed_pct +2.6% and xfb copies +12.9% there are emulated time running further per
+  frame, not frames. **Ordon 8.86 / 8.93 (its wait was 0.3%); title by section (job 525): cutscene 11.30 / 11.25, later
+  stretch 5.00 / 5.00, movie 8.44 / 8.32.** No early frame ends from the half-size arenas; slot waits ~0 a second.
+  Neutral: off by default. What it shows: in the heavy area neither thread now waits for the other or the GPU, and the
+  frame rate does not move, so **core 0's own work sets the heavy area's frame rate** (it was the GX thread only in the
+  sense of being busy); C3D_GetDrawingTime (c3d_gpu_ms) is not updated while it is on.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

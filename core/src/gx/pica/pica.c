@@ -52,6 +52,8 @@ void pica_set_cmdbuf_big(bool on) { g_cmdbufLimit = on ? 0.8f : 0.4f; }
 bool pica_cmdbuf_big(void) { return g_cmdbufLimit > 0.5f; }
 #define ARENA_VERTS ((6u << 20) / sizeof(PVert))
 #define IDX_MAX (512u << 10)  // u16 indices in the index arena (1 MB)
+// What a frame may use of the two arenas: all of them, or with overlapped frames (--dblframe, below) one half each.
+static u32 g_arenaCap = ARENA_VERTS, g_idxCap = IDX_MAX;
 #ifndef VBASE_SPAN
 #define VBASE_SPAN 0xFFFFu    // vertices a u16 index reaches from the vertex buffer's start
 #endif
@@ -118,6 +120,7 @@ static struct {
     PTex tex[MAX_TEX];
     u32 texBytes, frameNo;
     C3D_Tex grave[MAX_GRAVE];
+    u32 graveFrame[MAX_GRAVE];  // the frame each was retired in: freed once the GPU has finished it (free_done)
     u32 nGrave;
     PCopy copies[MAX_COPIES];
     PXfb xfb[MAX_XFB];
@@ -194,6 +197,7 @@ u64 g_copyPix[4];  // EFB -> texture copies: target texels, source EFB pixels (s
 static volatile bool g_vramTexWant;
 static bool g_vramTex;
 static void* g_staging[MAX_STAGING];
+static u32 g_stagingFrame[MAX_STAGING];  // the frame that queued each copy
 static u32 g_nStaging;
 u64 g_vramTexStats[3];  // textures put in VRAM, their bytes, textures left in FCRAM for want of VRAM
 static volatile bool g_xfbFcramWant;  // pica_set_xfb_fcram: applied at the next frame (begin_frame)
@@ -866,7 +870,6 @@ static void flush_arena(void) {
     g.idxFlushed = g.idxUsed;
 }
 
-static void ns_grave_free(void);  // converted shapes (below)
 
 static void free_all_textures(void) {
     for (u32 i = 0; i < MAX_TEX; i++)
@@ -874,33 +877,207 @@ static void free_all_textures(void) {
     g.texBytes = 0;
 }
 
-static void begin_frame(void) {
-    if (g.frame) return;
+// ---- overlapped frames (--dblframe, C30) ----
+// C3D_FrameBegin waits for the GPU to finish everything queued, the previous picture's tail included: 5-8% of the GX
+// thread in the heavy area (job 512). With overlapped frames citro3d's frame is never ended after the first: a frame
+// ends with a split and, at present, the screen transfer queued here; the vertex arena, the index arena and the
+// command buffer alternate between two slots, so a frame waits only for the GPU to finish the frame before last (its
+// slot's previous user). Retired textures, staging buffers and converted shapes are freed once the frame that retired
+// them is known finished (free_done); textures drawn by a frame not yet finished are retired, not deleted. This thread
+// swaps the screen once the queue has passed the transfer, and clears the queue only when it is idle (positions below
+// are absolute: g_qBase + index). Option changes that free every texture wait for the GPU as before.
+static volatile bool g_dblWant;
+static bool g_dbl;           // active: citro3d stays in its frame
+static u32 g_slot;           // the open frame's slot
+static u64 g_slotFence[2];   // queue position after the last frame that used each slot
+static u32 g_slotFrame[2];   // that frame's g.frameNo
+static u32 g_doneFrame;      // frames up to this one are finished on the GPU (otherwise: the one before the open frame)
+static u64 g_qBase;          // entries cleared from the queue so far
+static u64 g_swapFence;      // the queued screen transfer's end: swap once passed (0: none pending)
+static u64 g_capFence;       // the capture copy's end (cap_write reads it)
+static u32* g_cmdBufs[2];
+static PVert* g_arenaBase;
+static u16* g_idxBase;
+static u32 g_idxPaBase;
+u64 g_dblStats[5];  // slot waits that blocked, queue clears, waits for queue room, swaps, waits for everything
+void pica_set_dblframe(bool on) { g_dblWant = on; }
+bool pica_dblframe(void) { return g_dblWant; }
+static void queue_run(void);
+static bool g_earlyRun;
+
+static inline u64 q_end(void) { return g_qBase + g_q->numEntries; }
+static inline bool q_passed(u64 pos) { return g_qBase + *(volatile u16*)&g_q->lastEntry >= pos; }
+// Not running: everything queued has completed (an active queue runs what is added at once; Run restarts the rest).
+static bool q_idle(void) { gxCmdQueueRun(g_q); return gxCmdQueueWait(g_q, 0); }
+
+static void q_wait(u64 pos, u32 why) {
+    if (q_passed(pos)) return;
+    g_dblStats[why]++;
     u64 t0 = prof_begin();
     GW_ENTER(GW_FRAMEBEGIN);
-    C3D_FrameBegin(0);  // waits for the previous submit: the arena and retired textures are free again
+    while (!q_passed(pos) && !q_idle()) gspWaitForAnyEvent();
     GW_LEAVE();
     prof_end(PROF_GXSYNC, t0);
-    if (g_qBigWant && !g_qBigDone && g_q && g_q->numEntries == 0 && g_q->maxEntries < QBIG_ENTRIES) {
-        // (the queue is stopped and cleared here: C3D_FrameBegin waited for it)
-        gxCmdEntry_s* e = malloc(QBIG_ENTRIES * sizeof *e);
-        if (e) { free(g_q->entries); g_q->entries = e; g_q->maxEntries = QBIG_ENTRIES; g_qBigDone = true; }
+}
+
+static void q_clear_if_idle(void) {
+    if (!g_q->numEntries || !q_idle()) return;
+    g_qBase += g_q->numEntries;
+    gxCmdQueueClear(g_q);
+    g.queued = 0;
+    g_dblStats[1]++;
+}
+
+// Room for n more entries: the queue is cleared, which needs it idle.
+static void q_room(u32 n) {
+    if (g_q->numEntries + n + 2 <= g_q->maxEntries) return;
+    q_clear_if_idle();
+    if (g_q->numEntries + n + 2 <= g_q->maxEntries) return;
+    q_wait(q_end(), 2);
+    q_clear_if_idle();
+}
+
+static void swap_check(bool wait) {
+    if (!g_swapFence) return;
+    if (wait) q_wait(g_swapFence, 0);
+    else if (!q_passed(g_swapFence)) return;
+    gfxScreenSwapBuffers(GFX_TOP, false);
+    g_swapFence = 0;
+    g_dblStats[3]++;
+}
+
+static void use_slot(u32 s) {
+    g_slot = s;
+    g.arena = g_arenaBase + s * (ARENA_VERTS / 2);
+    if (g_idxBase) { g.idx = g_idxBase + s * (IDX_MAX / 2); g_idxPa = g_idxPaBase + s * IDX_MAX; }  // (IDX_MAX / 2 u16s)
+    g_c3d->cmdBuf = g_cmdBufs[s];
+    g_c3d->cmdBufUsage = 0;
+    GPUCMD_SetBuffer(g_cmdBufs[s], g_c3d->cmdBufSize, 0);
+}
+
+// Right after C3D_FrameBegin (the queue idle, stopped and cleared): the open frame becomes slot 0's.
+static bool dbl_enter(void) {
+    if (!g_q || !g_earlyRun) return false;  // (the queue is found at the first splits: tried again at the next frame)
+    if (!g_c3d) { g_dblWant = false; return false; }
+    if (!g_cmdBufs[0]) {
+        g_cmdBufs[0] = g_c3d->cmdBuf;
+        g_arenaBase = g.arena;
+        g_idxBase = g.idx;
+        g_idxPaBase = g_idxPa;
     }
-    g_qBudget = g_qBigWant && g_qBigDone ? QBIG_ENTRIES - 8 : 26;
+    if (!g_cmdBufs[1] && !(g_cmdBufs[1] = linearAlloc(g_c3d->cmdBufSize * 4))) { g_dblWant = false; return false; }
+    if (g_q->maxEntries < QBIG_ENTRIES) {
+        gxCmdEntry_s* e = malloc(QBIG_ENTRIES * sizeof *e);
+        if (!e) { g_dblWant = false; return false; }
+        free(g_q->entries);
+        g_q->entries = e;
+        g_q->maxEntries = QBIG_ENTRIES;
+        g_qBigDone = true;
+    }
+    g_qBase = 0;
+    g_slotFence[0] = g_slotFence[1] = 0;
+    g_slotFrame[0] = g_slotFrame[1] = 0;
+    g_swapFence = g_capFence = 0;
+    g_arenaCap = ARENA_VERTS / 2;
+    g_idxCap = IDX_MAX / 2;
+    use_slot(0);
+    g_dbl = true;
+    return true;
+}
+
+// Between frames: everything finishes, the picture is swapped, and citro3d's frame ends (nothing is left to submit).
+static void dbl_leave(void) {
+    q_wait(q_end(), 4);
+    swap_check(true);
+    g_dbl = false;
+    g_arenaCap = ARENA_VERTS;
+    g_idxCap = IDX_MAX;
+    g.arena = g_arenaBase;
+    if (g_idxBase) { g.idx = g_idxBase; g_idxPa = g_idxPaBase; }
+    C3D_FrameEnd(GX_CMDLIST_FLUSH);
+}
+
+// The next frame's slot, once its previous frame has finished; true when everything queued has (an option change).
+static bool dbl_begin(void) {
+    bool all = g.resetPending || g_texDiv != g_texDivWant || g_mips != g_mipsWant || g_small != g_smallWant ||
+               g_vramTex != g_vramTexWant || g_xfbFcram != g_xfbFcramWant;
+    u32 s = g_slot ^ 1;
+    if (all) {
+        q_wait(q_end(), 4);
+        g_doneFrame = g.frameNo;
+    } else {
+        q_wait(g_slotFence[s], 0);
+        if (g_slotFrame[s] > g_doneFrame) g_doneFrame = g_slotFrame[s];
+    }
+    swap_check(false);
+    q_clear_if_idle();
+    use_slot(s);
+    return all;
+}
+
+static void dbl_end(bool present) {
+    q_room(2);
+    C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    if (present) {
+        swap_check(true);  // the previous picture shown before this transfer takes the back buffer
+        C3D_FrameBufTransfer(&g.screen->frameBuf, g.screen->screen, g.screen->side, g.screen->transferFlags);
+        g.screen->used = false;
+        g_swapFence = q_end();
+    }
+    g_slotFence[g_slot] = q_end();
+    g_slotFrame[g_slot] = g.frameNo;
+    queue_run();
+}
+
+// Frees what was retired by frames the GPU has finished (all of it when C3D_FrameBegin waited).
+static void ns_grave_free_done(void);
+static void free_done(void) {
+    u32 n = 0;
+    for (u32 i = 0; i < g.nGrave; i++)
+        if (g.graveFrame[i] <= g_doneFrame) C3D_TexDelete(&g.grave[i]);
+        else { g.grave[n] = g.grave[i]; g.graveFrame[n++] = g.graveFrame[i]; }
+    g.nGrave = n;
+    n = 0;
+    for (u32 i = 0; i < g_nStaging; i++)
+        if (g_stagingFrame[i] <= g_doneFrame) linearFree(g_staging[i]);
+        else { g_staging[n] = g_staging[i]; g_stagingFrame[n++] = g_stagingFrame[i]; }
+    g_nStaging = n;
+    ns_grave_free_done();
+}
+
+static void begin_frame(void) {
+    if (g.frame) return;
+    if (g_dbl && !g_dblWant) dbl_leave();
+    bool idle = true;  // the GPU has finished everything queued
+    if (g_dbl) {
+        idle = dbl_begin();
+    } else {
+        u64 t0 = prof_begin();
+        GW_ENTER(GW_FRAMEBEGIN);
+        C3D_FrameBegin(0);  // waits for the previous submit: the arena and retired textures are free again
+        GW_LEAVE();
+        prof_end(PROF_GXSYNC, t0);
+        if (g_qBigWant && !g_qBigDone && g_q && g_q->numEntries == 0 && g_q->maxEntries < QBIG_ENTRIES) {
+            // (the queue is stopped and cleared here: C3D_FrameBegin waited for it)
+            gxCmdEntry_s* e = malloc(QBIG_ENTRIES * sizeof *e);
+            if (e) { free(g_q->entries); g_q->entries = e; g_q->maxEntries = QBIG_ENTRIES; g_qBigDone = true; }
+        }
+        if (g_dblWant) dbl_enter();
+    }
+    g_qBudget = (g_qBigWant || g_dbl) && g_qBigDone ? QBIG_ENTRIES - 8 : 26;
     g.frame = true;
     g.frameNo++;
+    if (idle) g_doneFrame = g.frameNo - 1;
     g.arenaUsed = g.arenaFlushed = g.queued = g.splitArena = g.idxUsed = g.idxFlushed = g.vbase = 0;
+    if (g_dbl) g.queued = g_q->numEntries;
     g.batchOpen = false;
-    for (u32 i = 0; i < g.nGrave; i++) C3D_TexDelete(&g.grave[i]);
-    g.nGrave = 0;
+    free_done();
     if (g_texDiv != g_texDivWant) { g_texDiv = g_texDivWant; g.resetPending = true; }  // (--texdiv: every texture again)
     if (g_mips != g_mipsWant) { g_mips = g_mipsWant; g.resetPending = true; }  // (--mips: every texture again)
     g_gpuDiag = g_gpuDiagWant;
     g_vfDeferCpu = g_deflitWant;  // this thread prepares the jobs (vfast_prepare reads it)
     if (g_shlightWant >= 0) { pica_set_shader_light(g_shlightWant != 0); g_shlightWant = -1; }
     if (g_small != g_smallWant) { g_small = g_smallWant; g.resetPending = true; }  // (--smalltex: every texture again)
-    for (u32 i = 0; i < g_nStaging; i++) linearFree(g_staging[i]);  // (the previous submit's copies are done)
-    g_nStaging = 0;
     if (g_vramTex != g_vramTexWant) { g_vramTex = g_vramTexWant; g.resetPending = true; }  // (every texture again)
     if (g_xfbFcram != g_xfbFcramWant) {  // the XFBs moved (the GPU is done with them: C3D_FrameBegin waited); pictures lost
         g_xfbFcram = g_xfbFcramWant;
@@ -912,7 +1089,6 @@ static void begin_frame(void) {
         }
     }
     if (g.resetPending) { free_all_textures(); g.resetPending = false; }
-    ns_grave_free();  // converted shapes retired before the previous submit, which the GPU has finished
     g.natAttr = false;
     if (g.uNat >= 0) C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 0, 0, 0, 0);
     C3D_BindProgram(&g.prog);
@@ -929,17 +1105,29 @@ static void begin_frame(void) {
     g_texEpoch++;
 }
 
-static void end_frame(void) {
+// present: the frame's picture is in g.screen (with overlapped frames the transfer and swap are queued here; citro3d
+// does both for a linked target that was drawn on).
+static void end_frame_at(bool present) {
     if (!g.frame) return;
     flush_batch();
     u64 t0 = prof_begin();
     flush_arena();
     GW_ENTER(GW_FRAMEEND);
-    C3D_FrameEnd(GX_CMDLIST_FLUSH);
+    if (g_dbl) dbl_end(present);
+    else C3D_FrameEnd(GX_CMDLIST_FLUSH);
     GW_LEAVE();
     prof_end(PROF_GXEND, t0);
     g_picaStats.submits++;
     g.frame = false;
+}
+
+static void end_frame(void) { end_frame_at(false); }
+
+// A list of retired memory is full: everything queued must finish before the next frame frees it.
+static void frame_drain(void) {
+    end_frame();
+    if (g_dbl) { q_wait(q_end(), 4); g_doneFrame = g.frameNo; }
+    begin_frame();
 }
 
 // citro3d's GX command queue, found in its context at attach (citro3d keeps it private): citro3d starts it only at
@@ -994,7 +1182,10 @@ static void verify_queue(bool before) {
     }
 }
 
-static void queue_run(void) { if (g_q && g_earlyRun) gxCmdQueueRun(g_q); }
+static void queue_run(void) {
+    if (g_q && g_earlyRun) gxCmdQueueRun(g_q);
+    if (g_swapFence) swap_check(false);  // (overlapped frames: the picture is shown once its transfer is done)
+}
 void pica_set_early_queue(bool on) { g_earlyRun = on; }
 bool pica_early_queue(void) { return g_earlyRun && g_q; }
 // Draws by batch path: [0] nothing in the key changed (fast), [1] key rebuilt and equal, [2] new batch; [3..6] new
@@ -1014,7 +1205,8 @@ static u32 g_nsSince;
 static void split(u32 transfers) {
     begin_frame();
     flush_batch();
-    if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { g_endWhy[0]++; end_frame(); begin_frame(); }
+    if (g_dbl) { q_room(1 + transfers); g.queued = g_q->numEntries; }  // (the queue keeps earlier frames' entries)
+    else if (g.queued + 1 + transfers > GXQUEUE_BUDGET) { g_endWhy[0]++; end_frame(); begin_frame(); }
     flush_arena();
     verify_queue(true);
     GW_ENTER(GW_SPLIT);
@@ -1052,11 +1244,11 @@ bool pica_split_open(void) { return g_splitOpen; }
 static u32 g_vwReserved;  // arena vertices the vertex worker's queued draws may write (vertex worker below)
 
 static bool need(u32 verts) {
-    if (verts > ARENA_VERTS) return false;
+    if (verts > g_arenaCap) return false;
     begin_frame();
     vw_sync();  // this thread writes the arena itself, after the worker's variable-length draws
-    if (g.arenaUsed + verts > ARENA_VERTS || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
-        g_endWhy[g.arenaUsed + verts > ARENA_VERTS ? 1 : 2]++;
+    if (g.arenaUsed + verts > g_arenaCap || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
+        g_endWhy[g.arenaUsed + verts > g_arenaCap ? 1 : 2]++;
         end_frame();
         begin_frame();
     }
@@ -1065,19 +1257,22 @@ static bool need(u32 verts) {
 
 // Room for a draw the vertex worker will append, without waiting for it.
 static bool need_work(u32 verts, u32 indices) {
-    if (verts > ARENA_VERTS || indices > IDX_MAX) return false;
+    if (verts > g_arenaCap || indices > g_idxCap) return false;
     begin_frame();
-    if (g.arenaUsed + g_vwReserved + verts > ARENA_VERTS || g.idxUsed + indices > IDX_MAX || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
-        g_endWhy[g.arenaUsed + g_vwReserved + verts > ARENA_VERTS ? 1 : g.idxUsed + indices > IDX_MAX ? 3 : 2]++;
+    if (g.arenaUsed + g_vwReserved + verts > g_arenaCap || g.idxUsed + indices > g_idxCap || C3D_GetCmdBufUsage() > g_cmdbufLimit) {
+        g_endWhy[g.arenaUsed + g_vwReserved + verts > g_arenaCap ? 1 : g.idxUsed + indices > g_idxCap ? 3 : 2]++;
         end_frame();
         begin_frame();
     }
     return true;
 }
 
-static void retire(C3D_Tex* t, bool usedThisFrame) {
-    if (!usedThisFrame) { C3D_TexDelete(t); return; }
-    if (g.nGrave == MAX_GRAVE) { g_endWhy[4]++; end_frame(); begin_frame(); }
+// lastUse: the frame that last drew with it. Drawn by a frame the GPU may not have finished (this one, or with
+// overlapped frames the one before): kept until that is done.
+static void retire(C3D_Tex* t, u32 lastUse) {
+    if (lastUse <= g_doneFrame) { C3D_TexDelete(t); return; }
+    if (g.nGrave == MAX_GRAVE) { g_endWhy[4]++; frame_drain(); }
+    g.graveFrame[g.nGrave] = g.frameNo;
     g.grave[g.nGrave++] = *t;
 }
 
@@ -1124,7 +1319,7 @@ static void evict_unused(u32 want) {
             if (p->live && p->lastUse != g.frameNo && (!old || p->lastUse < old->lastUse)) old = p;
         }
         if (!old) return;
-        C3D_TexDelete(&old->tex);
+        retire(&old->tex, old->lastUse);
         old->live = false;
         g.texBytes -= old->bytes;
     }
@@ -1157,7 +1352,7 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
     bool vram = g_vramTex && vramSpaceFree() > bytes + VRAM_RESERVE;
     u8* staging = NULL;
     if (vram) {
-        if (g_nStaging == MAX_STAGING) { g_endWhy[5]++; end_frame(); begin_frame(); }
+        if (g_nStaging == MAX_STAGING) { g_endWhy[5]++; frame_drain(); }
         C3D_TexInitParams vp = { (u16)W, (u16)H, (u8)(lv - 1), tf, GPU_TEX_2D, true };
         staging = linearAlloc(bytes);
         if (!staging || !C3D_TexInitWithParams(&nt, NULL, vp)) {
@@ -1204,11 +1399,12 @@ static bool decode(System* s, const GXCore* gx, PTex* e) {
         split(1);
         GX_TextureCopy((u32*)(void*)staging, 0, (u32*)nt.data, 0, bytes, GX_TRANSFER_RAW_COPY(1));
         queue_run();
+        g_stagingFrame[g_nStaging] = g.frameNo;
         g_staging[g_nStaging++] = staging;
         g_vramTexStats[0]++;
         g_vramTexStats[1] += bytes;
     }
-    if (e->live) { retire(&e->tex, e->lastUse == g.frameNo); g.texBytes -= e->bytes; }
+    if (e->live) { retire(&e->tex, e->lastUse); g.texBytes -= e->bytes; }
     e->tex = nt;
     e->bytes = bytes;
     e->live = true;
@@ -1260,7 +1456,7 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
             for (u32 i = 0; i < MAX_TEX; i++)
                 if (g.tex[i].lastUse != g.frameNo && (!slot || g.tex[i].lastUse < slot->lastUse)) slot = &g.tex[i];
             if (!slot) return NULL;
-            C3D_TexDelete(&slot->tex);
+            retire(&slot->tex, slot->lastUse);
             slot->live = false;
             g.texBytes -= slot->bytes;
         }
@@ -2080,6 +2276,7 @@ static void vw_sync_all(void) {
 // the GPU rose from 1.7% to 6-7%: 2DS, 9388639.)
 #define NS_SPLIT (3u * SPLIT_VERTS)
 static void split_early(void) {
+    if (g_dbl && g.queued + 8 > GXQUEUE_BUDGET && g.frame) q_clear_if_idle();
     if (!g_earlySplit || !g_q || !g.frame || (g.arenaUsed - g.splitArena < SPLIT_VERTS && g_nsSince < NS_SPLIT) ||
         g.queued + 8 > GXQUEUE_BUDGET)
         return;
@@ -2893,6 +3090,7 @@ static NShape* g_ns;
 static u32* g_nsLive;   // slots in use, packed (NShape.live: the position here)
 static u32 g_nsLiveN, g_nsBytes, g_nsVerify;
 static u8* g_nsGrave[NS_GRAVE];  // retired buffers: the GPU may still read them until the frame's submit is done
+static u32 g_nsGraveFrame[NS_GRAVE];  // the frame each was retired in
 static u32 g_nsGraveN;
 static volatile bool g_nsWant = true;
 // Counters (totals): [0] draws drawn converted, [1] conversions, [2] their vertices; old path for want of [3] state
@@ -2980,13 +3178,17 @@ static void ns_never(const u8* cmd, u32 why) {
     g_nsWhy[why]++;
 }
 
-static void ns_grave_free(void) {
-    for (u32 i = 0; i < g_nsGraveN; i++) linearFree(g_nsGrave[i]);
-    g_nsGraveN = 0;
+static void ns_grave_free_done(void) {
+    u32 n = 0;
+    for (u32 i = 0; i < g_nsGraveN; i++)
+        if (g_nsGraveFrame[i] <= g_doneFrame) linearFree(g_nsGrave[i]);
+        else { g_nsGrave[n] = g_nsGrave[i]; g_nsGraveFrame[n++] = g_nsGraveFrame[i]; }
+    g_nsGraveN = n;
 }
 
 static void ns_kill(NShape* e) {
-    if (g_nsGraveN == NS_GRAVE) { g_endWhy[6]++; end_frame(); begin_frame(); }  // begin_frame frees the grave
+    if (g_nsGraveN == NS_GRAVE) { g_endWhy[6]++; frame_drain(); }  // begin_frame frees the grave
+    g_nsGraveFrame[g_nsGraveN] = g.frameNo;
     g_nsGrave[g_nsGraveN++] = e->mem;
     g_nsBytes -= e->bytes;
     u32 pos = e->live, last = g_nsLive[--g_nsLiveN];
@@ -3661,7 +3863,10 @@ static void ns_verify(void);
 bool pica_present(System* s, u32 xfbAddr) {
     pica_merge_flush(s, false);
     if (g.frame) ns_verify();
-    if (g_capState == 2) cap_write();  // the copy was queued with the previous present
+    if (g_capState == 2) {  // the copy was queued with the previous present
+        if (g_dbl) q_wait(g_capFence, 4);
+        cap_write();
+    }
     PXfb* show = NULL;
     for (u32 i = 0; i < MAX_XFB; i++) {
         PXfb* x = &g.xfb[i];
@@ -3705,8 +3910,9 @@ bool pica_present(System* s, u32 xfbAddr) {
         GX_TextureCopy((u32*)g.screen->frameBuf.colorBuf, 0, g_capBuf, 0, CAP_W * CAP_H * 4, GX_TRANSFER_RAW_COPY(1));
         queue_run();
         g_capState = 2;
+        if (g_dbl) g_capFence = q_end();
     }
-    end_frame();  // queues the transfer to the top framebuffer and the swap
+    end_frame_at(true);  // queues the transfer to the top framebuffer and the swap
     return true;
 }
 

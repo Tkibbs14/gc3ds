@@ -8,10 +8,12 @@
 > heavy area +2.6%). **Limits now: the GX thread in Ordon and the heavy area (89-95% busy; core 0 idles 10-12% waiting
 > for it), core 0 in the title's later stretch (the ShdwDraw stand-in ~38% of it).** 10-19: four GX-thread changes
 > measured neutral (a 256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; MEASUREMENTS.md "Where
-> the GX thread stands"); its time is flat. Next: C30 (double-buffered frames: the GX thread waits 5-8% for the GPU at
-> each frame begin in the heavy area; risks a console freeze, so only when the owner is home), the TEV key's cost
-> (48 ms/s), ShdwDraw for the title's later stretch, then more ports (LIBRARY_PORTS.md). Judge frame-timing changes
-> by '# new frames 10s', not speed_pct.
+> the GX thread stands"); its time is flat. C30 (overlapped GPU frames, `--dblframe`) is built, stable and neutral
+> (jobs 522-525): it removes the GX thread's frame-begin wait (9 points less busy in the heavy area) and new frames stay
+> 6.91 / 6.90, so **core 0's own work now sets the heavy area's frame rate too**. Next: core 0 (its hot functions in
+> the heavy area, ShdwDraw for the title's later stretch, more ports: LIBRARY_PORTS.md), then the TEV key's cost
+> (48 ms/s) once the GX thread limits again. Texture sharpness is parked by the owner until full speed
+> (REDESIGN_CANDIDATES C31). Judge frame-timing changes by '# new frames 10s', not speed_pct.
 >
 > **Earlier on 2026-10-18.** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
 > area (`sdmc:/gc3ds/states/tp_area2.state`) ~20.0% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439, 449). In game
