@@ -400,6 +400,7 @@ typedef struct {
     bool noLc;           // --lc off: quantized psq accesses to the locked cache go to the interpreter (as before 2026-10-16)
     bool merge;          // --merge on|off: draw merging on the GX thread (pica.c; on by default)
     u32 vwmemKb;         // --vwmem KB: the vertex worker's job ring (pica_set_job_ring; --ab vwmem alternates 256 and 1024)
+    u32 vwmemBKb;        // --vwmem-b KB: with --ab vwmem, alternate --vwmem and this instead
     bool traceFollow;    // --trace-follow on|off: traces follow unconditional b
     u32 traceSide;       // --trace-side on|off|MASK: side exits (TRACE_SIDE_*: 1 bc on CR, 2 bc with CTR, 4 blr/bctr, 8 fused flags)
     bool link;           // --link on|off: block linking (off: every exit returns to the dispatcher)
@@ -607,6 +608,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         }
         else if (!strcmp(a, "--shapes")) o->shapes = !strcmp(v, "on");
         else if (!strcmp(a, "--vwmem")) o->vwmemKb = (u32)strtoul(v, NULL, 10);
+        else if (!strcmp(a, "--vwmem-b")) o->vwmemBKb = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--merge")) o->merge = !strcmp(v, "on");
         else if (!strcmp(a, "--traces")) o->traces = !strcmp(v, "on");
         else if (!strcmp(a, "--hle")) o->hle = !strcmp(v, "on");
@@ -1434,7 +1436,10 @@ static const char* run(const char* path) {
                 if (g_opt.abSteal && g_pica && perfRows % AB_SECS == 0) pica_set_steal(!pica_steal());
                 if (g_opt.abFskip && g_pica && perfRows % AB_SECS == 0) pica_set_fskip(!pica_fskip());
                 if (g_opt.abAot && g_jit && perfRows % AB_SECS == 0) { aot_set_enabled(!aot_enabled()); jit_invalidate_all(g_jit); }
-                if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
+                if (g_opt.abVwmem && g_pica && perfRows % AB_SECS == 0) {
+                    if (g_opt.vwmemBKb) pica_set_job_ring(pica_job_ring() == (g_opt.vwmemKb << 10) ? g_opt.vwmemBKb << 10 : g_opt.vwmemKb << 10);
+                    else pica_set_job_ring(pica_job_ring() > (256u << 10) ? 256u << 10 : 1024u << 10);
+                }
                 if (perfRows % 10 == 0) {
                     g_where = WH_PERFREP;
                     perf_fallbacks();

@@ -6,8 +6,8 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs the Ordon walk at ~28% of full speed and Ordon's heaviest area at ~20.6% (the intro cutscene ~29%,
-the THP movie ~13%; 18 October 2026, night).
+test. Today it runs the Ordon walk at ~28% of full speed and Ordon's heaviest area at ~20.6% (the title's cutscene
+~36%, its later Link / Epona stretch ~19%, the THP movie ~13%; 19 October 2026).
 
 ## Rules
 
@@ -122,9 +122,10 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **Gameplay (18 October 2026, night; jobs 500-502):** Ordon walk 28.0%, the heavy area 20.6%, the title cutscene
-  28.9%. **The GX thread is the limit in gameplay** (89-95% busy; core 0 idles 10-12% waiting for it, which the
-  profile's "dispatch" bucket holds); **core 0 is the limit in the title cutscene** (the ShdwDraw stand-in ~38% of it).
+- **Gameplay (18 October 2026, night; jobs 500-502):** Ordon walk 28.0%, the heavy area 20.6%; the title: cutscene
+  (25-150 s) 36.1%, later stretch 19.0%, movie 12.8% (the cutscene now ends at ~150 s, not ~250: windows must follow
+  it). **The GX thread is the limit in gameplay** (89-95% busy; core 0 idles 10-12% waiting for it, which the
+  profile's "dispatch" bucket holds); **core 0 is the limit in the title's later stretch** (the ShdwDraw stand-in ~38%).
   The vertex worker ~25-35% busy, the GPU ~5-15 ms a frame.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
@@ -152,7 +153,7 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
 - **Open directions:** the GX thread's own work (fifo, vertex prep, waits for the vertex worker's ring, draw tails);
-  the ShdwDraw stand-in for the cutscene; more library ports (J2DPane::draw, text, other TEV block types, J3D packet
+  the ShdwDraw stand-in for the title's later stretch; more library ports (J2DPane::draw, text, other TEV block types, J3D packet
   draw; `docs/research/LIBRARY_PORTS.md`); core 0: less hot code per guest instruction, longer blocks; GPU-resident vertex data for repeated display lists (C1);
   frame skip as a user option (guards for fades in place; game frames +50-60%).
 

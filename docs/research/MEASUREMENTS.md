@@ -12,8 +12,8 @@ probe, add the result here in the same commit as the change, and mark what it su
 `azahar` and `estimate` only explain.
 
 **Newest first (2026-10-18):** "The first library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
-night's state: Ordon 28.0%, heavy area 20.6%, cutscene 28.9%; the GX thread the limit in gameplay, core 0 in the
-cutscene), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
+state on 10-19: Ordon 28.0%, heavy area 20.6%, title cutscene 36.1% / later stretch 19.0% / movie 12.8%; the GX
+thread the limit in gameplay, core 0 in the later stretch; see "The title's sections moved" there), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
 ~20-23.5%, core 0 the limit everywhere, the GPU and GX side off the critical path). The verdict and headline
 numbers below are the 10-16 audit's and describe that state (GX thread ~80-88% busy, the GPU slow on FCRAM textures).
 
@@ -919,8 +919,9 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   only)**, and **with MSR.FP off the guest's first float instruction takes the FP-unavailable exception (the OS's lazy
   FP switch)**, so a float port is not taken then. Exact: PC 223,652 + 146,753 calls over the title sequence; device
   ~72,000 (Ordon and the heavy area). Only ~209 guest instructions a call, ~3,500 calls a second in Ordon.
-  **Speed (`--ab j3dhook`, jobs 496-498): Ordon +1.46 +- 0.33 (+5.8%), the title cutscene +1.86 +- 0.98 (+7.3%), heavy
-  area -0.13 +- 0.07 (-0.7%).** On by default. (One call stands in for three of the existing stand-ins' calls and the
+  **Speed (`--ab j3dhook`, jobs 496-498): Ordon +1.46 +- 0.33 (+5.8%), heavy area -0.13 +- 0.07 (-0.7%); the title
+  per section (job 498 re-scored 10-19, its cutscene ending at ~175 s): cutscene +0.30 +- 0.58, later stretch -0.07 +-
+  0.29, neutral.** (A first reading over 40-300 s, +7.3%, put the cutscene into the arms unevenly: wrong.) On by default. (One call stands in for three of the existing stand-ins' calls and the
   glue between them.)
 - **The heavy area is the GX thread's now (job 499, `--profile on`):** core 0's "dispatch" bucket rose to 10.2% (4.1% in
   job 451) and Ordon's to 7.9% (job 489): it holds the idle hook's wait for the GX thread to drain (gekko_idle_hook ->
@@ -930,18 +931,26 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   copy 3.6%, split 3.2%, idle 7-8% (dec_dlnote and dec_op, ~9% together, are the profile's own decoder statistics:
   `--profile on` turns gxdiag on).
 - **Baselines with the ports and gpbulk (jobs 500-502, plain runs):** Ordon walk 60-300 s **28.03%** (22.64% in job 397
-  this morning; ~23.5% before the ports), heavy area 30-240 s **20.64%** (~20.0%), title cutscene 25-250 s **28.94%**
-  (~26.8%), THP movie 370-420 s 12.82%. The GX thread is 94.9% busy in the heavy area and 89.3% in Ordon: it is the
-  next limit in both (Ordon's dispatch bucket, core 0 idling for the GX thread, is 11.5% in job 503).
+  this morning; ~23.5% before the ports), heavy area 30-240 s **20.64%** (~20.0%), THP movie 330-420 s 12.84%. The GX
+  thread is 94.9% busy in the heavy area and 89.3% in Ordon: it is the next limit in both (Ordon's dispatch bucket,
+  core 0 idling for the GX thread, is 11.5% in job 503).
+- **The title's sections moved (re-read 10-19):** the cutscene now runs ~34-38% and **ends at ~150 s** (~175 s in an
+  A/B run that drops compiled code at each switch); the later Link / Epona stretch runs ~19% from there to ~300 s;
+  the movie follows. **Job 502 by section: cutscene 25-150 s 36.05%, later stretch 165-300 s 19.02%, movie 12.84%;
+  job 439 (before the ports, 10-18): 35.15%, 18.94%, 12.72%.** So the title gained ~2.6% in the cutscene and nothing in
+  the later stretch, where the ShdwDraw stand-in is ~38% of core 0. The "cutscene 25-250 s" means quoted for today
+  (26.8%, 28.94%) mixed the cutscene with ~100 s of the later stretch. Windows must follow the boundary (speed_pct
+  drops from ~35% to ~19% within one row); ab_split.py and gx_split.py still hard-code older ones.
 - **GX-thread ring records batched (`--ringbatch`, gxthread.c, jobs 505-507):** the pipe's 32-byte bursts appended to
   one open record of up to 512 bytes, published when full and before every poll (each event slice), sync, present and
   drain. **Heavy area +0.54 +- 0.02 points (+2.6%), the GX thread 3.7% less busy; Ordon +0.45 +- 0.36 (+1.6%), the GX
-  thread 7.4% less busy; title cutscene -0.18 +- 0.61 and movie -0.05 +- 0.04 (neither GX-bound; the GX thread 6.5% and
-  39% less busy).** On by default.
+  thread 7.4% less busy; title by section (job 507): cutscene -0.09 +- 0.42, later stretch +0.07 +- 0.02, movie -0.05 +-
+  0.04 (none GX-bound).** On by default.
 - **Where core 0 goes now (jobs 503-504, `--profile on`):** Ordon: the J3D port's block 5.0% and drawSelf's 4.3% of
   samples (their commits wait for ring space when the GX thread is behind), GXLoadPosMtxImm 1.4%, __GXSendFlushPrim
-  1.1%, J2DPane::draw 1.2%. **Title cutscene: core 0 bound (dispatch 1.8%), the ShdwDraw stand-in ~38%** (its block
-  25.2% plus its neighbours), SetupNP 2.3%, GetTriPla 2.3%, psdRealCallBack 2.3%, the J3D port 2.9%.
+  1.1%, J2DPane::draw 1.2%. **The title's later stretch (job 504's last reports, past its ~150 s cutscene): core 0
+  bound (dispatch 1.8%), the ShdwDraw stand-in ~38%** (its block 25.2% plus its neighbours), SetupNP 2.3%, GetTriPla
+  2.3%, psdRealCallBack 2.3%, the J3D port 2.9%.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

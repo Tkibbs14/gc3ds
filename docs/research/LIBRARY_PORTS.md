@@ -3,7 +3,7 @@
 Owner decision (2026-10-18): port shared game libraries natively, for as many games as possible, as long as each port
 makes every game that uses it faster. When it was taken, core 0 (the game's own code) was the limit in every Twilight
 Princess scene (MEASUREMENTS.md, "Frames ended early, and the command buffer"). Since the first ports, gpbulk and ring
-batching (Status below), the GX thread is the limit in gameplay and core 0 in the title cutscene: a core 0 port now
+batching (Status below), the GX thread is the limit in gameplay and core 0 in the title's later stretch: a core 0 port now
 shows its gain where core 0 limits.
 
 ## Why ports, and what kind
@@ -54,11 +54,11 @@ shows its gain where core 0 limits.
 - **Ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"), each checked exact on the device
   (`--port check` runs on the 2DS as well as the PC; `--port plant` proves it reports a difference):
   J2DMaterial::setGX (Ordon +3.6-5.9%), J2DPictureEx::drawSelf (Ordon +4.5% more), J3DShapeMtxConcatView's matrix
-  load (Ordon +5.8%, title cutscene +7.3%), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). The
+  load (Ordon +5.8%; the title neutral), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). The
   heavy area is GX-thread bound since gpbulk, so each reads -0.5 to -0.7% there (within ~2 sigma). Not yet:
   J2DTevBlock1/4/8/16 (the title screen uses 16), indirect stages.
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
-  GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the cutscene, the ShdwDraw
+  GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code

@@ -440,11 +440,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   subtree per hook, sharing one context (core/src/cpu/port_j2d.c; LIBRARY_PORTS.md).
 - **Evidence (jobs 457-498, MEASUREMENTS.md "The first library port"):** J2DMaterial::setGX, J2DPictureEx::drawSelf and
   J3DShapeMtxConcatView's matrix load are exact over >500,000 checked calls (device and PC) and gain Ordon +3.6-5.9%,
-  +4.5% and +5.8% (cutscene +7.3% for J3D). A port that repeats the SDK step by step cost what the JIT did (~35,600
+  +4.5% and +5.8% (the title neutral for J3D when scored by section). A port that repeats the SDK step by step cost what the JIT did (~35,600
   cycles a call); doing less (plain loads after one range check, pipe bytes through a pointer, the SDK's bookkeeping
   folded) took it to ~15,700.
 - **Status:** built, three on by default. Since gpbulk and ring batching the GX thread limits gameplay, so further
-  core 0 ports pay mainly in core-0-bound scenes (the title cutscene).
+  core 0 ports pay mainly in core-0-bound scenes (the title's later stretch).
 - **Re-evaluate when:** the GX thread stops being gameplay's limit (then J2DPane::draw, text, the other TEV block
   types, J3D packet draw), or another JSystem game is the target (the same ports by code hash, GAMES.md).
 
