@@ -106,8 +106,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   `python3 core/tools/ab_phases.py LOG COLUMN 60 ON_VALUE`** (each phase against its neighbours, from 60 s), not with
   pooled means (they showed phantom gains); `core/tools/ab_split.py --col NAME` for the tp850 state (cutscene / later
   stretch). Read "speed" and **core 0's own speed** (`speed / (1 - gxwait_pct)`): while the GX side limits the game, a
-  faster core 0 only turns into waiting. A/B switches that flush compiled code (stand-in groups, JIT options) read
-  ~1.5 points low in both arms.
+  faster core 0 only turns into waiting. A/B switches that flush compiled code (stand-in groups, JIT options, ports)
+  stall for seconds: ab_phases.py drops each phase's first 12 s, and in the heavy area such A/Bs still read the on arm
+  ~2% low, so confirm them with separate whole runs (two heavy-area runs of one build agree to ~0.1%).
+- **Frames:** the game is locked to two VI fields a picture ('# new frames hist': field gaps), so while it stays
+  locked settled speed_pct is the frame rate; when a change unlocks it, only the '# new frames 10s' line counts (real
+  frames a second since 10-19; before that the line was broken and read ~6.9 in the heavy area at any speed).
 - `# ...` lines in perf.csv report every 10 s: vertex worker phases, job ring waits, display lists, caches, JIT code
   size, fallbacks, frames ended early, EFB copies, textures. With `--profile on`: hot guest code, guest stacks (map them
   with `core/tools/stack_funcs.py`), where the GX thread is (`# gx thread where`) and the decoder's time by command

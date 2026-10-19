@@ -97,6 +97,7 @@ static volatile bool g_frameReady;
 static void on_field(System* s, void* user) {
     (void)s; (void)user;
     g_fields++;
+    { extern volatile u32 g_viField; g_viField = g_fields; }
     g_frameReady = true;
 }
 
@@ -487,7 +488,7 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
-    bool dblframe, abDblframe;  // --dblframe on|off (off), --ab dblframe: overlapped GPU frames, C30 (pica.c)
+    bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
     bool feeddirect, abFeeddirect;  // --feeddirect on|off (off), --ab feeddirect: GX commands parsed in place (gx/fifo.c g_feedDirect)
     int idlewait; bool abIdlewait;  // --idlewait US: the idle hook waits at most US for the GX thread (default: a full sync, -1); --ab idlewait: full and US
     bool ringbatch, abRingbatch;  // --ringbatch on|off (on), --ab ringbatch: bursts batched into larger GX-thread ring records (gxthread.c)
@@ -543,6 +544,7 @@ static void opts_default(RunOpts* o) {
     o->idlewait = -1;    // the idle hook syncs fully with the GX thread (Dolphin's SyncOnSkipIdle)
     o->ringbatch = true; // bursts batched into 512-byte ring records: heavy area +2.6%, Ordon +1.6% (jobs 505-506)
     o->gpbulk = true;    // pipe bursts with one copy (hw/gx.c): heavy area +3.2%, Ordon +4.5% (jobs 477-478), byte-identical
+    o->dblframe = true;  // overlapped GPU frames (pica.c, C30): heavy area +1.9% frames, Ordon even (jobs 548-560)
     o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
     o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)
@@ -1534,10 +1536,26 @@ static const char* run(const char* path) {
                 }
                 {  // new frames' pacing (pica.c g_xfbGap): stutter shows as a large spread or largest gap
                     extern double g_xfbGap[4];
+                    // Per second of real time since the last report. (Until 10-19 this divided by 10, but a report comes
+                    // after ten rows, each cut at the first field past a second: ~10.8 s and a whole number of fields, so
+                    // with the game locked to two fields a picture the count barely moved: "6.9" in the heavy area at any
+                    // speed. The histogram's field gaps show whether the game is locked.)
+                    static u64 tRep;
+                    u64 tNow = svcGetSystemTick();
+                    double win = tRep ? (double)(tNow - tRep) / SYSCLOCK_ARM11 : 10.0;
+                    tRep = tNow;
                     double n = g_xfbGap[0], m = n > 0 ? g_xfbGap[1] / n : 0, v = n > 1 ? g_xfbGap[2] / n - m * m : 0;
-                    fprintf(g_perf, "# new frames 10s: %.1f/s, gap mean %.1f ms, sd %.1f ms, largest %.1f ms\n", n / 10.0, m,
-                            v > 0 ? sqrt(v) : 0.0, g_xfbGap[3]);
+                    fprintf(g_perf, "# new frames 10s: %.2f/s over %.2f s, gap mean %.1f ms, sd %.1f ms, largest %.1f ms\n",
+                            n / win, win, m, v > 0 ? sqrt(v) : 0.0, g_xfbGap[3]);
                     memset(g_xfbGap, 0, sizeof g_xfbGap);
+                    extern u32 g_xfbHistRt[64], g_xfbHistF[8];
+                    fprintf(g_perf, "# new frames hist 10s: real gap (bins of 1/240 s: count)");
+                    for (int b = 0; b < 64; b++) if (g_xfbHistRt[b]) fprintf(g_perf, " %d:%u", b, (unsigned)g_xfbHistRt[b]);
+                    fprintf(g_perf, "; VI fields between copies:");
+                    for (int b = 0; b < 8; b++) if (g_xfbHistF[b]) fprintf(g_perf, " %d:%u", b, (unsigned)g_xfbHistF[b]);
+                    fprintf(g_perf, "\n");
+                    memset(g_xfbHistRt, 0, sizeof g_xfbHistRt);
+                    memset(g_xfbHistF, 0, sizeof g_xfbHistF);
                 }
                 {  // the GX decoder's time by command class (fifo.c, one command in 16)
                     if (g_opt.idlewait >= 0) {  // the idle hook's bounded waits (gxthread.c): how each ended

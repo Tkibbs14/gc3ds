@@ -970,6 +970,8 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   column is printed rounded to whole copies; its phase means read +2.4% / +2.1%: use the 10 s line.) Timing drift of
   that kind would also move anything the game or its audio clocks by time rather than by frames. Not worth it: off
   (`--idlewait 0` to try); judge any change to idle-time behaviour by new frames a second, never by speed_pct.
+  (The frames line here was the broken one, entry "The frame-rate line was broken" below; re-measured properly, job 556:
+  6.30 frames a second against 6.35, the verdict holds.)
 - **GX commands parsed in place (jobs 516-517, `--ab feeddirect`; fifo.c):** the decoder reads the ring record itself
   and only a command split across records goes through the pending buffer (PC state hash unchanged over 400 fields).
   **Heavy area -0.080 +- 0.019 points (-0.4%), Ordon -0.013 +- 0.368: no gain.** The copy (dec_feed ~1.9% of the GX
@@ -982,43 +984,50 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Where the GX thread stands after these (10-19):** five GX-thread changes measured neutral or worse in one day (a
   256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; ring batching was the gain). Its time is
   spread over ~15 items of 2-8% each; the one wait with a clear cause left is framebegin (C30, double-buffered frames,
-  5-8% in the heavy area). Frame rates now (10 s lines): Ordon ~8.9-9.6 game frames a second, heavy area ~6.9.
-- **Overlapped frames, C30 (jobs 522-525, `--dblframe on` / `--ab dblframe`; pica.c):** citro3d's frame is never ended
-  after the first; a frame ends with a split and, at present, a screen transfer queued by pica.c; the vertex arena and
-  index arena alternate halves and the command buffer alternates with a second 2 MB one; a frame waits only for the
-  GPU to finish the frame before last; retired textures, staging buffers and converted shapes carry the frame that
-  retired them; the screen is swapped once the queue has passed the transfer; the queue (128 entries) is cleared only
-  when idle. **Stable through four runs and ~60 on / off switches; the picture is right (job 522's captures).** The
-  wait is gone: **heavy area gxsync -98%, the GX thread 96.6 -> 87.5% busy, core 0's GX wait 4.8 -> 0.4%; but new frames
-  a second 6.91 / 6.90 (on / off).** speed_pct +2.6% and xfb copies +12.9% there are emulated time running further per
-  frame, not frames. **Ordon 8.86 / 8.93 (its wait was 0.3%); title by section (job 525): cutscene 11.30 / 11.25, later
-  stretch 5.00 / 5.00, movie 8.44 / 8.32.** No early frame ends from the half-size arenas; slot waits ~0 a second.
-  Neutral: off by default. What it shows: in the heavy area neither thread now waits for the other or the GPU, and the
-  frame rate does not move, so **core 0's own work sets the heavy area's frame rate** (it was the GX thread only in the
-  sense of being busy); C3D_GetDrawingTime (c3d_gpu_ms) is not updated while it is on.
-- **Core 0 in the heavy area does not set its frame rate (jobs 526-543, 10-19):**
+  5-8% in the heavy area). Frame rates now (10 s lines): Ordon ~8.9-9.6 game frames a second, heavy area ~6.9 (that
+  line was broken, see below: the real rates were ~9.05 and ~6.35).
+- **The frame-rate line was broken; how to measure frames now (10-19, jobs 547-556):**
+  - **What was wrong.** '# new frames 10s' divided the XFB copies by 10, but a report comes after ten perf rows, and
+    each row is cut at the first emulated field past a second of real time: the window is ~10.8 s and holds a whole
+    number of fields. The game is locked to **exactly two VI fields per picture** (new '# new frames hist' line: 2 in
+    ~99% of gaps, all defaults, heavy area and Ordon). So the count stayed at ~69 a window ("6.9/s") for any speed
+    within a few percent. Every "frames flat" verdict scored with that line, including C30's and the ports' below, is
+    void; the real heavy-area rate was ~6.35 frames a second, not 6.9.
+  - **Now.** The line divides by the window's real length; the histogram gives the real-time gaps (1/240 s bins) and
+    the VI fields between copies. While the game stays locked at two fields, frames a second = fields_s / 2, so a
+    settled speed_pct is a frame-rate measure; when a change unlocks it (fields per copy 3 and more), speed_pct
+    inflates and only the frames line counts.
+  - **Separate whole runs are precise in the heavy area:** two runs of a build agree to ~0.1% (6.349 / 6.344). A/B
+    switches that recompile all JIT code (ports, opt) bias the on arm by ~2% there even when settled
+    (core/tools/ab_phases.py now drops each phase's first 12 s): confirm port results with separate runs.
+- **Overlapped frames, C30 (jobs 522-525, 548-560; `--dblframe`, pica.c): on by default.** citro3d's frame is never
+  ended after the first; a frame ends with a split and, at present, a screen transfer queued by pica.c; the vertex
+  arena and index arena alternate halves and the command buffer alternates with a second 2 MB one; a frame waits only
+  for the GPU to finish the frame before last; retired textures, staging buffers and converted shapes carry the frame
+  that retired them; the screen is swapped once the queue has passed the transfer; the queue (128 entries) is cleared
+  only when idle. Stable through ~14 runs and ~60 on / off switches; the picture is right (job 522's captures); no
+  early frame ends from the half-size arenas. **Separate runs, frames a second: heavy area 6.465 / 6.465 against
+  6.349 / 6.344 (+1.9%); Ordon 9.060 / 9.060 against 9.053 / 9.056 (even); the title even by section (job 525, an A/B
+  that recompiles nothing).** In the heavy area the GX thread's frame-begin wait goes (gxsync -98%, the GX thread 96.6
+  -> 87.5% busy). C3D_GetDrawingTime (c3d_gpu_ms) is not updated while it is on.
+- **What limits the heavy area: the GX side, not core 0 (jobs 526-555):**
   - **Two more ports, exact, off.** `__GXSendFlushPrim` (`--port-hooks` bit 3, `--ab flushhook`): PC 4,822 checked calls
     and device 26,761, 0 differed; ~2,700 calls/s of 48 guest instructions (19 pipe words).
     `J3DColorBlockLightOn::diffLightObj` (bit 4, `--ab lighthook`; each light's four XF loads, 72 bytes, appended to
     `__GDCurrentDL` natively): PC 18,699 and device 3,973 checked, 0 differed; ~945 calls/s of ~3,800 guest
     instructions; the port takes 7.3 + 8.7 us a call (building, committing byte by byte), ~1.5% of core 0, against
-    ~3.6% inclusive for the guest path (job 512 stacks).
-  - **A/B readings.** Heavy area, settled rows: flush -0.43 +- 0.13 and -0.50 +- 0.16 points (two runs); lights -0.28
-    +- 0.15; lights with overlapped frames -0.02 +- 0.17. Ordon: flush +1.2 +- 0.3 twice (the scripted walk is
-    deterministic, so a repeat gives the same alignment and cannot rule out a walk artifact); lights unreadable (+-0.9).
-  - **The heavy area's game frames are pinned at 6.90 a second.** Every 10 s line of every run since job 501
-    (gpbulk and ring batching) reads 6.9, while speed_pct ranges 20.65-21.13%. Separate whole runs: the three default
-    ports 6.9 frames at 21.13%, plus lights 6.9 at 21.12%, ports off 6.9 at 20.71% (jobs 539-541). **All HLE stand-ins
-    off (0 runs; core 0 runs ~3M more guest instructions a second natively): 6.9 frames at 21.14% (job 542)**; core 0
-    absorbs the extra work in its idle-loop waits. Slowing the GX side (gpbulk and ring batching off, job 543): 20.30%,
-    frames 6.6-6.9. So removing core 0 work cannot raise the heavy area's frame rate; its pace (one picture every
-    ~145 ms of real time, sd ~12 ms) is set on the GX side or by the waits between the threads, not by either thread's
-    busy time (both show 8-13% slack with overlapped frames on).
-  - **Method.** A port's A/B recompiles all JIT code at each switch (a multi-second stall: the first 10 s line of
-    each arm reads ~6.1 frames against 6.9). core/tools/ab_phases.py now drops each phase's first 12 s (SETTLE).
-    Even settled, port A/Bs in the heavy area read the on arm 1-2% lower while separate runs show the ports +2%
-    (ports off 20.71 against 21.13): treat a port A/B in the heavy area as biased, and confirm with separate runs.
-    The per-row xfbcopy_s column is rounded per ~1 s row and reads ~6.0 where the 10 s line reads 6.9: use the line.
+    ~3.6% inclusive for the guest path (job 512 stacks). **Separate runs, heavy area: lights 6.338 / 6.344, flush
+    6.334 / 6.332 frames a second against 6.349 / 6.344: neutral and -0.2%.**
+  - **Core 0 has slack there:** every HLE stand-in off (0 runs; core 0 runs ~3M more guest instructions a second)
+    left speed at 21.14% (job 542); removing core-0 work that sends nothing down the pipe (the lights port) changes
+    nothing. What moves it is the GX side: overlapped frames +1.9%; gpbulk and ring batching off -4% (job 543); the
+    three default ports +2.0% (ports off 20.71% against 21.13%, jobs 539-541), plausibly through their bulk pipe
+    writes (one ring record each) rather than core 0's time. A lighter GPU (`--texdiv 8`, job 545) and a second vertex
+    worker (`--vw2 on`, job 546, the GX thread 8 points less busy) did not raise it.
+  - **Per guest thread (new '# guest threads 10s' line, `--profile on`, job 544):** the main thread 89% of core 0's
+    samples, one other 4%; no thread soaks up spare time by polling.
+  - **Idle waits again (job 556, `--idlewait 0`):** speed 31.1% but the lock breaks (fields per copy 2 in under half of the gaps, up to
+    7) and frames are 6.30 a second (-0.7%): the old verdict stands.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

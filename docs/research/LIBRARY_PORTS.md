@@ -60,8 +60,11 @@ shows its gain where core 0 limits.
 - **Ported, off (2026-10-19, MEASUREMENTS.md "Core 0 in the heavy area does not set its frame rate"):**
   `__GXSendFlushPrim` (`--port-hooks` bit 3) and `J3DColorBlockLightOn::diffLightObj` (bit 4: the lights' XF loads
   appended to `__GDCurrentDL`; the context now carries a run of GD display-list bytes, committed and checked byte by
-  byte). Both exact on the PC and the device; no measured gain, because the heavy area's frame rate does not follow
-  core 0 (all stand-ins off left it unchanged). Ports pay where core 0 limits: the title's later stretch, Ordon.
+  byte). Both exact on the PC and the device; no measured gain (separate runs: neutral and -0.2% in the heavy area),
+  because the heavy area is limited by the GX side (all stand-ins off left it unchanged). The three default ports'
+  +2.0% there (ports off 20.71% against 21.13%) plausibly comes from their bulk pipe writes, which lighten the GX
+  thread's parsing. Core 0 ports pay where core 0 limits (the title's later stretch); measure ports with separate
+  runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.

@@ -460,13 +460,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Against / risk:** a mistake in the GPU queue can freeze the console (`--gpudiag 1` did, job 403): run only when the
   owner is home. Memory: a second arena and command buffer from linear memory (~12 MB free). Gain bounded by the wait:
   heavy area up to ~5%.
-- **Status:** built 2026-10-19 (`--dblframe on`, off by default; pica.c "overlapped frames"): halves of the existing
-  arenas plus one more 2 MB command buffer, a frame fenced on its slot's previous user, the screen swapped by the GX
-  thread. Stable and correct on the 2DS (jobs 522-525), **neutral in new frames everywhere** (heavy area 6.91 / 6.90,
-  Ordon 8.86 / 8.93, title sections even): the wait disappears (gxsync -98%, the GX thread 9 points less busy) but
-  core 0 then sets the frame rate (MEASUREMENTS.md "Overlapped frames").
-- **Re-evaluate when:** core 0 gets fast enough that the GX thread is the limit again (then turn it on and A/B once
-  more), GPU-heavier scenes become the target, or the frame-begin wait grows past ~10% of the GX thread.
+- **Status:** built 2026-10-19 and **on by default** (`--dblframe off` to compare; pica.c "overlapped frames"): halves
+  of the existing arenas plus one more 2 MB command buffer, a frame fenced on its slot's previous user, the screen
+  swapped by the GX thread. Stable and correct on the 2DS (~14 runs). **Heavy area +1.9% frames, Ordon even, title
+  even** (separate runs, jobs 548-560). A first verdict of "neutral" came from the broken frames line
+  (MEASUREMENTS.md "The frame-rate line was broken").
+- **Re-evaluate when:** a scene becomes GPU-bound (then the frame before last is what a frame waits for, and a third
+  slot would be the next step).
 
 ## C31. Sharper textures (after speed)
 

@@ -94,8 +94,11 @@ an edge) for scripted runs; its fields count from the run's start.
 
 Score an A/B with `python3 core/tools/ab_phases.py core/out/relay_<job>.csv <column> 60 <on value>` (each phase
 against its neighbours, from 60 s; pooled means showed phantom gains), or `core/tools/ab_split.py --col <column>` for
-the tp850 state. `core/tools/perf_heavy.py --by <column>` gives means and standard errors over the heavy rows. Only
-compare within one run: the same build varies ~5% between runs.
+the tp850 state. `core/tools/perf_heavy.py --by <column>` gives means and standard errors over the heavy rows.
+ab_phases.py drops each phase's first 12 s (a switch that flushes compiled code stalls); A/Bs that flush compiled code
+still read ~2% low for the on arm in the heavy area, so compare those builds with separate whole runs instead: in the
+heavy area (no `--press`) two runs of one build agree to ~0.1% (jobs 548-555). The scripted Ordon walk repeats
+exactly, so its runs compare too.
 
 ## Save states
 

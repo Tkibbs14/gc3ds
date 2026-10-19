@@ -2869,6 +2869,11 @@ static float ndc_y(float t) { return FLIP_Y ? 1.0f - 2.0f * t : 2.0f * t - 1.0f;
 // picture exists (presents run every field whatever the picture): count, sum, sum of squares (ms), largest.
 double g_xfbGap[4];
 static u64 g_xfbLast;
+// The gaps' distributions: real time in quarter-VBlank bins (1/240 s; the last bin holds the rest), and VI fields
+// emulated between copies (g_viField, written by core 0 at each field; the last bin 7 and more).
+u32 g_xfbHistRt[64], g_xfbHistF[8];
+volatile u32 g_viField;
+static u32 g_xfbLastField;
 
 static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
     g_picaStats.xfbCopies++;
@@ -2878,8 +2883,13 @@ static void copy_to_xfb(u32 x0, u32 y0, u32 w, u32 h, u32 dest) {
             double ms = (double)(now - g_xfbLast) * 1000.0 / SYSCLOCK_ARM11;
             g_xfbGap[0] += 1; g_xfbGap[1] += ms; g_xfbGap[2] += ms * ms;
             if (ms > g_xfbGap[3]) g_xfbGap[3] = ms;
+            u32 b = (u32)(ms * 0.24);
+            g_xfbHistRt[b < 63 ? b : 63]++;
+            u32 f = g_viField - g_xfbLastField;
+            g_xfbHistF[f < 7 ? f : 7]++;
         }
         g_xfbLast = now;
+        g_xfbLastField = g_viField;
     }
     g_copyPix[2]++;
     PXfb* x = NULL;

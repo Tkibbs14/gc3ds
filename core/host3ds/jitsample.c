@@ -35,8 +35,22 @@ static volatile u32 g_stkWalks, g_stkLost;
 
 static inline bool stk_ok(u32 a) { return a - 0x80000000u < 0x01800000u - 8 && !(a & 3); }
 
+// Guest threads (with the stacks): each sample counted against the OS's current thread (__OSCurrentThread, 0x800000E4),
+// with the outermost return address its stack walk reached (the thread's entry, mapped to a function offline), so a
+// thread that keeps core 0 busy without doing the frame's work (polling instead of idling) shows apart.
+#define THR_N 24
+static u32 g_thrPtr[THR_N], g_thrCount[THR_N], g_thrRoot[THR_N], g_thrOther;
+static void thr_note(u32 root) {
+    u32 t = ram_rd32(g_mem1, 0xE4);
+    for (u32 k = 0; k < THR_N; k++) {
+        if (g_thrPtr[k] == t && g_thrCount[k]) { g_thrCount[k]++; if (root) g_thrRoot[k] = root; return; }
+        if (!g_thrCount[k]) { g_thrPtr[k] = t; g_thrCount[k] = 1; g_thrRoot[k] = root; return; }
+    }
+    g_thrOther++;
+}
+
 static void stk_walk(void) {
-    u32 seen[STK_DEPTH + 1], ns = 0;
+    u32 seen[STK_DEPTH + 1], ns = 0, root = 0;
     u32 sp = g_g->gpr[1];
     for (u32 d = 0; d <= STK_DEPTH; d++) {
         u32 ra;
@@ -50,6 +64,7 @@ static void stk_walk(void) {
             sp = up;
         }
         if (!stk_ok(ra)) continue;
+        root = ra;
         bool dup = false;
         for (u32 k = 0; k < ns; k++) if (seen[k] == ra) { dup = true; break; }
         if (dup) continue;
@@ -62,6 +77,7 @@ static void stk_walk(void) {
         }
     }
     g_stkWalks++;
+    thr_note(root);
 }
 
 void jitsample_stacks(const u8* mem1) { g_mem1 = mem1; }
@@ -192,6 +208,14 @@ void jitsample_report(FILE* f, const Jit* j) {
         fprintf(f, "\n");
         memset(g_stkAddr, 0, sizeof g_stkAddr);
         g_stkWalks = g_stkLost = 0;
+        fprintf(f, "# guest threads 10s (thread, share of all samples, outermost return address):");
+        for (u32 k = 0; k < THR_N && g_thrCount[k]; k++)
+            fprintf(f, " %08lx %.1f%% %08lx", (unsigned long)g_thrPtr[k], tot > 0 ? 100.0 * g_thrCount[k] / tot : 0.0,
+                    (unsigned long)g_thrRoot[k]);
+        if (g_thrOther) fprintf(f, " other %.1f%%", tot > 0 ? 100.0 * g_thrOther / tot : 0.0);
+        fprintf(f, "\n");
+        memset(g_thrCount, 0, sizeof g_thrCount);
+        g_thrOther = 0;
     }
     g_n = 0;
     g_outside = 0;

@@ -57,7 +57,7 @@ void pica_set_tevver(bool on);  // update_tev skips the key while no TEV registe
 bool pica_tevver(void);
 void pica_set_tevenv(bool on);  // the combiner-plan cache keeps each program's citro3d stages (off until measured)
 bool pica_tevenv(void);
-void pica_set_dblframe(bool on);  // overlapped GPU frames (C30): a frame waits for the one before last only (off until measured)
+void pica_set_dblframe(bool on);  // overlapped GPU frames (C30): a frame waits for the one before last only (on by default)
 bool pica_dblframe(void);
 void pica_set_mips(bool on);  // mip levels from the game's textures (applied at the next frame: every texture again)
 bool pica_mips(void);
