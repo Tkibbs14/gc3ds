@@ -489,3 +489,19 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Status:** parked by the owner until full speed.
 - **Re-evaluate when:** the target scenes run at full speed, or GPU time per frame has room to spare.
 
+
+## C32. ShdwDraw walk memo (replay a repeated shadow walk)
+
+- **Idea (2026-10-19):** the shadow scan's stand-in still cost ~25% of core 0 in the title's later stretch, and 98% of
+  its calls repeat a previous call exactly (PC SHDW_KEYSTAT). Record a call's walk segment by segment and replay it when
+  the same inputs come again, instead of walking ~30,000 cells.
+- **Status:** built and **on by default** (`--shdwmemo`; core/src/cpu/hle_tp.c "The walk memo"). Exact per segment
+  (PC SHDW_MEMOCHECK: 1,108,244 replayed segments, 0 differed); a replayed segment may overrun the slice's budget by at
+  most 32,768 guest instructions (owner-approved timing drift; +0.05% cycles over 400 fields on the PC). 2DS: later
+  stretch 19.09 -> 21.81% (+14.2%), 24% more pictures; cutscene, movie, Ordon, heavy area even (MEASUREMENTS.md "The
+  ShdwDraw walk memo"). Made the loop head a stand-in entry too (exact on its own).
+- **Lessons:** the slice's budget is part of a replay's inputs in effect: segments that stopped at the budget landed
+  elsewhere each frame (replays ended at the first); unbounded overruns stretched VI fields (fields are scheduled from
+  the last one), which showed as more pictures but a slower game clock. Check the field gaps, not only speed.
+- **Re-evaluate when:** shadows move every frame in the target scene (the cutscene records every call and replays
+  none): a finer memo (per leaf or per cell row) would be the next step there.

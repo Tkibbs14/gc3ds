@@ -338,6 +338,8 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
 // bytes, sampled with the same arrays too, new list addresses.
 u64 g_dlStats[7];
 MemStamps g_memStamps;
+volatile u32 g_dmaGen;
+u32 g_dmaLog[DMA_LOG][2];
 #define DL_SLOTS 2048
 static struct { u32 addr, size, bytes, arrays; } g_dl[DL_SLOTS];
 static u32 dl_hash(const u8* p, u32 n, u32 h) { for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }

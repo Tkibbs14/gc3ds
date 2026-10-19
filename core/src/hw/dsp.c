@@ -28,7 +28,7 @@ static void aram_dma(System* s) {
     u32 mm = d->aramDmaMm & 0x03FFFFE0, ar = d->aramDmaAr & 0x00FFFFE0, cnt = d->aramDmaCnt & 0x03FFFFE0;
     bool toMm = d->aramDmaCnt & 0x80000000u;
     if (d->aram && mm + cnt <= PA_MEM1_END && ar + cnt <= ARAM_SIZE) {  // no ARAM: the JIT fuzzer's machines
-        if (toMm) { ram_from_be(s->mem1, mm, d->aram + ar, cnt); mem_dirty(mm, cnt); }  // (ARAM holds big-endian bytes)
+        if (toMm) { ram_from_be(s->mem1, mm, d->aram + ar, cnt); mem_dirty(mm, cnt); dma_note(mm, cnt); }  // (ARAM holds big-endian bytes)
         else ram_to_be(d->aram + ar, s->mem1, mm, cnt);
     } else {
         emu_log(LOG_DSP, "ARAM DMA out of range mm=%08x ar=%08x cnt=%08x\n", mm, ar, cnt);

@@ -1,25 +1,25 @@
 # gc3ds handoff (2026-10-10)
 
-> **▶ Current state (2026-10-19, night).** All defaults (jobs 577-582): **heavy area ~22.1% (6.6 game frames a
-> second), Ordon walk ~31.0% (9.3 frames a second); title cutscene (25-150 s) 36.8%, its later Link / Epona stretch
-> 19.5%, THP movie 13.1%.** The game is locked to two VI fields a picture, so frames a second = fields_s / 2.
-> New defaults on 10-19, each measured with separate whole runs: overlapped GPU frames (`--dblframe`, C30; heavy area
-> +1.9%), float lanes (`--fcache`, C11; +1.5% / +1.6% / title up to +2.4%) and the 2-way indirect table (`--ind2`;
-> ~+0.9%). Earlier the same day: three native library ports (core/src/cpu/port_j2d.c: J2DMaterial::setGX,
-> J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load), pipe bursts copied whole (gpbulk), GX-thread ring
-> records batched (ringbatch). Two more exact ports (flush prim, J3D lights) are built and off (neutral).
+> **▶ Current state (2026-10-20).** All defaults (jobs 610-619): **heavy area ~22.3% (6.67 game frames a second),
+> Ordon walk ~31.3% (9.37 frames a second); title cutscene (25-150 s) 37.0%, its later Link / Epona stretch 21.8%, THP
+> movie 13.2%.** Gameplay is locked to two VI fields a picture (frames a second = fields_s / 2); the later stretch mixes
+> two- and three-field pictures. New defaults on 10-19, each measured with separate whole runs: overlapped GPU frames
+> (`--dblframe`, C30; heavy area +1.9%), float lanes (`--fcache`, C11; ~+1.5%), the 2-way indirect table (`--ind2`;
+> ~+0.9%), compact vertex records (`--vin`; ~+0.7-0.9%), rlwinm as shifts (`--rotmask`; ~+0.3-0.6%), and the ShdwDraw
+> walk memo (`--shdwmemo`, C32; later stretch +14.2%, 24% more pictures). Earlier: three native library ports
+> (core/src/cpu/port_j2d.c), pipe bursts copied whole (gpbulk), GX-thread ring records batched (ringbatch). Built and
+> off: two more ports (flush prim, J3D lights), and the re-tested crstub / befloat / calls / fastfloat / relayout
+> (losses) and pipeps (even).
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
-> code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay, ~40% in the cutscene and
-> ~75% in the later stretch; the vertex worker is idle ~70-96%. So GX-thread work and offloading it to core 3 would
-> not raise the frame rate; what pays is cheaper guest code on core 0 (the JIT, ports, stand-ins) and work taken off
-> core 0. Next: (1) re-measure, with separate runs, the other JIT options and stand-ins rejected from A/Bs that
-> recompile all code (MEASUREMENTS.md's ruled-out list: those A/Bs read the on arm ~2% low); (2) ShdwDraw in the
-> title's later stretch (~38% of core 0 there; its triangle callback is guest code, so taking it off core 0 means a
-> whole native ShdwDraw); (3) more library ports, scored with separate runs. **Measuring:** check the histogram's field
-> gaps (locked = 2), then compare settled speed_pct or the '# new frames 10s' line (real frames a second since
-> 967e43f; the old line read "6.9" in the heavy area at any speed) across separate whole runs: two heavy-area runs of
-> one build agree to ~0.1% (MEASUREMENTS.md "The frame-rate line was broken"). Texture sharpness is parked by the owner
-> until full speed (REDESIGN_CANDIDATES C31).
+> code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
+> ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
+> Next: (1) the cutscene's shadows move every frame, so its ShdwDraw calls are recorded and never replayed: a finer
+> memo (per leaf or cell row) would carry C32 there; (2) more library ports, scored with separate runs (core 0's
+> profile: J3D ~18%, GX SDK ~13%, game code ~24%); (3) the rest of MEASUREMENTS.md's ruled-out list measured from A/Bs
+> that recompile all code. **Measuring:** check the field gaps ('# new frames hist'), then compare settled speed_pct or
+> the '# new frames 10s' line across separate whole runs (two heavy-area runs of one build agree to ~0.1%); a change
+> that stretches VI fields can show more pictures with a slower game clock (C32's unbounded version did). Texture
+> sharpness is parked by the owner until full speed (REDESIGN_CANDIDATES C31).
 >
 > **Earlier on 2026-10-18.** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
 > area (`sdmc:/gc3ds/states/tp_area2.state`) ~20.0% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439, 449). In game

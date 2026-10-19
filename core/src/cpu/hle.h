@@ -16,6 +16,11 @@ u32 hle_run(Gekko* g, u32 budget);
 void hle_invalidate(u32 pa);
 // Stand-ins on (default) or off (comparison); compiled code holds hooks, so drop it after a change (jit_invalidate_all).
 void hle_set_enabled(bool on);
+// The ShdwDraw walk memo (hle_tp.c; --shdwmemo): repeated calls replay a recorded walk. g_shmStats: calls, calls
+// replayed to the end, segments replayed, segments run by the walk (holes, budget), calls recorded, records dropped (DMA).
+void hle_set_shdw_memo(bool on);
+bool hle_shdw_memo(void);
+extern u64 g_shmStats[6], g_shmMiss[8], g_shmDiff[24];
 // Guest frame skip (experiment): the function at g_gfskipAddr returns at once on every other call while g_gfskipOn.
 extern u32 g_gfskipAddr;
 extern volatile bool g_gfskipOn;

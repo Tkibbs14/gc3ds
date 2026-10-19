@@ -87,6 +87,8 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--gpbulk on\|off` | pipe bursts copied whole (on) |
 | `--ringbatch on\|off` | the pipe's bursts batched into GX-thread ring records of up to 512 bytes (on) |
 | `--dblframe on\|off` | overlapped GPU frames: citro3d's frame stays open and a frame waits only for the GPU to finish the one before last (on) |
+| `--shdwmemo on\|off` | the ShdwDraw walk memo: repeated shadow walks replayed from a record (on; `# shdw memo 10s`, `# shdw memo misses 10s`) |
+| `--fcache`, `--ind2`, `--vin`, `--rotmask` `on\|off` | JIT and vertex-record options, all on since 10-19 (separate runs; MEASUREMENTS.md) |
 | `--pmu-split on\|hle\|fast\|empty\|port\|portcommit` | performance counters around compiled code, the ShdwDraw stand-in, its fast cells, an empty bracket, or the J2D port's two halves (`# pmu split 10s`, per-run counts) |
 | `--probe-faults on`, `--probe-mirror on` | the fault-delivery probe; Luma's physical-memory mirror and the L2C-310's registers (read only) |
 | `--trace-follow on\|off`, `--trace-side on\|off\|MASK`, `--trace-len N`, `--link on\|off` | JIT block shape |

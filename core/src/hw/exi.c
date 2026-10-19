@@ -78,7 +78,7 @@ static void transfer(System* s, int ch) {
     u32 rw = (c->cr >> 2) & 3;  // 0 read, 1 write, 2 read-write
     if (c->cr & 2) {  // DMA
         u32 pa = c->mar & 0x03FFFFE0, len = c->len & 0x03FFFFE0;
-        if (rw != 1) mem_dirty(pa, len);
+        if (rw != 1) { mem_dirty(pa, len); dma_note(pa, len); }
         for (u32 k = 0; k < len && pa + k < PA_MEM1_END; k++) {
             if (rw == 1) device_xfer(s, ch, dev, (u8)ram_rd8(s->mem1, pa + k), true);
             else ram_wr8(s->mem1, pa + k, device_xfer(s, ch, dev, 0, false));

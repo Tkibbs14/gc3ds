@@ -111,6 +111,12 @@ extern u64 g_dlRun[11];   // runs of draws inside display lists (fifo.c run_list
 #define MEM_PAGES (0x01800000u >> 12)
 typedef struct { volatile u32 now; volatile u32 page[MEM_PAGES]; } MemStamps;
 extern MemStamps g_memStamps;
+// DMA into guest RAM (disc, ARAM, EXI): a count since start and the last DMA_LOG destinations (physical address and
+// length, by count), which the ShdwDraw walk memo (hle_tp.c) checks its records' data against.
+#define DMA_LOG 64
+extern volatile u32 g_dmaGen;
+extern u32 g_dmaLog[DMA_LOG][2];
+static inline void dma_note(u32 pa, u32 len) { u32 k = g_dmaGen % DMA_LOG; g_dmaLog[k][0] = pa; g_dmaLog[k][1] = len; g_dmaGen = g_dmaGen + 1; }
 static inline void mem_dirty(u32 pa, u32 len) {
     if (!len || pa >= 0x01800000u) return;
     u32 last = pa + len - 1 >= 0x01800000u ? MEM_PAGES - 1 : (pa + len - 1) >> 12;

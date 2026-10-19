@@ -441,7 +441,7 @@ typedef struct {
     bool syscall, abSyscall;  // --syscall on|off (on), --ab syscall: sc with its handler inside the block (OPT_SYSCALL, opt column)
     bool hlelink, abHlelink;  // --hlelink on|off (on), --ab hlelink: stand-in blocks go on through the indirect table (OPT_HLELINK)
     bool crstub, abCrstub;    // --crstub on|off (off), --ab crstub: compares' CR updates through shared stubs (OPT_CRSTUB)
-    bool rotmask, abRotmask;  // --rotmask on|off (off), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
+    bool rotmask, abRotmask;  // --rotmask on|off (on), --ab rotmask: rlwinm / rlwimi as shifts (OPT_ROTMASK)
     bool fastfloat, abFastfloat;  // --fastfloat on|off (off), --ab fastfloat: float results not bit-exact (OPT_FASTFLOAT)
     bool befloat, abBefloat;  // --befloat on|off (off), --ab befloat: float stubs in big-endian data mode (OPT_BEFLOAT)
     bool vin, abVin;          // --vin on|off (on), --ab vin: compact vertices in vertex-worker jobs (g_vinCompact)
@@ -488,6 +488,7 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
+    bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
     bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
     bool feeddirect, abFeeddirect;  // --feeddirect on|off (off), --ab feeddirect: GX commands parsed in place (gx/fifo.c g_feedDirect)
     int idlewait; bool abIdlewait;  // --idlewait US: the idle hook waits at most US for the GX thread (default: a full sync, -1); --ab idlewait: full and US
@@ -559,7 +560,9 @@ static void opts_default(RunOpts* o) {
     // stretch +1.5 / +1.4% (jobs 160 and 162).
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
-    o->vin = false;   // compact job vertices (job memory per vertex ~145 -> ~90 bytes): off until the 2DS A/B shows a gain
+    o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
+    o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
+    o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
@@ -577,7 +580,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); o->abShdwmemo = !strcmp(v, "shdwmemo"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -590,6 +593,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--feeddirect")) o->feeddirect = !strcmp(v, "on");
         else if (!strcmp(a, "--tevenv")) o->tevenv = !strcmp(v, "on");
         else if (!strcmp(a, "--dblframe")) o->dblframe = !strcmp(v, "on");
+        else if (!strcmp(a, "--shdwmemo")) o->shdwmemo = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
@@ -735,7 +739,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch,idlewait,feeddirect,tevenv,dblframe");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch,idlewait,feeddirect,tevenv,dblframe,shdwmemo");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -1088,6 +1092,7 @@ static const char* run(const char* path) {
         g_pipeFast = true;
         jit_set_gather_buffer(g_jit, g_sys.gx.wgp, &g_sys.gx.wgpLen);
         hle_set_enabled(g_opt.hle || g_opt.abHle);
+        hle_set_shdw_memo(g_opt.shdwmemo && !g_opt.abShdwmemo);  // --ab shdwmemo starts off
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
@@ -1326,6 +1331,7 @@ static const char* run(const char* path) {
                 fprintf(g_perf, ",%d", g_feedDirect ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_tevenv() ? 1 : 0);
                 fprintf(g_perf, ",%d", g_pica && pica_dblframe() ? 1 : 0);
+                fprintf(g_perf, ",%d", hle_shdw_memo() ? 1 : 0);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1403,6 +1409,7 @@ static const char* run(const char* path) {
                 if (g_opt.abTevver && g_pica && perfRows % AB_SECS == 0) pica_set_tevver(!pica_tevver());
                 if (g_opt.abTevenv && g_pica && perfRows % AB_SECS == 0) pica_set_tevenv(!pica_tevenv());
                 if (g_opt.abDblframe && g_pica && perfRows % AB_SECS == 0) pica_set_dblframe(!pica_dblframe());
+                if (g_opt.abShdwmemo && perfRows % AB_SECS == 0) hle_set_shdw_memo(!hle_shdw_memo());
                 if (g_opt.abSmalltex && g_pica && perfRows % AB_SECS == 0) pica_set_smalltex(pica_smalltex() ? 0 : (g_opt.smalltex ? g_opt.smalltex : 1));
                 if (g_opt.abDeflit && g_pica && perfRows % AB_SECS == 0) pica_set_deflit(!pica_deflit());
                 if (g_opt.abVscache && perfRows % AB_SECS == 0) g_vsWays = g_vsWays > 1 ? 1 : 8;
@@ -1705,6 +1712,24 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
                                 (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
+                        static u64 lastShm[6];
+                        fprintf(g_perf, "# shdw memo 10s: calls %llu, replayed to the end %llu, segments replayed %llu, segments run (holes, budget) %llu, "
+                                "recorded %llu, records dropped %llu\n", (unsigned long long)(g_shmStats[0] - lastShm[0]),
+                                (unsigned long long)(g_shmStats[1] - lastShm[1]), (unsigned long long)(g_shmStats[2] - lastShm[2]),
+                                (unsigned long long)(g_shmStats[3] - lastShm[3]), (unsigned long long)(g_shmStats[4] - lastShm[4]),
+                                (unsigned long long)(g_shmStats[5] - lastShm[5]));
+                        memcpy(lastShm, g_shmStats, sizeof lastShm);
+                        static u64 lastMiss[8];
+                        fprintf(g_perf, "# shdw memo misses 10s: no record %llu, unfinished %llu, other inputs %llu, DMA %llu, bitset %llu, "
+                                "word cap %llu, stopped on inputs %llu; longest record %llu segments\n",
+                                (unsigned long long)(g_shmMiss[0] - lastMiss[0]), (unsigned long long)(g_shmMiss[1] - lastMiss[1]),
+                                (unsigned long long)(g_shmMiss[2] - lastMiss[2]), (unsigned long long)(g_shmMiss[3] - lastMiss[3]),
+                                (unsigned long long)(g_shmMiss[4] - lastMiss[4]), (unsigned long long)(g_shmMiss[5] - lastMiss[5]),
+                                (unsigned long long)(g_shmMiss[7] - lastMiss[7]), (unsigned long long)g_shmMiss[6]);
+                        memcpy(lastMiss, g_shmMiss, sizeof lastMiss);
+                        fprintf(g_perf, "# shdw memo stops by input (all time):");
+                        for (int k = 0; k < 24; k++) if (g_shmDiff[k]) fprintf(g_perf, " %d:%llu", k, (unsigned long long)g_shmDiff[k]);
+                        fprintf(g_perf, "\n");
                         static u64 lastThp[3];
                         if (g_thpStats[0] != lastThp[0] || g_thpStats[2] != lastThp[2])
                             fprintf(g_perf, "# thp idct 10s: calls %llu, guest instructions %llu, refused %llu\n",

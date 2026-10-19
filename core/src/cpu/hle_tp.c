@@ -20,11 +20,22 @@
 #include "hle.h"
 #include "port.h"
 #include "memo.h"
+extern volatile unsigned int g_dmaGen;  // (gx/gx.h: DMA into guest RAM since start, and its last 64 destinations)
+#define DMA_LOG_N 64  // (gx/gx.h DMA_LOG)
+extern unsigned int g_dmaLog[DMA_LOG_N][2];
+// The walk memo's recording (below): the collision data the walk read, as [g_shLo, g_shHi) (guest addresses; the
+// octree's offsets only go forward, so a cell reads between the root and its deepest node or its list's end).
+static bool g_shTrack;
+static u32 g_shLo, g_shHi;
+#define SH_TRACK(lo, hi) do { if (__builtin_expect(g_shTrack, 0)) { if ((lo) < g_shLo) g_shLo = (lo); if ((hi) > g_shHi) g_shHi = (hi); } } while (0)
 
 #define PC_ENTRY 0x8007FB48u
 #define PC_NEXT 0x8007FEA4u
 #define PC_TRI 0x8007FCE4u
 #define PC_EXIT 0x8007FEE8u
+// The loop head, where the stand-in stops when the slice's budget is used: also a stand-in entry, so the walk goes on
+// natively there in the next slice (compiled guest code walked the cells until the next triangle before).
+#define PC_LOOP 0x8007FB70u
 #define CODE_HASH 0x195639DFDBEA5654ull  // FNV-1a 64 of the guest bytes [PC_ENTRY, PC_EXIT); see code_hash
 
 u64 g_hleRuns, g_hleInsns;
@@ -39,6 +50,7 @@ void (*hle_shdw_begin_hook)(void);
 void (*hle_shdw_end_hook)(void);
 void (*hle_shdw_fast_begin_hook)(void);  // around the fast cells alone (--pmu-split fast / empty)
 void (*hle_shdw_fast_end_hook)(void);
+static bool g_shCrK, g_shCa;  // the last scan: CR0 written, XER[CA] cleared (the walk memo below)
 static u8* g_mem;
 static u32 g_memSize;
 static int g_known = -1;  // -1 not checked yet, 0 other code, 1 recognised
@@ -114,7 +126,7 @@ bool hle_is_hook(Gekko* g, u32 pc) {
     if (g_memoAddr && pc == g_memoAddr) return true;
     if (port_is_hook(pc)) return true;
     if (!g_on) return false;
-    if (pc != PC_ENTRY && pc != PC_NEXT) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
+    if (pc != PC_ENTRY && pc != PC_NEXT && pc != PC_LOOP) return hle_ps_is_hook(pc) || hle_gd_is_hook(pc) || hle_thp_is_hook(pc);
     return known();
 }
 
@@ -174,6 +186,7 @@ static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
             lev -= 1;
             off = ((shr(r17, lev) & 1u) | ((shr(r18, lev) & 1u) << 1) | ((shr(r19, lev) & 1u) << 2)) << 2;
         }
+        const u32 aNode = a;  // (the deepest node read: the walk memo's range)
         const u32 leaf = cur + (w & 0x7FFFFFFFu), sz = shl(1, lev), mask = sz - 1, step = sz - (r17 & mask);
         // (Any reason to stop takes the cell to the exact code from its head, so the checks' order is free: the row's
         // end first, before its triangles are scanned.)
@@ -231,6 +244,7 @@ static __attribute__((noinline)) u32 shdw_fast(ShdwRun* s, const ShdwGrid* gr) {
         levels += lv;
 #endif
         s->r16 = p;
+        SH_TRACK(gr->cur, (aNode + 0x80000000u > p ? aNode + 0x80000000u : p) + 4);
         r17 += step;
         n = nn;
         kAll += k; cells++;
@@ -276,6 +290,7 @@ static u32 scan(Gekko* g, u32 budget) {
 #define FBAD4(a) (__builtin_expect(((a) > lim4) | ((a) & 3), 0))
 #define FWR32(off, v) ramp_wr32a(fr + (off), (v))
     if (pc == PC_NEXT) goto L_fea4;
+    if (pc == PC_LOOP) goto L_fb70;  // (r0, r3-r8, CR0 and XER[CA] are written there before they are read)
     if (pc != PC_ENTRY) return 0;
 L_fb48:
     r3 = 0x000F0000u; n++;                         // addis r3,0,15
@@ -359,6 +374,7 @@ L_fba8:
 L_fbcc:
     r0 = r3; n++;                                // or r0,r3,r3
     RD32(r5, r3 + r5, 0x8007FBD0u); n++;       // lwzx r5,r3,r5
+    SH_TRACK(r3, r3 + r5 + 4);
     CRS(r5, 0); n++;                          // cmpi cr0,0,r5,0
     n++;                                             // bc 4,lt,0x8007fba8
     if ((s32)r5 >= 0) goto L_fba8;
@@ -382,6 +398,7 @@ L_fbcc:
     n++;                                             // bc 4,lt,0x8007fc28
     if ((s32)r4 < (s32)r0) { WR32(r1 + 2224, r4, 0x8007FC24u); n++; }  // stw r4,2224(r1)
     RD16(r0, r16 + 2, 0x8007FC28u); n++;         // lhz r0,2(r16)
+    SH_TRACK(r16, r16 + 4);
     CRU(r0, 0); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 12,eq,0x8007fc84
     if (r0 == 0) { wEmpty++; goto L_fc84; }
@@ -460,6 +477,7 @@ L_fea4:
         }
     }
     RD16(r0, r16 + 2, 0x8007FEA4u);              // lhzu r0,2(r16)
+    SH_TRACK(r16, r16 + 4);
     r16 += 2; n++;
     CRU(r0, 0); n++;                          // cmpli cr0,0,r0,0
     n++;                                             // bc 4,eq,0x8007fcb0
@@ -488,6 +506,7 @@ L_fcb0:
     wTri++;
     r3 = 1; n++;                                   // addi r3,0,1
     RD16(r4, r16, 0x8007FCB4u); n++;             // lhz r4,0(r16)
+    SH_TRACK(r16, r16 + 4);
     r0 = r4 & 31u; n++;                          // rlwinm r0,r4,0,27,31
     r5 = shl(r3, r0); n++;                     // slw r5,r3,r0
     r0 = (u32)((s32)r4 >> 5); caClear = true; n++;  // srawi r0,r4,5 (r4 is a halfword: CA = 0)
@@ -511,6 +530,7 @@ out:
 #undef CRU
 #undef FBAD4
 #undef FWR32
+    g_shCrK = crK != 0; g_shCa = caClear;
     if (!n) return 0;
     g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[6] = r6; g->gpr[7] = r7; g->gpr[8] = r8; g->gpr[14] = r14; g->gpr[15] = r15; g->gpr[16] = r16; g->gpr[17] = r17; g->gpr[18] = r18; g->gpr[19] = r19; g->gpr[20] = r20; g->gpr[21] = r21; g->gpr[22] = r22; g->gpr[23] = r23; g->gpr[24] = r24; g->gpr[25] = r25; g->gpr[26] = r26; g->gpr[27] = r27; g->gpr[28] = r28; g->gpr[29] = r29; g->gpr[30] = r30;
     if (crK) g->cr = (g->cr & 0x0FFFFFFFu) | (((crK == 1 ? cmps(crA, crB) : cmpu(crA, crB)) | ((g->xer & XER_SO) ? 1u : 0u)) << 28);
@@ -615,6 +635,295 @@ static void sk_after(const Gekko* g) {
 }
 #endif
 
+
+// ---- The walk memo (--shdwmemo, on by default on the 3DS; GC3DS_SHDWMEMO=1 on the PC) ----
+// In the title's later stretch the game makes ~1.3 ShdwDraw calls a frame (four distinct ones in turn; the long one
+// ~6,500 segments, ~30,000 cells), and 98% of calls repeat a previous call's walk exactly (PC, SHDW_KEYSTAT: 369 of 377
+// calls with a key seen before, all with the same outcome). The walk is a function of the registers it reads, its frame
+// words (2212-2228, the visited bitset at +156, which guest code zeroes before the call) and the collision data. A call
+// is recorded segment by segment (from the call's start, a triangle's return or the loop head to the next triangle, the
+// loop head or the end): the
+// segment's inputs (the PC, r1, r14-r30, the frame words 2212-2228) and everything the stand-in leaves (the registers it
+// writes, CR0, XER[CA], the PC, the frame words and the one bitset word it set, the instruction count). A later call
+// whose start has the same inputs replays the record while each segment's inputs are equal, and runs the walk from
+// wherever they stop matching. A record is dropped when a DMA into guest RAM since it was made overlaps the collision
+// data its walk read (shm_valid). r0, r3-r8 and CR0 are written before they are read: guest code leaves them differing.
+// A stop at the slice's budget (the loop head, itself a stand-in entry) ends a segment as a triangle does. Replay runs a
+// segment whole even past the slice's budget, by at most SHM_OVER guest instructions (the stops land at different places
+// each frame: replay would otherwise end at the first; on the 2DS that ended most replays of the long call, job 615), so
+// an event can come that much late: timing drift, owner-approved 2026-10-15 where the 2DS gains. Every segment's result
+// is the walk's (SHDW_MEMOCHECK). A stop at an address the stand-in cannot read is a hole: guest code runs there.
+// 2DS (jobs 617-618): the later stretch 19.09 -> 21.81%, 24% more pictures; Ordon and the heavy area even.
+#define SHM_RECS 5
+#define SHM_WORDS (192u << 10)  // a record's stream (the long call in the later stretch: ~8,700 segments, ~100k words)
+#define SHM_IN 24               // inputs: the PC, r1, r14-r30, the frame words 2212-2228
+// A replayed segment may pass the slice's budget by this many guest instructions (the event then comes that much late;
+// VI fields are scheduled from the last one, so unbounded overruns stretched every field: 1.7G cycles over 400, PC).
+#define SHM_OVER 32768u
+// A record is a stream of segments, each:
+//   w0: the written registers that changed (24 bits, kShOut order) | crK << 24 | CR0 << 25 (4 bits) | ca << 29 |
+//       hole << 30 | inputs stored << 31
+//   w1: the instruction count; w2: the PC it stops at; w3: the frame words that changed (5 bits) | the bitset offset << 16
+//   then the inputs (24 words) when stored, the changed registers, the changed frame words, the bitset word (at a
+//   triangle). Inputs are stored only where they differ from what the previous segments left (after a hole, or when
+//   guest code changed them): otherwise they are the running state's. A hole has no outputs.
+typedef struct { u64 key; u32 gen, nSeg, nw, use, lo, hi, hdr, node; bool done; u32* w; u32 in0[SHM_IN]; } ShRec;
+static ShRec g_shm[SHM_RECS];
+static ShRec* g_shmCur;   // replaying: the next segment at g_shmPos
+static ShRec* g_shmRec;   // recording
+static u32 g_shmPos, g_shmSeg, g_shmUse;
+static u32 g_shmOut[24], g_shmFrm[5];  // the running state: the registers and frame words as the last segment left them
+static u32 g_shmLastPc;              // and where the last segment stopped (the next one starts after a triangle or at the loop head)
+static bool g_shmOn;
+u64 g_shmStats[6];  // calls, calls replayed to the end, segments replayed, segments run (holes, budget), calls recorded, records dropped
+// Calls not replayed, by reason: [0] no record with the key, [1] the key's record not finished, [2] its first inputs
+// differ, [3] dropped by a DMA, [4] the bitset not clear; [5] records given up at the word cap; [6] the longest record
+// (segments), [7] replays that stopped on other inputs.
+u64 g_shmMiss[8];
+u64 g_shmDiff[24];  // replays stopped on other inputs, by the first input that differed (the PC, r1, r14-r30, frame words)
+void hle_set_shdw_memo(bool on) { g_shmOn = on; }
+bool hle_shdw_memo(void) { return g_shmOn; }
+static const u8 kShOut[24] = { 0, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30 };
+
+static void shm_in(const Gekko* g, u32* in) {
+    in[0] = g->pc;
+    in[1] = g->gpr[1];
+    memcpy(in + 2, &g->gpr[14], 17 * 4);
+    u32 fa = g->gpr[1] + 2212 - 0x80000000u;
+    for (int k = 0; k < 5; k++) in[19 + k] = ld32(g_mem + fa + 4 * k);
+    // At the call's start r14, r16-r18, r23-r25 and the frame words 2224 / 2228 are written before they are read (they
+    // hold whatever the previous call left): not inputs there.
+    if (g->pc == PC_ENTRY) { in[2] = in[4] = in[5] = in[6] = in[11] = in[12] = in[13] = in[22] = in[23] = 0; }
+}
+// The key a call's record is found by (its first inputs then compared whole).
+static u64 shm_key(const u32* in) {
+    u32 a = 0x9E3779B9u, b = 0x85EBCA6Bu;
+    for (int k = 0; k < SHM_IN; k++) { a = (a ^ in[k]) * 0x01000193u; b = (b + in[k]) * 0xC2B2AE35u; }
+    return ((u64)a << 32 | b) | 1;
+}
+// The inputs the running state gives for the next segment (a triangle's return to the walk).
+static void shm_expect(u32 r1, u32* in) {
+    in[0] = g_shmLastPc == PC_LOOP ? PC_LOOP : PC_NEXT;  // (after the budget's stop: the loop head)
+    in[1] = r1;
+    memcpy(in + 2, g_shmOut + 7, 17 * 4);
+    memcpy(in + 19, g_shmFrm, 5 * 4);
+}
+static void shm_start(const u32* in) {  // the running state at a call's start
+    g_shmLastPc = PC_TRI;
+    for (int k = 0; k < 7; k++) g_shmOut[k] = 0;
+    memcpy(g_shmOut + 7, in + 2, 17 * 4);
+    memcpy(g_shmFrm, in + 19, 5 * 4);
+}
+
+static bool shm_bits_clear(const Gekko* g) {
+    const u8* b = g_mem + (g->gpr[1] + 156 - 0x80000000u);
+    for (u32 i = 0; i < 2048; i += 4) if (ld32(b + i)) return false;
+    return true;
+}
+
+// The segment at *pos: its expected inputs into `want`; returns its header word and leaves *pos at its outputs.
+static u32 shm_head(const ShRec* r, u32* pos, u32 r1, u32* want) {
+    const u32* w = r->w + *pos;
+    u32 h = w[0];
+    if (h >> 31) { memcpy(want, w + 4, SHM_IN * 4); *pos += 4 + SHM_IN; }
+    else { if (g_shmSeg == 0) memcpy(want, r->in0, SHM_IN * 4); else shm_expect(r1, want); *pos += 4; }
+    return h;
+}
+// Its outputs into the running state (and, with g, into the guest).
+static void shm_out(const ShRec* r, u32* pos, const u32* head, Gekko* g) {
+    u32 h = head[0], fm = head[3] & 31, bitOff = head[3] >> 16, pc = head[2];
+    const u32* w = r->w + *pos;
+    for (int k = 0; k < 24; k++) if ((h >> k) & 1) g_shmOut[k] = *w++;
+    for (int k = 0; k < 5; k++) if ((fm >> k) & 1) g_shmFrm[k] = *w++;
+    u32 bitVal = pc == PC_TRI ? *w++ : 0;
+    *pos = (u32)(w - r->w);
+    g_shmLastPc = pc;
+    if (!g) return;
+    for (int k = 0; k < 24; k++) g->gpr[kShOut[k]] = g_shmOut[k];
+    if ((h >> 24) & 1) g->cr = (g->cr & 0x0FFFFFFFu) | (((h >> 25) & 0xE) << 28) | (((g->xer & XER_SO) ? 1u : 0u) << 28);
+    if ((h >> 29) & 1) g->xer &= ~XER_CA;
+    u32 fa = g->gpr[1] + 2212 - 0x80000000u;
+    for (int k = 0; k < 5; k++) ramp_wr32a(g_mem + fa + 4 * k, g_shmFrm[k]);
+    if (pc == PC_TRI) ramp_wr32a(g_mem + (g->gpr[1] + 156 - 0x80000000u) + bitOff, bitVal);
+    g->pc = pc;
+}
+
+static void shm_note(const Gekko* g, const u32* in, u32 n) {
+    ShRec* r = g_shmRec;
+    if (!r || !n) return;
+    if (r->nw + 4 + SHM_IN + 24 + 5 + 1 > SHM_WORDS) { g_shmRec = NULL; r->key = 0; g_shTrack = false; g_shmMiss[5]++; return; }
+    u32 want[SHM_IN];
+    if (r->nSeg == 0) memcpy(want, r->in0, sizeof want); else shm_expect(g->gpr[1], want);
+    bool store = memcmp(want, in, sizeof want) != 0;
+    bool hole = g->pc != PC_TRI && g->pc != PC_EXIT && g->pc != PC_LOOP;  // a stop at an address: guest code runs there
+    u32* w = r->w + r->nw;
+    u32* head = w;
+    w += 4;
+    if (store) { memcpy(w, in, SHM_IN * 4); w += SHM_IN; }
+    u32 regs = 0, fm = 0;
+    if (!hole) {
+        for (int k = 0; k < 24; k++) { u32 v = g->gpr[kShOut[k]]; if (v != g_shmOut[k]) { regs |= 1u << k; *w++ = v; g_shmOut[k] = v; } }
+        u32 fa = g->gpr[1] + 2212 - 0x80000000u;
+        for (int k = 0; k < 5; k++) { u32 v = ld32(g_mem + fa + 4 * k); if (v != g_shmFrm[k]) { fm |= 1u << k; *w++ = v; g_shmFrm[k] = v; } }
+        if (g->pc == PC_TRI) *w++ = g->gpr[0];  // (stwx r0,r3,r4 with r3 = r1 + 156: the bitset word)
+    }
+    head[0] = regs | (u32)g_shCrK << 24 | ((g->cr >> 28) & 0xFu) << 25 | (u32)g_shCa << 29 | (u32)hole << 30 | (u32)store << 31;
+    head[1] = n;
+    head[2] = g->pc;
+    head[3] = fm | (g->pc == PC_TRI ? g->gpr[4] << 16 : 0);
+    r->nw = (u32)(w - r->w);
+    r->nSeg++;
+    if (!hole) g_shmLastPc = g->pc;
+    if (g->pc == PC_EXIT) { r->done = true; r->lo = g_shLo; r->hi = g_shHi; g_shmRec = NULL; g_shTrack = false; g_shmStats[4]++; }
+    if (r->nSeg > g_shmMiss[6]) g_shmMiss[6] = r->nSeg;
+}
+
+static u32 scan_live(Gekko* g, u32 budget);
+#ifndef __3DS__
+static void shm_report(void) {
+    fprintf(stderr, "SHDW_MEMO: calls %llu, replayed to the end %llu, segments replayed %llu, run %llu, recorded %llu, dropped %llu\n",
+            (unsigned long long)g_shmStats[0], (unsigned long long)g_shmStats[1], (unsigned long long)g_shmStats[2],
+            (unsigned long long)g_shmStats[3], (unsigned long long)g_shmStats[4], (unsigned long long)g_shmStats[5]);
+}
+#endif
+#ifdef __3DS__
+void* linearAlloc(size_t size);  // (libctru: the records, ~3.8 MB, more than the heap has free)
+static void* shm_alloc(size_t n) { return linearAlloc(n); }
+#else
+static void* shm_alloc(size_t n) { return malloc(n); }
+// SHDW_MEMOCHECK=1: each replayed segment also runs the walk from the same state (to its natural stop) and the two are
+// compared (GPRs, CR, XER, PC, count, the frame); the walk's result stands.
+static int g_shmChk = -1;
+static u64 g_shmChkN, g_shmChkBad;
+static void shm_chk_report(void) {
+    fprintf(stderr, "SHDW_MEMOCHECK: %llu replayed segments compared with the walk, %llu differed\n",
+            (unsigned long long)g_shmChkN, (unsigned long long)g_shmChkBad);
+}
+#endif
+
+// A record stays valid while no DMA since it was made (or last checked) wrote over the collision data its walk read or
+// the grid header (r15's 64 bytes, and the node they point to). More DMAs than the log holds: dropped.
+static bool shm_valid(ShRec* r) {
+    u32 now = g_dmaGen;
+    if (now - r->gen > DMA_LOG_N) { r->key = 0; g_shmStats[5]++; return false; }
+    for (u32 q = r->gen; q != now; q++) {
+        u32 pa = g_dmaLog[q % DMA_LOG_N][0] | 0x80000000u, len = g_dmaLog[q % DMA_LOG_N][1];
+        bool hit = (pa < r->hi && pa + len > r->lo) || (pa < r->hdr + 64 && pa + len > r->hdr) ||
+                   (pa < r->node + 64 && pa + len > r->node);
+        if (hit) { r->key = 0; g_shmStats[5]++; return false; }
+    }
+    r->gen = now;
+    return true;
+}
+
+static u32 shm_run(Gekko* g, u32 budget) {
+    u32 fa = g->gpr[1] + 156 - 0x80000000u;
+    if (fa > g_memSize - 2232 || (fa & 3)) { g_shmCur = g_shmRec = NULL; g_shTrack = false; return scan_live(g, budget); }
+    u32 in[SHM_IN];
+    if (g->pc == PC_ENTRY || g_shmCur || g_shmRec) shm_in(g, in);
+    if (g->pc == PC_ENTRY) {
+        g_shmStats[0]++;
+        // A new call: a new generation for the stand-in's leaf memo, as scan does at the call's start (a replayed start
+        // never reaches scan, and a later segment the walk runs must not take the previous call's leaves as visited).
+        g_shFrame = g->gpr[1];
+        if (++g_shGen >= (1u << 20)) { g_shGen = 1; memset(g_shMemo, 0, sizeof g_shMemo); }
+        u64 key = shm_key(in);
+        if (g_shmRec) {  // the previous call's walk ended in guest code (after a hole): its record is a usable prefix
+            ShRec* q = g_shmRec;
+            if (q->nSeg) { q->done = true; q->lo = g_shLo; q->hi = g_shHi; g_shmStats[4]++; } else q->key = 0;
+            g_shmRec = NULL; g_shTrack = false;
+        }
+        g_shmCur = NULL;
+        u32 why = 0;
+        for (int i = 0; i < SHM_RECS; i++) {
+            if (g_shm[i].key != key) continue;
+            if (!g_shm[i].done) { why = 1; continue; }
+            if (memcmp(g_shm[i].in0, in, sizeof in)) { why = 2; continue; }
+            if (!shm_valid(&g_shm[i])) { why = 3; continue; }
+            if (!shm_bits_clear(g)) { why = 4; continue; }
+            g_shmCur = &g_shm[i]; g_shmPos = 0; g_shmSeg = 0; g_shm[i].use = ++g_shmUse;
+            break;
+        }
+        if (!g_shmCur) g_shmMiss[why]++;
+        if (!g_shmCur) {  // record this call (into the least recently used record)
+            ShRec* v = &g_shm[0];
+            for (int i = 1; i < SHM_RECS; i++) if (g_shm[i].use < v->use) v = &g_shm[i];
+            if (!v->w) v->w = shm_alloc(SHM_WORDS * 4);
+            if (v->w && shm_bits_clear(g)) {
+                v->key = key; v->nSeg = v->nw = 0; v->done = false; v->use = ++g_shmUse; v->gen = g_dmaGen; v->hdr = g->gpr[15];
+                u32 ha = g->gpr[15] + 24 - 0x80000000u;
+                v->node = ha <= g_memSize - 4 && !(ha & 3) ? ld32(g_mem + ha) : 0;
+                memcpy(v->in0, in, sizeof in);
+                g_shmRec = v;
+                g_shTrack = true; g_shLo = 0xFFFFFFFFu; g_shHi = 0;
+            }
+        }
+        shm_start(in);
+    }
+    if (g_shmCur) {
+        ShRec* r = g_shmCur;
+        u32 want[SHM_IN];
+        if (g_shmPos < r->nw) {
+            u32 pos = g_shmPos;
+            u32 h = shm_head(r, &pos, g->gpr[1], want);
+            if (!memcmp(want, in, sizeof want)) {
+                u32 head[4];
+                memcpy(head, r->w + g_shmPos, sizeof head);
+                g_shmSeg++;
+                if ((h >> 30) & 1) { g_shmPos = pos; g_shmStats[3]++; return scan_live(g, budget); }  // a hole: the walk
+                if (head[1] > budget + SHM_OVER) {  // far past the slice: the walk (which stops in time); replay then ends
+                    g_shmCur = NULL; g_shmStats[3]++; return scan_live(g, budget);
+                }
+#ifndef __3DS__
+                if (g_shmChk < 0) { g_shmChk = getenv("SHDW_MEMOCHECK") != NULL; if (g_shmChk) atexit(shm_chk_report); }
+                if (g_shmChk) {
+                    enum { FRAME = 2304 };
+                    u32 fpa = g->gpr[1] - 0x80000000u;
+                    static u8 f0[FRAME], fr[FRAME];
+                    Gekko g0 = *g;
+                    memcpy(f0, g_mem + fpa, FRAME);
+                    shm_out(r, &pos, head, g);
+                    Gekko gr = *g;
+                    memcpy(fr, g_mem + fpa, FRAME);
+                    *g = g0;
+                    memcpy(g_mem + fpa, f0, FRAME);
+                    u32 n2 = scan(g, head[2] == PC_LOOP ? head[1] : 0xFFFFFFFFu);  // (a budget stop: the same budget)
+                    g_shmChkN++;
+                    if ((n2 != head[1] || g->pc != gr.pc || memcmp(g->gpr, gr.gpr, sizeof g->gpr) || g->cr != gr.cr ||
+                         g->xer != gr.xer || memcmp(g_mem + fpa, fr, FRAME)) && g_shmChkBad++ < 10)
+                        fprintf(stderr, "SHDW_MEMOCHECK segment from %08x: walk %u insns to %08x, record %u to %08x\n",
+                                g0.pc, n2, g->pc, head[1], gr.pc);
+                } else
+#endif
+                shm_out(r, &pos, head, g);
+                g_shmPos = pos;
+                g_shmStats[2]++;
+                if (head[2] == PC_EXIT) { g_shmCur = NULL; g_shmStats[1]++; }
+                return head[1];
+            }
+        }
+        g_shmCur = NULL;  // the inputs went another way (or the record ended): the walk runs from here
+        g_shmMiss[7]++;
+        if (g_shmPos < r->nw) { for (int k = 0; k < SHM_IN; k++) if (want[k] != in[k]) { g_shmDiff[k]++; break; } }
+    }
+    if (!g_shmRec) return scan_live(g, budget);
+    u32 n = scan_live(g, budget);
+    shm_note(g, in, n);
+    return n;
+}
+
+// The walk itself: on the PC through HLE_CHECK when that is set (every replayed segment is then compared too, see
+// shm_run's caller); on the 3DS the stand-in.
+static u32 scan_live(Gekko* g, u32 budget) {
+#ifndef __3DS__
+    static int chk = -1;
+    if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
+    return chk ? checked(g, budget) : scan(g, budget);
+#else
+    return scan(g, budget);
+#endif
+}
+
 u32 hle_run(Gekko* g, u32 budget) {
     if (g_gfskipAddr && g->pc == g_gfskipAddr) {
         if (g_gfskipOn && gfskip_guarded()) { g_gfskipGuarded++; g_gfskipStats[0]++; return 0; }  // a fade: draw every frame
@@ -625,7 +934,7 @@ u32 hle_run(Gekko* g, u32 budget) {
     if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
     if (port_is_hook(g->pc)) { u32 n = port_run_hook(g); if (n) return n; }  // (not taken: the guest code runs)
     if (!g_on) return 0;
-    if (g->pc != PC_ENTRY && g->pc != PC_NEXT) {
+    if (g->pc != PC_ENTRY && g->pc != PC_NEXT && g->pc != PC_LOOP) {
         u32 n = hle_ps_run(g);  // (first: on the PC it checks the generated GD writers before hle_gd.c's own)
         if (!n) n = hle_gd_run(g);
         if (!n) n = hle_thp_run(g);
@@ -634,16 +943,16 @@ u32 hle_run(Gekko* g, u32 budget) {
     }
     if (!known()) return 0;
 #ifndef __3DS__
-    static int chk = -1;
-    if (chk < 0) chk = getenv("HLE_CHECK") != NULL;
+    static int env = -1;
+    if (env < 0) { env = 1; if (getenv("GC3DS_SHDWMEMO")) { g_shmOn = true; atexit(shm_report); } }
     sk_before(g);
-    u32 n = chk ? checked(g, budget) : scan(g, budget);
+    u32 n = g_shmOn ? shm_run(g, budget) : scan_live(g, budget);
     sk_after(g);
 #else
     // Timed one call in 16 (a clock read is a system call, ~200 cycles: two a call were ~1.3% of core 0 here).
     u64 t0 = g_profClock && !(g_shdwStats[0] & 15) ? g_profClock() : 0;
     if (hle_shdw_begin_hook) hle_shdw_begin_hook();
-    u32 n = scan(g, budget);
+    u32 n = g_shmOn ? shm_run(g, budget) : scan(g, budget);
     if (hle_shdw_end_hook) hle_shdw_end_hook();
     if (t0) g_shdwStats[3] += (g_profClock() - t0) * 16;
     g_shdwStats[0]++;

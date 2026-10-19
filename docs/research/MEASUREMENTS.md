@@ -11,9 +11,9 @@ probe, add the result here in the same commit as the change, and mark what it su
 (cutscene / later stretch / movie, or the native scene) and the trust level: `device` numbers decide; `pc`, `qemu_model`,
 `azahar` and `estimate` only explain.
 
-**Newest first (2026-10-19, night):** the entries from "The frame-rate line was broken" to "Float lanes and the 2-way
-indirect table, re-measured" (all defaults: heavy area ~22.1% / 6.6 frames a second, Ordon ~31.0% / 9.3, title
-36.8% / 19.5% / 13.1%; core 0 the limit in every scene, from the joint states). Before them (2026-10-18): "The first
+**Newest first (2026-10-20):** the entries from "The frame-rate line was broken" to "The ShdwDraw walk memo" (all
+defaults: heavy area ~22.3% / 6.67 frames a second, Ordon ~31.3% / 9.37, title 37.0% / 21.8% / 13.2%; core 0 the
+limit in every scene, from the joint states). Before them (2026-10-18): "The first
 library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
 state on 10-19: Ordon 28.0%, heavy area 20.6%, title cutscene 36.1% / later stretch 19.0% / movie 12.8%; the GX
 thread the limit in gameplay, core 0 in the later stretch; see "The title's sections moved" there), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
@@ -1053,6 +1053,41 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   - `--ind2 on` (OPT_IND2): heavy area 6.513 / 6.514 (+0.85%); Ordon 9.137 (+0.9%); title +0.5% / +0.8% / +0.3%.
   - Both: heavy area 6.613 (+2.4%), Ordon 9.279 (+2.5%), title 36.77 / 19.48 / 13.14% (+1.8% / +2.3% / +0.7%).
   - `--psgx on` (the GX register setters' stand-ins): heavy area 6.401 (-0.9%), the old verdict stands.
+- **The other rejected core-0 options, re-measured (jobs 583-604, separate runs, heavy area unless named):** baseline
+  6.609 / 6.611 frames a second (open and close).
+  - `--vin on` (compact vertex records in the worker's jobs): 6.653 / 6.656 (+0.7%); Ordon 9.344 against 9.264 (+0.9%);
+    title 36.86 / 19.47 / 13.16 against 36.68 / 19.44 / 13.13 (+0.5% / +0.15% / +0.2%). **On by default.**
+  - `--rotmask on` (OPT_ROTMASK): 6.648 / 6.646 (+0.6%); Ordon 9.289 (+0.3%); title 36.78 / 19.43 / 13.17. **On by
+    default.** Both: heavy area 6.693 (+1.3%), Ordon 9.377 (+1.2%), title 36.93 / 19.44 / 13.19 (+0.7% / 0 / +0.5%).
+  - Confirmed losses: `--crstub` 6.546 (-1.0%), `--befloat` 6.557 (-0.8%), `--calls` 6.532 (-1.2%), `--fastfloat`
+    6.567 (-0.6%), `--relayout` 20.4% speed (-7.6%, with stalls); `--pipeps` 6.608 (even).
+- **The ShdwDraw walk memo (jobs 605-619, 10-19; hle_tp.c "The walk memo", `--shdwmemo`):**
+  - **Why:** in the title's later stretch the game makes ~1.3 ShdwDraw calls a frame (four distinct ones in turn; the long
+    one ~6,500 stand-in segments, ~30,000 cells), and the stand-in spends ~2.6 s per 10 s report inside. 98% of calls
+    repeat a previous call's walk exactly (PC SHDW_KEYSTAT: 369 of 377, all with the same outcome). Stand-in "calls" in
+    the '# hle' line are segments (entries), not calls.
+  - **What:** a call is recorded segment by segment (from the call's start, a triangle's return or the loop head to the
+    next triangle, the loop head or the end): the walk's inputs where they differ from what the previous segment left,
+    and the registers, CR0, XER[CA], frame words and bitset word it changed (delta-encoded, ~12 words a segment; five
+    records of up to 192k words in linear memory). A call whose start inputs match a record replays it while each
+    segment's inputs match. Records are dropped when a logged DMA (disc, ARAM, EXI) overlaps the collision data the walk
+    read. The loop head (0x8007FB70), where the stand-in stops at the slice's budget, is now a stand-in entry too (exact;
+    before, compiled guest code walked cells there until the next triangle and re-entered mid-cell).
+  - **Timing:** a replayed segment may pass the slice's budget by at most 32,768 guest instructions. Unbounded (job 616)
+    stretched every VI field (fields are scheduled from the last one): +1.7G cycles over 400 fields on the PC, and on the
+    2DS more pictures (6.1 a second) but a slower game clock (~9.6 fields a second against ~11.4). Bounded: +0.05% cycles
+    over 400 fields on the PC.
+  - **Exactness (PC, tp_pc_5000 -> 5400):** memo off unchanged with the loop-head entry (state hash 44a254e5); memo on
+    replays 491 of 507 calls, 1,108,244 segments, each compared with the walk from the same state (SHDW_MEMOCHECK): 0
+    differed. Bugs the checks found on the way: the stand-in's leaf memo kept the previous call's generation when a
+    call's start was replayed (one cycle off at the end; now bumped at every call start), and dead-at-start inputs
+    (r14, r16-r18, r23-r25, frame 2224 / 2228) in the start key.
+  - **2DS (job 618 against 617, title):** later stretch **19.09 -> 21.81% (+14.2%)**, real pictures 4.79 -> 5.95 a second
+    (+24%), the game's clock ~11.3 -> ~13.5 fields a second, more pictures on two fields (45:17 against 32:18 two- and
+    three-field gaps); cutscene 37.02 / 37.00, movie 13.18 / 13.15. Heavy area 6.669 against 6.673 frames a second
+    (job 611, an earlier version).
+  - The cutscene's shadows move every frame: its calls are recorded, not replayed (PC, tp_pc_900 -> 2100: 209 recorded, 1
+    replayed), at no measured cost.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

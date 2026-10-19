@@ -6,8 +6,8 @@ PICA200 GPU doing the drawing. Every design decision here was measured on a real
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
 boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
-On a New 2DS XL it runs at about **31% of full speed walking in Ordon and ~22% in its heaviest area** (9.3 and 6.6 of
-the game's 30 frames a second), ~37% in the intro cutscene, ~19.5% in the scene after it and ~13% in the THP movie (19
+On a New 2DS XL it runs at about **31% of full speed walking in Ordon and ~22% in its heaviest area** (9.4 and 6.7 of
+the game's 30 frames a second), ~37% in the intro cutscene, ~22% in the scene after it and ~13% in the THP movie (20
 October 2026). Most of the work so far went into finding out where the time goes and what does and does not
 help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
 
@@ -19,7 +19,8 @@ help on this hardware; that knowledge is written down in `docs/` and is the most
   the time and almost never waits, while the GX thread (core 2) is idle 12-13% in gameplay and 40-75% in the title, and
   the vertex worker (core 3, which also lights vertices) is idle ~70-96%. Core 0's profile is flat and bound by
   instruction fetch: rendering ~39% (the game building its command stream), the 2D UI ~22%, game logic ~19%; in the
-  title's scene after the cutscene (Link and Epona) the shadow-drawing stand-in is ~38% of it. Native ports of library
+  title's scene after the cutscene (Link and Epona) the shadow-drawing walk was ~25% of it, until repeated walks were
+  replayed from a record (+14%). Native ports of library
   functions that do less than the guest code pay (`docs/research/LIBRARY_PORTS.md`), as did JIT options that keep
   floats in VFP registers and cut indirect-branch misses.
 - **The GPU has headroom:** ~5-15 ms a frame since textures moved to VRAM and lighting off the vertex shader, and
