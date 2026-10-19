@@ -154,8 +154,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C11. Float lanes: exact singles kept in VFP registers within a block (OPT_FCACHE)
 
-- **Status:** built 2026-10-13 (18d6248, second pass 2026-10-13), exact, **off by default** (`--fcache on`,
-  `--ab fcache`).
+- **Status:** built 2026-10-13 (18d6248, second pass 2026-10-13), exact; **on by default since 2026-10-19**
+  (`--fcache off` to compare): separate runs give heavy area +1.5%, Ordon +1.6%, title +1.1% / +2.4% / +0.6%
+  (MEASUREMENTS.md "Float lanes and the 2-way indirect table, re-measured"). The history below came from A/Bs that
+  recompile all JIT code at each switch.
 - **Model** (arm11_sched over TP's cutscene, 20 fields): 6.29 + 2.48 -> 6.17 + 2.30 host instructions + stall cycles
   per guest instruction (-3.4%); lfs 18.7 -> 12.9 cycles, stfs 22.4 -> 15.3, psq_st 39.0 -> 30.1, fadds 22.0 -> 12.7,
   ps_mul 31.4 -> 18.4.

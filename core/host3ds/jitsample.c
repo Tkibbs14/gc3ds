@@ -82,6 +82,17 @@ static void stk_walk(void) {
 
 void jitsample_stacks(const u8* mem1) { g_mem1 = mem1; }
 
+// Joint states (perf.csv '# joint 10s'): at each sample, core 0 (running guest code / waiting for ring space / waiting
+// for the GX thread to drain / other), the GX thread (working / its ring empty / waiting for the vertex worker / waiting
+// for the GPU) and the worker (working / idle), counted together: which resource the others wait on, sample by sample.
+extern volatile u8 g_c0Wait, g_vwBusyNow;
+static volatile u32 g_joint[4][4][2];
+static inline u32 gx_state(u8 w) {
+    if (w == 0) return 1;                     // idle/ring
+    if (w == 3 || w == 4 || w == 5) return 2; // vwwait, vwalloc, splitwait: the worker
+    if (w == 6) return 3;                     // framebegin: the GPU
+    return 0;
+}
 static void sampler(void* arg) {
     (void)arg;
     while (!g_quit) {
@@ -95,6 +106,11 @@ static void sampler(void* arg) {
             g_whereN[w < WH_N ? w : 0]++;
         }
         { u8 gw = g_gxWhere; g_gxwN[gw < GXW_N ? gw : GXW_N - 1]++; }
+        {
+            u8 cw = g_c0Wait, gw = g_gxWhere, vb = g_vwBusyNow;
+            u32 c0 = cw == 1 ? 1 : cw == 2 ? 2 : jit_in_run ? 0 : 3;
+            g_joint[c0][gx_state(gw)][vb ? 0 : 1]++;
+        }
         svcSleepThread(100000);
     }
 }
@@ -182,6 +198,18 @@ void jitsample_report(FILE* f, const Jit* j) {
             g_gxwN[k] = 0;
         }
         fprintf(f, "\n");
+        {
+            static const char* const c0n[4] = { "run", "ringwait", "gxsync", "other" };
+            static const char* const gxn[4] = { "work", "idle", "waitvw", "waitgpu" };
+            u32 jt = 0;
+            for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) jt += g_joint[a][b][c];
+            fprintf(f, "# joint 10s (core0/gx/worker, share of samples):");
+            for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) {
+                if (jt && g_joint[a][b][c] * 1000u >= jt) fprintf(f, " %s/%s/%s %.1f%%", c0n[a], gxn[b], c ? "idle" : "work", 100.0 * g_joint[a][b][c] / jt);
+                g_joint[a][b][c] = 0;
+            }
+            fprintf(f, "\n");
+        }
         fprintf(f, "# core0 outside compiled code 10s:");
         for (int k = 0; k < WH_N; k++) {
             if (g_whereN[k]) fprintf(f, " %s %.1f%%", kWh[k], tot > 0 ? 100.0 * g_whereN[k] / tot : 0.0);

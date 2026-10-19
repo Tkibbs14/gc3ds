@@ -3,8 +3,9 @@
 Owner decision (2026-10-18): port shared game libraries natively, for as many games as possible, as long as each port
 makes every game that uses it faster. When it was taken, core 0 (the game's own code) was the limit in every Twilight
 Princess scene (MEASUREMENTS.md, "Frames ended early, and the command buffer"). Since the first ports, gpbulk and ring
-batching (Status below), the GX thread is the limit in gameplay and core 0 in the title's later stretch: a core 0 port now
-shows its gain where core 0 limits.
+batching the GX thread looked like the limit in gameplay; since overlapped GPU frames (2026-10-19) the joint states show
+core 0 the limit in every scene again (MEASUREMENTS.md "Who waits on whom"). Measure ports with separate whole runs:
+an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2% low.
 
 ## Why ports, and what kind
 
@@ -54,17 +55,17 @@ shows its gain where core 0 limits.
 - **Ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"), each checked exact on the device
   (`--port check` runs on the 2DS as well as the PC; `--port plant` proves it reports a difference):
   J2DMaterial::setGX (Ordon +3.6-5.9%), J2DPictureEx::drawSelf (Ordon +4.5% more), J3DShapeMtxConcatView's matrix
-  load (Ordon +5.8%; the title neutral), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). The
-  heavy area is GX-thread bound since gpbulk, so each reads -0.5 to -0.7% there (within ~2 sigma). Not yet:
+  load (Ordon +5.8%; the title neutral), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). Their
+  heavy-area A/Bs read -0.5 to -0.7%, but separate runs give the three together +2.0% there (ports off 20.71%
+  against 21.13%, jobs 539-541). Not yet:
   J2DTevBlock1/4/8/16 (the title screen uses 16), indirect stages.
-- **Ported, off (2026-10-19, MEASUREMENTS.md "Core 0 in the heavy area does not set its frame rate"):**
+- **Ported, off (2026-10-19, MEASUREMENTS.md "What limits the heavy area, first reading"):**
   `__GXSendFlushPrim` (`--port-hooks` bit 3) and `J3DColorBlockLightOn::diffLightObj` (bit 4: the lights' XF loads
   appended to `__GDCurrentDL`; the context now carries a run of GD display-list bytes, committed and checked byte by
-  byte). Both exact on the PC and the device; no measured gain (separate runs: neutral and -0.2% in the heavy area),
-  because the heavy area is limited by the GX side (all stand-ins off left it unchanged). The three default ports'
-  +2.0% there (ports off 20.71% against 21.13%) plausibly comes from their bulk pipe writes, which lighten the GX
-  thread's parsing. Core 0 ports pay where core 0 limits (the title's later stretch); measure ports with separate
-  runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
+  byte). Both exact on the PC and the device; no measured gain (separate runs: neutral and -0.2% in the heavy area).
+  The flush prim is 48 guest instructions a call, too little to win back the port's set-up; the light port's
+  byte-by-byte commit (8.7 us a call) leaves little of its saving, so it would need word stores to pay. Measure ports
+  with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.

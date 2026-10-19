@@ -1,26 +1,25 @@
 # gc3ds handoff (2026-10-10)
 
-> **▶ Current state (2026-10-19).** All defaults (jobs 500-502): **Ordon walk 28.0%, heavy area 20.6%; title cutscene
-> (25-150 s) 36.1%, its later Link / Epona stretch 19.0%, THP movie 12.8%.** The cutscene ends at ~150 s now (~250 s
-> when the old windows were set): a "25-250 s cutscene" mean mixes in the later stretch. Since the entry below: three native library ports (core/src/cpu/port_j2d.c:
-> J2DMaterial::setGX, J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load), each checked exact on the 2DS with
-> `--port check`; pipe bursts copied whole (gpbulk, +3-4.5% everywhere); GX-thread ring records batched (ringbatch,
-> heavy area +2.6%). **Limits now: the GX thread in Ordon and the heavy area (89-95% busy; core 0 idles 10-12% waiting
-> for it), core 0 in the title's later stretch (the ShdwDraw stand-in ~38% of it).** 10-19: four GX-thread changes
-> measured neutral (a 256 KB job ring, bounded idle waits, in-place parsing, cached TEV stages; MEASUREMENTS.md "Where
-> the GX thread stands"); its time is flat. **Late 10-19: the '# new frames 10s' line was broken** (it divided by 10
-> over a ~10.8 s window cut at field boundaries, so with the game locked to two VI fields a picture it read "6.9" in
-> the heavy area at any speed; fixed, with a histogram of the gaps). Real rates, all defaults: heavy area ~6.35 game
-> frames a second, Ordon ~9.05 (speed ~21.2% / ~30.3%). **C30, overlapped GPU frames, is on by default: heavy area
-> +1.9%, Ordon and title even.** The heavy area is limited by the GX side: every HLE stand-in off left it unchanged,
-> a core-0-only port (J3D lights) changed nothing, while overlapped frames and the GX-side switches move it. Two more
-> exact ports (flush prim, J3D lights) are built and off. Next: GX-thread work in the heavy area (vertex prep ~9%,
-> job-ring waits ~8%, the draw tail ~7%, draw calls ~7%, the TEV key 48 ms/s), and moving GX-thread work to the
-> vertex worker's core (core 3 is ~30% busy); ShdwDraw for the title's later stretch (core 0 bound). **Measuring:**
-> while the game stays locked at two fields a picture (the histogram's field gaps), settled speed_pct is the frame
-> rate; compare builds with separate whole runs (two runs agree to ~0.1%), since A/Bs that recompile JIT code read ~2%
-> low for the on arm (MEASUREMENTS.md "The frame-rate line was broken"). Texture sharpness is parked by the owner until
-> full speed (REDESIGN_CANDIDATES C31).
+> **▶ Current state (2026-10-19, night).** All defaults (jobs 577-582): **heavy area ~22.1% (6.6 game frames a
+> second), Ordon walk ~31.0% (9.3 frames a second); title cutscene (25-150 s) 36.8%, its later Link / Epona stretch
+> 19.5%, THP movie 13.1%.** The game is locked to two VI fields a picture, so frames a second = fields_s / 2.
+> New defaults on 10-19, each measured with separate whole runs: overlapped GPU frames (`--dblframe`, C30; heavy area
+> +1.9%), float lanes (`--fcache`, C11; +1.5% / +1.6% / title up to +2.4%) and the 2-way indirect table (`--ind2`;
+> ~+0.9%). Earlier the same day: three native library ports (core/src/cpu/port_j2d.c: J2DMaterial::setGX,
+> J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load), pipe bursts copied whole (gpbulk), GX-thread ring
+> records batched (ringbatch). Two more exact ports (flush prim, J3D lights) are built and off (neutral).
+> **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
+> code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay, ~40% in the cutscene and
+> ~75% in the later stretch; the vertex worker is idle ~70-96%. So GX-thread work and offloading it to core 3 would
+> not raise the frame rate; what pays is cheaper guest code on core 0 (the JIT, ports, stand-ins) and work taken off
+> core 0. Next: (1) re-measure, with separate runs, the other JIT options and stand-ins rejected from A/Bs that
+> recompile all code (MEASUREMENTS.md's ruled-out list: those A/Bs read the on arm ~2% low); (2) ShdwDraw in the
+> title's later stretch (~38% of core 0 there; its triangle callback is guest code, so taking it off core 0 means a
+> whole native ShdwDraw); (3) more library ports, scored with separate runs. **Measuring:** check the histogram's field
+> gaps (locked = 2), then compare settled speed_pct or the '# new frames 10s' line (real frames a second since
+> 967e43f; the old line read "6.9" in the heavy area at any speed) across separate whole runs: two heavy-area runs of
+> one build agree to ~0.1% (MEASUREMENTS.md "The frame-rate line was broken"). Texture sharpness is parked by the owner
+> until full speed (REDESIGN_CANDIDATES C31).
 >
 > **Earlier on 2026-10-18.** Gameplay benchmarks on the 2DS, all defaults: Ordon walk ~23.5%, the heavy Ordon
 > area (`sdmc:/gc3ds/states/tp_area2.state`) ~20.0% (14.6% at the start of 10-18), title cutscene ~26.8% (jobs 437-439, 449). In game

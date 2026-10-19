@@ -126,11 +126,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **Gameplay (18 October 2026, night; jobs 500-502):** Ordon walk 28.0%, the heavy area 20.6%; the title: cutscene
-  (25-150 s) 36.1%, later stretch 19.0%, movie 12.8% (the cutscene now ends at ~150 s, not ~250: windows must follow
-  it). **The GX thread is the limit in gameplay** (89-95% busy; core 0 idles 10-12% waiting for it, which the
-  profile's "dispatch" bucket holds); **core 0 is the limit in the title's later stretch** (the ShdwDraw stand-in ~38%).
-  The vertex worker ~25-35% busy, the GPU ~5-15 ms a frame.
+- **All defaults (19 October 2026, night; jobs 577-582):** Ordon walk ~31.0% (9.3 game frames a second), the heavy
+  area ~22.1% (6.6); the title: cutscene (25-150 s) 36.8%, later stretch 19.5%, movie 13.1% (the cutscene ends at
+  ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+  running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
+  in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
+  stand-in is ~38% of core 0.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
@@ -145,8 +146,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   textures in VRAM (+12%), vertex set-ups cached for 8 keys (+1.1%), uploads without a divide per texel, the
   measurement-only decoder statistics and profile clock out of normal runs (+3.2%, +6%), a 2 MB command buffer (+2.6%),
   the three library ports (Ordon +3.6-5.9%, +4.5%, +5.8%), pipe bursts copied whole (`gpbulk`, +3.2% / +4.5%), GX-thread
-  ring records batched (`ringbatch`, heavy area +2.6%).
-- **Built, off, measured without a clear gain:** display-list vertex cache, float lanes, known-single stores (on; +1%),
+  ring records batched (`ringbatch`, heavy area +2.6%), overlapped GPU frames (`dblframe`, heavy area +1.9%), float
+  lanes (`fcache`, +1.5% / +1.6% / title up to +2.4%; rejected on 10-13 from A/Bs that recompile, reversed by separate
+  runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise).
+- **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
+  __GXSendFlushPrim and J3D light ports (neutral, separate runs),
   frame skip (+10%, visual glitches; a candidate user option), byte-swapped guest RAM (`GC_SWAPRAM`, neutral).
 - **Rejected with measurements:** second vertex worker on core 1 (evicts core 0's L2), shared-index fast path (TP: <1%
   of vertices), CPU display-list cache as a speed lever (RAM latency), matrix-chain HLE (flat profile), AOT translation
@@ -156,8 +160,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters and __GXSendFlushPrim as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions:** the GX thread's own work (fifo, vertex prep, waits for the vertex worker's ring, draw tails);
-  the ShdwDraw stand-in for the title's later stretch; more library ports (J2DPane::draw, text, other TEV block types, J3D packet
+- **Open directions:** re-measure with separate runs the core-0 options and stand-ins rejected from recompiling A/Bs
+  (several may be ~2% better than they read); the ShdwDraw stand-in for the title's later stretch (a whole native
+  ShdwDraw would take it off core 0's guest path); more library ports (J2DPane::draw, text, other TEV block types, J3D packet
   draw; `docs/research/LIBRARY_PORTS.md`); core 0: less hot code per guest instruction, longer blocks; GPU-resident vertex data for repeated display lists (C1);
   frame skip as a user option (guards for fades in place; game frames +50-60%).
 

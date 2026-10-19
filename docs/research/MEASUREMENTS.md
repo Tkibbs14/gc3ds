@@ -11,7 +11,10 @@ probe, add the result here in the same commit as the change, and mark what it su
 (cutscene / later stretch / movie, or the native scene) and the trust level: `device` numbers decide; `pc`, `qemu_model`,
 `azahar` and `estimate` only explain.
 
-**Newest first (2026-10-18):** "The first library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
+**Newest first (2026-10-19, night):** the entries from "The frame-rate line was broken" to "Float lanes and the 2-way
+indirect table, re-measured" (all defaults: heavy area ~22.1% / 6.6 frames a second, Ordon ~31.0% / 9.3, title
+36.8% / 19.5% / 13.1%; core 0 the limit in every scene, from the joint states). Before them (2026-10-18): "The first
+library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
 state on 10-19: Ordon 28.0%, heavy area 20.6%, title cutscene 36.1% / later stretch 19.0% / movie 12.8%; the GX
 thread the limit in gameplay, core 0 in the later stretch; see "The title's sections moved" there), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
 ~20-23.5%, core 0 the limit everywhere, the GPU and GX side off the critical path). The verdict and headline
@@ -89,11 +92,11 @@ Yes for choosing a direction, no for predicting what a given redesign will gain.
 - Fault-mode (fastmem) memory access is the largest remaining JIT lever: +9.3% core 0 in the cutscene and +4.1% later (job 168), against check hoisting's +5.7% / +2.8% (job 117). It is gated on kernel stability.
 - Texture decode should target ETC1 or RGB565 with mipmaps. Minified 1024x1024 without mips: ETC1 117, RGB565 27, RGBA8 17 Mpx/s (job 180). At 1 texel per pixel RGBA8 loses 45%. VRAM placement is suggested because FCRAM sampling doubles core 0's L2 latency, but it is unmeasured on TP and only ~1.2 MB of VRAM is free.
 - Offload audio to the 3DS DSP. GC DSP-ADPCM through ndsp has correlation 1.00000 (A1). 24 channels cost core 0 nothing (A2). Software mixing is 0.42% of a core per voice. WSOLA time-stretch is 0.66% of a core.
-- Ruled out by device data (do not re-propose without a new argument): dispatcher or indirect-table redesign (dispatcher under 1%; IND2 and FAST_BITS=13 neutral); faster compile (0.2-0.7%); traces, OPT_CALLS, relayout, AOT / static recompilation (footprint losses above); registers across blocks or loop regions (modelled 0.5-2.5% of hot words); CR dead-store elimination (~0.3%); peephole word shaving (CRSTUB, ROTMASK neutral); interlock scheduling alone (SCHED within noise against a modelled -18%); branch-prediction work (mispredicts under 1%); VFP short vectors (no throughput gain); CPU display-list vertex cache; second vertex worker; GX-thread stealing; deferred gather; deeper job rings (1 MB 18.9% vs 256 KB 20.9%); OPT_ICBI (matters only while loading); a single-function stand-in outside the shadow scan (no device block above 0.3%).
+- Ruled out by device data (do not re-propose without a new argument; several of these verdicts came from A/Bs that recompile all JIT code, which read the on arm ~2% low, and IND2 and float lanes were reversed by separate runs on 10-19, see "Float lanes and the 2-way indirect table, re-measured"): dispatcher or indirect-table redesign (dispatcher under 1%; IND2 neutral then, now on: +0.85%; FAST_BITS=13 neutral); faster compile (0.2-0.7%); traces, OPT_CALLS, relayout, AOT / static recompilation (footprint losses above); registers across blocks or loop regions (modelled 0.5-2.5% of hot words); CR dead-store elimination (~0.3%); peephole word shaving (CRSTUB, ROTMASK neutral); interlock scheduling alone (SCHED within noise against a modelled -18%); branch-prediction work (mispredicts under 1%); VFP short vectors (no throughput gain); CPU display-list vertex cache; second vertex worker; GX-thread stealing; deferred gather; deeper job rings (1 MB 18.9% vs 256 KB 20.9%); OPT_ICBI (matters only while loading); a single-function stand-in outside the shadow scan (no device block above 0.3%).
 
 ## Conflicts and stale numbers
 
-- C11 fcache verdict ('net zero, later -2.7 to -4.4%') does not reproduce with the current ab_split (+0.3 to +1.6% later, never negative). The cutscene gain sits inside the cutscene noise floor. Re-evaluate before treating C11 as closed.
+- C11 fcache verdict ('net zero, later -2.7 to -4.4%') does not reproduce with the current ab_split (+0.3 to +1.6% later, never negative). The cutscene gain sits inside the cutscene noise floor. Re-evaluate before treating C11 as closed. **Resolved 10-19:** separate runs give +1.1% / +2.4% / +0.6% (cutscene, later, movie), heavy area +1.5%, Ordon +1.6%; on by default.
 - Data-stall interpretation: HANDOFF L828-852 reads it as interlocks (~50 cycles per miss); the relay-mid reading is FCRAM (~150 cycles). The dcache2 simulator (1.9-14.3% of L1 misses reach FCRAM) favours interlocks plus L2 hits, but it is not device-confirmed.
 - Shader length: gcbench G1 / GPU_GUIDANCE rule 3 'free' vs gpuprobe jobs 181/183 (+32 instructions doubles cost per vertex). G1 is arithmetically implausible, so trust jobs 181/183. PERF_LEVERS, C6 and the gpu-direction memory still cite 'free'.
 - GPU_GUIDANCE rule 25 'GPU does not slow CPU memory' (gcbench5 M2, GPU fill only) is superseded for FCRAM texture sampling by jobs 192/196 and still cited in PERF_LEVERS.md:68-70.
@@ -1010,7 +1013,8 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   6.349 / 6.344 (+1.9%); Ordon 9.060 / 9.060 against 9.053 / 9.056 (even); the title even by section (job 525, an A/B
   that recompiles nothing).** In the heavy area the GX thread's frame-begin wait goes (gxsync -98%, the GX thread 96.6
   -> 87.5% busy). C3D_GetDrawingTime (c3d_gpu_ms) is not updated while it is on.
-- **What limits the heavy area: the GX side, not core 0 (jobs 526-555):**
+- **What limits the heavy area, first reading (jobs 526-555; corrected by the joint states below: with overlapped
+  frames on, core 0 is the limit and the gains here came from removing its waits for the GX thread):**
   - **Two more ports, exact, off.** `__GXSendFlushPrim` (`--port-hooks` bit 3, `--ab flushhook`): PC 4,822 checked calls
     and device 26,761, 0 differed; ~2,700 calls/s of 48 guest instructions (19 pipe words).
     `J3DColorBlockLightOn::diffLightObj` (bit 4, `--ab lighthook`; each light's four XF loads, 72 bytes, appended to
@@ -1028,6 +1032,27 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     samples, one other 4%; no thread soaks up spare time by polling.
   - **Idle waits again (job 556, `--idlewait 0`):** speed 31.1% but the lock breaks (fields per copy 2 in under half of the gaps, up to
     7) and frames are 6.30 a second (-0.7%): the old verdict stands.
+- **Who waits on whom: joint states (jobs 561-563, 10-19; '# joint 10s', every run).** The sampler records core 0
+  (running guest code / waiting for ring space / waiting for the GX thread to drain / other), the GX thread (working /
+  ring empty / waiting for the vertex worker / waiting for the GPU) and the worker (working / idle) at the same instant.
+  All defaults (overlapped frames on):
+  - **Heavy area:** core 0 runs guest code ~97% of the time; it waits for the GX thread 0.3%. The GX thread works ~83%
+    (idle ~13%, waiting for the worker ~8%); the worker works ~29%.
+  - **Ordon:** core 0 running ~96%, waiting 1.1%; the GX thread idle ~12%, waiting for the worker ~10%.
+  - **Title:** cutscene: core 0 ~93% running, the GX thread idle ~40%; later stretch: the GX thread idle ~75%, the
+    worker idle ~96%.
+  - **So core 0 is the limit in every scene now**, and the other cores have room: moving GX-thread work to core 3
+    would not raise the frame rate; the levers are core 0's guest code (the JIT, ports) and anything that takes work
+    off core 0. Core 0's samples by guest thread (`--profile on`, job 544): the main thread 89%, one other 4%.
+- **Float lanes and the 2-way indirect table, re-measured (jobs 564-582, separate runs): both on by default.**
+  Both were rejected from A/Bs that recompile all JIT code (C11 in 10-13; IND2 job 161), in scenes and builds where
+  core 0 waited for the GX thread.
+  - `--fcache on` (OPT_FCACHE, float lanes, exact): heavy area 6.551 / 6.556 frames a second against 6.459 / 6.457
+    (+1.5%); Ordon 9.199 against 9.057 (+1.6%); title 36.52 / 19.51 / 13.13% against 36.12 / 19.05 / 13.05 (cutscene
+    +1.1%, later stretch +2.4%, movie +0.6%).
+  - `--ind2 on` (OPT_IND2): heavy area 6.513 / 6.514 (+0.85%); Ordon 9.137 (+0.9%); title +0.5% / +0.8% / +0.3%.
+  - Both: heavy area 6.613 (+2.4%), Ordon 9.279 (+2.5%), title 36.77 / 19.48 / 13.14% (+1.8% / +2.3% / +0.7%).
+  - `--psgx on` (the GX register setters' stand-ins): heavy area 6.401 (-0.9%), the old verdict stands.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

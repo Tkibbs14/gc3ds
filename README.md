@@ -6,8 +6,8 @@ PICA200 GPU doing the drawing. Every design decision here was measured on a real
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
 boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
-On a New 2DS XL it runs at about **28% of full speed walking in Ordon and ~20.6% in its heaviest area** (roughly 6-8 of
-the game's 30 frames a second), ~36% in the intro cutscene, ~19% in the scene after it and ~13% in the THP movie (19
+On a New 2DS XL it runs at about **31% of full speed walking in Ordon and ~22% in its heaviest area** (9.3 and 6.6 of
+the game's 30 frames a second), ~37% in the intro cutscene, ~19.5% in the scene after it and ~13% in the THP movie (19
 October 2026). Most of the work so far went into finding out where the time goes and what does and does not
 help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
 
@@ -15,15 +15,15 @@ help on this hardware; that knowledge is written down in `docs/` and is the most
 
 ## Where the time goes (New 2DS XL, Twilight Princess gameplay in Ordon)
 
-- **The GX thread (core 2) is now the limit in gameplay** (89-95% busy; core 0 idles 10-12% waiting for it), after
-  native ports of three hot library functions (the HUD's material set-up and picture quads, J3D's matrix loads) and
-  cheaper pipe transfers took work off core 0. **Core 0 (the emulated CPU, JIT) is the limit in the title's scene after
-  the cutscene** (Link and Epona), where the shadow-drawing stand-in is ~38% of it. Core 0's profile is otherwise flat and bound by instruction fetch:
-  rendering ~39% (the game building its command stream), the 2D UI ~22%, game logic ~19%. Levers that only cut
-  executed instructions (byte-swapped guest RAM, float and compare tricks) measured 0-5%; ports of whole library
-  subtrees pay (`docs/research/LIBRARY_PORTS.md`).
-- **The other cores have headroom:** the vertex worker (core 3, which also lights vertices) ~25-35%, and the GPU ~5-15
-  ms a frame since textures moved to VRAM and lighting off the vertex shader.
+- **Core 0 (the emulated CPU, JIT) is the limit in every scene.** Sampled together, core 0 runs guest code 93-97% of
+  the time and almost never waits, while the GX thread (core 2) is idle 12-13% in gameplay and 40-75% in the title, and
+  the vertex worker (core 3, which also lights vertices) is idle ~70-96%. Core 0's profile is flat and bound by
+  instruction fetch: rendering ~39% (the game building its command stream), the 2D UI ~22%, game logic ~19%; in the
+  title's scene after the cutscene (Link and Epona) the shadow-drawing stand-in is ~38% of it. Native ports of library
+  functions that do less than the guest code pay (`docs/research/LIBRARY_PORTS.md`), as did JIT options that keep
+  floats in VFP registers and cut indirect-branch misses.
+- **The GPU has headroom:** ~5-15 ms a frame since textures moved to VRAM and lighting off the vertex shader, and
+  frames overlap on it (the GX thread no longer waits for the previous frame's tail).
 - Full speed is still ~4-5x away. `docs/research/MEASUREMENTS.md` holds every measurement, and `docs/research/REDESIGN_CANDIDATES.md` every idea that was tried, kept or rejected, with its numbers.
 
 ## How it works

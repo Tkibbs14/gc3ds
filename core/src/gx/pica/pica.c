@@ -2181,6 +2181,7 @@ static bool vw_steal(void) {
     return true;
 }
 
+volatile u8 g_vwBusyNow;  // the worker is running a job (jitsample.c's joint states)
 static void vw_main(void* arg) {
     (void)arg;
     crashlog_thread(CRASH_VWORKER);
@@ -2192,7 +2193,9 @@ static void vw_main(void* arg) {
             u64 t0 = timed && g_profClock ? g_profClock() : 0;
             g_vfPhaseTimed = timed;
             if (g_vw[c % VW_SLOTS].job) vfast_job_set_cache(g_vw[c % VW_SLOTS].job, g_vcWorker);  // gathers here use the worker's cache
+            g_vwBusyNow = 1;
             vw_do(&g_vw[c % VW_SLOTS]);
+            g_vwBusyNow = 0;
             g_vfPhaseTimed = false;
             if (timed && g_profClock) { u64 d = g_profClock() - t0; g_hostProf[PROF_VWORK] += d * 64; g_vwPhaseAll += d; }
             vw_done(c);
