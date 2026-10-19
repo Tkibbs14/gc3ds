@@ -5,9 +5,10 @@ against the measurements in HANDOFF.md, FINDINGS.md, OPT_JIT_PLAN.md and researc
 re-read in the primary source (marked **checked**). Goal: TP at 30-40% now, full speed later, on the New 2DS XL.
 
 > **Status 2026-10-18:** this page is the 10-13 snapshot. Since then the GX side and the GPU were taken off the critical
-> path (MEASUREMENTS.md from "Three scenes after the texture work"): core 0 is the limit in every scene, and native
-> library ports are next (LIBRARY_PORTS.md). The display-list vertex cache below (lever 1) was built and measured no
-> gain (REDESIGN_CANDIDATES C3).
+> path (MEASUREMENTS.md from "Three scenes after the texture work"), then three native library ports, pipe bursts
+> copied whole and batched ring records (LIBRARY_PORTS.md; MEASUREMENTS.md "The first library port" onward) moved the
+> limit again: **the GX thread in gameplay, core 0 in the title cutscene** (night of 10-18). The display-list vertex
+> cache below (lever 1) was built and measured no gain (REDESIGN_CANDIDATES C3).
 
 ## Where TP's time goes today (2DS, measured)
 

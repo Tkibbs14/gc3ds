@@ -472,7 +472,7 @@ typedef struct {
     bool abGfskip;            // --gfskip ADDR: the game's renderer at ADDR runs every other call (guest frame skip, experiment); --ab gfskip: on and off (gfskip column; starts off)
     bool abSkipfn;            // --skipfn ADDR,..: (measurement) these guest functions return at once; --ab skipfn: on and off (skipfn column; starts off)
     u32 memo;  // --memo ADDR: function memoization's probe on the function at ADDR (memo.c; measurement only)
-    int port;     // --port off|on|check|plant (on): the native J2D material port (port_j2d.c; check: each call compared with the
+    int port;     // --port off|on|check|plant (on): the native library ports (port_j2d.c, --port-hooks; check: each call compared with the
                   // interpreter, whose result is kept; plant: check with one pipe bit flipped in the port, which must be reported)
     bool abPort;  // --ab port: the port on and off (hle column bit 4)
     bool abPichook;  // --ab pichook: the J2DPictureEx::drawSelf port on and off (hle column bit 5)
@@ -1028,8 +1028,8 @@ static const char* run(const char* path) {
         g_portPmuEnd = g_opt.pmuSplit == 5 ? pmu_split_end : NULL;
         g_portCommitBegin = g_opt.pmuSplit == 6 ? pmu_split_begin : NULL;
         g_portCommitEnd = g_opt.pmuSplit == 6 ? pmu_split_end : NULL;
-        if (g_opt.pmuSplit == 5) pmu_split_what("the J2D port building its context");
-        if (g_opt.pmuSplit == 6) pmu_split_what("the J2D port committing");
+        if (g_opt.pmuSplit == 5) pmu_split_what("the library ports building their context");
+        if (g_opt.pmuSplit == 6) pmu_split_what("the library ports committing");
         if (g_opt.pmuSplit == 4) pmu_split_what("an empty bracket where the fast cells run");
         if (g_gxThread) gxthread_enable(&g_sys, !g_opt.gxInline);
         jit_set_mem_stubs(g_jit, true);

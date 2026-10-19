@@ -11,8 +11,10 @@ probe, add the result here in the same commit as the change, and mark what it su
 (cutscene / later stretch / movie, or the native scene) and the trust level: `device` numbers decide; `pc`, `qemu_model`,
 `azahar` and `estimate` only explain.
 
-**Newest first (2026-10-18):** the sections from "Three scenes after the texture work, and what limits each" onward
-(gameplay ~20-23.5%, core 0 the limit everywhere, the GPU and GX side off the critical path). The verdict and headline
+**Newest first (2026-10-18):** "The first library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
+night's state: Ordon 28.0%, heavy area 20.6%, cutscene 28.9%; the GX thread the limit in gameplay, core 0 in the
+cutscene), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
+~20-23.5%, core 0 the limit everywhere, the GPU and GX side off the critical path). The verdict and headline
 numbers below are the 10-16 audit's and describe that state (GX thread ~80-88% busy, the GPU slow on FCRAM textures).
 
 ## Verdict: is it enough to work with?

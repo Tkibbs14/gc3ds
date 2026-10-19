@@ -1,10 +1,13 @@
-// Native library ports (docs/research/LIBRARY_PORTS.md): JSystem J2D's material set-up (J2DMaterial::setGX) with the
-// Dolphin GX SDK functions it reaches, as one native call. The guest code makes ~30-100 small SDK calls per pane, each
-// a call and return around a few bit inserts into the SDK's shadow state (__GXData) and a register write to the gather
-// pipe; here they share one context: __GXData's words loaded at first touch, the pipe bytes collected in one buffer,
-// the other stores (texture objects) logged, all committed at the end. Anything not handled (another TEV block type,
-// indirect stages, a callback that is not the SDK's default, an address outside MEM1) gives up before the commit and
-// the guest code runs instead.
+// Native library ports (docs/research/LIBRARY_PORTS.md): JSystem functions with the Dolphin GX SDK functions they
+// reach, each as one native call hooked at the guest function's entry (PORT_* in port.h): J2D's material set-up
+// (J2DMaterial::setGX), J2DPictureEx::drawSelf (the material, the vertex formats, GXBegin with the SDK's dirty-state
+// flush, the quad) and J3D's concat-view matrix load (J3DShapeMtxConcatView::loadMtxConcatView_PNGP with either
+// class's loadNrmMtx). The guest code makes tens of small SDK calls for each, each a call and return around a few bit
+// inserts into the SDK's shadow state (__GXData) and a register write to the gather pipe; here they share one context:
+// __GXData's words loaded at first touch, the pipe bytes collected in one buffer, the other stores (texture objects)
+// logged, all committed at the end. Anything not handled (another TEV block type, indirect stages, a callback that is
+// not the SDK's default, an address outside MEM1, floating point off) gives up before the commit and the guest code
+// runs instead.
 //   Each function follows the game's machine code (Twilight Princess, GZ2E01: addresses below), so integer results are
 // exact; the code bytes of every guest function this replaces are hashed at first use and the port stays off unless
 // they all match. Check mode (--port check; PORT_CHECK=1 on the PC) runs the guest code in the interpreter after each
@@ -68,7 +71,7 @@ static bool port_valid(void) {
         if (code_hash(kFns[i].addr, kFns[i].size) != kFns[i].hash) {
             g_portValid = 0;
             if (!g_portStats.badHash) g_portStats.badHash = kFns[i].addr;
-            fprintf(stderr, "port: guest function %08lx differs: the J2D port stays off\n", (unsigned long)kFns[i].addr);
+            fprintf(stderr, "port: guest function %08lx differs: the ports stay off\n", (unsigned long)kFns[i].addr);
         }
     return g_portValid;
 }

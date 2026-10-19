@@ -6,8 +6,8 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs the Ordon walk at ~23.5% of full speed and Ordon's heaviest area at ~20% (the intro cutscene ~27%,
-the THP movie ~13%; 18 October 2026).
+test. Today it runs the Ordon walk at ~28% of full speed and Ordon's heaviest area at ~20.6% (the intro cutscene ~29%,
+the THP movie ~13%; 18 October 2026, night).
 
 ## Rules
 
@@ -122,17 +122,25 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **Gameplay (18 October 2026):** Ordon walk ~23.5%, the heavy area ~20%. **Core 0 is the limit in every scene**
-  (~98% busy, fetch-bound, flat profile: rendering ~39%, the 2D UI ~22%, game logic ~19%). The GX thread is ~81-88%
-  busy, the vertex worker ~25-35%, the GPU ~5-15 ms a frame. Next: native ports of shared libraries, J2D first
-  (`docs/research/LIBRARY_PORTS.md`; owner decision 2026-10-18).
+- **Gameplay (18 October 2026, night; jobs 500-502):** Ordon walk 28.0%, the heavy area 20.6%, the title cutscene
+  28.9%. **The GX thread is the limit in gameplay** (89-95% busy; core 0 idles 10-12% waiting for it, which the
+  profile's "dispatch" bucket holds); **core 0 is the limit in the title cutscene** (the ShdwDraw stand-in ~38% of it).
+  The vertex worker ~25-35% busy, the GPU ~5-15 ms a frame.
+- **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
+  J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
+  exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
+  proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
+  the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
+  lanes of f14, f15, f31) and not run where the guest would take an exception (MSR.FP off).
 - **Defaults that measured as gains:** draw merging (+24%), check hoisting (core 0 +5%), the job-ring and TEV work in
   HANDOFF, matrix indices apart from vertex records (VIx), the native stand-ins (shadow scan with a leaf memo, the
   paired-single library, J3D display-list writers, THP decode), PE register reads that no longer wait for the GX thread
   (cutscene +3.2%), pipe stores at known addresses (`OPT_PIPEK`, gameplay +7.0%), raw draw calls and state, mipmaps
   (heavy area +19%), small texel formats (+6%), CPU-lit draws and then all lighting on the vertex worker (+6.8%, +2.9%),
   textures in VRAM (+12%), vertex set-ups cached for 8 keys (+1.1%), uploads without a divide per texel, the
-  measurement-only decoder statistics and profile clock out of normal runs (+3.2%, +6%), a 2 MB command buffer (+2.6%).
+  measurement-only decoder statistics and profile clock out of normal runs (+3.2%, +6%), a 2 MB command buffer (+2.6%),
+  the three library ports (Ordon +3.6-5.9%, +4.5%, +5.8%), pipe bursts copied whole (`gpbulk`, +3.2% / +4.5%), GX-thread
+  ring records batched (`ringbatch`, heavy area +2.6%).
 - **Built, off, measured without a clear gain:** display-list vertex cache, float lanes, known-single stores (on; +1%),
   frame skip (+10%, visual glitches; a candidate user option), byte-swapped guest RAM (`GC_SWAPRAM`, neutral).
 - **Rejected with measurements:** second vertex worker on core 1 (evicts core 0's L2), shared-index fast path (TP: <1%
@@ -143,8 +151,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters and __GXSendFlushPrim as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions:** native library ports (J2D, then text, materials, J3D; `docs/research/LIBRARY_PORTS.md`); core
-  0: less hot code per guest instruction, longer blocks; GPU-resident vertex data for repeated display lists (C1);
+- **Open directions:** the GX thread's own work (fifo, vertex prep, waits for the vertex worker's ring, draw tails);
+  the ShdwDraw stand-in for the cutscene; more library ports (J2DPane::draw, text, other TEV block types, J3D packet
+  draw; `docs/research/LIBRARY_PORTS.md`); core 0: less hot code per guest instruction, longer blocks; GPU-resident vertex data for repeated display lists (C1);
   frame skip as a user option (guards for fades in place; game frames +50-60%).
 
 ## Code style

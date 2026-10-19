@@ -33,17 +33,18 @@
 > the newest numbers are in [research/MEASUREMENTS.md](research/MEASUREMENTS.md).
 > - The repository is **public** now.
 > - Twilight Princess plays into gameplay: a 2DS state with Link in Ordon (`sdmc:/gc3ds/states/tp_ordon.state`) is
->   the benchmark (a stick walk, AGENTS.md "Measuring"; ~22% on 10-17, ~23.5% now). The older `tp850` state is the title / attract
+>   the benchmark (a stick walk, AGENTS.md "Measuring"; ~22% on 10-17, 28.0% on the night of 10-18). The older `tp850` state is the title / attract
 >   sequence.
-> - (10-17: the GX thread, ~88% busy, was the next limit; since 10-18 core 0 is, see above.) Heavy-area state:
+> - (10-17: the GX thread, ~88% busy, was the next limit; on 10-18 core 0 was, then after the ports the GX thread again
+>   in gameplay, see the top.) Heavy-area state:
 >   `sdmc:/gc3ds/states/tp_area2.state`.
 > - The PC input sequence below has drifted: with its presses up to field 2636 the game is still at the memory card
 >   prompt at 3250; adding `A@3410` (no memory card), `SLEFT@3660`, `A@3700` (continue without saving), `START@4000`,
 >   `A@4030` (name) and `A@4310` (horse name) reaches the opening by field ~4800 (2026-10-17, the current PC build).
 
 Start here in a new session. Measured facts are in [FINDINGS.md](FINDINGS.md), hardware references in
-[ARCHITECTURE.md](ARCHITECTURE.md), and the next big piece of work in [GPU_BACKEND_PLAN.md](GPU_BACKEND_PLAN.md).
-The repository is `Tkibbs14/gc3ds`, **private**. It goes public only when the owner says games run well.
+[ARCHITECTURE.md](ARCHITECTURE.md), and the newest numbers and the open work in the current-state block above and
+[research/MEASUREMENTS.md](research/MEASUREMENTS.md). The repository is `Tkibbs14/gc3ds`, **public**.
 
 ## Where it stands
 
