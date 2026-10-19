@@ -21,6 +21,10 @@ void hle_set_enabled(bool on);
 void hle_set_shdw_memo(bool on);
 bool hle_shdw_memo(void);
 extern u64 g_shmStats[6], g_shmMiss[8], g_shmDiff[24];
+// The triangle path natively (hle_tp.c; --shdwtri): g_triStats: to the shadow callback, skipped, (unused), refused.
+void hle_set_shdw_tri(bool on);
+bool hle_shdw_tri(void);
+extern u64 g_triStats[4];
 // Guest frame skip (experiment): the function at g_gfskipAddr returns at once on every other call while g_gfskipOn.
 extern u32 g_gfskipAddr;
 extern volatile bool g_gfskipOn;

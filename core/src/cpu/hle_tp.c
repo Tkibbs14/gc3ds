@@ -20,6 +20,7 @@
 #include "hle.h"
 #include "port.h"
 #include "memo.h"
+#include "gekko_softfp.h"
 extern volatile unsigned int g_dmaGen;  // (gx/gx.h: DMA into guest RAM since start, and its last 64 destinations)
 #define DMA_LOG_N 64  // (gx/gx.h DMA_LOG)
 extern unsigned int g_dmaLog[DMA_LOG_N][2];
@@ -60,8 +61,10 @@ void hle_set_enabled(bool on) { g_on = on; }
 bool hle_enabled(void) { return g_on; }
 
 void hle_set_memory(u8* mem1, u32 size) { g_mem = mem1; g_memSize = size; g_known = -1; hle_gd_set_memory(mem1, size); }
+static void tri_invalidate(u32 pa);
 void hle_invalidate(u32 pa) {
     if (pa >> 12 == (PC_ENTRY & 0x0FFFFFFFu) >> 12 || pa >> 12 == (PC_EXIT & 0x0FFFFFFFu) >> 12) g_known = -1;
+    tri_invalidate(pa);
     hle_gd_invalidate(pa);
     hle_thp_invalidate(pa);
     hle_ps_invalidate(pa);
@@ -1049,6 +1052,286 @@ static void bs_hook(const Gekko* g) {
 }
 #endif
 
+
+// ---- The triangle path (--shdwtri; REDESIGN C32b) ----
+// With the walk replayed, what is left of the shadows in the title's later stretch is the path an unvisited triangle
+// takes from 0x8007fce4: getPolyCode, ChkShdwDrawThrough, the prism's three vertices from two cross products, GetTriPla,
+// then the shadow callback (bctrl at 0x8007fe94), or a skip back to 0x8007fea4 (a through polygon, a near-zero dot).
+// ShdwDraw's own blocks were 22.4% of core 0 there, GetTriPla 3.1%, getPolyCode 1.5% (job 620). This runs the path
+// natively to the callback's entry or the skip, one statement per guest instruction, and counts them: the integer work
+// and moves here, the PSVEC calls through their stand-ins (hle_ps.c, the interpreter when one refuses), and every float
+// operation (fabs, frsp, fcmpo, fdivs, fneg) through the interpreter's own handler, so FPRF and CR0 are its. Its
+// callees are recognised by a hash of their bytes. It reads everything before it writes anything, so a guest address
+// it cannot use (outside MEM1, misaligned, inside the frame it writes) leaves the path to guest code unchanged.
+// TRI_CHECK=1 (PC) compares every run with the interpreter.
+static const struct { u32 pc, n; } kTriFns[] = {
+    { 0x8007EB70u, 0x54 },  // dBgWKCol::getPolyCode
+    { 0x800740C4u, 0x18 },  // (its table lookup)
+    { 0x80074048u, 0x2C },  // (its 20-byte copy)
+    { 0x8007FF00u, 0x1C },  // dBgWKCol::ChkShdwDrawThrough
+    { 0x8007E8C0u, 0xC0 },  // dBgWKCol::GetTriPla
+    { 0x8007E850u, 0x1C },  // (its normal lookup)
+    { 0x8026F52Cu, 0x50 },  // cM3dGPla::cM3dGPla(normal, point)
+    { 0x803621DCu, 0x10 },  // _savegpr_29
+    { 0x80362228u, 0x10 },  // _restgpr_29
+};
+#define TRI_HASH 0x4F72DC97525B15A2ull  // FNV-1a 64 of kTriFns' bytes in order (HLE_PRINT_HASH=1 prints it)
+#define TRI_RET 0x8007FE98u
+static int g_triKnown = -1;
+static bool g_triOn;
+static int g_triPs[4];  // hle_ps.c's PSVECCrossProduct, PSVECDotProduct, PSVECScale, PSVECAdd (-1: the interpreter)
+static const u32 kTriPsPc[4] = { 0x803471B4u, 0x80347194u, 0x803470D8u, 0x80347090u };
+u64 g_triWhy[8];  // refusals: the CPU state, the frame or list, the header, the prism, the code, the rest
+u64 g_triStats[4];  // to the callback, skipped (through, first dot, second dot), refused
+void hle_set_shdw_tri(bool on) { g_triOn = on; }
+bool hle_shdw_tri(void) { return g_triOn; }
+static void tri_invalidate(u32 pa) {
+    for (u32 i = 0; i < sizeof kTriFns / sizeof kTriFns[0]; i++)
+        if (pa >> 12 == (kTriFns[i].pc & 0x0FFFFFFFu) >> 12 || pa >> 12 == ((kTriFns[i].pc + kTriFns[i].n - 1) & 0x0FFFFFFFu) >> 12) g_triKnown = -1;
+}
+static bool tri_known(void) {
+    if (g_triKnown < 0) {
+        u64 h = 0xCBF29CE484222325ull;
+        bool in = g_mem != NULL;
+        for (u32 i = 0; in && i < sizeof kTriFns / sizeof kTriFns[0]; i++) {
+            u32 pa = kTriFns[i].pc & 0x0FFFFFFFu;
+            if (pa + kTriFns[i].n > g_memSize) { in = false; break; }
+            for (u32 k = 0; k < kTriFns[i].n; k++) { h ^= ram_rd8(g_mem, pa + k); h *= 0x100000001B3ull; }
+        }
+#ifndef __3DS__
+        if (getenv("HLE_PRINT_HASH")) fprintf(stderr, "HLE hash of the triangle path's callees: %016llx\n", (unsigned long long)h);
+#endif
+        g_triKnown = in && h == TRI_HASH;
+        for (int k = 0; k < 4; k++) { bool gp; u32 sz; g_triPs[k] = hle_ps_inline(kTriPsPc[k], &gp, &sz); }
+    }
+    return g_triKnown == 1;
+}
+// A guest address in MEM1 (cached mapping), aligned to a: its host pointer, or NULL.
+static inline u8* tri_p(u32 ea, u32 len, u32 a) {
+    u32 pa = ea - 0x80000000u;
+    if ((ea & (a - 1)) || pa >= g_memSize || len > g_memSize - pa) return NULL;
+    return g_mem + pa;
+}
+// [ea, ea + len) clear of the frame window the path writes, [r1 - 64, r1 + 2212).
+static inline bool tri_clear(u32 ea, u32 len, u32 r1) { return ea + len <= r1 - 64u || ea >= r1 + 2212u; }
+// One float instruction (its word from guest memory, the code hashed) through the interpreter.
+static inline void tri_fop(Gekko* g, u32 pc) {
+    GkPriv* p = GKP(g);
+    u32 c0 = p->curPc, n0 = p->npc;
+    bool b0 = p->brk, st;
+    gekko_interp_one(g, pc, ram_rd32(g_mem, pc & 0x0FFFFFFFu), &st);
+    p->curPc = c0; p->npc = n0; p->brk = b0;
+}
+// lfs into f0 (both lanes, as the interpreter loads a single).
+static inline void tri_lfs0(Gekko* g, u32 w) { u64 d = sf_single_to_double(w); fpr_set0(g, 0, d); fpr_set1(g, 0, d); }
+// stfs of f0, as the interpreter rounds it.
+static inline u32 tri_stfs0(const Gekko* g) { return sf_double_to_single(fpr_get0(g, 0), (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0); }
+// lfs f0 then stfs f0 of one word: the word itself unless it is a denormal, an infinity or a NaN.
+static inline u32 tri_mov(Gekko* g, u32 w) {
+    u32 e = w & 0x7F800000u;
+    if (e && e != 0x7F800000u) return w;
+    tri_lfs0(g, w);
+    return tri_stfs0(g);
+}
+// A PSVEC call: its stand-in, or the guest function in the interpreter when it refuses.
+static u32 tri_call(Gekko* g, int k, u32 ret) {
+    g->lr = ret;
+    u32 n = g_triPs[k] >= 0 ? hle_ps_inline_call(g, (u32)g_triPs[k]) : 0;
+    if (n) return n & 0x3FFFFFFFu;
+    GkPriv* p = GKP(g);
+    u32 c0 = p->curPc, n0 = p->npc, pc = kTriPsPc[k];
+    bool b0 = p->brk, st;
+    while (pc != ret && n < 256) { pc = gekko_interp_one(g, pc, ram_rd32(g_mem, pc & 0x0FFFFFFFu), &st); n++; }
+    p->curPc = c0; p->npc = n0; p->brk = b0;
+    return n;
+}
+static inline void tri_cr0(Gekko* g, u32 v) { g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(v, 0) | (g->xer >> 31)) << 28); }
+#define TW(p, v) ramp_wr32a((p), (v))
+
+static u32 tri_run(Gekko* g) {
+    // The state the PSVEC stand-ins and the float handlers assume (hle_ps.c ps_call), and no enabled FP exceptions.
+    if (!(g->msr & MSR_DR) || !(g->msr & MSR_FP) || (g->msr & (MSR_FE0 | MSR_FE1)) || (g->fpscr & FPSCR_RN) ||
+        (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) != (HID2_PSE | HID2_LSQE) || (g->spr[SPR_GQR0] & 0x00070007u))
+        { g_triStats[3]++; g_triWhy[0]++; return 0; }
+    const u32 r1 = g->gpr[1], r15 = g->gpr[15], r16 = g->gpr[16];
+    u8 *fr = tri_p(r1 - 64u, 64 + 2212, 8), *pt = tri_p(r16, 2, 2), *ph = tri_p(r15 + 24u, 8, 4);
+    if (!fr || !pt || !ph) { g_triStats[3]++; g_triWhy[1]++; return 0; }
+    fr += 64;  // fr[o]: r1 + o
+    // ---- reads ----
+    const u32 tri = ld16(pt), head = ld32(ph), ctb = ld32(ph + 4);  // lhz 0(r16); lwz 24(r15); lwz 28(r15)
+    u8* pH = tri_p(head, 12, 4);
+    if (!pH) { g_triStats[3]++; g_triWhy[2]++; return 0; }
+    const u32 posb = ld32(pH), nrmb = ld32(pH + 4), pb = ld32(pH + 8);
+    const u32 prism = pb + (tri << 4);
+    u8* pP = tri_p(prism, 16, 4);
+    if (!pP || !tri_clear(prism, 16, r1)) { g_triStats[3]++; g_triWhy[3]++; return 0; }
+    const u32 ai = ld16(pP + 14);
+    const u32 cp = ctb + 8u + ai * 20u;  // 800740c4
+    u8* pc5 = tri_p(cp, 20, 4);
+    if (!pc5 || !tri_clear(cp, 20, r1)) { g_triStats[3]++; g_triWhy[4]++; return 0; }
+    u32 cw[5];
+    for (int k = 0; k < 5; k++) cw[k] = ld32(pc5 + 4 * k);
+    const u32 through = (cw[0] & 0x00400000u) ? 1u : (cw[0] >> 17) & 1u;
+    u32 posi = 0, fni = 0, e1 = 0, e2 = 0, e3 = 0, pp = 0, n1 = 0, n2 = 0, n3 = 0, n4 = 0, hgt = 0, eps = 0, pw[3] = { 0 }, nw[3] = { 0 },
+        cbo = 0, cbf = 0;
+    if (!through) {
+        posi = ld16(pP + 4); fni = ld16(pP + 6); e1 = ld16(pP + 8); e2 = ld16(pP + 10); e3 = ld16(pP + 12); hgt = ld32(pP);
+        pp = posb + posi * 12u; n1 = nrmb + fni * 12u; n2 = nrmb + e1 * 12u; n3 = nrmb + e3 * 12u; n4 = nrmb + e2 * 12u;
+        u8 *a = tri_p(pp, 12, 4), *b = tri_p(n1, 12, 4), *e = tri_p(g->gpr[13] - 29696u, 4, 4), *o = tri_p(ld32(fr + 8), 52, 4);
+        if (!a || !b || !e || !o || !tri_p(n2, 12, 4) || !tri_p(n3, 12, 4) || !tri_p(n4, 12, 4) || !tri_clear(pp, 12, r1) ||
+            !tri_clear(n1, 12, r1) || !tri_clear(n2, 12, r1) || !tri_clear(n3, 12, r1) || !tri_clear(n4, 12, r1) ||
+            !tri_clear(g->gpr[13] - 29696u, 4, r1) || !tri_clear(ld32(fr + 8), 52, r1)) { g_triStats[3]++; g_triWhy[5]++; return 0; }
+        for (int k = 0; k < 3; k++) { pw[k] = ld32(a + 4 * k); nw[k] = ld32(b + 4 * k); }
+        eps = ld32(e); cbo = ld32(fr + 8); cbf = ld32(o + 48);
+    }
+    // ---- 0x8007fce4: getPolyCode(r15, tri, r1 + 100) ----
+    const u32 r31 = g->gpr[31];
+    TW(fr - 32, r1);            // stwu r1,-32(r1)
+    TW(fr + 4, 0x8007FCF4u);    // stw r0,36(r1)
+    TW(fr - 4, r31);            // stw r31,28(r1)
+    TW(fr - 24, cp);            // stw r3,0(r5) (800740d4)
+    for (int k = 0; k < 5; k++) TW(fr + 100 + 4 * k, cw[k]);  // 80074048
+    // ---- 0x8007fcf4: ChkShdwDrawThrough(r15, r1 + 100); 0x8007fd00: clrlwi. r0,r3,24; bne 0x8007fea4 ----
+    u32 n = 52;
+    g->gpr[0] = through; g->gpr[3] = through; g->gpr[4] = r1 + 100u; g->gpr[5] = r1 - 24u; g->lr = 0x8007FD00u;
+    tri_cr0(g, through);
+    if (through) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    // ---- 0x8007fd08: the vertex, the normals; PSVECCrossProduct(n1, n2, r1 + 24); PSVECDotProduct(r1 + 24, n3) ----
+    for (int k = 0; k < 2; k++) TW(fr + 120 + 4 * k, tri_mov(g, pw[k]));
+    tri_lfs0(g, pw[2]); TW(fr + 128, tri_stfs0(g));
+    TW(fr + 2208, n1); TW(fr + 2204, n3);
+    g->gpr[31] = prism;
+    g->gpr[0] = e1 * 12u; g->gpr[3] = n1; g->gpr[4] = n2; g->gpr[5] = r1 + 24u;
+    n += 31 + tri_call(g, 0, 0x8007FD84u);
+    g->gpr[3] = r1 + 24u; g->gpr[4] = n3;
+    n += 3 + tri_call(g, 1, 0x8007FD90u);
+    tri_fop(g, 0x8007FD90u); tri_fop(g, 0x8007FD94u);  // fabs f0,f1; frsp f2,f0
+    tri_lfs0(g, eps); tri_fop(g, 0x8007FD9Cu);          // lfs f0,-29696(r13); fcmpo cr0,f2,f0
+    n += 5;
+    if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    // ---- 0x8007fda4: PSVECScale(r1 + 24, r1 + 24, height / dot); PSVECAdd(r1 + 24, r1 + 120, r1 + 144) ----
+    g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 24u;
+    tri_lfs0(g, hgt); tri_fop(g, 0x8007FDB0u);  // lfs f0,0(r31); fdivs f1,f0,f1
+    n += 5 + tri_call(g, 2, 0x8007FDB8u);
+    g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 144u;
+    n += 4 + tri_call(g, 3, 0x8007FDC8u);
+    // ---- 0x8007fdc8: PSVECCrossProduct(n4, n1, r1 + 12); PSVECDotProduct(r1 + 12, n3) ----
+    g->gpr[0] = e2 * 12u; g->gpr[3] = n4; g->gpr[4] = n1; g->gpr[5] = r1 + 12u;
+    n += 8 + tri_call(g, 0, 0x8007FDE8u);
+    g->gpr[3] = r1 + 12u; g->gpr[4] = n3;
+    n += 3 + tri_call(g, 1, 0x8007FDF4u);
+    tri_fop(g, 0x8007FDF4u); tri_fop(g, 0x8007FDF8u);
+    tri_lfs0(g, eps); tri_fop(g, 0x8007FE00u);
+    n += 5;
+    if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    // ---- 0x8007fe08: PSVECScale(r1 + 12, r1 + 12, height / dot); PSVECAdd(r1 + 12, r1 + 120, r1 + 132) ----
+    g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 12u;
+    tri_lfs0(g, hgt); tri_fop(g, 0x8007FE14u);
+    n += 5 + tri_call(g, 2, 0x8007FE1Cu);
+    g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 132u;
+    n += 4 + tri_call(g, 3, 0x8007FE2Cu);
+    // ---- 0x8007fe2c: GetTriPla(r1 + 60, r15, tri) ----
+    const u32 vt = 0x803A37C0u;  // (lis r3,-32710; addi r0,r3,14272)
+    TW(fr + 96, vt);
+    TW(fr - 48, r1);              // stwu r1,-48(r1)
+    TW(fr + 4, 0x8007FE48u);      // stw r0,52(r1)
+    TW(fr - 12, g->gpr[29]); TW(fr - 8, g->gpr[30]); TW(fr - 4, prism);  // _savegpr_29
+    TW(fr - 40, n1);              // 8007e864: stw r0,0(r5)
+    // 8007e918: PSVECDotProduct(n1, pp): only f1, which the next one overwrites; counted
+    TW(fr - 20, vt);              // 8007e924: stw r0,28(r1)
+    // 8026f52c: cM3dGPla(r1 - 36, n1, pp)
+    TW(fr - 64, r1 - 48u);        // stwu r1,-16(r1)
+    TW(fr - 44, 0x8007E938u);     // stw r0,20(r1)
+    TW(fr - 52, pp);              // stw r31,12(r1)
+    for (int k = 0; k < 2; k++) TW(fr - 36 + 4 * k, tri_mov(g, nw[k]));
+    tri_lfs0(g, nw[2]); TW(fr - 28, tri_stfs0(g));
+    g->gpr[3] = r1 - 36u; g->gpr[4] = pp;
+    u32 nd = tri_call(g, 1, 0x8026F560u);
+    tri_fop(g, 0x8026F560u);      // fneg f0,f1
+    TW(fr - 24, tri_stfs0(g));    // stfs f0,12(r31)
+    TW(fr + 76, vt);              // 8007e940: stw r0,16(r29)
+    for (int k = 0; k < 3; k++) TW(fr + 60 + 4 * k, tri_mov(g, ld32(fr - 36 + 4 * k)));
+    tri_lfs0(g, ld32(fr - 24)); TW(fr + 72, tri_stfs0(g));
+    TW(fr - 20, vt);              // 8007e964: stw r0,28(r1)
+    n += 7 + 99 - 8 + nd;  // fe2c..fe44, and GetTriPla's 99 with the second dot product as it ran (the first, 8, counted as run)
+    // ---- 0x8007fe48: the plane to r1 + 80; the callback(r1[8], r1 + 120, 0, 1, 2, r1 + 80) ----
+    for (int k = 0; k < 3; k++) TW(fr + 80 + 4 * k, tri_mov(g, ld32(fr + 60 + 4 * k)));
+    tri_lfs0(g, ld32(fr + 72)); TW(fr + 92, tri_stfs0(g));
+    TW(fr + 76, vt);
+    g->gpr[0] = vt; g->gpr[3] = cbo; g->gpr[4] = r1 + 120u; g->gpr[5] = 0; g->gpr[6] = 1; g->gpr[7] = 2; g->gpr[8] = r1 + 80u;
+    g->gpr[11] = r1; g->gpr[12] = cbf; g->gpr[31] = prism;
+    g->ctr = cbf; g->lr = TRI_RET; g->pc = cbf & ~3u;
+    n += 20;
+    g_triStats[0]++;
+    return n;
+}
+#undef TW
+
+#ifndef __3DS__
+// TRI_CHECK=1: every run also runs in the interpreter from the same state for the same instruction count; compared: PC,
+// GPRs, CR, XER, LR, CTR, f0, f1, f14-f31 (both lanes; f2-f13 are volatile, dead: the PSVEC stand-ins leave them), and the
+// frame window [r1 - 64, r1 + 2240). FPSCR differences are counted apart (the PSVEC stand-ins leave FPRF as it was). The
+// interpreter's result stands.
+static struct { u64 calls, bad, fpscr; } g_tchk;
+static void tchk_report(void) {
+    fprintf(stderr, "TRI_CHECK refusals: %llu %llu %llu %llu %llu %llu\n", (unsigned long long)g_triWhy[0], (unsigned long long)g_triWhy[1], (unsigned long long)g_triWhy[2], (unsigned long long)g_triWhy[3], (unsigned long long)g_triWhy[4], (unsigned long long)g_triWhy[5]);
+    fprintf(stderr, "TRI_CHECK: %llu runs compared with the interpreter, %llu differed, %llu with another FPSCR; to the callback %llu, skipped %llu, refused %llu\n",
+            (unsigned long long)g_tchk.calls, (unsigned long long)g_tchk.bad, (unsigned long long)g_tchk.fpscr,
+            (unsigned long long)g_triStats[0], (unsigned long long)g_triStats[1], (unsigned long long)g_triStats[3]);
+}
+static u32 tri_checked(Gekko* g) {
+    enum { LO = 64, W = 64 + 2240 };
+    u32 r1 = g->gpr[1];
+    u8* w = tri_p(r1 - LO, W, 4);
+    if (!w) return tri_run(g);
+    static u8 w0[W], wn[W];
+    Gekko g0 = *g;
+    memcpy(w0, w, W);
+    u32 n = tri_run(g);
+    if (!n) return 0;
+    Gekko gn = *g;
+    memcpy(wn, w, W);
+    *g = g0;
+    memcpy(w, w0, W);
+    u32 steps = 0;
+    while (steps < n) {
+        bool stop;
+        g->pc = gekko_interp_one(g, g->pc, ram_rd32(g_mem, g->pc & 0x0FFFFFFFu), &stop);
+        steps++;
+    }
+    g_tchk.calls++;
+    bool fsame = true;
+    static const int fk[] = { 0, 1, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
+    for (u32 i = 0; i < sizeof fk / sizeof fk[0]; i++)
+        if (fpr_get0(g, fk[i]) != fpr_get0(&gn, fk[i]) || fpr_get1(g, fk[i]) != fpr_get1(&gn, fk[i])) fsame = false;
+    bool same = g->pc == gn.pc && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && g->cr == gn.cr && g->xer == gn.xer &&
+                g->lr == gn.lr && g->ctr == gn.ctr && fsame && !memcmp(w, wn, W);
+    if (g->fpscr != gn.fpscr) g_tchk.fpscr++;
+    if (!same && g_tchk.bad++ < 20) {
+        fprintf(stderr, "TRI_CHECK run %llu (r15 %08x): native %u insns to %08x, interpreter to %08x; cr %08x/%08x lr %08x/%08x ctr %08x/%08x\n",
+                (unsigned long long)g_tchk.calls, g0.gpr[15], n, gn.pc, g->pc, gn.cr, g->cr, gn.lr, g->lr, gn.ctr, g->ctr);
+        for (int k = 0; k < 32; k++)
+            if (g->gpr[k] != gn.gpr[k]) fprintf(stderr, "  r%d native %08x interpreter %08x\n", k, gn.gpr[k], g->gpr[k]);
+        for (u32 i = 0; i < sizeof fk / sizeof fk[0]; i++)
+            if (fpr_get0(g, fk[i]) != fpr_get0(&gn, fk[i]) || fpr_get1(g, fk[i]) != fpr_get1(&gn, fk[i]))
+                fprintf(stderr, "  f%d native %016llx/%016llx interpreter %016llx/%016llx\n", fk[i], (unsigned long long)fpr_get0(&gn, fk[i]),
+                        (unsigned long long)fpr_get1(&gn, fk[i]), (unsigned long long)fpr_get0(g, fk[i]), (unsigned long long)fpr_get1(g, fk[i]));
+        for (u32 k = 0; k < W; k += 4)
+            if (memcmp(w + k, wn + k, 4)) fprintf(stderr, "  r1%+d native %08x interpreter %08x\n", (int)k - LO, ld32(wn + k), ld32(w + k));
+    }
+    return steps;
+}
+#endif
+// The path at g->pc == PC_TRI: instructions stood in for (0: guest code runs it).
+static u32 tri_go(Gekko* g) {
+#ifndef __3DS__
+    static int chk = -1;
+    if (chk < 0) { chk = getenv("TRI_CHECK") != NULL; if (chk) atexit(tchk_report); }
+    if (chk) return tri_checked(g);
+#endif
+    return tri_run(g);
+}
+
 u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     bs_hook(g);
@@ -1074,14 +1357,36 @@ u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     static int env = -1;
     if (env < 0) { env = 1; if (getenv("GC3DS_SHDWMEMO")) { g_shmOn = true; atexit(shm_report); } }
+    { static int te = -1; if (te < 0) { te = 1; if (getenv("GC3DS_SHDWTRI")) g_triOn = true; } }
     sk_before(g);
     u32 n = g_shmOn ? shm_run(g, budget) : scan_live(g, budget);
     sk_after(g);
+    while (n && g_triOn && g_bsOn <= 0 && g->pc == PC_TRI && tri_known()) {
+        u32 t = tri_go(g);
+        if (!t) break;
+        n += t;
+        if (g->pc != PC_NEXT || n >= budget) break;
+        sk_before(g);
+        u32 m = g_shmOn ? shm_run(g, budget - n) : scan_live(g, budget - n);
+        sk_after(g);
+        if (!m) break;
+        n += m;
+    }
 #else
     // Timed one call in 16 (a clock read is a system call, ~200 cycles: two a call were ~1.3% of core 0 here).
     u64 t0 = g_profClock && !(g_shdwStats[0] & 15) ? g_profClock() : 0;
     if (hle_shdw_begin_hook) hle_shdw_begin_hook();
     u32 n = g_shmOn ? shm_run(g, budget) : scan(g, budget);
+    // The triangle path natively while the walk stops there, then the walk again from the skip (--shdwtri).
+    while (n && g_triOn && g->pc == PC_TRI && tri_known()) {
+        u32 t = tri_run(g);
+        if (!t) break;
+        n += t;
+        if (g->pc != PC_NEXT || n >= budget) break;
+        u32 m = g_shmOn ? shm_run(g, budget - n) : scan(g, budget - n);
+        if (!m) break;
+        n += m;
+    }
     if (hle_shdw_end_hook) hle_shdw_end_hook();
     if (t0) g_shdwStats[3] += (g_profClock() - t0) * 16;
     g_shdwStats[0]++;

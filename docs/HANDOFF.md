@@ -13,8 +13,11 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
-> Next: (1) the cutscene's shadows move every frame, so its ShdwDraw calls are recorded and never replayed: a finer
-> memo (per leaf or cell row) would carry C32 there; (2) more library ports, scored with separate runs (core 0's
+> Next: (1) **in progress 10-20:** the cutscene's shadow walks turned out negligible (~1-18 ms per 10 s), so item 1 became
+> the per-triangle path the replayed walk still hands to guest code (REDESIGN C32b, ~23% of core 0 in the later
+> stretch). It is built as a native stand-in, `--shdwtri on|off` (off until measured; hle_tp.c "The triangle path"):
+> TRI_CHECK=1 on the PC compared 26,407 runs with the interpreter, 0 differed. 2DS jobs 624-629 (title, heavy area,
+> Ordon; off then on, separate runs) decide the default. (2) more library ports, scored with separate runs (core 0's
 > profile: J3D ~18%, GX SDK ~13%, game code ~24%); (3) the rest of MEASUREMENTS.md's ruled-out list measured from A/Bs
 > that recompile all code. **Measuring:** check the field gaps ('# new frames hist'), then compare settled speed_pct or
 > the '# new frames 10s' line across separate whole runs (two heavy-area runs of one build agree to ~0.1%); a change
