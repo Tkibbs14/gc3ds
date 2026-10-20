@@ -46,7 +46,7 @@ test. Today it runs the Ordon walk at ~28% of full speed and Ordon's heaviest ar
 | `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
 | `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
 | `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
-| `core/tools/` | `perf_heavy.py` (A/B analysis), `arm11_sched.py` (ARM11 cycle model), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh` |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `arm11_sched.py` (ARM11 cycle model), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
 | `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
 | `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
 | `docs/` | Designs, findings and the running log (see README) |

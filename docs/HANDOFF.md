@@ -23,6 +23,10 @@
 > gathering caps at ~300k vertices/s in both emulated and native mode (TP needs ~750k at 30 fps). Its ranked directions:
 > retained GPU-resident geometry (C1) with the GX pipeline split across cores, native mode for TP, subsystem ports, a
 > multi-game measurement program, measured accuracy trades. Its experiment order starts with a GX-ceiling instrument.
+> research/EMULATOR_CEILING.md is the emulator-only view (cost model, proposals H1-H5 / W1 / G1-G3, roadmap). Its H1
+> offline model ran on 10-20 (`core/tools/hammock.py`, MEASUREMENTS.md "Hammock blocks and inlined leaves"): blocks
+> 1.5-1.85x longer, CR dead at exits only 7-14%, worth ~+3-8% core 0, below the +8-15% estimate; inlining small leaves
+> (H5: GPR save / restore is 17-22% of all calls) is the cheaper first build.
 > Earlier next steps, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
 > 0 inclusive, ~6,600 cycles a pane in its own code; designed from the machine code in research/LIBRARY_PORTS.md "The pane
 > walk's design", with the five pane classes gameplay draws and every callee it needs; ~+3-3.5% in Ordon expected);

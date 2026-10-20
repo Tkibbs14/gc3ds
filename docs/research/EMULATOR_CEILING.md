@@ -115,6 +115,13 @@ could disprove it. Gains are on core 0 unless marked GX.
   hammock rule (JIT_REGSTAT already counts blocks and register traffic): if block length rises by less than ~1.5x or
   fewer than ~30% of compare / branch pairs become internal, drop it. Then one device jitbench ring with internal
   forward branches against today's exits, to price the boundary saved.
+- **Offline result (2026-10-20, MEASUREMENTS.md "Hammock blocks and inlined leaves, modelled offline"):** the block
+  former reproduces today's 5.5-5.7 instructions per boundary; hammocks reach **7.5-8.9 (A, W = 16-32) and 8.3-10.1
+  (B: other bc as side exits)**, boundaries -27 to -43%. The 1.5x threshold is **met** (A at W = 32, B at W = 16), 2x
+  nowhere. The compare / branch threshold was mis-posed: the compare is already in the branch's block 95-96% of the
+  time; what counts is whether the CR field can stay unwritten, and it is dead at every exit only **7-14%** of the time.
+  **Revised ceiling (estimate): +3-7% core 0 from boundaries, ~+0.5-1% from CR in flags**, not +8-15%. Kept open
+  behind the cheaper H5, which removes a further ~12-15% of boundaries (calls and returns are ~a third of them).
 
 ### H2. Leaner block exits and entries
 
@@ -157,6 +164,11 @@ could disprove it. Gains are on core 0 unless marked GX.
 - **Contradicts:** code growth at every call site (traces' lesson): keep to functions under ~20 instructions.
 - **Ceiling:** **+4-8%**; realistic +2-5%. Smallest experiment: inline `_savegpr_N` / `_restgpr_N` only (pure stores /
   loads, exact) and A/B with separate runs.
+- **Offline count (2026-10-20, same MEASUREMENTS.md section):** calls are ~16-18% of block boundaries, each with a
+  return. Leaves reaching blr within 16 instructions (no call, frame, loop or tail jump) take 39-43% of calls: ~12-15%
+  of boundaries. `_savegpr_N` / `_restgpr_N` alone take 17-22% of calls (~6-7% of boundaries, ~+1.5-2.5% core 0,
+  estimate); OSDisableInterrupts / OSRestoreInterrupts take 9.4% in the later stretch but hold an mtmsr, which ends a
+  block today (inlining them pays only if mtmsr's EE-only form is compiled in place).
 
 ### W1. Subsystem ports, generalised by library version (workload elimination)
 
@@ -241,6 +253,8 @@ could disprove it. Gains are on core 0 unless marked GX.
 
 - **Core 0 (estimate):** H1 +8-15%, H2 +3-5%, H3 +4-9%, H4 0-8%, H5 +2-5% compound to **~1.2-1.45x**; W1 adds
   **~1.3-1.6x**: together **~1.6-2.3x**. Ordon needs 3.2x, the heavy area 4.4x.
+  - **Revised 2026-10-20 after H1's offline model:** H1 +3-8% (boundaries plus CR), H5 +2-4%: the JIT items compound
+    to **~1.13-1.39x**, and with W1 **~1.5-2.2x**. The target below moves to its lower half.
 - **GX side (estimate):** G1 + G2 + G3 together **~2-3.5x**; Ordon needs ~2.4x, the heavy area ~3.7x.
 - **Most ambitious credible target: Ordon-class gameplay at ~15-22 game frames a second, heavy scenes ~10-15**, by
   emulation alone. **Full speed in Twilight Princess's gameplay requires the top of every range at once** (core 0
@@ -251,13 +265,15 @@ could disprove it. Gains are on core 0 unless marked GX.
 
 Evidence that would move the target up: H1's offline model showing blocks 2x longer and most compare / branch pairs
 internal; G2's key-repeat share above ~70% of display-list calls; the pane walk meeting its Amdahl prediction. Evidence
-that would move it down: any of those failing.
+that would move it down: any of those failing. (H1's model, 2026-10-20: blocks 1.5-1.85x longer, not 2x, and the CR
+field dead at the exits only 7-14% of the time: the first of these failed.)
 
 ## 8. Roadmap, ordered for information per cost
 
 1. **Offline models, no device time (days):** H1's block former and boundary / compare counts on TP's PC trace; H2's
    dead write-back count; G2's (list, incoming state) repeat share from a decoder hash on the PC. These decide whether
-   the two big items (H1, G2) are worth building.
+   the two big items (H1, G2) are worth building. **H1 done 2026-10-20:** passes the length threshold, fails 2x,
+   worth ~+3-8%; it stays behind H5 and the GX items.
 2. **Cheap device measurements (one run each):** the share of GX-thread and worker time on repeated lists (G1 / G2);
    a PMU split on the float stubs (H4); fault counts per minute in steady gameplay (H3).
 3. **The first builds, smallest first, each with separate-run scoring:** inline save / restore GPR (H5); one GX stage on

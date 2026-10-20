@@ -1186,6 +1186,53 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
   - The Translator v4 region of the same path (job 345, generated code, FP checked at the first FP instruction) lost:
     later stretch 17.47 -> 14.41%. The difference is the float model and the inline PSVEC calls.
 
+### Hammock blocks and inlined leaves, modelled offline (PC interpreter profile, 2026-10-20)
+
+- **What:** EMULATOR_CEILING.md H1's smallest disproving experiment. The PC interpreter counted every executed guest
+  instruction (`PCHIST`) and every taken control transfer by (from, to) (`EDGEHIST`, new), and dumped MEM1 at exit
+  (`MEMDUMP`, new); `core/tools/hammock.py` replays the counts through today's block rule and two hammock rules. The
+  stand-ins ran as on the device (SHDWMEMO, SHDWTRI, SHDWCB, PORT on), so their native work is not counted. Two
+  stretches: **cut** tp_pc_4290 -> 4490 (386 M guest instructions) and **later** tp_pc_5000 -> 5200 (236 M). Model
+  self-test: a synthetic if-then over a compare (hm_selftest) gives 0% / 50% dead fields with the rewrite after the
+  join and 0% / 0% without it, as constructed.
+- **Today's rule reproduces the JIT:** 5.73 (cut) and 5.50 (later) guest instructions per block boundary, against
+  JIT_REGSTAT's ~5.9 on the device. Boundaries by kind (cut / later): forward bc 38.2 / 34.8%, blr 19.2 / 18.8%,
+  backward bc 12.8 / 17.8%, forward bl 12.8 / 10.2%, forward b 6.5 / 6.5%, bctrl 5.4 / 2.8%, backward bl 2.6 / 6.6%,
+  bctr 1.7 / 0.6%, other enders (sc, rfi, mtmsr, uncompiled mtspr, mtfs*) 0.2 / 1.8%.
+- **Hammock A** (a forward b / bc within W instructions stays inside the block) and **hammock B** (also: any other bc
+  leaves only when taken, its fall-through stays inside), guest instructions per boundary and boundaries removed:
+
+  | W | cut A | cut B | later A | later B |
+  |---|---|---|---|---|
+  | 8 | 7.60 (-24.6%) | 9.14 (-37.3%) | 7.01 (-21.6%) | 7.85 (-30.0%) |
+  | 16 | 8.31 (-31.1%) | 9.77 (-41.4%) | 7.54 (-27.1%) | 8.31 (-33.8%) |
+  | 32 | 8.85 (-35.3%) | 10.10 (-43.3%) | 8.18 (-32.8%) | 8.87 (-38.0%) |
+  | 64 | 9.58 (-40.2%) | 10.58 (-45.8%) | 8.80 (-37.6%) | 9.31 (-40.9%) |
+
+  Pre-registered threshold (block length x1.5): **met** at W = 32 with A (1.54x / 1.49x) and at W = 16 with B (1.70x /
+  1.51x); x2 is reached nowhere (B at W = 64: 1.85x / 1.69x).
+- **CR in ARM flags: the second threshold was mis-posed.** The compare that sets a conditional branch's CR field is
+  already in the branch's block 96.3% (cut) / 94.6% (later) of the time today (C22's "a compare ends its block" is
+  about where the field must be written, not where it is computed). What hammocks change is whether the field can stay
+  unwritten: it is overwritten after the join before any read or exit only **10.5-14.2% (cut) / 7.2-10.3% (later)** of
+  the time (W = 8-64). In the other ~87-93% the field is live at an exit and must still be built.
+- **Calls and returns are the other third of boundaries:** calls are 2.76% (cut) / 3.27% (later) of guest
+  instructions, ~16-18% of boundaries, and each brings a blr. Calls to a leaf that reaches its blr within N
+  instructions with no call, frame, loop or tail jump: **N = 8: 29.7 / 35.1%; N = 16: 38.8 / 42.6%; N = 32: 51.5 /
+  48.6%** of calls. The GPR save / restore entries (`_savegpr_14..31` / `_restgpr_14..31`, 0x803621A0-0x8036223C, pure
+  stw / lwz off r11) take **22.3% (cut) / 16.7% (later) of all calls**: inlining those alone removes ~6-7% of
+  boundaries (two per call). OSDisableInterrupts / OSRestoreInterrupts (0x8033D6F4, 0x8033D71C) take 9.4% of calls in
+  the later stretch, but each holds an mtmsr, which ends a block today.
+- **Reading (estimate):** at ~2-3.4 cycles of boundary cost per guest instruction (job 283), hammock B at W = 16-32
+  removes ~0.7-1.5 of ~22 cycles: **+3-7% core 0**, plus fewer exit sequences in the I-cache; the dead-CR part adds
+  ~0.5-1%. Inlining leaves under 16 instructions removes a further ~12-15% of boundaries (~+2-4%), the save / restore
+  entries alone ~+1.5-2.5%. Below EMULATOR_CEILING.md's earlier H1 estimate (+8-15%).
+- **Limits:** PC title stretches (tp_pc_4290 may not be the device's cutscene window), not gameplay; the 64-instruction
+  block cap, page ends and register-cache pressure across internal edges are not modelled; boundaries are counted,
+  not priced per kind (a taken side exit costs what an exit costs today).
+- **Reproduce:** `PCHIST=pc.bin EDGEHIST=edges.bin MEMDUMP=mem.bin gcemu <disc> --load-state S --frames N`, then
+  `python3 core/tools/hammock.py pc.bin edges.bin mem.bin --window 8,16,32,64`.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

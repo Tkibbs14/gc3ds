@@ -344,6 +344,18 @@ u64* g_gekkoOpMix;
 void (*g_gkStoreHook)(u32 ea, u32 size);
 #endif
 u32* g_gekkoPcHist;
+GkEdge* g_gekkoEdges;
+u32 g_gekkoEdgeFull;
+static void edge_note(u32 from, u32 to) {
+    u32 h = ((from >> 2) * 2654435761u ^ (to >> 2) * 40503u) & (GK_EDGE_N - 1);
+    for (u32 k = 0; k < 64; k++, h = (h + 1) & (GK_EDGE_N - 1)) {
+        GkEdge* e = &g_gekkoEdges[h];
+        if (e->count && (e->from != from || e->to != to)) continue;
+        e->from = from; e->to = to; e->count++;
+        return;
+    }
+    g_gekkoEdgeFull++;
+}
 
 u32 gekko_op_key(u32 inst) {
     u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF, xo5 = xo & 31;
@@ -460,6 +472,7 @@ u32 gekko_run(Gekko* g, u32 cycles) {
             if (g_gekkoPcHist && (pc >> 25) == 0x40u) g_gekkoPcHist[(pc & 0x01FFFFFFu) >> 2]++;
             gk_prim[inst >> 26](g, inst);
             g->pc = p->npc;
+            if (g_gekkoEdges && g->pc != pc + 4) edge_note(pc, g->pc);
             g->cycles++;
             // A taken branch back to the start of a polling loop: jump time to the next event, as for "b .".
             if (p->pollRam && g->pc < pc && pc - g->pc < 4 * GK_POLL_MAX && ((inst >> 26) == 16 || (inst >> 26) == 18) &&

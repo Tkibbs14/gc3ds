@@ -131,6 +131,12 @@ extern u64* g_gekkoOpMix;
 u32 gekko_op_key(u32 inst);
 // Debug: when set (8M entries), the interpreter counts every instruction it executes at 0x80000000-0x81FFFFFF by (pc & 0x01FFFFFF) >> 2.
 extern u32* g_gekkoPcHist;
+// Debug (EDGEHIST, PC): every control transfer the interpreter takes that is not to pc + 4 (taken branches, calls,
+// returns, exceptions), counted by (from, to) in an open-addressed table of GK_EDGE_N entries (count 0: empty).
+#define GK_EDGE_N (1u << 21)
+typedef struct { u32 from, to, count; } GkEdge;
+extern GkEdge* g_gekkoEdges;
+extern u32 g_gekkoEdgeFull;  // transfers not counted (the table was full)
 // The guest registers an instruction reads and writes, as bit masks over ids 0-31 (GPRs) and GR_* (gekko_regs.c);
 // false when it is not analysed (it changes state compiled code depends on, or is not in the table).
 enum { GR_CR = 32, GR_XER = 33, GR_LR = 34, GR_CTR = 35, GR_N = 36 };

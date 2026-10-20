@@ -298,6 +298,10 @@ int main(int argc, char** argv) {
     // PCHIST=file: executed instructions by address (0x80000000-0x81FFFFFF), written at exit as raw u32 counts.
     const char* pcHistPath = getenv("PCHIST");
     if (pcHistPath) g_gekkoPcHist = calloc(1u << 23, sizeof(u32));
+    // EDGEHIST=file: the interpreter's taken control transfers, written at exit as (from, to, count) u32 triples;
+    // MEMDUMP=file: MEM1 at exit as big-endian words (the guest code the counts refer to).
+    const char* edgeHistPath = getenv("EDGEHIST");
+    if (edgeHistPath) g_gekkoEdges = calloc(GK_EDGE_N, sizeof(GkEdge));
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     u64 startCycles = sys.cpu.cycles, end = startCycles + (u64)(seconds * GEKKO_HZ);
@@ -339,6 +343,18 @@ int main(int argc, char** argv) {
     if (g_gekkoPcHist) {
         FILE* f = fopen(pcHistPath, "wb");
         if (f) { fwrite(g_gekkoPcHist, sizeof(u32), 1u << 23, f); fclose(f); }
+    }
+    if (g_gekkoEdges) {
+        FILE* f = fopen(edgeHistPath, "wb");
+        u32 n = 0;
+        for (u32 k = 0; f && k < GK_EDGE_N; k++) if (g_gekkoEdges[k].count) { fwrite(&g_gekkoEdges[k], sizeof(GkEdge), 1, f); n++; }
+        if (f) fclose(f);
+        fprintf(stderr, "EDGEHIST: %u edges, %u transfers not counted (table full)\n", n, g_gekkoEdgeFull);
+    }
+    if (getenv("MEMDUMP")) {
+        FILE* f = fopen(getenv("MEMDUMP"), "wb");
+        for (u32 a = 0; f && a < MEM1_SIZE; a += 4) { u32 w = mem1_read32(&sys, a); u8 b[4] = { (u8)(w >> 24), (u8)(w >> 16), (u8)(w >> 8), (u8)w }; fwrite(b, 1, 4, f); }
+        if (f) fclose(f);
     }
     if (g_gekkoOpMix) {
         u64 total = 0;
