@@ -1122,14 +1122,62 @@ static inline void tri_fop(Gekko* g, u32 pc) {
     gekko_interp_one(g, pc, ram_rd32(g_mem, pc & 0x0FFFFFFFu), &st);
     p->curPc = c0; p->npc = n0; p->brk = b0;
 }
+// The float operations natively, as the JIT computes them (jit.c "Fast float"): for finite, normal (or zero) operands
+// and results the value is the interpreter's bit for bit (a single result computed in double then rounded: double
+// rounding is harmless for one operation on singles), FPSCR is left alone but for FPCC on a compare; anything else
+// (a denormal, an infinity, a NaN, an overflow) goes to the interpreter's handler. First version through the handlers
+// for every operation: later stretch 21.94 -> 19.80% (2DS job 625; soft-float division and rounding).
+static inline bool tri_nrm(double d) {  // finite and not a denormal (zero allowed)
+    u64 b; memcpy(&b, &d, 8);
+    u32 e = (u32)(b >> 52) & 0x7FFu;
+    return e != 0x7FFu && (e != 0 || (b << 1) == 0);
+}
+static inline bool tri_nrmf(float f) {
+    u32 b; memcpy(&b, &f, 4);
+    u32 e = b & 0x7F800000u;
+    return e != 0x7F800000u && (e != 0 || (b << 1) == 0);
+}
+static inline void tri_fabs(Gekko* g, int d, int b, u32 pc) { (void)pc; fpr_set0(g, d, fpr_get0(g, b) & ~0x8000000000000000ull); }
+static inline void tri_fneg(Gekko* g, int d, int b, u32 pc) { (void)pc; fpr_set0(g, d, fpr_get0(g, b) ^ 0x8000000000000000ull); }
+static inline void tri_frsp(Gekko* g, int d, int b, u32 pc) {
+    double x = g->fpr[b].ps0;
+    float f = (float)x;
+    if (!tri_nrm(x) || !tri_nrmf(f) || (f == 0.0f && x != 0.0)) { tri_fop(g, pc); return; }
+    g->fpr[d].ps0 = g->fpr[d].ps1 = (double)f;
+}
+static inline void tri_fdivs(Gekko* g, int d, int a, int b, u32 pc) {
+    double x = g->fpr[a].ps0, y = g->fpr[b].ps0;
+    if (!tri_nrm(x) || !tri_nrm(y) || y == 0.0) { tri_fop(g, pc); return; }
+    float q = (float)(x / y);
+    if (!tri_nrmf(q) || (q == 0.0f && x != 0.0)) { tri_fop(g, pc); return; }
+    g->fpr[d].ps0 = g->fpr[d].ps1 = (double)q;
+}
+static inline void tri_fcmpo0(Gekko* g, int a, int b, u32 pc) {
+    double x = g->fpr[a].ps0, y = g->fpr[b].ps0;
+    if (x != x || y != y) { tri_fop(g, pc); return; }
+    u32 c = x < y ? 8u : x > y ? 4u : 2u;
+    g->cr = (g->cr & 0x0FFFFFFFu) | (c << 28);
+    g->fpscr = (g->fpscr & ~FPSCR_FPCC) | (c << 12);
+}
 // lfs into f0 (both lanes, as the interpreter loads a single).
-static inline void tri_lfs0(Gekko* g, u32 w) { u64 d = sf_single_to_double(w); fpr_set0(g, 0, d); fpr_set1(g, 0, d); }
+static inline void tri_lfs0(Gekko* g, u32 w) {
+    u32 e = w & 0x7F800000u;
+    if ((e && e != 0x7F800000u) || !(w << 1)) { float f; memcpy(&f, &w, 4); g->fpr[0].ps0 = g->fpr[0].ps1 = (double)f; return; }
+    u64 d = sf_single_to_double(w); fpr_set0(g, 0, d); fpr_set1(g, 0, d);
+}
 // stfs of f0, as the interpreter rounds it.
-static inline u32 tri_stfs0(const Gekko* g) { return sf_double_to_single(fpr_get0(g, 0), (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0); }
+static inline u32 tri_stfs0(const Gekko* g) {
+    double x = g->fpr[0].ps0;
+    float f = (float)x;
+    u32 w; memcpy(&w, &f, 4);
+    u32 e = w & 0x7F800000u;
+    if ((e && e != 0x7F800000u && (double)f == x) || x == 0.0) return w;
+    return sf_double_to_single(fpr_get0(g, 0), (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0);
+}
 // lfs f0 then stfs f0 of one word: the word itself unless it is a denormal, an infinity or a NaN.
 static inline u32 tri_mov(Gekko* g, u32 w) {
     u32 e = w & 0x7F800000u;
-    if (e && e != 0x7F800000u) return w;
+    if ((e && e != 0x7F800000u) || !(w << 1)) return w;
     tri_lfs0(g, w);
     return tri_stfs0(g);
 }
@@ -1205,13 +1253,13 @@ static u32 tri_run(Gekko* g) {
     n += 31 + tri_call(g, 0, 0x8007FD84u);
     g->gpr[3] = r1 + 24u; g->gpr[4] = n3;
     n += 3 + tri_call(g, 1, 0x8007FD90u);
-    tri_fop(g, 0x8007FD90u); tri_fop(g, 0x8007FD94u);  // fabs f0,f1; frsp f2,f0
-    tri_lfs0(g, eps); tri_fop(g, 0x8007FD9Cu);          // lfs f0,-29696(r13); fcmpo cr0,f2,f0
+    tri_fabs(g, 0, 1, 0x8007FD90u); tri_frsp(g, 2, 0, 0x8007FD94u);  // fabs f0,f1; frsp f2,f0
+    tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FD9Cu);              // lfs f0,-29696(r13); fcmpo cr0,f2,f0
     n += 5;
     if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
     // ---- 0x8007fda4: PSVECScale(r1 + 24, r1 + 24, height / dot); PSVECAdd(r1 + 24, r1 + 120, r1 + 144) ----
     g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 24u;
-    tri_lfs0(g, hgt); tri_fop(g, 0x8007FDB0u);  // lfs f0,0(r31); fdivs f1,f0,f1
+    tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FDB0u);  // lfs f0,0(r31); fdivs f1,f0,f1
     n += 5 + tri_call(g, 2, 0x8007FDB8u);
     g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 144u;
     n += 4 + tri_call(g, 3, 0x8007FDC8u);
@@ -1220,13 +1268,13 @@ static u32 tri_run(Gekko* g) {
     n += 8 + tri_call(g, 0, 0x8007FDE8u);
     g->gpr[3] = r1 + 12u; g->gpr[4] = n3;
     n += 3 + tri_call(g, 1, 0x8007FDF4u);
-    tri_fop(g, 0x8007FDF4u); tri_fop(g, 0x8007FDF8u);
-    tri_lfs0(g, eps); tri_fop(g, 0x8007FE00u);
+    tri_fabs(g, 0, 1, 0x8007FDF4u); tri_frsp(g, 2, 0, 0x8007FDF8u);
+    tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FE00u);
     n += 5;
     if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
     // ---- 0x8007fe08: PSVECScale(r1 + 12, r1 + 12, height / dot); PSVECAdd(r1 + 12, r1 + 120, r1 + 132) ----
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 12u;
-    tri_lfs0(g, hgt); tri_fop(g, 0x8007FE14u);
+    tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FE14u);
     n += 5 + tri_call(g, 2, 0x8007FE1Cu);
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 132u;
     n += 4 + tri_call(g, 3, 0x8007FE2Cu);
@@ -1247,7 +1295,7 @@ static u32 tri_run(Gekko* g) {
     tri_lfs0(g, nw[2]); TW(fr - 28, tri_stfs0(g));
     g->gpr[3] = r1 - 36u; g->gpr[4] = pp;
     u32 nd = tri_call(g, 1, 0x8026F560u);
-    tri_fop(g, 0x8026F560u);      // fneg f0,f1
+    tri_fneg(g, 0, 1, 0x8026F560u);  // fneg f0,f1
     TW(fr - 24, tri_stfs0(g));    // stfs f0,12(r31)
     TW(fr + 76, vt);              // 8007e940: stw r0,16(r29)
     for (int k = 0; k < 3; k++) TW(fr + 60 + 4 * k, tri_mov(g, ld32(fr - 36 + 4 * k)));
