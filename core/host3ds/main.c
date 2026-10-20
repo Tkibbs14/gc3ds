@@ -492,8 +492,8 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
-    bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c)
-    bool shdwtri, abShdwtri;  // --shdwtri on|off (off), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
+    bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c; neutral, jobs 664-665)
+    bool shdwtri, abShdwtri;  // --shdwtri on|off (on), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
     bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
     bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
     bool feeddirect, abFeeddirect;  // --feeddirect on|off (off), --ab feeddirect: GX commands parsed in place (gx/fifo.c g_feedDirect)
@@ -567,6 +567,7 @@ static void opts_default(RunOpts* o) {
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
+    o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)

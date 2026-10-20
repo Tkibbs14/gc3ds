@@ -11,9 +11,9 @@ probe, add the result here in the same commit as the change, and mark what it su
 (cutscene / later stretch / movie, or the native scene) and the trust level: `device` numbers decide; `pc`, `qemu_model`,
 `azahar` and `estimate` only explain.
 
-**Newest first (2026-10-20):** the entries from "The frame-rate line was broken" to "The ShdwDraw walk memo" (all
-defaults: heavy area ~22.3% / 6.67 frames a second, Ordon ~31.3% / 9.37, title 37.0% / 21.8% / 13.2%; core 0 the
-limit in every scene, from the joint states). Before them (2026-10-18): "The first
+**Newest first (2026-10-20):** the entries from "The frame-rate line was broken" to "The triangle path as a native
+stand-in" (all defaults by the evening: heavy area ~22.65% / 6.79 frames a second, Ordon ~31.6% / 9.42, title 36.9% /
+22.5% / 13.15%; core 0 the limit in every scene, from the joint states). Before them (2026-10-18): "The first
 library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
 state on 10-19: Ordon 28.0%, heavy area 20.6%, title cutscene 36.1% / later stretch 19.0% / movie 12.8%; the GX
 thread the limit in gameplay, core 0 in the later stretch; see "The title's sections moved" there), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
@@ -1118,6 +1118,33 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     It changes GPRs r0, r3-r8, r11, r12, r31; FPRs f0-f13 and f28-f31 (both halves); CR, LR, CTR, FPSCR; frame words at
     r1 + 4, 12-32, 60-96, 100-116, 120-152, 2204, 2208; outside the frame it stores nothing but the interrupt handler's
     context saves. That bounds a per-triangle cache (REDESIGN C32b): ~85 passes and skips per key.
+- **The triangle path as a native stand-in (`--shdwtri`, REDESIGN C32b; jobs 624-670, 10-20; hle_tp.c "The triangle
+  path"):** written by hand from the guest instructions (0x8007fce4 to the callback's bctrl or the skip, with
+  getPolyCode, ChkShdwDrawThrough and GetTriPla), run while the walk stops there, then the walk goes on natively from a
+  skip. Instead of the cache: the path is fixed straight-line work, so native code needs no memory or guards.
+  - **Exact (PC, TRI_CHECK=1, every run against the interpreter from the same state):** 1,047,230 runs over
+    tp_pc_5000 -> 5400, 0 differed (FPSCR excepted: the PSVEC stand-ins leave FPRF, as the JIT does). Whole-state
+    hashes differ (+0.0012% cycles over 400 fields): a triangle now runs in one go, so slices and interrupts land
+    elsewhere (timing drift, owner-approved).
+  - **v1, every float operation through the interpreter's handler (soft float):** a loss. Later stretch 21.94 ->
+    19.80% (job 625 against 624), heavy area -0.8%, Ordon -1.3% (626-629).
+  - **v2, float operations as the JIT computes them** (native for finite normal values, one rounding of a double result;
+    the handler otherwise): later stretch 21.95 -> 22.13% (+0.8%, 644-645), heavy area and Ordon even (646-647).
+  - **v3, the PSVEC calls inline** (their stand-ins' arithmetic; the in-place call, its checks and address lookups were
+    most of their cost): **later stretch 21.89 -> 22.48% (+2.7%, 657-658) and 22.03 -> 22.46% (+2.0%, 665-666), ~5%
+    more pictures (7.06 against 6.73 a second); heavy area 6.775 -> 6.794 (+0.3%), Ordon 9.395 -> 9.416 (+0.2%,
+    667-670); cutscene and movie even. On by default.**
+  - Where it stands: the ShdwDraw stand-in (walk replay and triangle path) is **34% of core 0's cycles** in the later
+    stretch (job 659, `--pmu-split hle`; 12% for the replay alone, job 623), with 39% of core 0's I-cache misses and
+    58% of its load/store stalls: ~5,300 cycles a triangle for ~150 statements. The callback's guest code runs between
+    triangles and evicts the stand-in (hle_run with the path inlined is 8.9 KB, the walk 7.9 KB, replay 3.5 KB, against a
+    16 KB I-cache).
+  - **The callback natively too (`--shdwcb`, off):** psdRealCallBack and dDlst_shadowPoly_c::set (light, plane and box
+    tests; the triangle pushed off the plane), so a triangle never leaves native code. PC: 105,058 runs, 86,597 through
+    the callback, 0 differed. 2DS: later stretch 22.48 against 22.46% (job 664 against 665): **neutral**, so the cost is
+    not the trips through guest code; ~27k callbacks per second return before set, ~6k are refused for a full poly.
+  - The Translator v4 region of the same path (job 345, generated code, FP checked at the first FP instruction) lost:
+    later stretch 17.47 -> 14.41%. The difference is the float model and the inline PSVEC calls.
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

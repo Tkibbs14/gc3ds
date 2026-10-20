@@ -1,25 +1,29 @@
 # gc3ds handoff (2026-10-10)
 
-> **▶ Current state (2026-10-20).** All defaults (jobs 610-619): **heavy area ~22.3% (6.67 game frames a second),
-> Ordon walk ~31.3% (9.37 frames a second); title cutscene (25-150 s) 37.0%, its later Link / Epona stretch 21.8%, THP
-> movie 13.2%.** Gameplay is locked to two VI fields a picture (frames a second = fields_s / 2); the later stretch mixes
-> two- and three-field pictures. New defaults on 10-19, each measured with separate whole runs: overlapped GPU frames
-> (`--dblframe`, C30; heavy area +1.9%), float lanes (`--fcache`, C11; ~+1.5%), the 2-way indirect table (`--ind2`;
-> ~+0.9%), compact vertex records (`--vin`; ~+0.7-0.9%), rlwinm as shifts (`--rotmask`; ~+0.3-0.6%), and the ShdwDraw
-> walk memo (`--shdwmemo`, C32; later stretch +14.2%, 24% more pictures). Earlier: three native library ports
-> (core/src/cpu/port_j2d.c), pipe bursts copied whole (gpbulk), GX-thread ring records batched (ringbatch). Built and
-> off: two more ports (flush prim, J3D lights), and the re-tested crstub / befloat / calls / fastfloat / relayout
-> (losses) and pipeps (even).
+> **▶ Current state (2026-10-20, evening).** All defaults (jobs 664-670): **heavy area ~22.65% (6.79 game frames a
+> second), Ordon walk ~31.6% (9.42 frames a second); title cutscene (25-150 s) 36.9%, its later Link / Epona stretch
+> 22.5% (~7.1 pictures a second), THP movie 13.15%.** Gameplay is locked to two VI fields a picture (frames a second =
+> fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
+> the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
+> native stand-in (`--shdwtri`, C32b; later stretch +2.0-2.7%, heavy area +0.3%, Ordon +0.2%). On 10-19: overlapped GPU
+> frames (`--dblframe`, C30), float lanes (`--fcache`, C11), the 2-way indirect table (`--ind2`), compact vertex records
+> (`--vin`), rlwinm as shifts (`--rotmask`), the ShdwDraw walk memo (`--shdwmemo`, C32; later stretch +14.2%). Earlier:
+> three native library ports (core/src/cpu/port_j2d.c), gpbulk, ringbatch. Built and off, measured: the shadow callback
+> natively (`--shdwcb`, neutral), cXyz operator stand-ins (`--psxyz`, heavy area -0.9%), flush-prim and J3D-light
+> ports, crstub / befloat / calls / fastfloat / relayout (losses), pipeps (even); the rest of the old ruled-out list
+> re-measured with separate runs on 10-20 (traces, vw2, steal, sched off, dlcache, vwmem 256 lose; icbi, qbig,
+> feeddirect, cmdpld even).
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
-> Next: (1) **in progress 10-20:** the cutscene's shadow walks turned out negligible (~1-18 ms per 10 s), so item 1 became
-> the per-triangle path the replayed walk still hands to guest code (REDESIGN C32b, ~23% of core 0 in the later
-> stretch). It is built as a native stand-in, `--shdwtri on|off` (off until measured; hle_tp.c "The triangle path"):
-> TRI_CHECK=1 on the PC compared 26,407 runs with the interpreter, 0 differed. 2DS jobs 624-629 (title, heavy area,
-> Ordon; off then on, separate runs) decide the default. (2) more library ports, scored with separate runs (core 0's
-> profile: J3D ~18%, GX SDK ~13%, game code ~24%); (3) the rest of MEASUREMENTS.md's ruled-out list measured from A/Bs
-> that recompile all code. **Measuring:** check the field gaps ('# new frames hist'), then compare settled speed_pct or
+> Next, by measured size: (1) **the library ports' own cost** (Ordon, jobs 648-649: building their context is 7-8% of
+> core 0, committing 4-5%; J2DPictureEx::drawSelf 31 + 13 us a call, J3D's concat-view matrix load 4 + 2.7 us at ~8,000
+> calls a second; the ports hold 13-22% of core 0's data-TLB misses): cheaper versions of the three ports on now;
+> (2) new ports from job 630-631's profiles (heavy area / Ordon self time: J2DPane::draw 2.0 / 3.1%,
+> mDoExt_3DlineMat1_c::update 1.3%, __save_gpr / __restore_gpr ~2.4% (C20: an in-place stand-in loses; only code the JIT
+> emits in place would pay), cXyz operators ~2.8% (same: a stand-in lost)); (3) the shadow stand-in's footprint in the
+> later stretch (34% of core 0, ~5,300 cycles a triangle; REDESIGN C32b "Re-evaluate when"). Small functions lose as
+> entry-hook stand-ins on the 3DS: a port pays only when it replaces a large subtree or a hot loop. **Measuring:** check the field gaps ('# new frames hist'), then compare settled speed_pct or
 > the '# new frames 10s' line across separate whole runs (two heavy-area runs of one build agree to ~0.1%); a change
 > that stretches VI fields can show more pictures with a slower game clock (C32's unbounded version did). Texture
 > sharpness is parked by the owner until full speed (REDESIGN_CANDIDATES C31).

@@ -526,3 +526,12 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
     Memory: ~400 B a key (floats packed where exact), ~2.5 MB for 6,152 keys; the walk memo's records were compacted
     to their exact size first (they held 3.75 MB and left 1.6 MB of linear memory free).
   - Expected: most of the ~23% of core 0 the path costs, so the later stretch could gain ~20%+.
+- **Done 2026-10-20, as a native stand-in instead of the cache (`--shdwtri`, on by default; MEASUREMENTS.md "The
+  triangle path as a native stand-in"):** later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2%;
+  exact against the interpreter. Far below the ~20% expected: the 22.4% "ShdwDraw's own blocks" included the replay's
+  time, and the native path still costs ~5,300 cycles a triangle (the stand-in is 34% of core 0's cycles, with 39% of
+  its I-cache misses). The callback natively too (`--shdwcb`) was neutral.
+- **Re-evaluate when:** someone shrinks the stand-in's hot code (tri_run is inlined into hle_run: 8.9 KB, plus the
+  7.9 KB walk and 3.5 KB replay against a 16 KB I-cache) or batches triangles: e.g. record each triangle's outputs in
+  the walk memo's record (the path's results depend only on the collision data, so a replayed walk could replay its
+  triangles' frame writes too, and the callback would run from a list).
