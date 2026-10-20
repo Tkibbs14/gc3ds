@@ -1176,6 +1176,9 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     (+3.8%) (696 against 697); heavy area 6.824 -> 6.839 (+0.22%), Ordon 9.463 -> 9.528 (+0.7%) (699-702). `--shdwcb`
     on by default.** Exact: TRI_CHECK 105,058 runs, 0 differed. (`--pmu-split path`, job 695: the path with the
     callback ~5,780 cycles a run, the path alone ~2,700, as warm.)
+  - **The replay's output loops over the set bits only (10-20, `__builtin_ctz`; a branch per bit of 29 mispredicted
+    often):** SHDW_MEMOCHECK 156,206 segments, 0 differed; later stretch 23.47 -> 23.61 / 23.62% (two runs, 703-704,
+    against 696), pictures 7.73 -> 7.77, cutscene and movie even.
   - **The callback natively too (`--shdwcb`, off):** psdRealCallBack and dDlst_shadowPoly_c::set (light, plane and box
     tests; the triangle pushed off the plane), so a triangle never leaves native code. PC: 105,058 runs, 86,597 through
     the callback, 0 differed. 2DS: later stretch 22.48 against 22.46% (job 664 against 665): **neutral**, so the cost is

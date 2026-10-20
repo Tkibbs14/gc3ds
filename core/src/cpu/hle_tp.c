@@ -767,8 +767,9 @@ static u32 shm_head(const ShRec* r, u32* pos, u32 r1, u32* want) {
 static void shm_out(const ShRec* r, u32* pos, const u32* head, Gekko* g) {
     u32 h = head[0], fm = head[3] & 31, bitOff = head[3] >> 16, pc = head[2];
     const u32* w = r->w + *pos;
-    for (int k = 0; k < 24; k++) if ((h >> k) & 1) g_shmOut[k] = *w++;
-    for (int k = 0; k < 5; k++) if ((fm >> k) & 1) g_shmFrm[k] = *w++;
+    // (the set bits only, lowest first: a branch on each of 29 bits mispredicted often, the words' order is the same)
+    for (u32 m = h & 0xFFFFFFu; m; m &= m - 1) g_shmOut[__builtin_ctz(m)] = *w++;
+    for (u32 m = fm; m; m &= m - 1) g_shmFrm[__builtin_ctz(m)] = *w++;
     u32 bitVal = pc == PC_TRI ? *w++ : 0;
     *pos = (u32)(w - r->w);
     g_shmLastPc = pc;
