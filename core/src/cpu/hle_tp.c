@@ -21,6 +21,7 @@
 #include "port.h"
 #include "memo.h"
 #include "gekko_softfp.h"
+#include "hle_psops.h"
 extern volatile unsigned int g_dmaGen;  // (gx/gx.h: DMA into guest RAM since start, and its last 64 destinations)
 #define DMA_LOG_N 64  // (gx/gx.h DMA_LOG)
 extern unsigned int g_dmaLog[DMA_LOG_N][2];
@@ -1193,6 +1194,59 @@ static u32 tri_call(Gekko* g, int k, u32 ret) {
     p->curPc = c0; p->npc = n0; p->brk = b0;
     return n;
 }
+// The four PSVEC calls inline, with their stand-ins' arithmetic (hle_ps_gen.inc: the same operations in the same order,
+// so the same results on each platform) and counts; the stand-in call itself, its checks and three address lookups a
+// call, was most of their cost here. Their addresses were checked before the first store. Off (hle_ps.c's stand-ins
+// off or not recognised, or Scale's f1 not two singles): tri_call.
+static inline float tri_ldf(const u8* p) { u32 w = ld32(p); float f; memcpy(&f, &w, 4); return f; }
+static inline void tri_stf(u8* p, float f) { u32 w; memcpy(&w, &f, 4); if (!(w & 0x7F800000u)) w &= 0x80000000u; ramp_wr32a(p, w); }  // (PSTF)
+static u32 tri_ps(Gekko* g, int k, u32 ret) {
+    if (g_triPs[k] < 0 || !hle_ps_enabled()) return tri_call(g, k, ret);
+    if (k == 2 && ((double)(float)g->fpr[1].ps0 != g->fpr[1].ps0 || (double)(float)g->fpr[1].ps1 != g->fpr[1].ps1)) return tri_call(g, k, ret);
+    g->lr = ret;
+    u8* a = g_mem + (g->gpr[3] - 0x80000000u);
+    u8* b = g_mem + (g->gpr[4] - 0x80000000u);
+    u8* o = g_mem + (g->gpr[5] - 0x80000000u);
+    if (k == 0) {  // PSVECCrossProduct(a, b, o)
+        P f1 = { tri_ldf(b), tri_ldf(b + 4) }, f2 = PS(tri_ldf(a + 8)), f0 = { tri_ldf(a), tri_ldf(a + 4) };
+        P f6 = PMERGE10(f1, f1), f3 = PS(tri_ldf(b + 8));
+        P f4 = PMUL(f1, f2), f7 = PMULS0(f1, f0);
+        P f5 = PMSUB(f0, f3, f4), f8 = PMSUB(f0, f6, f7);
+        P f9 = PMERGE11(f5, f5), f10 = PMERGE01(f5, f8);
+        tri_stf(o, f9.p0);
+        f10 = PNEG(f10);
+        tri_stf(o + 4, f10.p0); tri_stf(o + 8, f10.p1);
+        g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1;
+        return 15;
+    }
+    if (k == 1) {  // PSVECDotProduct(a, b) -> f1
+        P f2 = { tri_ldf(a + 4), tri_ldf(a + 8) }, f3 = { tri_ldf(b + 4), tri_ldf(b + 8) };
+        f2 = PMUL(f2, f3);
+        P f5 = { tri_ldf(a), tri_ldf(a + 4) }, f4 = { tri_ldf(b), tri_ldf(b + 4) };
+        f3 = PMADD(f5, f4, f2);
+        P f1 = PSUM0(f3, f2, f2);
+        g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1;
+        return 8;
+    }
+    if (k == 2) {  // PSVECScale(a, b, f1)
+        P f1 = { (float)g->fpr[1].ps0, (float)g->fpr[1].ps1 };
+        P f0 = { tri_ldf(a), tri_ldf(a + 4) }, f2 = { tri_ldf(a + 8), 1.0f };
+        f0 = PMULS0(f0, f1);
+        tri_stf(b, f0.p0); tri_stf(b + 4, f0.p1);
+        f0 = PMULS0(f2, f1);
+        tri_stf(b + 8, f0.p0);
+        return 7;
+    }
+    {  // PSVECAdd(a, b, o)
+        P f2 = { tri_ldf(a), tri_ldf(a + 4) }, f4 = { tri_ldf(b), tri_ldf(b + 4) };
+        P f6 = PADD(f2, f4);
+        tri_stf(o, f6.p0); tri_stf(o + 4, f6.p1);
+        P f3 = { tri_ldf(a + 8), 1.0f }, f5 = { tri_ldf(b + 8), 1.0f };
+        P f7 = PADD(f3, f5);
+        tri_stf(o + 8, f7.p0);
+        return 9;
+    }
+}
 static inline void tri_cr0(Gekko* g, u32 v) { g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(v, 0) | (g->xer >> 31)) << 28); }
 #define TW(p, v) ramp_wr32a((p), (v))
 
@@ -1250,9 +1304,9 @@ static u32 tri_run(Gekko* g) {
     TW(fr + 2208, n1); TW(fr + 2204, n3);
     g->gpr[31] = prism;
     g->gpr[0] = e1 * 12u; g->gpr[3] = n1; g->gpr[4] = n2; g->gpr[5] = r1 + 24u;
-    n += 31 + tri_call(g, 0, 0x8007FD84u);
+    n += 31 + tri_ps(g, 0, 0x8007FD84u);
     g->gpr[3] = r1 + 24u; g->gpr[4] = n3;
-    n += 3 + tri_call(g, 1, 0x8007FD90u);
+    n += 3 + tri_ps(g, 1, 0x8007FD90u);
     tri_fabs(g, 0, 1, 0x8007FD90u); tri_frsp(g, 2, 0, 0x8007FD94u);  // fabs f0,f1; frsp f2,f0
     tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FD9Cu);              // lfs f0,-29696(r13); fcmpo cr0,f2,f0
     n += 5;
@@ -1260,14 +1314,14 @@ static u32 tri_run(Gekko* g) {
     // ---- 0x8007fda4: PSVECScale(r1 + 24, r1 + 24, height / dot); PSVECAdd(r1 + 24, r1 + 120, r1 + 144) ----
     g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 24u;
     tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FDB0u);  // lfs f0,0(r31); fdivs f1,f0,f1
-    n += 5 + tri_call(g, 2, 0x8007FDB8u);
+    n += 5 + tri_ps(g, 2, 0x8007FDB8u);
     g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 144u;
-    n += 4 + tri_call(g, 3, 0x8007FDC8u);
+    n += 4 + tri_ps(g, 3, 0x8007FDC8u);
     // ---- 0x8007fdc8: PSVECCrossProduct(n4, n1, r1 + 12); PSVECDotProduct(r1 + 12, n3) ----
     g->gpr[0] = e2 * 12u; g->gpr[3] = n4; g->gpr[4] = n1; g->gpr[5] = r1 + 12u;
-    n += 8 + tri_call(g, 0, 0x8007FDE8u);
+    n += 8 + tri_ps(g, 0, 0x8007FDE8u);
     g->gpr[3] = r1 + 12u; g->gpr[4] = n3;
-    n += 3 + tri_call(g, 1, 0x8007FDF4u);
+    n += 3 + tri_ps(g, 1, 0x8007FDF4u);
     tri_fabs(g, 0, 1, 0x8007FDF4u); tri_frsp(g, 2, 0, 0x8007FDF8u);
     tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FE00u);
     n += 5;
@@ -1275,9 +1329,9 @@ static u32 tri_run(Gekko* g) {
     // ---- 0x8007fe08: PSVECScale(r1 + 12, r1 + 12, height / dot); PSVECAdd(r1 + 12, r1 + 120, r1 + 132) ----
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 12u;
     tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FE14u);
-    n += 5 + tri_call(g, 2, 0x8007FE1Cu);
+    n += 5 + tri_ps(g, 2, 0x8007FE1Cu);
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 132u;
-    n += 4 + tri_call(g, 3, 0x8007FE2Cu);
+    n += 4 + tri_ps(g, 3, 0x8007FE2Cu);
     // ---- 0x8007fe2c: GetTriPla(r1 + 60, r15, tri) ----
     const u32 vt = 0x803A37C0u;  // (lis r3,-32710; addi r0,r3,14272)
     TW(fr + 96, vt);
@@ -1294,7 +1348,7 @@ static u32 tri_run(Gekko* g) {
     for (int k = 0; k < 2; k++) TW(fr - 36 + 4 * k, tri_mov(g, nw[k]));
     tri_lfs0(g, nw[2]); TW(fr - 28, tri_stfs0(g));
     g->gpr[3] = r1 - 36u; g->gpr[4] = pp;
-    u32 nd = tri_call(g, 1, 0x8026F560u);
+    u32 nd = tri_ps(g, 1, 0x8026F560u);
     tri_fneg(g, 0, 1, 0x8026F560u);  // fneg f0,f1
     TW(fr - 24, tri_stfs0(g));    // stfs f0,12(r31)
     TW(fr + 76, vt);              // 8007e940: stw r0,16(r29)

@@ -77,6 +77,16 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   without a checked read each, pipe bytes stored as words into a buffer the size is known for, the SDK's per-call
   bookkeeping (bpSentNot, dirty bits) folded into one final value, and the pipe path itself (one copy per burst: +3.2% /
   +4.5% for every game). The next ports are written that way from the start.
+- **Regenerating hle_ps_gen.inc (checked byte-identical 2026-10-20):** the inputs are objdump listings of the game's
+  functions in `/root/psfns` (WSL Debian; game code, never committed), made with the session's `dis.py START END`
+  (main.dol bytes through devkitPPC's objdump). In order: `python3 core/tools/ps_translate.py --helpers 803621A0,803621EC`
+  PSMTXConcat PSMTXCopy PSMTXMultVec PSMTXMultVecSR PSVECAdd PSVECSubtract PSVECScale PSVECDotProduct
+  PSVECCrossProduct PSVECSquareMag PSVECSquareDistance PSMTXIdentity PSMTXScaleApply PSMTXTransApply
+  J3DFifoLoadPosMtxImm__FPA4_fUl J3DFifoLoadNrmMtxImm__FPA4_fUl J3DFifoLoadNrmMtxImm3x3__FPA3_fUl GXLoadLightObjImm
+  `calcWeightEnvelopeMtx__12J3DMtxBufferFv!` GXSetTevColorIn GXSetTevAlphaIn GXSetTevColorOp GXSetTevAlphaOp
+  GXSetTevOrder GXSetTevSwapMode GXSetTevKColorSel GXSetTevKAlphaSel GXSetTevIndirect GXSetChanCtrl GXSetArray
+  __GXSetMatrixIndex GXSetTevColor `__GXSendFlushPrim!`, then (10-20) `__pl__4cXyzCFRC3Vec!` `__mi__4cXyzCFRC3Vec!`
+  `__ml__4cXyzCFf!` (each NAME.dis; `!` = direct mode). The cXyz operators are the `--psxyz` group (off until measured).
 - **Tools:** core/tools/porthash.py makes the code-hash table from main.dol and the symbol map; `--port-parts on` times
   each part of a call; `--pmu-split port` / `portcommit` count cycles and events around each half.
 

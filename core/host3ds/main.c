@@ -143,6 +143,9 @@ static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixInde
 // in the heavy Ordon area (3.4% of core 0, job 451): its words go to the pipe as one block. --psflush, --ab psflush.
 static const char kPsFlush[] = "__GXSendFlushPrim";
 static bool g_psflushOn;  // off: neutral on the 2DS (jobs 452-453); --psflush on
+// cXyz's operator+, operator- and operator* (d_com / SComponent; 20 instructions around a PSVEC call): 2.8% of the
+// heavy area's core 0 between them (job 630). --psxyz on.
+static const char kPsXyz[] = "__pl,__mi,__ml";
 extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
 extern bool g_ringBatch;  // gxthread.c: bursts batched into larger ring records
 extern bool g_feedDirect;  // gx/fifo.c: GX commands parsed in place
@@ -485,6 +488,7 @@ typedef struct {
     bool abJ3dhook;  // --ab j3dhook: the J3D concat-view matrix port on and off (hle column bit 6)
     bool abFlushhook;  // --ab flushhook: the __GXSendFlushPrim port on and off (hle column bit 7)
     bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
+    bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
     bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
@@ -588,6 +592,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
+        else if (!strcmp(a, "--psxyz")) o->psxyz = !strcmp(v, "on");
         else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
         else if (!strcmp(a, "--ringbatch")) o->ringbatch = !strcmp(v, "on");
         else if (!strcmp(a, "--idlewait")) o->idlewait = atoi(v);
@@ -1133,6 +1138,7 @@ static const char* run(const char* path) {
         g_feedDirect = g_opt.feeddirect && !g_opt.abFeeddirect;  // --ab feeddirect starts off
         g_memoAddr = g_opt.memo;
         hle_ps_set_group(kPsFlush, g_psflushOn);
+        hle_ps_set_group(kPsXyz, g_opt.psxyz);
         if (g_opt.psOff[0]) hle_ps_disable(g_opt.psOff);
         if (g_pica) pica_set_native_shapes(g_opt.shapes && !g_opt.abShapes);  // --ab shapes starts off
         if (g_pica) pica_set_lean(g_opt.abLean ? 0 : g_opt.lean);  // --ab lean starts off

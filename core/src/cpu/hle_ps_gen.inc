@@ -1888,6 +1888,207 @@ stop:
 #undef FPGATE
 #undef FWB
 #undef FWB0
+#define FPGATE() (fpin || (FPOK() && (fpin = 1)))
+#define FWB(k) do { fw |= 1u << (k); } while (0)
+#define FWB0(k) do { fw0 |= 1u << (k); } while (0)
+#define FSYNC() do { if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0; if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0; fw = 0; fw0 = 0; g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0); } while (0)
+#define SYNC_IN() do { r0 = g->gpr[0]; r3 = g->gpr[3]; r4 = g->gpr[4]; r5 = g->gpr[5]; f1 = FIN(1); fw &= ~0x3FFFu; fw0 &= ~0x3FFFu; frs &= ~0x3FFFu; ca = (g->xer >> 29) & 1; } while (0)
+static u32 ps___pl(Gekko* g) {  // 20 instructions (direct: stops where an access is not in MEM1)
+    u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r31 = g->gpr[31];
+    u32 lr = g->lr;
+    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)
+    const u32 xsz = g_size;
+    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, fw0 = 0, frs = 0, fpin = 0;
+    P f0 = (P){ 0, 0 };  /*  */
+    P f1 = (P){ 0, 0 };  /*  */
+    (void)r0; (void)r1; (void)r3; (void)r4; (void)r5; (void)r31; (void)ca; (void)spc; (void)fw; (void)fw0; (void)frs; (void)fpin;
+    n++; { u32 ea_ = r1 + 0xffffffe0u; STW32(XH(ea_, 4, 0x80266ae4u), r1); r1 = ea_; }
+    n++; r0 = lr;
+    n++; STW32(XH(r1 + 0x24u, 4, 0x80266aecu), r0);
+    n++; STW32(XH(r1 + 0x1cu, 4, 0x80266af0u), r31);
+    n++; r31 = r3 | r3;
+    n++; r3 = r4 | r4;
+    n++; r4 = r5 | r5;
+    n++; r5 = r1 + 0x8u;
+    n++; FSYNC(); g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[31] = r31; { u32 lr0_ = g->lr, st_ = g_psStop; g->lr = 0x80266b08u; u32 cn_ = ps_icall(g, 0x80347090u); g_psStop |= st_; if (!cn_) { g->lr = lr0_; spc = 0x80266b04u; goto stop; } if (g_psMid) return n + cn_; n += cn_; } SYNC_IN(); lr = 0x80266b08u;
+    if (!FPGATE()) { n++; spc = 0x80266b08u; goto stop; }
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x8u, 4, 0x80266b08u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x0u, 4, 0x80266b0cu), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0xcu, 4, 0x80266b10u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x4u, 4, 0x80266b14u), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x10u, 4, 0x80266b18u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x8u, 4, 0x80266b1cu), FBITS(f0.p0));
+    n++; r31 = BE32(XH(r1 + 0x1cu, 4, 0x80266b20u));
+    n++; r0 = BE32(XH(r1 + 0x24u, 4, 0x80266b24u));
+    n++; lr = r0;
+    n++; r1 = r1 + 0x20u;
+    n++;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    return n;
+stop:
+    n--;  // (the instruction that stopped did not run)
+    if (!n) return 0;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    g->pc = spc;
+    g_psMid = true;
+    return n;
+}
+#undef FPGATE
+#undef FWB
+#undef FWB0
+#undef FSYNC
+#undef SYNC_IN
+#define FPGATE() (fpin || (FPOK() && (fpin = 1)))
+#define FWB(k) do { fw |= 1u << (k); } while (0)
+#define FWB0(k) do { fw0 |= 1u << (k); } while (0)
+#define FSYNC() do { if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0; if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0; fw = 0; fw0 = 0; g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0); } while (0)
+#define SYNC_IN() do { r0 = g->gpr[0]; r3 = g->gpr[3]; r4 = g->gpr[4]; r5 = g->gpr[5]; f1 = FIN(1); fw &= ~0x3FFFu; fw0 &= ~0x3FFFu; frs &= ~0x3FFFu; ca = (g->xer >> 29) & 1; } while (0)
+static u32 ps___mi(Gekko* g) {  // 20 instructions (direct: stops where an access is not in MEM1)
+    u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r5 = g->gpr[5], r31 = g->gpr[31];
+    u32 lr = g->lr;
+    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)
+    const u32 xsz = g_size;
+    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, fw0 = 0, frs = 0, fpin = 0;
+    P f0 = (P){ 0, 0 };  /*  */
+    P f1 = (P){ 0, 0 };  /*  */
+    (void)r0; (void)r1; (void)r3; (void)r4; (void)r5; (void)r31; (void)ca; (void)spc; (void)fw; (void)fw0; (void)frs; (void)fpin;
+    n++; { u32 ea_ = r1 + 0xffffffe0u; STW32(XH(ea_, 4, 0x80266b34u), r1); r1 = ea_; }
+    n++; r0 = lr;
+    n++; STW32(XH(r1 + 0x24u, 4, 0x80266b3cu), r0);
+    n++; STW32(XH(r1 + 0x1cu, 4, 0x80266b40u), r31);
+    n++; r31 = r3 | r3;
+    n++; r3 = r4 | r4;
+    n++; r4 = r5 | r5;
+    n++; r5 = r1 + 0x8u;
+    n++; FSYNC(); g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[5] = r5; g->gpr[31] = r31; { u32 lr0_ = g->lr, st_ = g_psStop; g->lr = 0x80266b58u; u32 cn_ = ps_icall(g, 0x803470b4u); g_psStop |= st_; if (!cn_) { g->lr = lr0_; spc = 0x80266b54u; goto stop; } if (g_psMid) return n + cn_; n += cn_; } SYNC_IN(); lr = 0x80266b58u;
+    if (!FPGATE()) { n++; spc = 0x80266b58u; goto stop; }
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x8u, 4, 0x80266b58u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x0u, 4, 0x80266b5cu), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0xcu, 4, 0x80266b60u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x4u, 4, 0x80266b64u), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x10u, 4, 0x80266b68u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x8u, 4, 0x80266b6cu), FBITS(f0.p0));
+    n++; r31 = BE32(XH(r1 + 0x1cu, 4, 0x80266b70u));
+    n++; r0 = BE32(XH(r1 + 0x24u, 4, 0x80266b74u));
+    n++; lr = r0;
+    n++; r1 = r1 + 0x20u;
+    n++;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    return n;
+stop:
+    n--;  // (the instruction that stopped did not run)
+    if (!n) return 0;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[5] = r5;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    g->pc = spc;
+    g_psMid = true;
+    return n;
+}
+#undef FPGATE
+#undef FWB
+#undef FWB0
+#undef FSYNC
+#undef SYNC_IN
+#define FPGATE() (fpin || (FPOK() && (fpin = 1)))
+#define FWB(k) do { fw |= 1u << (k); } while (0)
+#define FWB0(k) do { fw0 |= 1u << (k); } while (0)
+#define FSYNC() do { if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0; if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0; fw = 0; fw0 = 0; g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0); } while (0)
+#define SYNC_IN() do { r0 = g->gpr[0]; r3 = g->gpr[3]; r4 = g->gpr[4]; f1 = FIN(1); fw &= ~0x3FFFu; fw0 &= ~0x3FFFu; frs &= ~0x3FFFu; ca = (g->xer >> 29) & 1; } while (0)
+static u32 ps___ml(Gekko* g) {  // 19 instructions (direct: stops where an access is not in MEM1)
+    u32 r0 = g->gpr[0], r1 = g->gpr[1], r3 = g->gpr[3], r4 = g->gpr[4], r31 = g->gpr[31];
+    u32 lr = g->lr;
+    u8* const xm = g_m;  // (locals: through the globals, every store would reload them)
+    const u32 xsz = g_size;
+    u32 ca = (g->xer >> 29) & 1, n = 0, spc = 0, fw = 0, fw0 = 0, frs = 0, fpin = 0;
+    P f0 = (P){ 0, 0 };  /*  */
+    P f1 = (P){ 0, 0 };  /*  */
+    (void)r0; (void)r1; (void)r3; (void)r4; (void)r31; (void)ca; (void)spc; (void)fw; (void)fw0; (void)frs; (void)fpin;
+    n++; { u32 ea_ = r1 + 0xffffffe0u; STW32(XH(ea_, 4, 0x80266b84u), r1); r1 = ea_; }
+    n++; r0 = lr;
+    n++; STW32(XH(r1 + 0x24u, 4, 0x80266b8cu), r0);
+    n++; STW32(XH(r1 + 0x1cu, 4, 0x80266b90u), r31);
+    n++; r31 = r3 | r3;
+    n++; r3 = r4 | r4;
+    n++; r4 = r1 + 0x8u;
+    n++; FSYNC(); g->gpr[0] = r0; g->gpr[1] = r1; g->gpr[3] = r3; g->gpr[4] = r4; g->gpr[31] = r31; { u32 lr0_ = g->lr, st_ = g_psStop; g->lr = 0x80266ba4u; u32 cn_ = ps_icall(g, 0x803470d8u); g_psStop |= st_; if (!cn_) { g->lr = lr0_; spc = 0x80266ba0u; goto stop; } if (g_psMid) return n + cn_; n += cn_; } SYNC_IN(); lr = 0x80266ba4u;
+    if (!FPGATE()) { n++; spc = 0x80266ba4u; goto stop; }
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x8u, 4, 0x80266ba4u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x0u, 4, 0x80266ba8u), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0xcu, 4, 0x80266bacu)))); FWB(0);
+    n++; STW32(XH(r31 + 0x4u, 4, 0x80266bb0u), FBITS(f0.p0));
+    n++; f0 = PS(U2F(BE32(XH(r1 + 0x10u, 4, 0x80266bb4u)))); FWB(0);
+    n++; STW32(XH(r31 + 0x8u, 4, 0x80266bb8u), FBITS(f0.p0));
+    n++; r31 = BE32(XH(r1 + 0x1cu, 4, 0x80266bbcu));
+    n++; r0 = BE32(XH(r1 + 0x24u, 4, 0x80266bc0u));
+    n++; lr = r0;
+    n++; r1 = r1 + 0x20u;
+    n++;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    return n;
+stop:
+    n--;  // (the instruction that stopped did not run)
+    if (!n) return 0;
+    g->gpr[0] = r0;
+    g->gpr[1] = r1;
+    g->gpr[3] = r3;
+    g->gpr[4] = r4;
+    g->gpr[31] = r31;
+    if (fw & (1u << 0)) { g->fpr[0].ps0 = (double)f0.p0; g->fpr[0].ps1 = (double)f0.p1; } else if (fw0 & (1u << 0)) g->fpr[0].ps0 = (double)f0.p0;
+    if (fw & (1u << 1)) { g->fpr[1].ps0 = (double)f1.p0; g->fpr[1].ps1 = (double)f1.p1; } else if (fw0 & (1u << 1)) g->fpr[1].ps0 = (double)f1.p0;
+    g->xer = (g->xer & ~XER_CA) | (ca ? XER_CA : 0);
+    g->lr = lr;
+    g->pc = spc;
+    g_psMid = true;
+    return n;
+}
+#undef FPGATE
+#undef FWB
+#undef FWB0
+#undef FSYNC
+#undef SYNC_IN
 static const PsDef g_psDefs[] = {
     { "PSMTXConcat", 0xcc, 0x9421ffc0u, 0x9395f0d5c0fe75d4ull, ps_PSMTXConcat, false, false, true, false },
     { "PSMTXCopy", 0x34, 0xe0030000u, 0x077d9e23e845819bull, ps_PSMTXCopy, false, false, true, false },
@@ -1922,4 +2123,7 @@ static const PsDef g_psDefs[] = {
     { "__GXSetMatrixIndex", 0x84, 0x2c030005u, 0x58db30c7ab5b1833ull, ps___GXSetMatrixIndex, true, false, false, false },
     { "GXSetTevColor", 0x60, 0x5466083cu, 0x49827a2bb28c55aaull, ps_GXSetTevColor, true, false, false, false },
     { "__GXSendFlushPrim", 0x88, 0x8062cb80u, 0xe90bfbe1d2494d54ull, ps___GXSendFlushPrim, true, false, false, true },
+    { "__pl", 0x50, 0x9421ffe0u, 0xeca75b70ec32b487ull, ps___pl, false, true, true, true },
+    { "__mi", 0x50, 0x9421ffe0u, 0x10cd515b8f22ce53ull, ps___mi, false, true, true, true },
+    { "__ml", 0x4c, 0x9421ffe0u, 0x37fdbbdc97c94744ull, ps___ml, false, true, true, true },
 };
