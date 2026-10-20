@@ -435,6 +435,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Status:** probe built (`--memo ADDR`), replay not built.
 - **Re-evaluate when:** a candidate function with stable inputs shows up (the probe reports hits), or per-pane
   (nested) recording is designed: the HUD's panes mostly do not change, the screen around them always does.
+- **2026-10-20, J3D probed (MEASUREMENTS.md "J3D's per-model work, probed for memoization"):** calcMaterial repeats 91%
+  of calls but is under 1% of the guest's work; J3DModel::calc 22%, J3DJoint::recursiveCalc 9% (the view matrix moves).
+  The probe's previous-call table is now keyed by object (512 entries). Still no candidate worth a replay.
 
 ## C29. Native library ports (hand-written JSystem / GX SDK subtrees, one native call each)
 

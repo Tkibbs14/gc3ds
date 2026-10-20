@@ -41,6 +41,10 @@ static u32 g_shLo, g_shHi;
 #define CODE_HASH 0x195639DFDBEA5654ull  // FNV-1a 64 of the guest bytes [PC_ENTRY, PC_EXIT); see code_hash
 
 u64 g_hleRuns, g_hleInsns;
+// Where the ShdwDraw stand-in is (jitsample.c counts it with every core-0 sample; '# shdw where 10s'): 0 not in it,
+// 1 the walk replayed, 2 the walk run, 3 the triangle path's reads and copies, 4 its vector maths, 5 GetTriPla and the
+// call, 6 the callback, 7 hle_run's own work. A byte store each: measurement that costs nothing measurable.
+volatile u8 g_shWhere;
 // ShdwDraw stand-in costs (device profile job 266: ~34% of core 0 in the later stretch sits in it): calls, triangles the
 // fast loop skipped, guest instructions counted outside that loop, and ticks inside scan (g_profClock; 0 when off).
 u64 g_shdwStats[4];
@@ -126,10 +130,24 @@ static bool gfskip_guarded(void) {
     return false;
 }
 
+// --panestat on (measurement): J2DPane::draw 0x802F67E0 (TP) is an entry hook that counts each call's pane class (the
+// vtable at 0(r3)) and lets the guest code run: which pane types a native J2D walk would have to draw.
+bool g_paneStat;
+#define PANE_VT 32
+u32 g_paneVt[PANE_VT], g_paneN[PANE_VT], g_paneOther;
+static void pane_note(const Gekko* g) {
+    u32 a = g->gpr[3] - 0x80000000u, vt = a < g_memSize - 4 && !(a & 3) ? ramp_rd32a(g_mem + a) : 0;
+    for (u32 i = 0; i < PANE_VT; i++) {
+        if (g_paneVt[i] == vt) { g_paneN[i]++; return; }
+        if (!g_paneVt[i]) { g_paneVt[i] = vt; g_paneN[i] = 1; return; }
+    }
+    g_paneOther++;
+}
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
     if (g_gfskipAddr && pc == g_gfskipAddr) return true;
     if (g_memoAddr && pc == g_memoAddr) return true;
+    if (g_paneStat && pc == 0x802F67E0u) return true;
     if (port_is_hook(pc)) return true;
     if (!g_on) return false;
 #ifndef __3DS__
@@ -1252,6 +1270,7 @@ static u32 tri_ps(Gekko* g, int k, u32 ret) {
 static inline void tri_cr0(Gekko* g, u32 v) { g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(v, 0) | (g->xer >> 31)) << 28); }
 #define TW(p, v) ramp_wr32a((p), (v))
 
+static u8 g_triStop;  // tri_bench: stop the path at this point (0: never)
 static bool g_tchkOn;  // TRI_CHECK (PC): the callback keeps what it overwrote
 static bool g_cbRan;   // the last tri_run went through the callback natively
 
@@ -1463,6 +1482,7 @@ epi:
 
 static u32 tri_run(Gekko* g) {
     g_cbRan = false;
+    g_shWhere = 3;
     // The state the PSVEC stand-ins and the float handlers assume (hle_ps.c ps_call), and no enabled FP exceptions.
     if (!(g->msr & MSR_DR) || !(g->msr & MSR_FP) || (g->msr & (MSR_FE0 | MSR_FE1)) || (g->fpscr & FPSCR_RN) ||
         (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) != (HID2_PSE | HID2_LSQE) || (g->spr[SPR_GQR0] & 0x00070007u))
@@ -1498,6 +1518,7 @@ static u32 tri_run(Gekko* g) {
         for (int k = 0; k < 3; k++) { pw[k] = ld32(a + 4 * k); nw[k] = ld32(b + 4 * k); }
         eps = ld32(e); cbo = ld32(fr + 8); cbf = ld32(o + 48);
     }
+    if (__builtin_expect(g_triStop == 1, 0)) return 1;  // (tri_bench: the cost up to here)
     // ---- 0x8007fce4: getPolyCode(r15, tri, r1 + 100) ----
     const u32 r31 = g->gpr[31];
     TW(fr - 32, r1);            // stwu r1,-32(r1)
@@ -1510,12 +1531,14 @@ static u32 tri_run(Gekko* g) {
     g->gpr[0] = through; g->gpr[3] = through; g->gpr[4] = r1 + 100u; g->gpr[5] = r1 - 24u; g->lr = 0x8007FD00u;
     tri_cr0(g, through);
     if (through) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    if (__builtin_expect(g_triStop == 2, 0)) return n;  // (tri_bench: the cost up to here)
     // ---- 0x8007fd08: the vertex, the normals; PSVECCrossProduct(n1, n2, r1 + 24); PSVECDotProduct(r1 + 24, n3) ----
     for (int k = 0; k < 2; k++) TW(fr + 120 + 4 * k, tri_mov(g, pw[k]));
     tri_lfs0(g, pw[2]); TW(fr + 128, tri_stfs0(g));
     TW(fr + 2208, n1); TW(fr + 2204, n3);
     g->gpr[31] = prism;
     g->gpr[0] = e1 * 12u; g->gpr[3] = n1; g->gpr[4] = n2; g->gpr[5] = r1 + 24u;
+    g_shWhere = 4;
     n += 31 + tri_ps(g, 0, 0x8007FD84u);
     g->gpr[3] = r1 + 24u; g->gpr[4] = n3;
     n += 3 + tri_ps(g, 1, 0x8007FD90u);
@@ -1523,6 +1546,7 @@ static u32 tri_run(Gekko* g) {
     tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FD9Cu);              // lfs f0,-29696(r13); fcmpo cr0,f2,f0
     n += 5;
     if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    if (__builtin_expect(g_triStop == 3, 0)) return n;  // (tri_bench: the cost up to here)
     // ---- 0x8007fda4: PSVECScale(r1 + 24, r1 + 24, height / dot); PSVECAdd(r1 + 24, r1 + 120, r1 + 144) ----
     g->gpr[3] = r1 + 24u; g->gpr[4] = r1 + 24u;
     tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FDB0u);  // lfs f0,0(r31); fdivs f1,f0,f1
@@ -1538,12 +1562,14 @@ static u32 tri_run(Gekko* g) {
     tri_lfs0(g, eps); tri_fcmpo0(g, 2, 0, 0x8007FE00u);
     n += 5;
     if (g->cr & 0x80000000u) { g->pc = PC_NEXT; g_triStats[1]++; return n; }
+    if (__builtin_expect(g_triStop == 4, 0)) return n;  // (tri_bench: the cost up to here)
     // ---- 0x8007fe08: PSVECScale(r1 + 12, r1 + 12, height / dot); PSVECAdd(r1 + 12, r1 + 120, r1 + 132) ----
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 12u;
     tri_lfs0(g, hgt); tri_fdivs(g, 1, 0, 1, 0x8007FE14u);
     n += 5 + tri_ps(g, 2, 0x8007FE1Cu);
     g->gpr[3] = r1 + 12u; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + 132u;
     n += 4 + tri_ps(g, 3, 0x8007FE2Cu);
+    g_shWhere = 5;
     // ---- 0x8007fe2c: GetTriPla(r1 + 60, r15, tri) ----
     const u32 vt = 0x803A37C0u;  // (lis r3,-32710; addi r0,r3,14272)
     TW(fr + 96, vt);
@@ -1568,6 +1594,7 @@ static u32 tri_run(Gekko* g) {
     tri_lfs0(g, ld32(fr - 24)); TW(fr + 72, tri_stfs0(g));
     TW(fr - 20, vt);              // 8007e964: stw r0,28(r1)
     n += 7 + 99 - 8 + nd;  // fe2c..fe44, and GetTriPla's 99 with the second dot product as it ran (the first, 8, counted as run)
+    if (__builtin_expect(g_triStop == 5, 0)) return n;  // (tri_bench: the cost up to here)
     // ---- 0x8007fe48: the plane to r1 + 80; the callback(r1[8], r1 + 120, 0, 1, 2, r1 + 80) ----
     for (int k = 0; k < 3; k++) TW(fr + 80 + 4 * k, tri_mov(g, ld32(fr + 60 + 4 * k)));
     tri_lfs0(g, ld32(fr + 72)); TW(fr + 92, tri_stfs0(g));
@@ -1577,7 +1604,7 @@ static u32 tri_run(Gekko* g) {
     g->ctr = cbf; g->lr = TRI_RET; g->pc = cbf & ~3u;
     n += 20;
     g_triStats[0]++;
-    if (g_cbOn && g->pc == PC_CB && cb_known()) { u32 m = cb_run(g); if (m) { n += m; g_cbRan = true; } }
+    if (g_cbOn && g->pc == PC_CB && cb_known()) { g_shWhere = 6; u32 m = cb_run(g); if (m) { n += m; g_cbRan = true; } }
     return n;
 }
 #undef TW
@@ -1663,6 +1690,91 @@ static u32 tri_go(Gekko* g) {
     return tri_run(g);
 }
 
+
+// --tribench N (measurement): at the Nth triangle path, its pieces are timed on that triangle's state, each N_TB times
+// (state and frame restored before each): the restore alone, the whole path, the eight PSVEC operations, the float
+// helpers, the moves (lfs / stfs pairs), and the callback. g_triBenchT: clock ticks for each loop; the frame and the
+// registers are put back afterwards and the walk goes on as if nothing ran.
+u32 g_triBench, g_triBenchN;
+u64 (*hle_bench_clock)(void);
+u64 g_triBenchT[16];
+bool g_triBenchDone;
+#define N_TB 4000u
+static void tri_bench(Gekko* g) {
+    enum { LO = 128, W = 128 + 2240 };
+    const u32 r1 = g->gpr[1];
+    u8* w = tri_p(r1 - LO, W, 8);
+    if (!w || !hle_bench_clock || !tri_known()) return;
+    static u8 w0[W], w1[W];
+    static Gekko g0, g1;
+    g0 = *g;
+    memcpy(w0, w, W);
+    bool cb0 = g_cbOn;
+    g_cbOn = false;
+    u64 t = hle_bench_clock();
+    for (u32 i = 0; i < N_TB; i++) { *g = g0; memcpy(w, w0, W); }
+    g_triBenchT[0] = hle_bench_clock() - t;
+    t = hle_bench_clock();
+    for (u32 i = 0; i < N_TB; i++) { *g = g0; memcpy(w, w0, W); tri_run(g); }
+    g_triBenchT[1] = hle_bench_clock() - t;
+    g1 = *g;  // (after a run: the callback's entry state, if it got there)
+    memcpy(w1, w, W);
+    u32 n1 = ld32(w + LO + 2208), n3 = ld32(w + LO + 2204);
+    if (tri_p(n1, 12, 4) && tri_p(n3, 12, 4)) {
+        t = hle_bench_clock();
+        for (u32 i = 0; i < N_TB; i++) {
+            for (int h = 0; h < 2; h++) {
+                u32 o = h ? 12u : 24u;
+                g->gpr[3] = n1; g->gpr[4] = n3; g->gpr[5] = r1 + o; tri_ps(g, 0, 0);
+                g->gpr[3] = r1 + o; g->gpr[4] = n3; tri_ps(g, 1, 0);
+                g->fpr[1].ps0 = g->fpr[1].ps1 = 0.5; g->gpr[3] = r1 + o; g->gpr[4] = r1 + o; tri_ps(g, 2, 0);
+                g->gpr[3] = r1 + o; g->gpr[4] = r1 + 120u; g->gpr[5] = r1 + (h ? 132u : 144u); tri_ps(g, 3, 0);
+            }
+        }
+        g_triBenchT[2] = hle_bench_clock() - t;
+    }
+    t = hle_bench_clock();
+    for (u32 i = 0; i < N_TB; i++) {
+        for (int h = 0; h < 2; h++) {
+            g->fpr[1].ps0 = g->fpr[1].ps1 = 0.75;
+            tri_fabs(g, 0, 1, 0x8007FD90u); tri_frsp(g, 2, 0, 0x8007FD94u);
+            tri_lfs0(g, 0x358637BDu); tri_fcmpo0(g, 2, 0, 0x8007FD9Cu);
+            tri_lfs0(g, 0x41200000u); tri_fdivs(g, 1, 0, 1, 0x8007FDB0u);
+        }
+        tri_fneg(g, 0, 1, 0x8026F560u);
+    }
+    g_triBenchT[3] = hle_bench_clock() - t;
+    t = hle_bench_clock();
+    for (u32 i = 0; i < N_TB; i++) {
+        u8* fr = w + LO;
+        for (int k = 0; k < 13; k++) ramp_wr32a(fr + 120 + 4 * (k % 9), tri_mov(g, ld32(fr + 60 + 4 * (k % 4))));
+        for (int k = 0; k < 4; k++) { tri_lfs0(g, ld32(fr + 72)); ramp_wr32a(fr + 92, tri_stfs0(g)); }
+    }
+    g_triBenchT[4] = hle_bench_clock() - t;
+    if (g1.pc == PC_CB && cb_known()) {
+        t = hle_bench_clock();
+        bool tk = g_tchkOn;
+        g_tchkOn = true;  // (cb_run keeps the poly bytes it overwrites: put back after each run)
+        for (u32 i = 0; i < N_TB; i++) {
+            *g = g1; memcpy(w, w1, W); cb_run(g);
+            if (g_cbSet) { memcpy(g_mem + (g_cbPoly + 4u - 0x80000000u), g_cbOld, 2); memcpy(g_mem + (g_cbDst - 0x80000000u), g_cbOld + 2, 36); }
+        }
+        g_triBenchT[5] = hle_bench_clock() - t;
+        g_tchkOn = tk;
+    }
+    for (u8 k = 1; k <= 5; k++) {  // the path to each stop point
+        g_triStop = k;
+        t = hle_bench_clock();
+        for (u32 i = 0; i < N_TB; i++) { *g = g0; memcpy(w, w0, W); tri_run(g); }
+        g_triBenchT[5 + k] = hle_bench_clock() - t;
+    }
+    g_triStop = 0;
+    g_cbOn = cb0;
+    *g = g0;
+    memcpy(w, w0, W);
+    g_triBenchDone = true;
+}
+
 u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     bs_hook(g);
@@ -1675,6 +1787,7 @@ u32 hle_run(Gekko* g, u32 budget) {
         return 0;  // declined: the renderer runs
     }
     if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
+    if (g_paneStat && g->pc == 0x802F67E0u) { pane_note(g); return 0; }  // (counted; the guest code runs)
     if (port_is_hook(g->pc)) { u32 n = port_run_hook(g); if (n) return n; }  // (not taken: the guest code runs)
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT && g->pc != PC_LOOP) {
@@ -1707,18 +1820,23 @@ u32 hle_run(Gekko* g, u32 budget) {
     // Timed one call in 16 (a clock read is a system call, ~200 cycles: two a call were ~1.3% of core 0 here).
     u64 t0 = g_profClock && !(g_shdwStats[0] & 15) ? g_profClock() : 0;
     if (hle_shdw_begin_hook) hle_shdw_begin_hook();
+    g_shWhere = g_shmOn ? 1 : 2;
     u32 n = g_shmOn ? shm_run(g, budget) : scan(g, budget);
     // The triangle path natively while the walk stops there, then the walk again from the skip (--shdwtri).
     while (n && g_triOn && g->pc == PC_TRI && tri_known()) {
+        if (g_triBench && ++g_triBenchN == g_triBench) tri_bench(g);
         u32 t = tri_run(g);
         if (!t) break;
         n += t;
         if (g->pc != PC_NEXT || n >= budget) break;
+        g_shWhere = g_shmOn ? 1 : 2;
         u32 m = g_shmOn ? shm_run(g, budget - n) : scan(g, budget - n);
         if (!m) break;
         n += m;
     }
+    g_shWhere = 7;
     if (hle_shdw_end_hook) hle_shdw_end_hook();
+    g_shWhere = 0;
     if (t0) g_shdwStats[3] += (g_profClock() - t0) * 16;
     g_shdwStats[0]++;
     g_shdwStats[2] += n;

@@ -1061,6 +1061,14 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     default.** Both: heavy area 6.693 (+1.3%), Ordon 9.377 (+1.2%), title 36.93 / 19.44 / 13.19 (+0.7% / 0 / +0.5%).
   - Confirmed losses: `--crstub` 6.546 (-1.0%), `--befloat` 6.557 (-0.8%), `--calls` 6.532 (-1.2%), `--fastfloat`
     6.567 (-0.6%), `--relayout` 20.4% speed (-7.6%, with stalls); `--pipeps` 6.608 (even).
+- **J3D's per-model work, probed for memoization (jobs 672-675, 678-680, 10-20; heavy area, `--memo ADDR`; the probe's
+  table of previous calls now keyed by object, 512 entries, allocated on first use: 16 in turn never met a model
+  twice):** J3DModel::calcMaterial 0x803276EC **91% of calls repeat their inputs exactly** (4,841 of 5,310 per 10 s;
+  1,321 guest instructions, 124 input words a call), but that is ~0.7M guest instructions a second, under 1% of core
+  0's guest work. J3DModel::calc 0x80327CF0 22% (3,063 instructions a call), J3DJoint::recursiveCalc 0x8032F3F8 9%
+  (the view matrix at 0x80434bf0.. and an animation word change every frame). J3DMaterial::diff 0x803167D8 and
+  J3DModel::diff 0x803279A0 could not be probed: every call stops on an exception in the interpreter run (the OS's lazy
+  FP switch). **Not a lever** (C28).
 - **cXyz operator stand-ins (`--psxyz`, jobs 660-663, 10-20; operator+, operator-, operator* translated in direct
   mode, 2.8% of the heavy area's core 0 between them in job 630's profile; PC HLE_CHECK 0 of 3,024,366 PS calls
   differed):** heavy area 6.672 -> 6.611 (-0.9%), Ordon 9.325 -> 9.319 (even). **Off.** Direct-mode stand-ins are entry
@@ -1139,6 +1147,16 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     58% of its load/store stalls: ~5,300 cycles a triangle for ~150 statements. The callback's guest code runs between
     triangles and evicts the stand-in (hle_run with the path inlined is 8.9 KB, the walk 7.9 KB, replay 3.5 KB, against a
     16 KB I-cache).
+  - **Where the stand-in's time goes (jobs 676-677, '# shdw where 10s', a phase byte the core-0 sampler counts; later
+    stretch, share of all core-0 samples):** walk replay 7.3%, the path's reads and copies 6.3%, its vector maths
+    10.7%, GetTriPla and the call set-up 4.3% (the path ~21%); with `--shdwcb` the callback adds 10.5% (as much as its
+    guest code cost). **On-device bench (`--tribench N`, jobs 681-682: one later-stretch triangle's state, each piece
+    4,000 times, warm caches):** the whole path ~4,200 cycles (reads 660, getPolyCode 120, first cross + dot 800,
+    scale + add + second cross + dot 1,190, scale + add + GetTriPla 1,180, plane and set-up 280); the eight PSVEC
+    operations 1,250 (~156 each), the 17 lfs / stfs moves 780. So it is not the I-cache: every piece is slow alike,
+    VFP11 latency in dependent single-precision chains (one PSVEC op after another, stores between them) plus the
+    byte-swapped loads and stores. Interleaving the two independent cross / dot / scale chains would be the next step
+    for it; it pays only in the title (gameplay +0.2-0.3% for the whole path).
   - **The callback natively too (`--shdwcb`, off):** psdRealCallBack and dDlst_shadowPoly_c::set (light, plane and box
     tests; the triangle pushed off the plane), so a triangle never leaves native code. PC: 105,058 runs, 86,597 through
     the callback, 0 differed. 2DS: later stretch 22.48 against 22.46% (job 664 against 665): **neutral**, so the cost is

@@ -86,6 +86,8 @@ void jitsample_stacks(const u8* mem1) { g_mem1 = mem1; }
 // for the GX thread to drain / other), the GX thread (working / its ring empty / waiting for the vertex worker / waiting
 // for the GPU) and the worker (working / idle), counted together: which resource the others wait on, sample by sample.
 extern volatile u8 g_c0Wait, g_vwBusyNow;
+extern volatile u8 g_shWhere;  // hle_tp.c: where the ShdwDraw stand-in is
+static volatile u32 g_shwN[8];
 static volatile u32 g_joint[4][4][2];
 static inline u32 gx_state(u8 w) {
     if (w == 0) return 1;                     // idle/ring
@@ -106,6 +108,7 @@ static void sampler(void* arg) {
             g_whereN[w < WH_N ? w : 0]++;
         }
         { u8 gw = g_gxWhere; g_gxwN[gw < GXW_N ? gw : GXW_N - 1]++; }
+        { u8 sw = g_shWhere; if (sw) g_shwN[sw & 7]++; }
         {
             u8 cw = g_c0Wait, gw = g_gxWhere, vb = g_vwBusyNow;
             u32 c0 = cw == 1 ? 1 : cw == 2 ? 2 : jit_in_run ? 0 : 3;
@@ -209,6 +212,17 @@ void jitsample_report(FILE* f, const Jit* j) {
                 g_joint[a][b][c] = 0;
             }
             fprintf(f, "\n");
+        }
+        {
+            static const char* const shn[8] = { "", "replay", "walk", "path reads", "path maths", "GetTriPla", "callback", "hle_run" };
+            u32 sh = 0;
+            for (int k = 1; k < 8; k++) sh += g_shwN[k];
+            if (sh) {
+                fprintf(f, "# shdw where 10s (share of all core-0 samples):");
+                for (int k = 1; k < 8; k++) fprintf(f, " %s %.1f%%", shn[k], tot > 0 ? 100.0 * g_shwN[k] / tot : 0.0);
+                fprintf(f, "\n");
+            }
+            for (int k = 0; k < 8; k++) g_shwN[k] = 0;
         }
         fprintf(f, "# core0 outside compiled code 10s:");
         for (int k = 0; k < WH_N; k++) {

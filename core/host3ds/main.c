@@ -492,6 +492,8 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
+    bool panestat;  // --panestat on (measurement): count J2DPane::draw's pane classes ('# pane types 10s')
+    u32 tribench;  // --tribench N (measurement): time the triangle path's pieces at its Nth run (hle_tp.c tri_bench)
     bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c; neutral, jobs 664-665)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (on), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
     bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
@@ -605,6 +607,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--shdwmemo")) o->shdwmemo = !strcmp(v, "on");
         else if (!strcmp(a, "--shdwtri")) o->shdwtri = !strcmp(v, "on");
         else if (!strcmp(a, "--shdwcb")) o->shdwcb = !strcmp(v, "on");
+        else if (!strcmp(a, "--tribench")) o->tribench = (u32)strtoul(v, NULL, 10);
+        else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
@@ -1106,6 +1110,8 @@ static const char* run(const char* path) {
         hle_set_shdw_memo(g_opt.shdwmemo && !g_opt.abShdwmemo);  // --ab shdwmemo starts off
         hle_set_shdw_tri(g_opt.shdwtri && !g_opt.abShdwtri);  // --ab shdwtri starts off
         hle_set_shdw_cb(g_opt.shdwcb);
+        { extern bool g_paneStat; g_paneStat = g_opt.panestat; }
+        if (g_opt.tribench) { extern u32 g_triBench; extern u64 (*hle_bench_clock)(void); g_triBench = g_opt.tribench; hle_bench_clock = svcGetSystemTick; }
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
@@ -1740,6 +1746,22 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_triStats[0] - lastTri[0]), (unsigned long long)(g_triStats[1] - lastTri[1]),
                                 (unsigned long long)(g_triStats[3] - lastTri[3]));
                         memcpy(lastTri, g_triStats, sizeof lastTri);
+                        { extern bool g_triBenchDone; extern u64 g_triBenchT[16]; static bool said;
+                          if (g_triBenchDone && !said) {  // ticks of the 268 MHz system clock; core 0 runs at 804 MHz: x3 cycles
+                              said = true;
+                              static const char* const nm[11] = { "restore", "restore + path", "8 PSVEC ops", "float ops", "17 moves", "restore + callback",
+                                  "restore + reads", "+ getPolyCode", "+ first cross and dot", "+ scale, add, second cross and dot", "+ scale, add, GetTriPla" };
+                              fprintf(g_perf, "# tri bench (core-0 cycles a run, 4000 runs each):");
+                              for (int k = 0; k < 11; k++) fprintf(g_perf, " %s %.0f", nm[k], (double)g_triBenchT[k] * 3.0 / 4000.0);
+                              fprintf(g_perf, "\n");
+                          } }
+                        { extern bool g_paneStat; extern u32 g_paneVt[32], g_paneN[32], g_paneOther;
+                          if (g_paneStat) {
+                              fprintf(g_perf, "# pane types 10s (vtable calls):");
+                              for (int k = 0; k < 32 && g_paneVt[k]; k++) { fprintf(g_perf, " %08lx %lu", (unsigned long)g_paneVt[k], (unsigned long)g_paneN[k]); g_paneN[k] = 0; }
+                              fprintf(g_perf, "; other %lu\n", (unsigned long)g_paneOther);
+                              g_paneOther = 0;
+                          } }
                         static u64 lastCb[4];
                         if (hle_shdw_cb()) fprintf(g_perf, "# shdw callback 10s: set %llu, returned %llu, poly full %llu, not taken %llu\n",
                                 (unsigned long long)(g_cbStats[0] - lastCb[0]), (unsigned long long)(g_cbStats[1] - lastCb[1]),

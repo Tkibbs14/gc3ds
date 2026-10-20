@@ -98,12 +98,14 @@ void memo_access(Gekko* g, u32 ea, u32 size, bool write) {
     for (u32 w = first; w <= last; w += 4) note_word(g, w, write, write && w >= ea && w + 4 <= ea + size);
 }
 
-// The previous call's inputs per object (r3), kept whole for the diagnosis of misses.
-#define KEEP 16
-#define PREV_MAX 8192u
+// The previous call's inputs per object (r3), kept for the diagnosis of misses: a table by r3 (~1.1 MB; the J3D candidates are
+// called for hundreds of models a frame; 16 entries in turn never met the same model twice, jobs 674-675), allocated
+// on the first probe (it was 1 MB of static memory in every build). A call with more inputs than PREV_MAX keeps only
+// their hash, so a miss there counts but is not diagnosed word by word.
+#define KEEP 512u
+#define PREV_MAX 256u
 typedef struct { u32 r3; u64 hash, key; u32 n; u32 rd[PREV_MAX][2]; u32 regs[12]; } Prev;
-static Prev g_prev[KEEP];
-static u32 g_prevNext;
+static Prev* g_prev;
 // Misses diagnosed: calls with the key registers different (per register), with another input count, and per input
 // word that changed: how often, by address (a small table of the most frequent).
 u64 g_memoDiag[16];  // [0] key regs differ, [1] input count differs, [2] same count but words differ, [3] words differing (sum)
@@ -162,8 +164,15 @@ u32 memo_probe(Gekko* g) {
     for (int r = 1; r <= 10; r++) regs[r - 1] = entryRegs[r];
     regs[10] = entryRegs[13];
     regs[11] = (u32)(keyOther ^ (keyOther >> 32));
+    if (!g_prev) g_prev = calloc(KEEP, sizeof *g_prev);
+    if (!g_prev) return n;
     Prev* p = NULL;
-    for (u32 i = 0; i < KEEP; i++) if (g_prev[i].r3 == r3 && g_prev[i].n) p = &g_prev[i];
+    u32 slot = (r3 >> 2) * 2654435761u % KEEP;
+    for (u32 k = 0; k < 8; k++) {  // (a short probe; a full neighbourhood replaces its first slot)
+        Prev* q = &g_prev[(slot + k) % KEEP];
+        if (q->n && q->r3 == r3) { p = q; break; }
+        if (!q->n) { slot = (slot + k) % KEEP; break; }
+    }
     if (p && p->hash == h && p->n == g_nrd) st->hits++;
     else if (p) {
         st->misses++;
@@ -173,7 +182,7 @@ u32 memo_probe(Gekko* g) {
         if (p->n != g_nrd) g_memoDiag[1]++;
         else {
             u32 diff = 0;
-            for (u32 i = 0; i < g_nrd && i < PREV_MAX; i++) {
+            for (u32 i = 0; i < g_nrd && i < PREV_MAX; i++) {  // (beyond PREV_MAX: the hash alone)
                 if (p->rd[i][0] == g_rd[i][0] && p->rd[i][1] == g_rd[i][1]) continue;
                 diff++;
                 u32 a = g_rd[i][0], k;
@@ -183,7 +192,7 @@ u32 memo_probe(Gekko* g) {
             if (diff) { g_memoDiag[2]++; g_memoDiag[3] += diff; }
         }
     } else {
-        p = &g_prev[g_prevNext++ % KEEP];
+        p = &g_prev[slot];
         p->r3 = r3;
         st->firsts++;
     }
