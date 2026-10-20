@@ -1480,6 +1480,13 @@ epi:
 }
 
 
+// The fast form's words and singles (tri_run v4).
+bool g_triFast = true;  // --trifast off: the PSVEC-at-a-time form only (comparison)
+u64 g_triFastN;         // triangles the fast form took
+static inline float U2Ft(u32 w) { float f; memcpy(&f, &w, 4); return f; }
+static inline u32 bitsft(float f) { u32 w; memcpy(&w, &f, 4); return w; }
+static inline u32 PSTFt(float f) { u32 w = bitsft(f); return (w & 0x7F800000u) ? w : w & 0x80000000u; }  // (psq_st's flush)
+static inline bool tri_plw(u32 w) { u32 e = w & 0x7F800000u; return (e && e != 0x7F800000u) || !(w << 1); }  // zero or normal
 static u32 tri_run(Gekko* g) {
     g_cbRan = false;
     g_shWhere = 3;
@@ -1517,6 +1524,122 @@ static u32 tri_run(Gekko* g) {
             !tri_clear(g->gpr[13] - 29696u, 4, r1) || !tri_clear(ld32(fr + 8), 52, r1)) { g_triStats[3]++; g_triWhy[5]++; return 0; }
         for (int k = 0; k < 3; k++) { pw[k] = ld32(a + 4 * k); nw[k] = ld32(b + 4 * k); }
         eps = ld32(e); cbo = ld32(fr + 8); cbf = ld32(o + 48);
+    }
+    // ---- the fast form (v4): every input loaded first, both cross / dot / scale / add chains computed side by side in
+    // registers (the VFP's latency overlapped: one chain after another, through memory, cost ~4,200 cycles a triangle,
+    // jobs 681-682), then each exit's final frame words written once. Same operations in the same order per value as the
+    // PSVEC stand-ins (hle_psops.h), so the same bits; taken only when every input and result on the path is zero or
+    // normal (PSTF's flush, the dot tests, the divides), else the form below, one PSVEC call at a time, runs.
+    if (!through && g_triFast) {
+        const u8 *qa = g_mem + (n1 - 0x80000000u), *qb = g_mem + (n2 - 0x80000000u), *qc = g_mem + (n3 - 0x80000000u),
+                 *qd = g_mem + (n4 - 0x80000000u);
+        u32 wa[3], wb[3], wc[3], wd[3];
+        u32 bad = !tri_plw(hgt) | !tri_plw(eps);
+        for (int k = 0; k < 3; k++) {
+            wa[k] = ld32(qa + 4 * k); wb[k] = ld32(qb + 4 * k); wc[k] = ld32(qc + 4 * k); wd[k] = ld32(qd + 4 * k);
+            bad |= !tri_plw(wa[k]) | !tri_plw(wb[k]) | !tri_plw(wc[k]) | !tri_plw(wd[k]) | !tri_plw(pw[k]);
+        }
+        if (!bad) {
+            const float a0 = U2Ft(wa[0]), a1 = U2Ft(wa[1]), a2 = U2Ft(wa[2]);  // n1
+            const float b0 = U2Ft(wb[0]), b1 = U2Ft(wb[1]), b2 = U2Ft(wb[2]);  // n2
+            const float c0 = U2Ft(wc[0]), c1 = U2Ft(wc[1]), c2 = U2Ft(wc[2]);  // n3
+            const float d0 = U2Ft(wd[0]), d1 = U2Ft(wd[1]), d2 = U2Ft(wd[2]);  // n4
+            const float p0 = U2Ft(pw[0]), p1 = U2Ft(pw[1]), p2 = U2Ft(pw[2]), h = U2Ft(hgt), ep = U2Ft(eps);
+            // PSVECCrossProduct(n1, n2) and (n4, n1), as stored (PSTF)
+            const u32 x1 = PSTFt(msub1(a1, b2, b1 * a2)), y1 = PSTFt(-msub1(a0, b2, b0 * a2)), z1 = PSTFt(-msub1(a1, b0, b1 * a0));
+            const u32 x2 = PSTFt(msub1(d1, a2, a1 * d2)), y2 = PSTFt(-msub1(d0, a2, a0 * d2)), z2 = PSTFt(-msub1(d1, a0, a1 * d0));
+            const float X1 = U2Ft(x1), Y1 = U2Ft(y1), Z1 = U2Ft(z1), X2 = U2Ft(x2), Y2 = U2Ft(y2), Z2 = U2Ft(z2);
+            // PSVECDotProduct(cross, n3): f1 = { madd(x, c0, y * c1) + z * c2, z * c2 }
+            const float t1 = Z1 * c2, t2 = Z2 * c2;
+            const float dot1 = madd1(X1, c0, Y1 * c1) + t1, dot2 = madd1(X2, c0, Y2 * c1) + t2;
+            const float ad1 = __builtin_fabsf(dot1), ad2 = __builtin_fabsf(dot2);
+            // GetTriPla's plane: n1 copied, d = -PSVECDotProduct(n1, pos)
+            const float tN = a2 * p2, dN = madd1(a0, p0, a1 * p1) + tN;
+            bad = !tri_nrmf(dot1) | !tri_nrmf(t1) | !tri_plw(x1) | !tri_plw(y1) | !tri_plw(z1);
+            u32 ex = 0;  // 1: skip at the first test, 2: at the second, 3: to the callback
+            u32 s1[3] = { 0 }, v2[3] = { 0 }, s2[3] = { 0 }, v1[3] = { 0 };
+            if (!bad) {
+                if (ad1 < ep) ex = 1;
+                else {
+                    const float q1 = h / dot1;
+                    const u32 sx = PSTFt(X1 * q1), sy = PSTFt(Y1 * q1), sz = PSTFt(Z1 * q1);
+                    s1[0] = sx; s1[1] = sy; s1[2] = sz;
+                    v2[0] = PSTFt(U2Ft(sx) + p0); v2[1] = PSTFt(U2Ft(sy) + p1); v2[2] = PSTFt(U2Ft(sz) + p2);
+                    bad |= !tri_nrmf(q1) | !tri_plw(sx) | !tri_plw(sy) | !tri_plw(sz) | !tri_plw(v2[0]) | !tri_plw(v2[1]) | !tri_plw(v2[2]);
+                    bad |= !tri_nrmf(dot2) | !tri_nrmf(t2) | !tri_plw(x2) | !tri_plw(y2) | !tri_plw(z2);
+                    if (ad2 < ep) ex = 2;
+                    else {
+                        const float q2 = h / dot2;
+                        const u32 ux = PSTFt(X2 * q2), uy = PSTFt(Y2 * q2), uz = PSTFt(Z2 * q2);
+                        s2[0] = ux; s2[1] = uy; s2[2] = uz;
+                        v1[0] = PSTFt(U2Ft(ux) + p0); v1[1] = PSTFt(U2Ft(uy) + p1); v1[2] = PSTFt(U2Ft(uz) + p2);
+                        bad |= !tri_nrmf(q2) | !tri_plw(ux) | !tri_plw(uy) | !tri_plw(uz) | !tri_plw(v1[0]) | !tri_plw(v1[1]) | !tri_plw(v1[2]);
+                        bad |= !tri_nrmf(dN) | !tri_nrmf(tN);
+                        ex = 3;
+                    }
+                }
+            }
+            if (!bad) {
+                g_triFastN++;
+                const u32 r31 = g->gpr[31];
+                // getPolyCode, ChkShdwDrawThrough (the words the call leaves: see the form below)
+                TW(fr - 32, r1); TW(fr + 4, 0x8007FCF4u); TW(fr - 4, r31); TW(fr - 24, cp);
+                for (int k = 0; k < 5; k++) TW(fr + 100 + 4 * k, cw[k]);
+                for (int k = 0; k < 3; k++) TW(fr + 120 + 4 * k, pw[k]);
+                TW(fr + 2208, n1); TW(fr + 2204, n3);
+                g->gpr[31] = prism;
+                u32 n = 52 + 31 + 15 + 3 + 8 + 5;
+                g->gpr[3] = r1 + 24u; g->gpr[4] = n3; g->gpr[5] = r1 + 24u; g->gpr[0] = e1 * 12u;
+                g->lr = 0x8007FD90u;
+                const float dt = ex == 1 ? dot1 : dot2, tt = ex == 1 ? t1 : t2;
+                if (ex <= 2) {
+                    if (ex == 1) { TW(fr + 24, x1); TW(fr + 28, y1); TW(fr + 32, z1); }
+                    else {
+                        TW(fr + 24, s1[0]); TW(fr + 28, s1[1]); TW(fr + 32, s1[2]);
+                        TW(fr + 144, v2[0]); TW(fr + 148, v2[1]); TW(fr + 152, v2[2]);
+                        TW(fr + 12, x2); TW(fr + 16, y2); TW(fr + 20, z2);
+                        n += 5 + 7 + 4 + 9 + 8 + 15 + 3 + 8 + 5;
+                        g->gpr[0] = e2 * 12u; g->gpr[3] = r1 + 12u; g->gpr[5] = r1 + 12u; g->lr = 0x8007FDF4u;
+                    }
+                    // fabs f0,f1; frsp f2,f0; lfs f0,eps; fcmpo cr0,f2,f0 (less: the skip)
+                    g->fpr[1].ps0 = (double)dt; g->fpr[1].ps1 = (double)tt;
+                    g->fpr[2].ps0 = g->fpr[2].ps1 = (double)__builtin_fabsf(dt);
+                    g->fpr[0].ps0 = g->fpr[0].ps1 = (double)ep;
+                    g->cr = (g->cr & 0x0FFFFFFFu) | (8u << 28);
+                    g->fpscr = (g->fpscr & ~FPSCR_FPCC) | (8u << 12);
+                    g->pc = PC_NEXT;
+                    g_triStats[1]++;
+                    return n;
+                }
+                // to the callback: both halves, GetTriPla, the plane
+                TW(fr + 24, s1[0]); TW(fr + 28, s1[1]); TW(fr + 32, s1[2]);
+                TW(fr + 144, v2[0]); TW(fr + 148, v2[1]); TW(fr + 152, v2[2]);
+                TW(fr + 12, s2[0]); TW(fr + 16, s2[1]); TW(fr + 20, s2[2]);
+                TW(fr + 132, v1[0]); TW(fr + 136, v1[1]); TW(fr + 140, v1[2]);
+                n += 5 + 7 + 4 + 9 + 8 + 15 + 3 + 8 + 5 + 5 + 7 + 4 + 9;
+                const u32 vt = 0x803A37C0u;
+                const u32 dw = bitsft(-dN);  // (stfs of the negated dot, a single: its bits)
+                TW(fr + 96, vt); TW(fr - 48, r1); TW(fr + 4, 0x8007FE48u);
+                TW(fr - 12, g->gpr[29]); TW(fr - 8, g->gpr[30]); TW(fr - 4, prism);
+                TW(fr - 40, n1); TW(fr - 20, vt); TW(fr - 64, r1 - 48u); TW(fr - 44, 0x8007E938u); TW(fr - 52, pp);
+                TW(fr - 36, wa[0]); TW(fr - 32, wa[1]); TW(fr - 28, wa[2]); TW(fr - 24, dw);
+                TW(fr + 76, vt);
+                TW(fr + 60, wa[0]); TW(fr + 64, wa[1]); TW(fr + 68, wa[2]); TW(fr + 72, dw);
+                TW(fr + 80, wa[0]); TW(fr + 84, wa[1]); TW(fr + 88, wa[2]); TW(fr + 92, dw);
+                n += 7 + 99 + 20;
+                g->fpr[1].ps0 = (double)dN; g->fpr[1].ps1 = (double)tN;
+                g->fpr[0].ps0 = g->fpr[0].ps1 = (double)(-dN);
+                g->fpr[2].ps0 = g->fpr[2].ps1 = (double)ad2;
+                g->cr = (g->cr & 0x0FFFFFFFu) | ((ad2 > ep ? 4u : 2u) << 28);
+                g->fpscr = (g->fpscr & ~FPSCR_FPCC) | ((ad2 > ep ? 4u : 2u) << 12);
+                g->gpr[0] = vt; g->gpr[3] = cbo; g->gpr[4] = r1 + 120u; g->gpr[5] = 0; g->gpr[6] = 1; g->gpr[7] = 2; g->gpr[8] = r1 + 80u;
+                g->gpr[11] = r1; g->gpr[12] = cbf;
+                g->ctr = cbf; g->lr = TRI_RET; g->pc = cbf & ~3u;
+                g_triStats[0]++;
+                if (g_cbOn && g->pc == PC_CB && cb_known()) { g_shWhere = 6; u32 m = cb_run(g); if (m) { n += m; g_cbRan = true; } }
+                return n;
+            }
+        }
     }
     if (__builtin_expect(g_triStop == 1, 0)) return 1;  // (tri_bench: the cost up to here)
     // ---- 0x8007fce4: getPolyCode(r15, tri, r1 + 100) ----
@@ -1618,6 +1741,7 @@ static struct { u64 calls, bad, fpscr, cb; } g_tchk;
 static void tchk_report(void) {
     fprintf(stderr, "TRI_CHECK refusals: %llu %llu %llu %llu %llu %llu\n", (unsigned long long)g_triWhy[0], (unsigned long long)g_triWhy[1], (unsigned long long)g_triWhy[2], (unsigned long long)g_triWhy[3], (unsigned long long)g_triWhy[4], (unsigned long long)g_triWhy[5]);
     fprintf(stderr, "TRI_CHECK callback: %llu runs through it; set %llu, returned %llu, full %llu, not taken %llu\n", (unsigned long long)g_tchk.cb, (unsigned long long)g_cbStats[0], (unsigned long long)g_cbStats[1], (unsigned long long)g_cbStats[2], (unsigned long long)g_cbStats[3]);
+    fprintf(stderr, "TRI_CHECK fast form: %llu runs\n", (unsigned long long)g_triFastN);
     fprintf(stderr, "TRI_CHECK: %llu runs compared with the interpreter, %llu differed, %llu with another FPSCR; to the callback %llu, skipped %llu, refused %llu\n",
             (unsigned long long)g_tchk.calls, (unsigned long long)g_tchk.bad, (unsigned long long)g_tchk.fpscr,
             (unsigned long long)g_triStats[0], (unsigned long long)g_triStats[1], (unsigned long long)g_triStats[3]);
@@ -1801,7 +1925,7 @@ u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     static int env = -1;
     if (env < 0) { env = 1; if (getenv("GC3DS_SHDWMEMO")) { g_shmOn = true; atexit(shm_report); } }
-    { static int te = -1; if (te < 0) { te = 1; if (getenv("GC3DS_SHDWTRI")) g_triOn = true; if (getenv("GC3DS_SHDWCB")) g_cbOn = true; } }
+    { static int te = -1; if (te < 0) { te = 1; if (getenv("GC3DS_SHDWTRI")) g_triOn = true; if (getenv("GC3DS_SHDWCB")) g_cbOn = true; if (getenv("GC3DS_TRIFAST0")) g_triFast = false; } }
     sk_before(g);
     u32 n = g_shmOn ? shm_run(g, budget) : scan_live(g, budget);
     sk_after(g);

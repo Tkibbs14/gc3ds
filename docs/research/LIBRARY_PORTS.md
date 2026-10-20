@@ -69,6 +69,15 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.
+- **The J2D pane walk, scoped (2026-10-20; jobs 630-631 profiles, 683-684 `--panestat on`):** J2DPane::draw is 25.4% of
+  Ordon's core 0 inclusive (dMeter2Draw_c::draw 14.6%, J2DScreen::draw 13.1%), but its own work is ~3% self; the rest
+  is what it draws (J2DPictureEx's port, text, GX calls). Gameplay draws five pane classes, per 10 s in Ordon: J2DPictureEx
+  20,090, J2DPane (no drawSelf work) 14,504, J2DTextBoxEx 3,430, J2DScreen 490, J2DPicture 392 (~400 panes a frame;
+  heavy area the same mix, 0.7x). A native walk could take every subtree without text boxes (pre-scanned at each pane's
+  hook, J2DPictureEx's port inside one shared context, pane stores written through with an undo list), worth about the
+  walk's ~3% plus the hook exits; text (J2DTextBoxEx: J2DPrint, JUTResFont) would be the next piece. Not started:
+  the per-pane port give-up rate (~2% of J2DPictureEx calls, float edge cases) would abort large subtrees, so the
+  give-ups' cause comes first.
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
   would take (MSR.FP off: the OS's lazy FP switch).

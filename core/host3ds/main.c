@@ -492,6 +492,7 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
+    bool trifast;  // --trifast on|off (on): the triangle path's fast form (hle_tp.c tri_run v4)
     bool panestat;  // --panestat on (measurement): count J2DPane::draw's pane classes ('# pane types 10s')
     u32 tribench;  // --tribench N (measurement): time the triangle path's pieces at its Nth run (hle_tp.c tri_bench)
     bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c; neutral, jobs 664-665)
@@ -569,6 +570,7 @@ static void opts_default(RunOpts* o) {
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
+    o->trifast = true;  // the triangle path's fast form (exact; measured by jobs 685+)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
@@ -609,6 +611,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--shdwcb")) o->shdwcb = !strcmp(v, "on");
         else if (!strcmp(a, "--tribench")) o->tribench = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
+        else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
@@ -1111,6 +1114,7 @@ static const char* run(const char* path) {
         hle_set_shdw_tri(g_opt.shdwtri && !g_opt.abShdwtri);  // --ab shdwtri starts off
         hle_set_shdw_cb(g_opt.shdwcb);
         { extern bool g_paneStat; g_paneStat = g_opt.panestat; }
+        { extern bool g_triFast; g_triFast = g_opt.trifast; }
         if (g_opt.tribench) { extern u32 g_triBench; extern u64 (*hle_bench_clock)(void); g_triBench = g_opt.tribench; hle_bench_clock = svcGetSystemTick; }
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off

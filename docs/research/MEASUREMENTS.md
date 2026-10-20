@@ -1157,6 +1157,13 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     VFP11 latency in dependent single-precision chains (one PSVEC op after another, stores between them) plus the
     byte-swapped loads and stores. Interleaving the two independent cross / dot / scale chains would be the next step
     for it; it pays only in the title (gameplay +0.2-0.3% for the whole path).
+  - **v4, the fast form (`--trifast`, on; jobs 685-687):** every input loaded first, both cross / dot / scale / add
+    chains computed side by side in registers, then each exit's final frame words written once; same operations per
+    value as the PSVEC stand-ins, taken when every input and result is zero or normal (else v3 runs). PC: 1,048,860
+    runs with the callback native too, 0 differed, the fast form took all 864,429 that reached the callback. **2DS: later
+    stretch 22.41 -> 23.26% (+3.8%), pictures 6.92 -> 7.45 a second (+7.7%), movie 13.15 -> 13.42%, cutscene even (685
+    against 686); the path's share of core 0 21.4 -> 9.9% ('# shdw where'); bench ~2,550 cycles a triangle against
+    ~4,200.**
   - **The callback natively too (`--shdwcb`, off):** psdRealCallBack and dDlst_shadowPoly_c::set (light, plane and box
     tests; the triangle pushed off the plane), so a triangle never leaves native code. PC: 105,058 runs, 86,597 through
     the callback, 0 differed. 2DS: later stretch 22.48 against 22.46% (job 664 against 665): **neutral**, so the cost is
