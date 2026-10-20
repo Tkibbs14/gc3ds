@@ -142,7 +142,7 @@ static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixInde
 // __GXSendFlushPrim (direct mode): the GX SDK's dummy primitive of zero words after draws, the game's hottest function
 // in the heavy Ordon area (3.4% of core 0, job 451): its words go to the pipe as one block. --psflush, --ab psflush.
 static const char kPsFlush[] = "__GXSendFlushPrim";
-static bool g_psflushOn;  // off: neutral on the 2DS (jobs 452-453); --psflush on
+static bool g_psflushOn;  // on: heavy area +1.7%, Ordon +0.8% (separate runs, jobs 640, 650-654; its A/B, jobs 452-453, read neutral); --psflush off
 // cXyz's operator+, operator- and operator* (d_com / SComponent; 20 instructions around a PSVEC call): 2.8% of the
 // heavy area's core 0 between them (job 630). --psxyz on.
 static const char kPsXyz[] = "__pl,__mi,__ml";
@@ -489,7 +489,7 @@ typedef struct {
     bool abFlushhook;  // --ab flushhook: the __GXSendFlushPrim port on and off (hle column bit 7)
     bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
     bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
-    bool psflush, abPsflush;  // --psflush on|off (off), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
+    bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (off), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
@@ -566,6 +566,7 @@ static void opts_default(RunOpts* o) {
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
+    o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
