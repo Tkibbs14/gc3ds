@@ -660,7 +660,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--link")) o->link = !strcmp(v, "on");
         else if (!strcmp(a, "--gx")) o->gxInline = !strcmp(v, "inline");
         else if (!strcmp(a, "--slow")) o->slowInline = !strcmp(v, "inline");
-        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : !strcmp(v, "port") ? 5 : !strcmp(v, "portcommit") ? 6 : 0;
+        else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : !strcmp(v, "port") ? 5 : !strcmp(v, "portcommit") ? 6 : !strcmp(v, "cb") ? 7 : !strcmp(v, "path") ? 8 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
@@ -1068,6 +1068,11 @@ static const char* run(const char* path) {
         hle_shdw_fast_begin_hook = g_opt.pmuSplit == 3 ? pmu_split_begin : g_opt.pmuSplit == 4 ? pmu_split_empty : NULL;
         hle_shdw_fast_end_hook = g_opt.pmuSplit == 3 ? pmu_split_end : NULL;
         if (g_opt.pmuSplit == 3) pmu_split_what("ShdwDraw's fast cells");
+        { extern void (*hle_shdw_tri_begin_hook)(void), (*hle_shdw_tri_end_hook)(void), (*hle_shdw_cb_begin_hook)(void), (*hle_shdw_cb_end_hook)(void);
+          hle_shdw_cb_begin_hook = g_opt.pmuSplit == 7 ? pmu_split_begin : NULL; hle_shdw_cb_end_hook = g_opt.pmuSplit == 7 ? pmu_split_end : NULL;
+          hle_shdw_tri_begin_hook = g_opt.pmuSplit == 8 ? pmu_split_begin : NULL; hle_shdw_tri_end_hook = g_opt.pmuSplit == 8 ? pmu_split_end : NULL;
+          if (g_opt.pmuSplit == 7) pmu_split_what("the native shadow callback");
+          if (g_opt.pmuSplit == 8) pmu_split_what("the triangle path (with the callback when native)"); }
         g_portPmuBegin = g_opt.pmuSplit == 5 ? pmu_split_begin : NULL;
         g_portPmuEnd = g_opt.pmuSplit == 5 ? pmu_split_end : NULL;
         g_portCommitBegin = g_opt.pmuSplit == 6 ? pmu_split_begin : NULL;
