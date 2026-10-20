@@ -83,6 +83,7 @@ screenshots), which is how gameplay save states for benchmarks are made; `--pres
 | `docs/research/MEASUREMENTS.md` | Every measurement, with its job, conditions and what it informs |
 | `docs/research/PERF_LEVERS.md`, `docs/research/REDESIGN_CANDIDATES.md` | Ranked levers; every idea with its evidence and status |
 | `docs/research/DIRECTION_REVIEW.md` | The 2026-10-20 independent review: what limits gc3ds (two walls), library ports by Amdahl, execution models, ranked directions, experiments, ceilings |
+| `docs/research/EMULATOR_CEILING.md` | How far emulation alone can go: today's cost model (~22 cycles per guest instruction), the lower bound, every rejected idea re-examined, proposals with disproving experiments, a roadmap |
 | `docs/research/OUTSIDE_RESEARCH.md` | What published work (other ARM JITs, the TP decomp and Dusklight, frame skipping, 3DS homebrew) says that bears on gc3ds |
 | `docs/OPT_JIT_PLAN.md`, `docs/REGION_JIT_PLAN.md`, `docs/DL_CACHE_PLAN.md`, `docs/GPU_BACKEND_PLAN.md` | Designs |
 | `docs/FINDINGS.md`, `docs/research/GPU_GUIDANCE.md`, `docs/research/PICA200.md`, `docs/ARCHITECTURE.md` | Hardware facts measured on a New 2DS XL, and references |
