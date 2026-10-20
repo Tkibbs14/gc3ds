@@ -20,7 +20,9 @@ their field overwritten in the same block before any exit (dead at the exits: ne
 
 Also the calls (bl): the share whose target is a small leaf (reaches its blr within N instructions with no call, no
 stack frame, no loop and no tail jump), each a call and a return boundary an inlining JIT would remove (H5), and the
-share that goes to the GPR save / restore entries (--gpr-lo / --gpr-hi, TP's _savegpr_14.._restgpr_31).
+share that goes to the GPR save / restore entries (--gpr-lo / --gpr-hi, TP's _savegpr_14.._restgpr_31). And
+function-scope regions (every direct b / bc within a span stays inside, loops included, with and without inlined
+leaves) and how much guest code holds 50-99% of the executed instructions.
 
 Limits: a PC profile (the title's cutscene / later stretch, not gameplay); the 64-instruction block cap, page ends
 and register pressure across internal edges are not modelled.
@@ -280,6 +282,29 @@ def main():
                       for n in (8, 16, 32)))
     top = sorted(calls.items(), key=lambda x: -x[1])[:8]
     print('  top call targets: ' + ', '.join('%08x %.1f%%' % (t, 100.0 * c / max(ncalls, 1)) for t, c in top))
+
+    # function-scope regions (GENERAL_ARCHITECTURE.md section 2): every direct non-linking b / bc within +-span bytes
+    # stays inside, both directions (loops too); then also calls to leaves under 16 instructions inlined, each removing
+    # its bl and one execution of the leaf's blr
+    inl = 0
+    for f, outs in edges.items():
+        w = word(mem, f)
+        if (w >> 26) == 18 and (w & 1) and f in info:
+            inl += 2 * sum(c for t, c in outs if leaf(t, 16))
+    for span in (256, 4096):
+        rem = sum(c for pc, (inst, k, lk, off, c) in info.items()
+                  if k in ('b', 'bc') and not lk and off is not None and -span <= off <= span)
+        a_, b_ = cur - rem, cur - rem - inl
+        print('regions +-%d bytes: %.2f per boundary (-%.1f%%); with leaves under 16 inlined %.2f (-%.1f%%)'
+              % (span, total / max(a_, 1), 100.0 * rem / cur, total / max(b_, 1), 100.0 * (cur - b_) / cur))
+    hot = sorted((c for _, c in executed), reverse=True)
+    acc, marks, out = 0, [0.5, 0.8, 0.9, 0.95, 0.99], []
+    for n, c in enumerate(hot, 1):
+        acc += c
+        while marks and acc >= marks[0] * total:
+            out.append('%d%% in %d KB' % (marks[0] * 100, n * 4 // 1024))
+            marks.pop(0)
+    print('guest code holding the executed instructions: ' + ', '.join(out))
 
 
 if __name__ == '__main__':

@@ -18,6 +18,10 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
+> **Proposed, awaiting the owner (2026-10-20): research/GENERAL_ARCHITECTURE.md** re-ranks for the general-emulator goal:
+> X1 (a PC census of GX redundancy) and X2 (L2 lockdown by master on the L2C-310) first, then zero-flush native calls
+> with the GPR inlining (X3), then a hand-compiled region oracle (X4); the pane walk behind SDK-level work. The queue
+> below stands until the owner decides.
 > **Queue for the next session (set 2026-10-20; one list reconciling DIRECTION_REVIEW.md section 6 and
 > EMULATOR_CEILING.md section 8, emulator first per the owner):**
 > 1. **Inline GPR save / restore in the JIT** (H5; design below, "Next JIT build"). Small build, +1.5-2.5% core 0

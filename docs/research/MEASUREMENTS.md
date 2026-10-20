@@ -1230,6 +1230,10 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Limits:** PC title stretches (tp_pc_4290 may not be the device's cutscene window), not gameplay; the 64-instruction
   block cap, page ends and register-cache pressure across internal edges are not modelled; boundaries are counted,
   not priced per kind (a taken side exit costs what an exit costs today).
+- **Function-scope regions (same profiles, GENERAL_ARCHITECTURE.md section 2):** every direct non-linking b / bc
+  within +-4 KB inside the region, loops included: **13.58 / 13.47 guest instructions per boundary (-57.8 / -59.2%)**;
+  with leaves under 16 instructions inlined **19.11 / 20.44 (-70.0 / -73.1%)** (cut / later). Guest code holding the
+  executed instructions: 90% in 17 KB (cut) / 61 KB (later), 99% in 39 / 228 KB.
 - **Reproduce:** `PCHIST=pc.bin EDGEHIST=edges.bin MEMDUMP=mem.bin gcemu <disc> --load-state S --frames N`, then
   `python3 core/tools/hammock.py pc.bin edges.bin mem.bin --window 8,16,32,64`.
 
