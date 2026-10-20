@@ -63,9 +63,11 @@ bool hle_enabled(void) { return g_on; }
 
 void hle_set_memory(u8* mem1, u32 size) { g_mem = mem1; g_memSize = size; g_known = -1; hle_gd_set_memory(mem1, size); }
 static void tri_invalidate(u32 pa);
+static void cb_invalidate(u32 pa);
 void hle_invalidate(u32 pa) {
     if (pa >> 12 == (PC_ENTRY & 0x0FFFFFFFu) >> 12 || pa >> 12 == (PC_EXIT & 0x0FFFFFFFu) >> 12) g_known = -1;
     tri_invalidate(pa);
+    cb_invalidate(pa);
     hle_gd_invalidate(pa);
     hle_thp_invalidate(pa);
     hle_ps_invalidate(pa);
@@ -1250,7 +1252,217 @@ static u32 tri_ps(Gekko* g, int k, u32 ret) {
 static inline void tri_cr0(Gekko* g, u32 v) { g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(v, 0) | (g->xer >> 31)) << 28); }
 #define TW(p, v) ramp_wr32a((p), (v))
 
+static bool g_tchkOn;  // TRI_CHECK (PC): the callback keeps what it overwrote
+static bool g_cbRan;   // the last tri_run went through the callback natively
+
+// ---- The shadow callback natively (--shdwcb; with --shdwtri) ----
+// d_drawlist.cpp's psdRealCallBack 0x80054688 (the real-time shadow's callback: light direction, plane distance and
+// box tests, then dDlst_shadowPoly_c::set 0x80054288, which stores the triangle pushed off the plane), so a triangle
+// the walk reaches never leaves native code: the path, the callback and ShdwDraw's three instructions after it
+// (0x8007fe98..0x8007fea0) to the next-triangle step. Run only when the callback is this one (recognised by a hash of
+// it, set and the GPR helpers) and the shadow poly's two virtual getters (getTriMax, getTri) are a load-immediate and
+// an add-immediate (decoded from their words). Everything it reads is checked before its first store (not taken:
+// guest code runs the callback, with the path's results in place). The callee frames below r1 are dead state (the
+// owner decision of 2026-10-15 for stand-ins), as are the volatile GPRs other than r0, r3 and r11.
+#define PC_CB 0x80054688u
+static const struct { u32 pc, n; } kCbFns[] = {
+    { 0x80054688u, 0x1CC },  // psdRealCallBack
+    { 0x80054288u, 0x12C },  // dDlst_shadowPoly_c::set
+    { 0x803621CCu, 0x20 },   // _savegpr_25 .. 31
+    { 0x80362218u, 0x20 },   // _restgpr_25 .. 31
+};
+#define CB_HASH 0xB085E3771247559Dull  // FNV-1a 64 of kCbFns' bytes in order (HLE_PRINT_HASH=1 prints it)
+static int g_cbKnown = -1;
+static bool g_cbOn;
+u64 g_cbStats[4];  // set a triangle, returned before set (a test), the shadow poly full, not taken
+void hle_set_shdw_cb(bool on) { g_cbOn = on; }
+bool hle_shdw_cb(void) { return g_cbOn; }
+static void cb_invalidate(u32 pa) {
+    for (u32 i = 0; i < sizeof kCbFns / sizeof kCbFns[0]; i++)
+        if (pa >> 12 == (kCbFns[i].pc & 0x0FFFFFFFu) >> 12 || pa >> 12 == ((kCbFns[i].pc + kCbFns[i].n - 1) & 0x0FFFFFFFu) >> 12) g_cbKnown = -1;
+}
+static bool cb_known(void) {
+    if (g_cbKnown < 0) {
+        u64 h = 0xCBF29CE484222325ull;
+        bool in = g_mem != NULL;
+        for (u32 i = 0; in && i < sizeof kCbFns / sizeof kCbFns[0]; i++) {
+            u32 pa = kCbFns[i].pc & 0x0FFFFFFFu;
+            if (pa + kCbFns[i].n > g_memSize) { in = false; break; }
+            for (u32 k = 0; k < kCbFns[i].n; k++) { h ^= ram_rd8(g_mem, pa + k); h *= 0x100000001B3ull; }
+        }
+#ifndef __3DS__
+        if (getenv("HLE_PRINT_HASH")) fprintf(stderr, "HLE hash of the shadow callback: %016llx\n", (unsigned long long)h);
+#endif
+        g_cbKnown = in && h == CB_HASH;
+    }
+    return g_cbKnown == 1;
+}
+// lfs / stfs of FPR k (the triangle path's f0 versions, for any register).
+static inline void cb_lfs(Gekko* g, int k, u32 w) {
+    u32 e = w & 0x7F800000u;
+    if ((e && e != 0x7F800000u) || !(w << 1)) { float f; memcpy(&f, &w, 4); g->fpr[k].ps0 = g->fpr[k].ps1 = (double)f; return; }
+    u64 d = sf_single_to_double(w); fpr_set0(g, k, d); fpr_set1(g, k, d);
+}
+static inline u32 cb_stfs(const Gekko* g, int k) {
+    double x = g->fpr[k].ps0;
+    float f = (float)x;
+    u32 w; memcpy(&w, &f, 4);
+    u32 e = w & 0x7F800000u;
+    if ((e && e != 0x7F800000u && (double)f == x) || x == 0.0) return w;
+    return sf_double_to_single(fpr_get0(g, k), (GKP(g)->compat & GK_COMPAT_STFS_TINY_ZERO) != 0);
+}
+// fmuls / fadds / fsubs (op 0 / 1 / 2) of two singles: one rounding, as the JIT; anything else through the handler.
+static inline void cb_fs(Gekko* g, int op, int d, int a, int b, u32 pc) {
+    double x = g->fpr[a].ps0, y = g->fpr[b].ps0;
+    if (!tri_nrm(x) || !tri_nrm(y) || (double)(float)x != x || (double)(float)y != y) { tri_fop(g, pc); return; }
+    float r = op == 0 ? (float)(x * y) : op == 1 ? (float)(x + y) : (float)(x - y);
+    bool zero = op == 0 ? (x == 0.0 || y == 0.0) : op == 1 ? x == -y : x == y;
+    if (!tri_nrmf(r) || (r == 0.0f && !zero)) { tri_fop(g, pc); return; }
+    g->fpr[d].ps0 = g->fpr[d].ps1 = (double)r;
+}
+#define CB_LT (g->cr & 0x80000000u)
+#define CB_GT (g->cr & 0x40000000u)
+// Undo for TRI_CHECK (PC): the shadow poly bytes the callback wrote, as they were.
+static u32 g_cbPoly, g_cbDst;
+static u8 g_cbOld[2 + 36];
+static bool g_cbSet;
+
+static u32 cb_run(Gekko* g) {
+    const u32 r1 = g->gpr[1], r2 = g->gpr[2];
+    const u32 cbo = g->gpr[3], vtx = g->gpr[4], i1 = g->gpr[5], i2 = g->gpr[6], i3 = g->gpr[7], pla = g->gpr[8];
+    g_cbSet = false;
+    // ---- reads ----
+    u8 *fr = tri_p(r1 - 96u, 96 + 100, 8), *pO = tri_p(cbo, 64, 4), *pK = tri_p(r2 - 31192u, 48, 4), *pQ = tri_p(pla, 16, 4);
+    if (!fr || !pO || !pK || !pQ || i1 > 2 || i2 > 2 || i3 > 2 || vtx != r1 + 120u) { g_cbStats[3]++; return 0; }
+    fr += 96;  // fr[o]: r1 + o
+    const u32 lv = ld32(pO + 56), ce = ld32(pO + 52), poly = ld32(pO + 60);
+    u8 *pL = tri_p(lv, 12, 4), *pC = tri_p(ce, 12, 4), *pP = tri_p(poly, 8, 4);
+    if (!pL || !pC || !pP || !tri_clear(cbo, 64, r1) || !tri_clear(lv, 12, r1) || !tri_clear(ce, 12, r1)) { g_cbStats[3]++; return 0; }
+    const u32 pvt = ld32(pP);
+    u8* pV = tri_p(pvt, 16, 4);
+    if (!pV) { g_cbStats[3]++; return 0; }
+    const u32 fmax = ld32(pV + 12), ftri = ld32(pV + 8);
+    u8 *cmax = tri_p(fmax, 8, 4), *ctri = tri_p(ftri, 8, 4);
+    if (!cmax || !ctri) { g_cbStats[3]++; return 0; }
+    const u32 wm0 = ld32(cmax), wm1 = ld32(cmax + 4), wt0 = ld32(ctri), wt1 = ld32(ctri + 4);
+    if ((wm0 >> 16) != 0x3860u || wm1 != 0x4E800020u || (wt0 >> 16) != 0x3863u || wt1 != 0x4E800020u) { g_cbStats[3]++; return 0; }
+    const u32 tmax = (u32)(s32)(s16)(wm0 & 0xFFFF), tri0 = poly + (u32)(s32)(s16)(wt0 & 0xFFFF);
+    const u32 cnt = ld16(pP + 4);
+    const u32 dst = tri0 + cnt * 36u;
+    u8* pD = NULL;
+    if ((s32)cnt < (s32)tmax) {
+        pD = tri_p(dst, 36, 4);
+        if (!pD || !tri_clear(dst, 36, r1) || !(dst >= poly + 6u || dst + 36u <= poly + 4u)) { g_cbStats[3]++; return 0; }
+    }
+    const u8* vA = fr + 120 + 12 * i1;
+    const u8* vB = fr + 120 + 12 * i2;
+    const u8* vC = fr + 120 + 12 * i3;
+    // ---- psdRealCallBack ----
+    TW(fr + 4, TRI_RET);  // stw r0,36(r1) (its own frame's words and _savegpr_26's: dead)
+    g->gpr[3] = lv; g->gpr[4] = pla;
+    u32 n = 21 + tri_ps(g, 1, 0x800546C0u);  // ..0x800546bc with _savegpr_26 (7); PSVECDotProduct(light, normal)
+    cb_lfs(g, 0, ld32(pK + 40)); tri_fcmpo0(g, 1, 0, 0x800546C4u);  // lfs f0,-31152(r2); fcmpo cr0,f1,f0
+    n += 3;
+    if (!CB_LT) goto ret1;
+    g->gpr[3] = ce;
+    cb_lfs(g, 1, ld32(pQ + 8)); cb_lfs(g, 0, ld32(pC + 8)); cb_fs(g, 0, 3, 1, 0, 0x800546D8u);
+    cb_lfs(g, 1, ld32(pQ)); cb_lfs(g, 0, ld32(pC)); cb_fs(g, 0, 2, 1, 0, 0x800546E4u);
+    cb_lfs(g, 1, ld32(pQ + 4)); cb_lfs(g, 0, ld32(pC + 4)); cb_fs(g, 0, 0, 1, 0, 0x800546F0u);
+    cb_fs(g, 1, 0, 2, 0, 0x800546F4u); cb_fs(g, 1, 1, 3, 0, 0x800546F8u);
+    cb_lfs(g, 0, ld32(pQ + 12)); cb_fs(g, 1, 1, 1, 0, 0x80054700u);
+    cb_lfs(g, 0, ld32(pK + 44)); tri_fcmpo0(g, 1, 0, 0x80054708u);  // lfs f0,-31148(r2); fcmpo cr0,f1,f0
+    n += 17;
+    if (!CB_GT) goto ret1;
+    // 0x80054710: the box tests (min at r26 + 20, max at r26 + 32: x, y, z), y then x then z
+    n += 7;
+    g->gpr[3] = cbo + 32u; g->gpr[4] = vtx + 12u * i1; g->gpr[5] = vtx + 12u * i2; g->gpr[6] = vtx + 12u * i3;
+    g->gpr[0] = 12u * i3;
+    {
+        static const u8 ax[3] = { 4, 0, 8 };  // y, x, z
+        static const u32 pcs[3] = { 0x80054734u, 0x80054780u, 0x800547CCu };  // each axis's first fcmpo (min); max +0x24
+        for (int k = 0; k < 3; k++) {
+            u32 o = ax[k];
+            // below the minimum: all three
+            cb_lfs(g, 2, ld32(vA + o)); cb_lfs(g, 1, ld32(pO + 20 + o)); tri_fcmpo0(g, 2, 1, pcs[k]);
+            n += 4;
+            if (CB_LT) {
+                cb_lfs(g, 0, ld32(vB + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 12); n += 3;
+                if (CB_LT) { cb_lfs(g, 0, ld32(vC + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 24); n += 3; if (CB_LT) goto reject; }
+            }
+            // above the maximum: all three
+            cb_lfs(g, 1, ld32(pO + 32 + o)); tri_fcmpo0(g, 2, 1, pcs[k] + 36);
+            n += 3;
+            if (CB_GT) {
+                cb_lfs(g, 0, ld32(vB + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 48); n += 3;
+                if (CB_GT) { cb_lfs(g, 0, ld32(vC + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 60); n += 3; if (CB_GT) goto reject; }
+            }
+        }
+    }
+    // 0x80054818: set(poly, vtx, i1, i2, i3, plane)
+    n += 7;
+    {
+        n += 5 + 8 + 10;  // ..0x80054298 with _savegpr_25 (8); ..0x800542c0 (the bctrl)
+        n += 2;           // getTriMax: li r3,N; blr
+        g->ctr = fmax;
+        n += 3;           // lhz r0,4(r31); cmpw r0,r3; blt
+        g->gpr[0] = cnt;
+        g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(cnt, tmax) | (g->xer >> 31)) << 28);
+        if (!pD) { g->gpr[3] = 0; n += 2 + 14 + 1; g_cbStats[2]++; goto epi; }  // (and 0x80054834's b)
+        n += 5 + 2;       // ..0x800542e8 (the bctrl); getTri: addi r3,r3,K; blr
+        g->ctr = ftri;
+        // 0x800542ec: the normal pushed off the plane: b = n * (1 - |n.y|)^2 (x, z), then * 2
+        n += 22;
+        cb_lfs(g, 2, ld32(pQ)); TW(fr - 88, cb_stfs(g, 2));
+        cb_lfs(g, 0, ld32(pQ + 4)); TW(fr - 84, cb_stfs(g, 0));
+        cb_lfs(g, 1, ld32(pQ + 8)); TW(fr - 80, cb_stfs(g, 1));
+        tri_fabs(g, 0, 0, 0x80054310u); tri_frsp(g, 3, 0, 0x80054314u);
+        cb_lfs(g, 0, ld32(pK)); cb_fs(g, 2, 3, 0, 3, 0x8005431Cu);  // lfs f0,-31192(r2); fsubs f3,f0,f3
+        cb_fs(g, 0, 3, 3, 3, 0x80054320u);
+        cb_fs(g, 0, 0, 2, 3, 0x80054324u); TW(fr - 88, cb_stfs(g, 0));
+        cb_fs(g, 0, 0, 1, 3, 0x8005432Cu); TW(fr - 80, cb_stfs(g, 0));
+        cb_lfs(g, 1, ld32(pK + 32));  // lfs f1,-31160(r2)
+        g->gpr[3] = r1 - 88u; g->gpr[4] = r1 - 88u;
+        n += tri_ps(g, 2, 0x80054344u);
+        // the three vertices + b into the poly's next triangle
+        if (g_tchkOn) { g_cbPoly = poly; g_cbDst = dst; memcpy(g_cbOld, pP + 4, 2); memcpy(g_cbOld + 2, pD, 36); g_cbSet = true; }
+        static const u32 rets[3] = { 0x8005435Cu, 0x80054374u, 0x8005438Cu };
+        const u32 idx[3] = { i1, i2, i3 };
+        for (int k = 0; k < 3; k++) {
+            g->gpr[0] = (idx[k] & 0xFFFF) * 12u;
+            g->gpr[3] = vtx + g->gpr[0]; g->gpr[4] = r1 - 88u; g->gpr[5] = dst + 12u * k;
+            n += 6 + tri_ps(g, 3, rets[k]);
+        }
+        ramp_wr16a(pP + 4, cnt + 1);  // sth r0,4(r31)
+        g->gpr[0] = cnt + 1; g->gpr[3] = 1;
+        n += 4 + 14;      // ..0x80054398; the epilogue with _restgpr_25 (8)
+        g_cbStats[0]++;
+    }
+    n += 1;  // 0x80054834: b
+    goto epi;
+reject:
+    g->gpr[3] = 1;
+    n += 2;
+    g_cbStats[1]++;
+    goto epi;
+ret1:
+    g->gpr[3] = 1;
+    n += 1;
+    g_cbStats[1]++;
+epi:
+    n += 13;  // 0x8005483c..: _restgpr_26 (7), the epilogue
+    g->gpr[11] = r1;
+    g->lr = TRI_RET;
+    // ---- ShdwDraw 0x8007fe98: lis r3,-32710; addi r0,r3,14272; stw r0,96(r1) ----
+    g->gpr[3] = 0x803A0000u; g->gpr[0] = 0x803A37C0u;
+    TW(fr + 96, 0x803A37C0u);
+    n += 3;
+    g->pc = PC_NEXT;
+    return n;
+}
+
+
 static u32 tri_run(Gekko* g) {
+    g_cbRan = false;
     // The state the PSVEC stand-ins and the float handlers assume (hle_ps.c ps_call), and no enabled FP exceptions.
     if (!(g->msr & MSR_DR) || !(g->msr & MSR_FP) || (g->msr & (MSR_FE0 | MSR_FE1)) || (g->fpscr & FPSCR_RN) ||
         (g->spr[SPR_HID2] & (HID2_PSE | HID2_LSQE)) != (HID2_PSE | HID2_LSQE) || (g->spr[SPR_GQR0] & 0x00070007u))
@@ -1365,6 +1577,7 @@ static u32 tri_run(Gekko* g) {
     g->ctr = cbf; g->lr = TRI_RET; g->pc = cbf & ~3u;
     n += 20;
     g_triStats[0]++;
+    if (g_cbOn && g->pc == PC_CB && cb_known()) { u32 m = cb_run(g); if (m) { n += m; g_cbRan = true; } }
     return n;
 }
 #undef TW
@@ -1374,15 +1587,16 @@ static u32 tri_run(Gekko* g) {
 // GPRs, CR, XER, LR, CTR, f0, f1, f14-f31 (both lanes; f2-f13 are volatile, dead: the PSVEC stand-ins leave them), and the
 // frame window [r1 - 64, r1 + 2240). FPSCR differences are counted apart (the PSVEC stand-ins leave FPRF as it was). The
 // interpreter's result stands.
-static struct { u64 calls, bad, fpscr; } g_tchk;
+static struct { u64 calls, bad, fpscr, cb; } g_tchk;
 static void tchk_report(void) {
     fprintf(stderr, "TRI_CHECK refusals: %llu %llu %llu %llu %llu %llu\n", (unsigned long long)g_triWhy[0], (unsigned long long)g_triWhy[1], (unsigned long long)g_triWhy[2], (unsigned long long)g_triWhy[3], (unsigned long long)g_triWhy[4], (unsigned long long)g_triWhy[5]);
+    fprintf(stderr, "TRI_CHECK callback: %llu runs through it; set %llu, returned %llu, full %llu, not taken %llu\n", (unsigned long long)g_tchk.cb, (unsigned long long)g_cbStats[0], (unsigned long long)g_cbStats[1], (unsigned long long)g_cbStats[2], (unsigned long long)g_cbStats[3]);
     fprintf(stderr, "TRI_CHECK: %llu runs compared with the interpreter, %llu differed, %llu with another FPSCR; to the callback %llu, skipped %llu, refused %llu\n",
             (unsigned long long)g_tchk.calls, (unsigned long long)g_tchk.bad, (unsigned long long)g_tchk.fpscr,
             (unsigned long long)g_triStats[0], (unsigned long long)g_triStats[1], (unsigned long long)g_triStats[3]);
 }
 static u32 tri_checked(Gekko* g) {
-    enum { LO = 64, W = 64 + 2240 };
+    enum { LO = 128, W = 128 + 2240 };
     u32 r1 = g->gpr[1];
     u8* w = tri_p(r1 - LO, W, 4);
     if (!w) return tri_run(g);
@@ -1393,6 +1607,13 @@ static u32 tri_checked(Gekko* g) {
     if (!n) return 0;
     Gekko gn = *g;
     memcpy(wn, w, W);
+    bool cbm = g_cbRan;
+    u8 pn[38], *pc = NULL, *pd = NULL;
+    if (cbm && g_cbSet) {  // the poly's count and triangle as the native run left them, then as they were
+        pc = g_mem + (g_cbPoly + 4u - 0x80000000u); pd = g_mem + (g_cbDst - 0x80000000u);
+        memcpy(pn, pc, 2); memcpy(pn + 2, pd, 36);
+        memcpy(pc, g_cbOld, 2); memcpy(pd, g_cbOld + 2, 36);
+    }
     *g = g0;
     memcpy(w, w0, W);
     u32 steps = 0;
@@ -1402,24 +1623,32 @@ static u32 tri_checked(Gekko* g) {
         steps++;
     }
     g_tchk.calls++;
+    if (cbm) g_tchk.cb++;
     bool fsame = true;
     static const int fk[] = { 0, 1, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
-    for (u32 i = 0; i < sizeof fk / sizeof fk[0]; i++)
+    for (u32 i = cbm ? 2 : 0; i < sizeof fk / sizeof fk[0]; i++)
         if (fpr_get0(g, fk[i]) != fpr_get0(&gn, fk[i]) || fpr_get1(g, fk[i]) != fpr_get1(&gn, fk[i])) fsame = false;
-    bool same = g->pc == gn.pc && !memcmp(g->gpr, gn.gpr, sizeof g->gpr) && g->cr == gn.cr && g->xer == gn.xer &&
-                g->lr == gn.lr && g->ctr == gn.ctr && fsame && !memcmp(w, wn, W);
+    bool gsame = true;
+    for (int k = 0; k < 32; k++) {
+        bool dead = cbm && ((k >= 4 && k <= 10) || k == 12);
+        if (!dead && g->gpr[k] != gn.gpr[k]) gsame = false;
+    }
+    u32 wlo = cbm ? LO : LO - 64;  // (with the callback: from r1 up; the path alone: its callees' frames too)
+    bool same = g->pc == gn.pc && gsame && g->cr == gn.cr && g->xer == gn.xer && g->lr == gn.lr && g->ctr == gn.ctr &&
+                fsame && !memcmp(w + wlo, wn + wlo, W - wlo) && (!pc || (!memcmp(pc, pn, 2) && !memcmp(pd, pn + 2, 36)));
     if (g->fpscr != gn.fpscr) g_tchk.fpscr++;
     if (!same && g_tchk.bad++ < 20) {
-        fprintf(stderr, "TRI_CHECK run %llu (r15 %08x): native %u insns to %08x, interpreter to %08x; cr %08x/%08x lr %08x/%08x ctr %08x/%08x\n",
-                (unsigned long long)g_tchk.calls, g0.gpr[15], n, gn.pc, g->pc, gn.cr, g->cr, gn.lr, g->lr, gn.ctr, g->ctr);
+        fprintf(stderr, "TRI_CHECK run %llu (r15 %08x, callback %d): native %u insns to %08x, interpreter to %08x; cr %08x/%08x lr %08x/%08x ctr %08x/%08x\n",
+                (unsigned long long)g_tchk.calls, g0.gpr[15], cbm, n, gn.pc, g->pc, gn.cr, g->cr, gn.lr, g->lr, gn.ctr, g->ctr);
         for (int k = 0; k < 32; k++)
             if (g->gpr[k] != gn.gpr[k]) fprintf(stderr, "  r%d native %08x interpreter %08x\n", k, gn.gpr[k], g->gpr[k]);
-        for (u32 i = 0; i < sizeof fk / sizeof fk[0]; i++)
+        for (u32 i = cbm ? 2 : 0; i < sizeof fk / sizeof fk[0]; i++)
             if (fpr_get0(g, fk[i]) != fpr_get0(&gn, fk[i]) || fpr_get1(g, fk[i]) != fpr_get1(&gn, fk[i]))
                 fprintf(stderr, "  f%d native %016llx/%016llx interpreter %016llx/%016llx\n", fk[i], (unsigned long long)fpr_get0(&gn, fk[i]),
                         (unsigned long long)fpr_get1(&gn, fk[i]), (unsigned long long)fpr_get0(g, fk[i]), (unsigned long long)fpr_get1(g, fk[i]));
-        for (u32 k = 0; k < W; k += 4)
+        for (u32 k = wlo; k < W; k += 4)
             if (memcmp(w + k, wn + k, 4)) fprintf(stderr, "  r1%+d native %08x interpreter %08x\n", (int)k - LO, ld32(wn + k), ld32(w + k));
+        if (pc && (memcmp(pc, pn, 2) || memcmp(pd, pn + 2, 36))) fprintf(stderr, "  the shadow poly's bytes differ\n");
     }
     return steps;
 }
@@ -1428,7 +1657,7 @@ static u32 tri_checked(Gekko* g) {
 static u32 tri_go(Gekko* g) {
 #ifndef __3DS__
     static int chk = -1;
-    if (chk < 0) { chk = getenv("TRI_CHECK") != NULL; if (chk) atexit(tchk_report); }
+    if (chk < 0) { chk = getenv("TRI_CHECK") != NULL; if (chk) atexit(tchk_report); g_tchkOn = chk; }
     if (chk) return tri_checked(g);
 #endif
     return tri_run(g);
@@ -1459,7 +1688,7 @@ u32 hle_run(Gekko* g, u32 budget) {
 #ifndef __3DS__
     static int env = -1;
     if (env < 0) { env = 1; if (getenv("GC3DS_SHDWMEMO")) { g_shmOn = true; atexit(shm_report); } }
-    { static int te = -1; if (te < 0) { te = 1; if (getenv("GC3DS_SHDWTRI")) g_triOn = true; } }
+    { static int te = -1; if (te < 0) { te = 1; if (getenv("GC3DS_SHDWTRI")) g_triOn = true; if (getenv("GC3DS_SHDWCB")) g_cbOn = true; } }
     sk_before(g);
     u32 n = g_shmOn ? shm_run(g, budget) : scan_live(g, budget);
     sk_after(g);

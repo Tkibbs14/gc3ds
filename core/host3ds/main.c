@@ -492,6 +492,7 @@ typedef struct {
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
+    bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (off), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
     bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
     bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
@@ -602,6 +603,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--dblframe")) o->dblframe = !strcmp(v, "on");
         else if (!strcmp(a, "--shdwmemo")) o->shdwmemo = !strcmp(v, "on");
         else if (!strcmp(a, "--shdwtri")) o->shdwtri = !strcmp(v, "on");
+        else if (!strcmp(a, "--shdwcb")) o->shdwcb = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
@@ -1102,6 +1104,7 @@ static const char* run(const char* path) {
         hle_set_enabled(g_opt.hle || g_opt.abHle);
         hle_set_shdw_memo(g_opt.shdwmemo && !g_opt.abShdwmemo);  // --ab shdwmemo starts off
         hle_set_shdw_tri(g_opt.shdwtri && !g_opt.abShdwtri);  // --ab shdwtri starts off
+        hle_set_shdw_cb(g_opt.shdwcb);
         hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
@@ -1736,6 +1739,11 @@ static const char* run(const char* path) {
                                 (unsigned long long)(g_triStats[0] - lastTri[0]), (unsigned long long)(g_triStats[1] - lastTri[1]),
                                 (unsigned long long)(g_triStats[3] - lastTri[3]));
                         memcpy(lastTri, g_triStats, sizeof lastTri);
+                        static u64 lastCb[4];
+                        if (hle_shdw_cb()) fprintf(g_perf, "# shdw callback 10s: set %llu, returned %llu, poly full %llu, not taken %llu\n",
+                                (unsigned long long)(g_cbStats[0] - lastCb[0]), (unsigned long long)(g_cbStats[1] - lastCb[1]),
+                                (unsigned long long)(g_cbStats[2] - lastCb[2]), (unsigned long long)(g_cbStats[3] - lastCb[3]));
+                        memcpy(lastCb, g_cbStats, sizeof lastCb);
                         static u64 lastMiss[8];
                         fprintf(g_perf, "# shdw memo misses 10s: no record %llu, unfinished %llu, other inputs %llu, DMA %llu, bitset %llu, "
                                 "word cap %llu, stopped on inputs %llu; longest record %llu segments\n",

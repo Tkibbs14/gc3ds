@@ -25,6 +25,10 @@ extern u64 g_shmStats[6], g_shmMiss[8], g_shmDiff[24];
 void hle_set_shdw_tri(bool on);
 bool hle_shdw_tri(void);
 extern u64 g_triStats[4];
+// Its shadow callback natively too (--shdwcb): g_cbStats: set a triangle, returned before set, poly full, not taken.
+void hle_set_shdw_cb(bool on);
+bool hle_shdw_cb(void);
+extern u64 g_cbStats[4];
 // Guest frame skip (experiment): the function at g_gfskipAddr returns at once on every other call while g_gfskipOn.
 extern u32 g_gfskipAddr;
 extern volatile bool g_gfskipOn;
