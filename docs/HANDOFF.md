@@ -18,7 +18,12 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
-> Next, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
+> **Direction (2026-10-20): read research/DIRECTION_REVIEW.md first.** Gameplay has two walls of nearly equal height
+> (core 0 ~93-97% running, the GX thread ~80-83% working), so core-0 work alone shows only up to ~+15-19%; CPU vertex
+> gathering caps at ~300k vertices/s in both emulated and native mode (TP needs ~750k at 30 fps). Its ranked directions:
+> retained GPU-resident geometry (C1) with the GX pipeline split across cores, native mode for TP, subsystem ports, a
+> multi-game measurement program, measured accuracy trades. Its experiment order starts with a GX-ceiling instrument.
+> Earlier next steps, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
 > 0 inclusive, ~6,600 cycles a pane in its own code; designed from the machine code in research/LIBRARY_PORTS.md "The pane
 > walk's design", with the five pane classes gameplay draws and every callee it needs; ~+3-3.5% in Ordon expected);
 > (1) **the library ports' own cost** (Ordon, jobs 648-649: building their context is 7-8% of
