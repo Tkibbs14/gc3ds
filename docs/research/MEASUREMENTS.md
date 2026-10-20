@@ -1132,7 +1132,7 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     the handler otherwise): later stretch 21.95 -> 22.13% (+0.8%, 644-645), heavy area and Ordon even (646-647).
   - **v3, the PSVEC calls inline** (their stand-ins' arithmetic; the in-place call, its checks and address lookups were
     most of their cost): **later stretch 21.89 -> 22.48% (+2.7%, 657-658) and 22.03 -> 22.46% (+2.0%, 665-666), ~5%
-    more pictures (7.06 against 6.73 a second); heavy area 6.775 -> 6.794 (+0.3%), Ordon 9.395 -> 9.416 (+0.2%,
+    more pictures (6.96 against 6.60 a second in the later stretch, core/tools/title_sections.py); heavy area 6.775 -> 6.794 (+0.3%), Ordon 9.395 -> 9.416 (+0.2%,
     667-670); cutscene and movie even. On by default.**
   - Where it stands: the ShdwDraw stand-in (walk replay and triangle path) is **34% of core 0's cycles** in the later
     stretch (job 659, `--pmu-split hle`; 12% for the replay alone, job 623), with 39% of core 0's I-cache misses and

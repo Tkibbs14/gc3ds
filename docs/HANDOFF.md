@@ -2,7 +2,7 @@
 
 > **▶ Current state (2026-10-20, evening).** All defaults (jobs 664-670): **heavy area ~22.65% (6.79 game frames a
 > second), Ordon walk ~31.6% (9.42 frames a second); title cutscene (25-150 s) 36.9%, its later Link / Epona stretch
-> 22.5% (~7.1 pictures a second), THP movie 13.15%.** Gameplay is locked to two VI fields a picture (frames a second =
+> 22.5% (~7.0 pictures a second), THP movie 13.15%.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
 > native stand-in (`--shdwtri`, C32b; later stretch +2.0-2.7%, heavy area +0.3%, Ordon +0.2%). On 10-19: overlapped GPU

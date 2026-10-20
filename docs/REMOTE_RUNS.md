@@ -88,6 +88,8 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--ringbatch on\|off` | the pipe's bursts batched into GX-thread ring records of up to 512 bytes (on) |
 | `--dblframe on\|off` | overlapped GPU frames: citro3d's frame stays open and a frame waits only for the GPU to finish the one before last (on) |
 | `--shdwmemo on\|off` | the ShdwDraw walk memo: repeated shadow walks replayed from a record (on; `# shdw memo 10s`, `# shdw memo misses 10s`) |
+| `--shdwtri on\|off`, `--shdwcb on\|off` | ShdwDraw's triangle path as a native stand-in (on; `# shdw tri 10s`); with it, the shadow callback natively too (off, neutral; `# shdw callback 10s`) |
+| `--psflush on\|off`, `--psxyz on\|off`, `--psgx on\|off`, `--psoff PREFIX,..` | groups of the translated SDK stand-ins (hle_ps.c): __GXSendFlushPrim (on), the cXyz operators (off, a loss), the GX register setters (off, a loss); --psoff keeps the named ones off |
 | `--fcache`, `--ind2`, `--vin`, `--rotmask` `on\|off` | JIT and vertex-record options, all on since 10-19 (separate runs; MEASUREMENTS.md) |
 | `--pmu-split on\|hle\|fast\|empty\|port\|portcommit` | performance counters around compiled code, the ShdwDraw stand-in, its fast cells, an empty bracket, or the J2D port's two halves (`# pmu split 10s`, per-run counts) |
 | `--probe-faults on`, `--probe-mirror on` | the fault-delivery probe; Luma's physical-memory mirror and the L2C-310's registers (read only) |
@@ -95,7 +97,12 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--profile on` | hot guest code, guest stacks, core 0's samples by guest thread, the GX thread's position and the decoder's command classes (`# hot guest code`, `# guest stacks`, `# guest threads`, `# gx thread where`, `# gx decode`). Every run also reports `# joint 10s` (core 0 / GX thread / vertex worker states sampled together: who waits on whom) and `# new frames` / `# new frames hist` (real frames a second; real gaps and VI fields between XFB copies) |
 | `--fuzz CASES [SEED]` | the JIT differential fuzzer (tests/jit/jit_fuzz.c) on the console's own CPU |
 
-Score an A/B with `python3 core/tools/ab_phases.py core/out/relay_<job>.csv <column> 60 <on value>` (each phase
+Score separate whole runs (how defaults are decided now) with `python3 core/tools/runs.py core/out/relay_<job>.csv ...`
+(gameplay: settled speed, fields and real frames a second, the VI fields per picture) and
+`python3 core/tools/title_sections.py core/out/relay_<job>.csv ...` (tp850: cutscene, later stretch, movie). Fetch a
+finished job's log first with `bash core/tools/relay.sh log <job>`. The scripted Ordon walk's `--press` list:
+`SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519` repeated every 480 fields to 2919 (the jobs in MEASUREMENTS.md
+since 10-19 use exactly that). Score an A/B with `python3 core/tools/ab_phases.py core/out/relay_<job>.csv <column> 60 <on value>` (each phase
 against its neighbours, from 60 s; pooled means showed phantom gains), or `core/tools/ab_split.py --col <column>` for
 the tp850 state. `core/tools/perf_heavy.py --by <column>` gives means and standard errors over the heavy rows.
 ab_phases.py drops each phase's first 12 s (a switch that flushes compiled code stalls); A/Bs that flush compiled code

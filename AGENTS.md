@@ -102,6 +102,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   from the run's start). New gameplay states are made by steering a run live: `relay.sh cmd JOB "press A 6"`,
   `"stick X Y N"`, `"save sdmc:/gc3ds/states/NAME.state"`, with `"shot"` and `relay.sh frames JOB` to see where it is.
 - **Heavy gameplay state:** `--state sdmc:/gc3ds/states/tp_area2.state` (Ordon's heaviest area; no `--press` needed).
+- **Separate whole runs decide defaults:** `python3 core/tools/runs.py core/out/relay_<job>.csv ...` (gameplay: settled
+  speed, fields and real frames a second, VI fields per picture) and `python3 core/tools/title_sections.py ...` (tp850:
+  cutscene, later stretch, movie). Queue the change's run and a baseline on the same build.
 - The A/B switch flips every 20 s (`AB_SECS`); each row of perf.csv records which half it is in. **Score it with
   `python3 core/tools/ab_phases.py LOG COLUMN 60 ON_VALUE`** (each phase against its neighbours, from 60 s), not with
   pooled means (they showed phantom gains); `core/tools/ab_split.py --col NAME` for the tp850 state (cutscene / later
@@ -126,12 +129,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (20 October 2026; jobs 610-619):** Ordon walk ~31.3% (9.37 game frames a second), the heavy
-  area ~22.3% (6.67); the title: cutscene (25-150 s) 37.0%, later stretch 21.8%, movie 13.2% (the cutscene ends at
-  ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (20 October 2026, evening; jobs 664-670):** Ordon walk ~31.6% (9.42 game frames a second), the heavy
+  area ~22.65% (6.79); the title: cutscene (25-150 s) 36.9%, later stretch 22.5% (~7.0 pictures a second), movie
+  13.15% (the cutscene ends at ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
-  walk is now mostly replayed (C32); the cutscene's moving shadows are still walked every call.
+  walk is mostly replayed (C32) and each triangle's path runs natively (C32b), but that stand-in is still ~34% of
+  core 0 there (~5,300 cycles a triangle, I-cache bound); the cutscene's moving shadows cost under 0.2% of core 0.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
@@ -149,23 +153,29 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   ring records batched (`ringbatch`, heavy area +2.6%), overlapped GPU frames (`dblframe`, heavy area +1.9%), float
   lanes (`fcache`, +1.5% / +1.6% / title up to +2.4%; rejected on 10-13 from A/Bs that recompile, reversed by separate
   runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise), compact vertex records (`vin`, ~+0.7-0.9%), rlwinm as
-  shifts (`rotmask`, ~+0.3-0.6%), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32).
+  shifts (`rotmask`, ~+0.3-0.6%), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32), the
+  __GXSendFlushPrim stand-in (`psflush`, heavy area +1.7%, Ordon +0.8%: its old A/B read neutral), ShdwDraw's triangle
+  path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
-  __GXSendFlushPrim and J3D light ports (neutral, separate runs), and re-tested with separate runs on 10-19: crstub
-  (-1.0%), befloat (-0.8%), calls (-1.2%), fastfloat (-0.6%), relayout (-7.6%), pipeps (even),
+  __GXSendFlushPrim and J3D light ports (neutral, separate runs), the shadow callback natively (`shdwcb`, neutral),
+  the cXyz operator stand-ins (`psxyz`, heavy area -0.9%), and re-tested with separate runs on 10-19 and 10-20: crstub
+  (-1.0%), befloat (-0.8%), calls (-1.2%), fastfloat (-0.6%), relayout (-7.6%), traces (-5.1%), vw2 (-2.3%), steal,
+  sched off, dlcache, vwmem 256 (-0.65 to -0.75%), pipeps, icbi, qbig, feeddirect, cmdpld (even),
   frame skip (+10%, visual glitches; a candidate user option), byte-swapped guest RAM (`GC_SWAPRAM`, neutral).
 - **Rejected with measurements:** second vertex worker on core 1 (evicts core 0's L2), shared-index fast path (TP: <1%
   of vertices), CPU display-list cache as a speed lever (RAM latency), matrix-chain HLE (flat profile), AOT translation
   (slower on the console), translating call-heavy small functions (entry and exit cost more than the JIT's code). See
   REDESIGN_CANDIDATES for the numbers.
 - **Also measured without a gain (10-17/18):** lean citro3d state, command-buffer prefetch, psq_st to the pipe in the
-  stubs, GX setters and __GXSendFlushPrim as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
+  stubs, GX setters as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions:** a finer ShdwDraw memo for the cutscene's moving shadows (per leaf or cell row, C32); the rest of
-  MEASUREMENTS.md's ruled-out list measured from recompiling A/Bs; more library ports (J2DPane::draw, text, other TEV block types, J3D packet
-  draw; `docs/research/LIBRARY_PORTS.md`); core 0: less hot code per guest instruction, longer blocks; GPU-resident vertex data for repeated display lists (C1);
-  frame skip as a user option (guards for fades in place; game frames +50-60%).
+- **Open directions (HANDOFF.md's current state orders them):** the library ports' own cost (Ordon: building their
+  context 7-8% of core 0, committing 4-5%); larger ports where a whole subtree is replaced (J2DPane::draw, text, other
+  TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`), since small functions lose as entry-hook
+  stand-ins; the ShdwDraw stand-in's code footprint (C32b); core 0: less hot code per guest instruction, longer blocks;
+  GPU-resident vertex data for repeated display lists (C1); frame skip as a user option (guards for fades in place;
+  game frames +50-60%).
 
 ## Code style
 

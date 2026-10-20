@@ -6,9 +6,9 @@ PICA200 GPU doing the drawing. Every design decision here was measured on a real
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
 boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
-On a New 2DS XL it runs at about **31% of full speed walking in Ordon and ~22% in its heaviest area** (9.4 and 6.7 of
-the game's 30 frames a second), ~37% in the intro cutscene, ~22% in the scene after it and ~13% in the THP movie (20
-October 2026). Most of the work so far went into finding out where the time goes and what does and does not
+On a New 2DS XL it runs at about **31.6% of full speed walking in Ordon and ~22.7% in its heaviest area** (9.4 and 6.8
+of the game's 30 frames a second), ~37% in the intro cutscene, ~22.5% in the scene after it and ~13% in the THP movie
+(20 October 2026). Most of the work so far went into finding out where the time goes and what does and does not
 help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
 
 **Bring your own games.** gc3ds contains no game data, BIOS or firmware, and never will. Use dumps of discs you own.
@@ -20,7 +20,7 @@ help on this hardware; that knowledge is written down in `docs/` and is the most
   the vertex worker (core 3, which also lights vertices) is idle ~70-96%. Core 0's profile is flat and bound by
   instruction fetch: rendering ~39% (the game building its command stream), the 2D UI ~22%, game logic ~19%; in the
   title's scene after the cutscene (Link and Epona) the shadow-drawing walk was ~25% of it, until repeated walks were
-  replayed from a record (+14%). Native ports of library
+  replayed from a record (+14%) and each shadow triangle's work ran natively (+2-3%). Native ports of library
   functions that do less than the guest code pay (`docs/research/LIBRARY_PORTS.md`), as did JIT options that keep
   floats in VFP registers and cut indirect-branch misses.
 - **The GPU has headroom:** ~5-15 ms a frame since textures moved to VRAM and lighting off the vertex shader, and
@@ -68,7 +68,8 @@ bash core/tools/vfast_check.sh 2              # fast vertex path against the ref
 ## Measuring on a console
 
 `docs/REMOTE_RUNS.md`: queue builds and A/B runs to a console on any network through a relay you run yourself
-(`tools/relay-server/`), and read the results with `core/tools/perf_heavy.py`. A running job can be steered live
+(`tools/relay-server/`), and score the results with `core/tools/runs.py` (gameplay) and `core/tools/title_sections.py`
+(the title screen) as separate whole runs. A running job can be steered live
 (`relay.sh cmd JOB "press A 6"`, `"stick X Y N"`, `"save PATH"`, `"shot"`; `relay.sh frames JOB` fetches the
 screenshots), which is how gameplay save states for benchmarks are made; `--press` scripts buttons and the main stick
 (`SLEFT` / `SRIGHT` / `SUP` / `SDOWN`) for repeatable gameplay runs.
