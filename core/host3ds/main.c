@@ -495,7 +495,7 @@ typedef struct {
     bool trifast;  // --trifast on|off (on): the triangle path's fast form (hle_tp.c tri_run v4)
     bool panestat;  // --panestat on (measurement): count J2DPane::draw's pane classes ('# pane types 10s')
     u32 tribench;  // --tribench N (measurement): time the triangle path's pieces at its Nth run (hle_tp.c tri_bench)
-    bool shdwcb;  // --shdwcb on|off (off): with --shdwtri, its shadow callback natively too (hle_tp.c; neutral, jobs 664-665)
+    bool shdwcb;  // --shdwcb on|off (on): with --shdwtri, its shadow callback natively too (hle_tp.c)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (on), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
     bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
     bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
@@ -570,6 +570,7 @@ static void opts_default(RunOpts* o) {
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
+    o->shdwcb = true;   // the shadow callback natively, read stage by stage: title later stretch +1.1% (+3.8% pictures), heavy area +0.22%, Ordon +0.7% (jobs 696-702)
     o->trifast = true;  // the triangle path's fast form: title later stretch +3.8% (+7.7% pictures), heavy area +0.24%, Ordon +0.4% (jobs 685-691)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)

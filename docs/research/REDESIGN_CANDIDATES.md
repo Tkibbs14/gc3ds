@@ -542,3 +542,6 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   (+7.7% pictures), gameplay +0.2-0.4%; the path 21% -> ~10% of core 0. The callback rewritten compact stayed neutral
   (in place ~1,600 cycles a call against ~300 warm), so what is left is how the stand-in runs in place (replay ~7%,
   path ~11%, callback ~7% in '# shdw where'), not the code's arithmetic.
+- **2026-10-20, later: the callback read stage by stage (`--shdwcb`, now on):** later stretch +1.1% (+3.8% pictures),
+  heavy area +0.22%, Ordon +0.7%. Reading everything first was the cost (~1,300 ARM instructions, ~43 micro-TLB misses
+  a call), not the I-cache.
