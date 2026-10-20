@@ -18,6 +18,25 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
+> **Queue for the next session (set 2026-10-20; one list reconciling DIRECTION_REVIEW.md section 6 and
+> EMULATOR_CEILING.md section 8, emulator first per the owner):**
+> 1. **Inline GPR save / restore in the JIT** (H5; design below, "Next JIT build"). Small build, +1.5-2.5% core 0
+>    (estimate).
+> 2. **The HUD: the J2D pane walk as one port** (W1; design in research/LIBRARY_PORTS.md "The pane walk's design").
+>    First its prerequisite: why ~2% of J2DPictureEx port calls give up (float edge cases), because a give-up inside a
+>    walked subtree would abort the whole subtree. Then the walk. ~+3-3.5% Ordon, ~2.5% heavy area (estimate), and it
+>    tests whether subsystem ports meet their Amdahl prediction.
+> 3. **Decide the GX side (offline, then one device run):** G2's (display list, incoming state) repeat share from a
+>    decoder hash on the PC, and the GX-ceiling instrument (GX-thread and worker ticks on repeated lists). Needed
+>    because core-0 gains show only up to ~+15-19% until the GX thread (~80-83% busy in gameplay) gets cheaper: 1 and 2
+>    fit under that cap, later core-0 work does not.
+> 4. **Cheap device measurements, one run each:** a PMU split on the float stubs in gameplay (H4: build single-precision
+>    floats only above ~15% of core 0); fault counts per minute in steady gameplay (H3, fault mode's crash; only when
+>    James can restart the 2DS).
+> 5. **Offline:** H2's dead register write-backs at block exits.
+> 6. **A second game to gameplay** (early SDK, then Wind Waker): whether the two walls and the library shares hold.
+> 7. **The large redesigns, only if 3 supports them:** G1 + G2 (translated command cache over GPU-resident geometry),
+>    then hammock blocks (H1, ~+3-8% by the offline model). Parked by the owner: native mode (emulator first, 10-16); frame or render skipping (a steady 30 first).
 > **Direction (2026-10-20): read research/DIRECTION_REVIEW.md first.** Gameplay has two walls of nearly equal height
 > (core 0 ~93-97% running, the GX thread ~80-83% working), so core-0 work alone shows only up to ~+15-19%; CPU vertex
 > gathering caps at ~300k vertices/s in both emulated and native mode (TP needs ~750k at 30 fps). Its ranked directions:
