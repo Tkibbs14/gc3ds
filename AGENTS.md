@@ -129,13 +129,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (20 October 2026, evening; jobs 664-670):** Ordon walk ~31.6% (9.42 game frames a second), the heavy
-  area ~22.65% (6.79); the title: cutscene (25-150 s) 36.9%, later stretch 22.5% (~7.0 pictures a second), movie
-  13.15% (the cutscene ends at ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (20 October 2026, night; jobs 688-693):** Ordon walk ~31.7% (9.44 game frames a second), the heavy
+  area ~22.7% (6.82); the title: cutscene (25-150 s) 36.85%, later stretch 23.2% (~7.4 pictures a second), movie
+  13.45% (the cutscene ends at ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
-  walk is mostly replayed (C32) and each triangle's path runs natively (C32b), but that stand-in is still ~34% of
-  core 0 there (~5,300 cycles a triangle, I-cache bound); the cutscene's moving shadows cost under 0.2% of core 0.
+  walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay
+  ~7% + path ~10-11% of core 0 there, the guest callback ~7-10%; the cutscene's moving shadows cost under 0.2%.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
@@ -155,7 +155,8 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise), compact vertex records (`vin`, ~+0.7-0.9%), rlwinm as
   shifts (`rotmask`, ~+0.3-0.6%), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32), the
   __GXSendFlushPrim stand-in (`psflush`, heavy area +1.7%, Ordon +0.8%: its old A/B read neutral), ShdwDraw's triangle
-  path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b).
+  path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b) and its fast form (`trifast`, both
+  chains in registers: later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
   __GXSendFlushPrim and J3D light ports (neutral, separate runs), the shadow callback natively (`shdwcb`, neutral),
   the cXyz operator stand-ins (`psxyz`, heavy area -0.9%), and re-tested with separate runs on 10-19 and 10-20: crstub

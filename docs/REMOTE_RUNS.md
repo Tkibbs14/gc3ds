@@ -89,7 +89,7 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--ringbatch on\|off` | the pipe's bursts batched into GX-thread ring records of up to 512 bytes (on) |
 | `--dblframe on\|off` | overlapped GPU frames: citro3d's frame stays open and a frame waits only for the GPU to finish the one before last (on) |
 | `--shdwmemo on\|off` | the ShdwDraw walk memo: repeated shadow walks replayed from a record (on; `# shdw memo 10s`, `# shdw memo misses 10s`) |
-| `--shdwtri on\|off`, `--shdwcb on\|off` | ShdwDraw's triangle path as a native stand-in (on; `# shdw tri 10s`); with it, the shadow callback natively too (off, neutral; `# shdw callback 10s`) |
+| `--shdwtri on|off`, `--trifast on|off`, `--shdwcb on|off` | ShdwDraw's triangle path as a native stand-in (on; `# shdw tri 10s`) in its fast form (on; off: the PSVEC-at-a-time form)\|off`, `--shdwcb on\|off` | ShdwDraw's triangle path as a native stand-in (on; `# shdw tri 10s`); with it, the shadow callback natively too (off, neutral; `# shdw callback 10s`) |
 | `--psflush on\|off`, `--psxyz on\|off`, `--psgx on\|off`, `--psoff PREFIX,..` | groups of the translated SDK stand-ins (hle_ps.c): __GXSendFlushPrim (on), the cXyz operators (off, a loss), the GX register setters (off, a loss); --psoff keeps the named ones off |
 | `--fcache`, `--ind2`, `--vin`, `--rotmask` `on\|off` | JIT and vertex-record options, all on since 10-19 (separate runs; MEASUREMENTS.md) |
 | `--pmu-split on\|hle\|fast\|empty\|port\|portcommit` | performance counters around compiled code, the ShdwDraw stand-in, its fast cells, an empty bracket, or the J2D port's two halves (`# pmu split 10s`, per-run counts) |

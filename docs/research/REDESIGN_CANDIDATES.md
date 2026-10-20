@@ -538,3 +538,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   7.9 KB walk and 3.5 KB replay against a 16 KB I-cache) or batches triangles: e.g. record each triangle's outputs in
   the walk memo's record (the path's results depend only on the collision data, so a replayed walk could replay its
   triangles' frame writes too, and the callback would run from a list).
+- **2026-10-20, night: the fast form (`--trifast`, on):** both chains in registers, final words once: later stretch +3.8%
+  (+7.7% pictures), gameplay +0.2-0.4%; the path 21% -> ~10% of core 0. The callback rewritten compact stayed neutral
+  (in place ~1,600 cycles a call against ~300 warm), so what is left is how the stand-in runs in place (replay ~7%,
+  path ~11%, callback ~7% in '# shdw where'), not the code's arithmetic.

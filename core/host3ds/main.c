@@ -570,7 +570,7 @@ static void opts_default(RunOpts* o) {
     o->native2 = true;
     o->latch = true;  // OPT_LATCH: job 169 core 0 +2.4% cutscene, job 170 +0.8% / +1.4%, I-cache misses -1 to -5%
     o->shdwmemo = true;  // the ShdwDraw walk memo (hle_tp.c): title later stretch +14.2% (24% more pictures), Ordon and heavy area even (jobs 611-619)
-    o->trifast = true;  // the triangle path's fast form (exact; measured by jobs 685+)
+    o->trifast = true;  // the triangle path's fast form: title later stretch +3.8% (+7.7% pictures), heavy area +0.24%, Ordon +0.4% (jobs 685-691)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)

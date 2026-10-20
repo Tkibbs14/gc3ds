@@ -1271,6 +1271,14 @@ static inline void tri_cr0(Gekko* g, u32 v) { g->cr = (g->cr & 0x0FFFFFFFu) | ((
 #define TW(p, v) ramp_wr32a((p), (v))
 
 static u8 g_triStop;  // tri_bench: stop the path at this point (0: never)
+// The fast form's words and singles (tri_run v4).
+bool g_triFast = true;  // --trifast off: the PSVEC-at-a-time form only (comparison)
+u64 g_triFastN;         // triangles the fast form took
+static inline float U2Ft(u32 w) { float f; memcpy(&f, &w, 4); return f; }
+static inline u32 bitsft(float f) { u32 w; memcpy(&w, &f, 4); return w; }
+static inline u32 PSTFt(float f) { u32 w = bitsft(f); return (w & 0x7F800000u) ? w : w & 0x80000000u; }  // (psq_st's flush)
+static inline bool tri_plw(u32 w) { u32 e = w & 0x7F800000u; return (e && e != 0x7F800000u) || !(w << 1); }  // zero or normal
+#define CMPF(a, b) ((a) < (b) ? 8u : (a) > (b) ? 4u : 2u)  // fcmpo's CR field for two numbers
 static bool g_tchkOn;  // TRI_CHECK (PC): the callback keeps what it overwrote
 static bool g_cbRan;   // the last tri_run went through the callback natively
 
@@ -1376,99 +1384,101 @@ static u32 cb_run(Gekko* g) {
     const u8* vA = fr + 120 + 12 * i1;
     const u8* vB = fr + 120 + 12 * i2;
     const u8* vC = fr + 120 + 12 * i3;
-    // ---- psdRealCallBack ----
-    TW(fr + 4, TRI_RET);  // stw r0,36(r1) (its own frame's words and _savegpr_26's: dead)
-    g->gpr[3] = lv; g->gpr[4] = pla;
-    u32 n = 21 + tri_ps(g, 1, 0x800546C0u);  // ..0x800546bc with _savegpr_26 (7); PSVECDotProduct(light, normal)
-    cb_lfs(g, 0, ld32(pK + 40)); tri_fcmpo0(g, 1, 0, 0x800546C4u);  // lfs f0,-31152(r2); fcmpo cr0,f1,f0
-    n += 3;
-    if (!CB_LT) goto ret1;
-    g->gpr[3] = ce;
-    cb_lfs(g, 1, ld32(pQ + 8)); cb_lfs(g, 0, ld32(pC + 8)); cb_fs(g, 0, 3, 1, 0, 0x800546D8u);
-    cb_lfs(g, 1, ld32(pQ)); cb_lfs(g, 0, ld32(pC)); cb_fs(g, 0, 2, 1, 0, 0x800546E4u);
-    cb_lfs(g, 1, ld32(pQ + 4)); cb_lfs(g, 0, ld32(pC + 4)); cb_fs(g, 0, 0, 1, 0, 0x800546F0u);
-    cb_fs(g, 1, 0, 2, 0, 0x800546F4u); cb_fs(g, 1, 1, 3, 0, 0x800546F8u);
-    cb_lfs(g, 0, ld32(pQ + 12)); cb_fs(g, 1, 1, 1, 0, 0x80054700u);
-    cb_lfs(g, 0, ld32(pK + 44)); tri_fcmpo0(g, 1, 0, 0x80054708u);  // lfs f0,-31148(r2); fcmpo cr0,f1,f0
-    n += 17;
-    if (!CB_GT) goto ret1;
-    // 0x80054710: the box tests (min at r26 + 20, max at r26 + 32: x, y, z), y then x then z
-    n += 7;
-    g->gpr[3] = cbo + 32u; g->gpr[4] = vtx + 12u * i1; g->gpr[5] = vtx + 12u * i2; g->gpr[6] = vtx + 12u * i3;
-    g->gpr[0] = 12u * i3;
-    {
-        static const u8 ax[3] = { 4, 0, 8 };  // y, x, z
-        static const u32 pcs[3] = { 0x80054734u, 0x80054780u, 0x800547CCu };  // each axis's first fcmpo (min); max +0x24
-        for (int k = 0; k < 3; k++) {
-            u32 o = ax[k];
-            // below the minimum: all three
-            cb_lfs(g, 2, ld32(vA + o)); cb_lfs(g, 1, ld32(pO + 20 + o)); tri_fcmpo0(g, 2, 1, pcs[k]);
-            n += 4;
-            if (CB_LT) {
-                cb_lfs(g, 0, ld32(vB + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 12); n += 3;
-                if (CB_LT) { cb_lfs(g, 0, ld32(vC + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 24); n += 3; if (CB_LT) goto reject; }
+    // ---- psdRealCallBack, in singles ----
+    // f0-f13 are dead when it returns (volatile), so no FPR is kept: the values are C floats. Every float it reads must
+    // be zero or normal and every result on the way zero or normal (else the guest code runs the callback): then each
+    // operation is one rounding, as the interpreter computes it (and the PSVEC stand-ins' arithmetic for the calls).
+    u32 bad = 0;
+    float L[3], N[4], C[3], MN[3], MX[3], VA[3], VB[3], VC[3];
+    for (int k = 0; k < 3; k++) {
+        u32 w;
+        w = ld32(pL + 4 * k); bad |= !tri_plw(w); L[k] = U2Ft(w);
+        w = ld32(pC + 4 * k); bad |= !tri_plw(w); C[k] = U2Ft(w);
+        w = ld32(pO + 20 + 4 * k); bad |= !tri_plw(w); MN[k] = U2Ft(w);
+        w = ld32(pO + 32 + 4 * k); bad |= !tri_plw(w); MX[k] = U2Ft(w);
+        w = ld32(vA + 4 * k); bad |= !tri_plw(w); VA[k] = U2Ft(w);
+        w = ld32(vB + 4 * k); bad |= !tri_plw(w); VB[k] = U2Ft(w);
+        w = ld32(vC + 4 * k); bad |= !tri_plw(w); VC[k] = U2Ft(w);
+    }
+    for (int k = 0; k < 4; k++) { u32 w = ld32(pQ + 4 * k); bad |= !tri_plw(w); N[k] = U2Ft(w); }
+    const u32 kw0 = ld32(pK), kw32 = ld32(pK + 32), kw40 = ld32(pK + 40), kw44 = ld32(pK + 44);
+    bad |= !tri_plw(kw0) | !tri_plw(kw32) | !tri_plw(kw40) | !tri_plw(kw44);
+    if (bad) { g_cbStats[3]++; return 0; }
+    const float K1 = U2Ft(kw0), K2 = U2Ft(kw32), Kl = U2Ft(kw40), Kp = U2Ft(kw44);  // 1, 2, -0.2, -90 (r2-31192/-31160/-31152/-31148)
+    // PSVECDotProduct(light, normal); fcmpo with -0.2
+    const float tl = L[2] * N[2], dl = madd1(L[0], N[0], L[1] * N[1]) + tl;
+    // the plane distance: fmuls / fadds in its order
+    const float pz = N[2] * C[2], px = N[0] * C[0], py = N[1] * C[1], pxy = px + py, pzxy = pz + pxy, pd = pzxy + N[3];
+    bad = !tri_nrmf(tl) | !tri_nrmf(dl) | !tri_nrmf(L[1] * N[1]);
+    u32 n = 21 + 8 + 3;  // ..0x800546bc with _savegpr_26 (7), PSVECDotProduct (8), 0x800546c0..c8
+    u32 fc = CMPF(dl, Kl), res = 1, cr0 = 0, ctr = g->ctr;
+    int out = 0;  // 0 returned (a test), 1 rejected (the box), 2 set, 3 the poly full
+    if (fc == 8) {
+        bad |= !tri_nrmf(pz) | !tri_nrmf(px) | !tri_nrmf(py) | !tri_nrmf(pxy) | !tri_nrmf(pzxy) | !tri_nrmf(pd);
+        n += 17;
+        fc = CMPF(pd, Kp);
+        if (fc == 4) {
+            n += 7;  // 0x80054710..28
+            out = -1;
+            static const u8 ax[3] = { 1, 0, 2 };  // y, x, z
+            for (int k = 0; k < 3 && out < 0; k++) {
+                const int o = ax[k];
+                fc = CMPF(VA[o], MN[o]); n += 4;
+                if (fc == 8) {
+                    fc = CMPF(VB[o], MN[o]); n += 3;
+                    if (fc == 8) { fc = CMPF(VC[o], MN[o]); n += 3; if (fc == 8) { out = 1; break; } }
+                }
+                fc = CMPF(VA[o], MX[o]); n += 3;
+                if (fc == 4) {
+                    fc = CMPF(VB[o], MX[o]); n += 3;
+                    if (fc == 4) { fc = CMPF(VC[o], MX[o]); n += 3; if (fc == 4) { out = 1; break; } }
+                }
             }
-            // above the maximum: all three
-            cb_lfs(g, 1, ld32(pO + 32 + o)); tri_fcmpo0(g, 2, 1, pcs[k] + 36);
-            n += 3;
-            if (CB_GT) {
-                cb_lfs(g, 0, ld32(vB + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 48); n += 3;
-                if (CB_GT) { cb_lfs(g, 0, ld32(vC + o)); tri_fcmpo0(g, 0, 1, pcs[k] + 60); n += 3; if (CB_GT) goto reject; }
+            if (out < 0) {
+                // set(poly, vtx, i1, i2, i3, plane)
+                n += 7 + 5 + 8 + 10 + 2 + 3;  // 0x80054818..30; prologue, _savegpr_25, ..bctrl, getTriMax, the count test
+                ctr = fmax;
+                cr0 = (cmps(cnt, tmax) | (g->xer >> 31));
+                if (!pD) { out = 3; res = 0; n += 2 + 14 + 1; }
+                else {
+                    const float ay = __builtin_fabsf(N[1]), f3a = K1 - ay, f3 = f3a * f3a;
+                    const float bx = N[0] * f3, bz = N[2] * f3;
+                    bad |= !tri_nrmf(f3a) | !tri_nrmf(f3) | !tri_nrmf(bx) | !tri_nrmf(bz);
+                    // PSVECScale(b, b, 2) as stored (psq_st), then PSVECAdd(v_k, b, dst + 12k)
+                    const u32 sx = PSTFt(bx * K2), sy = PSTFt(N[1] * K2), sz = PSTFt(bz * K2);
+                    const float SX = U2Ft(sx), SY = U2Ft(sy), SZ = U2Ft(sz);
+                    u32 outw[9];
+                    const u32 idx[3] = { i1, i2, i3 };
+                    for (int k = 0; k < 3; k++) {
+                        const u8* v = fr + 120 + 12 * idx[k];
+                        const float v0 = U2Ft(ld32(v)), v1 = U2Ft(ld32(v + 4)), v2 = U2Ft(ld32(v + 8));
+                        outw[3 * k] = PSTFt(v0 + SX); outw[3 * k + 1] = PSTFt(v1 + SY); outw[3 * k + 2] = PSTFt(v2 + SZ);
+                        bad |= !tri_plw(outw[3 * k]) | !tri_plw(outw[3 * k + 1]) | !tri_plw(outw[3 * k + 2]);
+                    }
+                    bad |= !tri_plw(sx) | !tri_plw(sy) | !tri_plw(sz);
+                    if (bad) { g_cbStats[3]++; return 0; }
+                    n += 5 + 2 + 22 + 7 + 3 * (6 + 9) + 4 + 14 + 1;  // ..bctrl, getTri, 0x800542ec..340, Scale, the adds, ..398, epilogue, 0x80054834
+                    ctr = ftri;
+                    if (g_tchkOn) { g_cbPoly = poly; g_cbDst = dst; memcpy(g_cbOld, pP + 4, 2); memcpy(g_cbOld + 2, pD, 36); g_cbSet = true; }
+                    for (int k = 0; k < 9; k++) TW(pD + 4 * k, outw[k]);
+                    ramp_wr16a(pP + 4, cnt + 1);  // sth r0,4(r31)
+                    res = 1;
+                    out = 2;
+                }
             }
         }
     }
-    // 0x80054818: set(poly, vtx, i1, i2, i3, plane)
-    n += 7;
-    {
-        n += 5 + 8 + 10;  // ..0x80054298 with _savegpr_25 (8); ..0x800542c0 (the bctrl)
-        n += 2;           // getTriMax: li r3,N; blr
-        g->ctr = fmax;
-        n += 3;           // lhz r0,4(r31); cmpw r0,r3; blt
-        g->gpr[0] = cnt;
-        g->cr = (g->cr & 0x0FFFFFFFu) | ((cmps(cnt, tmax) | (g->xer >> 31)) << 28);
-        if (!pD) { g->gpr[3] = 0; n += 2 + 14 + 1; g_cbStats[2]++; goto epi; }  // (and 0x80054834's b)
-        n += 5 + 2;       // ..0x800542e8 (the bctrl); getTri: addi r3,r3,K; blr
-        g->ctr = ftri;
-        // 0x800542ec: the normal pushed off the plane: b = n * (1 - |n.y|)^2 (x, z), then * 2
-        n += 22;
-        cb_lfs(g, 2, ld32(pQ)); TW(fr - 88, cb_stfs(g, 2));
-        cb_lfs(g, 0, ld32(pQ + 4)); TW(fr - 84, cb_stfs(g, 0));
-        cb_lfs(g, 1, ld32(pQ + 8)); TW(fr - 80, cb_stfs(g, 1));
-        tri_fabs(g, 0, 0, 0x80054310u); tri_frsp(g, 3, 0, 0x80054314u);
-        cb_lfs(g, 0, ld32(pK)); cb_fs(g, 2, 3, 0, 3, 0x8005431Cu);  // lfs f0,-31192(r2); fsubs f3,f0,f3
-        cb_fs(g, 0, 3, 3, 3, 0x80054320u);
-        cb_fs(g, 0, 0, 2, 3, 0x80054324u); TW(fr - 88, cb_stfs(g, 0));
-        cb_fs(g, 0, 0, 1, 3, 0x8005432Cu); TW(fr - 80, cb_stfs(g, 0));
-        cb_lfs(g, 1, ld32(pK + 32));  // lfs f1,-31160(r2)
-        g->gpr[3] = r1 - 88u; g->gpr[4] = r1 - 88u;
-        n += tri_ps(g, 2, 0x80054344u);
-        // the three vertices + b into the poly's next triangle
-        if (g_tchkOn) { g_cbPoly = poly; g_cbDst = dst; memcpy(g_cbOld, pP + 4, 2); memcpy(g_cbOld + 2, pD, 36); g_cbSet = true; }
-        static const u32 rets[3] = { 0x8005435Cu, 0x80054374u, 0x8005438Cu };
-        const u32 idx[3] = { i1, i2, i3 };
-        for (int k = 0; k < 3; k++) {
-            g->gpr[0] = (idx[k] & 0xFFFF) * 12u;
-            g->gpr[3] = vtx + g->gpr[0]; g->gpr[4] = r1 - 88u; g->gpr[5] = dst + 12u * k;
-            n += 6 + tri_ps(g, 3, rets[k]);
-        }
-        ramp_wr16a(pP + 4, cnt + 1);  // sth r0,4(r31)
-        g->gpr[0] = cnt + 1; g->gpr[3] = 1;
-        n += 4 + 14;      // ..0x80054398; the epilogue with _restgpr_25 (8)
-        g_cbStats[0]++;
-    }
-    n += 1;  // 0x80054834: b
-    goto epi;
-reject:
-    g->gpr[3] = 1;
-    n += 2;
-    g_cbStats[1]++;
-    goto epi;
-ret1:
-    g->gpr[3] = 1;
-    n += 1;
-    g_cbStats[1]++;
-epi:
-    n += 13;  // 0x8005483c..: _restgpr_26 (7), the epilogue
+    if (bad) { g_cbStats[3]++; return 0; }
+    if (out == 1) n += 2;       // 0x80054810: li r3,1; b
+    else if (out == 0) n += 1;  // 0x80054838: li r3,1
+    n += 13;                    // 0x8005483c..: _restgpr_26 (7), the epilogue
+    TW(fr + 4, TRI_RET);        // stw r0,36(r1) (the frames below r1: dead)
+    g_cbStats[out == 2 ? 0 : out == 3 ? 2 : 1]++;
+    (void)res;
+    // CR0: the last compare (set's cmpw, else the last fcmpo); FPSCR[FPCC]: the last fcmpo
+    g->cr = (g->cr & 0x0FFFFFFFu) | ((out >= 2 ? cr0 : fc) << 28);
+    g->fpscr = (g->fpscr & ~FPSCR_FPCC) | (fc << 12);
+    g->ctr = ctr;
     g->gpr[11] = r1;
     g->lr = TRI_RET;
     // ---- ShdwDraw 0x8007fe98: lis r3,-32710; addi r0,r3,14272; stw r0,96(r1) ----
@@ -1480,13 +1490,6 @@ epi:
 }
 
 
-// The fast form's words and singles (tri_run v4).
-bool g_triFast = true;  // --trifast off: the PSVEC-at-a-time form only (comparison)
-u64 g_triFastN;         // triangles the fast form took
-static inline float U2Ft(u32 w) { float f; memcpy(&f, &w, 4); return f; }
-static inline u32 bitsft(float f) { u32 w; memcpy(&w, &f, 4); return w; }
-static inline u32 PSTFt(float f) { u32 w = bitsft(f); return (w & 0x7F800000u) ? w : w & 0x80000000u; }  // (psq_st's flush)
-static inline bool tri_plw(u32 w) { u32 e = w & 0x7F800000u; return (e && e != 0x7F800000u) || !(w << 1); }  // zero or normal
 static u32 tri_run(Gekko* g) {
     g_cbRan = false;
     g_shWhere = 3;
@@ -1824,7 +1827,7 @@ u64 (*hle_bench_clock)(void);
 u64 g_triBenchT[16];
 bool g_triBenchDone;
 #define N_TB 4000u
-static void tri_bench(Gekko* g) {
+static __attribute__((unused)) void tri_bench(Gekko* g) {
     enum { LO = 128, W = 128 + 2240 };
     const u32 r1 = g->gpr[1];
     u8* w = tri_p(r1 - LO, W, 8);

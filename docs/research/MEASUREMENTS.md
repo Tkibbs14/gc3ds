@@ -12,8 +12,8 @@ probe, add the result here in the same commit as the change, and mark what it su
 `azahar` and `estimate` only explain.
 
 **Newest first (2026-10-20):** the entries from "The frame-rate line was broken" to "The triangle path as a native
-stand-in" (all defaults by the evening: heavy area ~22.65% / 6.79 frames a second, Ordon ~31.6% / 9.42, title 36.9% /
-22.5% / 13.15%; core 0 the limit in every scene, from the joint states). Before them (2026-10-18): "The first
+stand-in" (all defaults by the night: heavy area ~22.7% / 6.82 frames a second, Ordon ~31.7% / 9.44, title 36.85% /
+23.2% / 13.45%; core 0 the limit in every scene, from the joint states). Before them (2026-10-18): "The first
 library port, J2DMaterial::setGX, and pipe bursts with one copy" (the
 state on 10-19: Ordon 28.0%, heavy area 20.6%, title cutscene 36.1% / later stretch 19.0% / movie 12.8%; the GX
 thread the limit in gameplay, core 0 in the later stretch; see "The title's sections moved" there), and before it the sections from "Three scenes after the texture work, and what limits each" (gameplay
@@ -1163,7 +1163,12 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     runs with the callback native too, 0 differed, the fast form took all 864,429 that reached the callback. **2DS: later
     stretch 22.41 -> 23.26% (+3.8%), pictures 6.92 -> 7.45 a second (+7.7%), movie 13.15 -> 13.42%, cutscene even (685
     against 686); the path's share of core 0 21.4 -> 9.9% ('# shdw where'); bench ~2,550 cycles a triangle against
-    ~4,200.**
+    ~4,200; heavy area 6.800 -> 6.816 (+0.24%), Ordon 9.407 -> 9.443 (+0.4%) (688-691). On by default.**
+  - **The callback rewritten compact (10-20; singles only, no FPR emulation: f0-f13 are dead when it returns; every float
+    zero or normal, else guest code): PC 105,058 runs, 0 differed; 2DS later stretch 23.21 against 23.15% (692 against
+    693), neutral again.** In place it is still 7.4% of core 0 (~1,600 cycles a call, most of which return after the
+    light test) against ~300 warm in the bench: the cost is how the stand-in runs in place, not the callback's code.
+    `--shdwcb` stays off. The later stretch's shadow stand-in now: replay 6.7%, path 11.5%, callback 7.4%.
   - **The callback natively too (`--shdwcb`, off):** psdRealCallBack and dDlst_shadowPoly_c::set (light, plane and box
     tests; the triangle pushed off the plane), so a triangle never leaves native code. PC: 105,058 runs, 86,597 through
     the callback, 0 differed. 2DS: later stretch 22.48 against 22.46% (job 664 against 665): **neutral**, so the cost is

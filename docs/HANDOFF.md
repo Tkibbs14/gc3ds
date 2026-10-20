@@ -1,11 +1,12 @@
 # gc3ds handoff (2026-10-10)
 
-> **▶ Current state (2026-10-20, evening).** All defaults (jobs 664-670): **heavy area ~22.65% (6.79 game frames a
-> second), Ordon walk ~31.6% (9.42 frames a second); title cutscene (25-150 s) 36.9%, its later Link / Epona stretch
-> 22.5% (~7.0 pictures a second), THP movie 13.15%.** Gameplay is locked to two VI fields a picture (frames a second =
+> **▶ Current state (2026-10-20, night).** All defaults (jobs 688-693): **heavy area ~22.7% (6.82 game frames a
+> second), Ordon walk ~31.7% (9.44 frames a second); title cutscene (25-150 s) 36.85%, its later Link / Epona stretch
+> 23.2% (~7.4 pictures a second), THP movie 13.45%.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
-> native stand-in (`--shdwtri`, C32b; later stretch +2.0-2.7%, heavy area +0.3%, Ordon +0.2%). On 10-19: overlapped GPU
+> native stand-in (`--shdwtri`, C32b; later stretch +2.0-2.7%, heavy area +0.3%, Ordon +0.2%) and its fast form
+> (`--trifast`: both cross / dot / scale chains in registers, later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%). On 10-19: overlapped GPU
 > frames (`--dblframe`, C30), float lanes (`--fcache`, C11), the 2-way indirect table (`--ind2`), compact vertex records
 > (`--vin`), rlwinm as shifts (`--rotmask`), the ShdwDraw walk memo (`--shdwmemo`, C32; later stretch +14.2%). Earlier:
 > three native library ports (core/src/cpu/port_j2d.c), gpbulk, ringbatch. Built and off, measured: the shadow callback
@@ -21,8 +22,9 @@
 > calls a second; the ports hold 13-22% of core 0's data-TLB misses): cheaper versions of the three ports on now;
 > (2) new ports from job 630-631's profiles (heavy area / Ordon self time: J2DPane::draw 2.0 / 3.1%,
 > mDoExt_3DlineMat1_c::update 1.3%, __save_gpr / __restore_gpr ~2.4% (C20: an in-place stand-in loses; only code the JIT
-> emits in place would pay), cXyz operators ~2.8% (same: a stand-in lost)); (3) the shadow stand-in's footprint in the
-> later stretch (34% of core 0, ~5,300 cycles a triangle; REDESIGN C32b "Re-evaluate when"). Small functions lose as
+> emits in place would pay), cXyz operators ~2.8% (same: a stand-in lost)); (3) the shadow stand-in in the later stretch
+> (replay ~7%, path ~11%, callback ~7% of core 0, '# shdw where'; the callback natively, even compact, was neutral:
+> its cost in place is ~5x its warm cost, so the remaining lever is how the stand-in runs in place, not its code). Small functions lose as
 > entry-hook stand-ins on the 3DS: a port pays only when it replaces a large subtree or a hot loop. **Measuring:** check the field gaps ('# new frames hist'), then compare settled speed_pct or
 > the '# new frames 10s' line across separate whole runs (two heavy-area runs of one build agree to ~0.1%); a change
 > that stretches VI fields can show more pictures with a slower game clock (C32's unbounded version did). Texture
