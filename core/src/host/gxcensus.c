@@ -12,7 +12,15 @@ bool g_gxcensus;
 #define SET_N (1u << 18)
 #define U(x) ((unsigned long long)(x))
 typedef struct { u32 lo, hi; char name[256]; bool gx; } Symbol;
-typedef struct { u64 writes[6], same[6], calls, upper, lower, lastuse, active[3], fifo[3], lit, hit, spec, singular, outside[4]; } Counts;
+enum { B_DEP_ACTIVE, B_DEP_LAST, B_LIGHT1, B_LIGHT2, B_LIGHT4, B_PICTURES,
+       B_WORD_BP, B_WORD_CP, B_WORD_XF, B_WORD_TEV, B_WORD_MASK, B_PLAN_FIRST, B_PLAN_CHANGED, B_DRAWS, B_N };
+enum { DEC_BP_EQUAL, DEC_BP_OTHER, DEC_CP_EQUAL, DEC_CP_CHANGE, DEC_XF_EQUAL, DEC_XF_CHANGE,
+       DEC_IDX_EQUAL, DEC_IDX_CHANGE, DEC_DRAW, DEC_CALL, DEC_OTHER, DEC_PARTIAL, DEC_INGRESS, DEC_N };
+typedef struct {
+    u64 writes[6], same[6], calls, upper, lower, lastuse, active[3], fifo[3], lit, hit, spec, singular, outside[4];
+    u64 b[B_N], dec_n[DEC_N], dec_s[DEC_N], dec_ticks[DEC_N], dec_raw[DEC_N], dec_segments[DEC_N];
+} Counts;
+static void x1b_emit(const char* tag, u32 field_no, const Counts* c);
 typedef struct { u32 pc; u64 n[4]; } Watch;
 static Symbol symbols[40000];
 static u32 nsym, field, first, fields, gxptr, gxbase, gxsize;
@@ -96,12 +104,18 @@ static void emit(const char* tag, u32 f, const Counts* c) {
     fprintf(report, "%s %u", tag, f);
     for (unsigned i = 0; i < 6; i++) fprintf(report, " %s=%llu/%llu", groups[i], U(c->same[i]), U(c->writes[i]));
     fprintf(report, " lists=%llu upper=%llu lower=%llu lastuse=%llu activeupper=%llu activelower=%llu activelight=%llu sdk=%llu direct=%llu dlbytes=%llu"
-            " lit=%llu lhit=%llu spec=%llu singular=%llu reads=%llu stores=%llu ptrreads=%llu ptrstores=%llu\n",
+            " lit=%llu lhit=%llu spec=%llu singular=%llu reads=%llu stores=%llu ptrreads=%llu ptrstores=%llu",
             U(c->calls), U(c->upper), U(c->lower), U(c->lastuse), U(c->active[0]), U(c->active[1]), U(c->active[2]), U(c->fifo[0]), U(c->fifo[1]), U(c->fifo[2]),
             U(c->lit), U(c->hit), U(c->spec), U(c->singular), U(c->outside[0]), U(c->outside[1]),
             U(c->outside[2]), U(c->outside[3]));
+    static const char* names[B_N] = { "depactive", "deplast", "light1", "light2", "light4", "pictures",
+        "dep_bp", "dep_cp", "dep_xf", "dep_tev", "dep_mask", "plan_first", "plan_changed", "draw_commands" };
+    for (unsigned i = 0; i < B_N; i++) fprintf(report, " %s=%llu", names[i], U(c->b[i]));
+    fputc('\n', report);
+    x1b_emit(tag, f, c);
 }
 static bool overlap(u32 a, u32 n, u32 b, u32 len) { return (u64)a < (u64)b + len && (u64)b < (u64)a + n; }
+#include "gxcensus_x1b.inc"
 void gxcensus_mem(u32 pc, u32 pa, u32 size, bool write) {
     if (refresh) {
         u32 live = ram_rd32(machine->mem1, gxptr) & 0x3ffffff;
@@ -143,6 +157,7 @@ void gxcensus_reg(unsigned bank, u32 reg, u32 old, u32 value) {
     row.same[group] += old == value;
 }
 void gxcensus_list(const GXCore* gx, const u8* p, u32 size) {
+    dep_begin(gx, p, size);
     listkey = bytes(p, size);
     u64 upper = words(listkey, gx->cp + 0xa0, 16);
     if (plant) upper = word(upper, field);
@@ -163,7 +178,7 @@ void gxcensus_list(const GXCore* gx, const u8* p, u32 size) {
     }
     row.calls++; row.upper += repeat(0, upper); row.lower += repeat(1, lower); row.fifo[2] += size;
 }
-void gxcensus_list_end(void) { listkey = 0; }
+void gxcensus_list_end(void) { dep_end(); listkey = 0; }
 static float xf(const GXCore* gx, u32 a) { float f; memcpy(&f, gx->xf + a, 4); return f; }
 // General affine inverse: modelview can include scale and shear.
 static bool inverse(const GXCore* gx, u32 pm, double inv[3][3], double t[3]) {
@@ -204,6 +219,7 @@ static u64 lighting_key(const GXCore* gx, u32 pn, u32 mask, u64 base, bool* vali
     return h;
 }
 void gxcensus_draw(System* s, const GXCore* gx, u32 vat, const u8* p, u32 count, u32 stride) {
+    if (count) row.b[B_DRAWS]++;
     u32 chans = gx->xf[0x1009] & 3, mask = 0; bool lit = false, spec = false, vertexColor = false;
     for (u32 ch = 0; ch < chans && ch < 2; ch++) for (u32 alpha = 0; alpha < 2; alpha++) {
         u32 ctrl = gx->xf[0x100e + ch + 2*alpha];
@@ -227,9 +243,11 @@ void gxcensus_draw(System* s, const GXCore* gx, u32 vat, const u8* p, u32 count,
         u64 key = keys[pn];
         if (vertexColor) key = words(key, v.color, 2);
         row.hit += repeat(2, key);
+        retain_light(key);
     }
 }
 static void close_field(const char* tag) {
+    x1b_close_field();
     if (plant) {
         gxcensus_mem(0xfffffffc, gxbase, 4, false); gxcensus_mem(0xfffffffc, gxptr, 4, true);
     }
@@ -239,6 +257,12 @@ static void close_field(const char* tag) {
     for (unsigned i = 0; i < 3; i++) { total.fifo[i] += row.fifo[i]; total.active[i] += row.active[i]; }
     total.lit += row.lit; total.hit += row.hit; total.spec += row.spec; total.singular += row.singular;
     for (unsigned i = 0; i < 4; i++) total.outside[i] += row.outside[i];
+    for (unsigned i = 0; i < B_N; i++) total.b[i] += row.b[i];
+    for (unsigned i = 0; i < DEC_N; i++) {
+        total.dec_n[i] += row.dec_n[i]; total.dec_s[i] += row.dec_s[i];
+        total.dec_ticks[i] += row.dec_ticks[i]; total.dec_raw[i] += row.dec_raw[i];
+        total.dec_segments[i] += row.dec_segments[i];
+    }
     memset(&row, 0, sizeof row);
 }
 void gxcensus_field(u32 next) {
@@ -268,6 +292,7 @@ void gxcensus_start(System* s, const char* path) {
     fprintf(report, "lower=whole BP+mask+TEV banks+CP+XF shadow; upper=list bytes+16 array bases; previous field membership\n");
     fprintf(report, "lighting=affine inverse modelview; quantisation=1/1024; specular vertices excluded; no guest data retained\n");
     fprintf(report, "native_standins=%u (use GC3DS_NOHLE=1 and no AOT/PORT for complete storing-PC and memory watches)\n", hle_enabled());
+    x1b_init();
     g_gxcensus = true;
 }
 static int watchcmp(const void* a, const void* b) {
@@ -291,7 +316,9 @@ void gxcensus_finish(void) {
     fprintf(stderr, "GXCENSUS: %u fields; unchanged %.2f%%; lists upper/lower %.2f/%.2f%%; lighting %.2f%%; outside PCs %u; plant %u\n",
             fields, writes ? 100.0*same/writes : 0, total.calls ? 100.0*total.upper/total.calls : 0,
             total.calls ? 100.0*total.lower/total.calls : 0, total.lit ? 100.0*total.hit/total.lit : 0, nwatch, plant);
+    x1b_summary();
     if (fclose(report)) fail("report write failed");
+    x1b_free();
     g_gxcensus = false;
     for (unsigned i=0;i<2;i++) for (unsigned k=0;k<3;k++) { free(sets[i][k]); free(active_sets[i][k]); }
 }

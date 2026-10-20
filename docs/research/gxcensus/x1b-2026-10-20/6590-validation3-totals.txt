@@ -1,0 +1,23 @@
+GXCENSUS X1 plant=0 start=6590 symbols=GZ2E01/default
+__GXData=00456580 gxData=0044ce80 size=5b0 PI_FIFO_WPTR=0c003014
+lower=whole BP+mask+TEV banks+CP+XF shadow; upper=list bytes+16 array bases; previous field membership
+lighting=affine inverse modelview; quantisation=1/1024; specular vertices excluded; no guest data retained
+native_standins=0 (use GC3DS_NOHLE=1 and no AOT/PORT for complete storing-PC and memory watches)
+X1b decode_clock=fenced_TSC empty_segment_ticks=18 sample=first_in_class_then_1/64; command/partial/ingress counts exact; probes/backend/copies excluded
+X1b lighting age=completed EFB-to-XFB copies (N=1,2,4); current picture excluded from lookups
+total 200 TEV=2255984/2679504 texture=489167/586922 XF_matrices=684061/2210668 XF_lights=628839/647472 CP_arrays=276100/319100 other=941987/1138043 lists=33200 upper=0 lower=0 lastuse=28479 activeupper=30983 activelower=820 activelight=1442826 sdk=32624367 direct=11542896 dlbytes=33344000 lit=2163900 lhit=0 spec=0 singular=0 reads=0 stores=0 ptrreads=0 ptrstores=0 depactive=20331 deplast=17731 light1=1442826 light2=1442826 light4=1442826 pictures=100 dep_bp=338700 dep_cp=180000 dep_xf=3144700 dep_tev=241600 dep_mask=12700 plan_first=2132 plan_changed=10348 draw_commands=779695
+decode_total 200 BP_equal commands=2454234 samples=38779 ticks=2324637 raw=3022659 segments=38779
+decode_total 200 BP_other commands=1060726 samples=16578 ticks=1146424 raw=1445350 segments=16607
+decode_total 200 CP_equal commands=547744 samples=8492 ticks=383712 raw=536568 segments=8492
+decode_total 200 CP_change commands=73237 samples=1112 ticks=78818 raw=98834 segments=1112
+decode_total 200 XF_equal commands=581024 samples=9116 ticks=712076 raw=876164 segments=9116
+decode_total 200 XF_change commands=279541 samples=4446 ticks=855764 raw=935792 segments=4446
+decode_total 200 IDX_equal commands=0 samples=0 ticks=0 raw=0 segments=0
+decode_total 200 IDX_change commands=0 samples=0 ticks=0 raw=0 segments=0
+decode_total 200 draw commands=779695 samples=12197 ticks=1483206 raw=1922298 segments=24394
+decode_total 200 call commands=33200 samples=562 ticks=973296 raw=1578276 segments=33610
+decode_total 200 other commands=563301 samples=8847 ticks=302906 raw=462152 segments=8847
+decode_total 200 partial commands=1242750 samples=19340 ticks=1111718 raw=1459838 segments=19340
+decode_total 200 ingress commands=1380227 samples=21480 ticks=6089988 raw=8043744 segments=108542
+outside PCs=0 (top 20; reads/stores struct, reads/stores pointer)
+X1b_derived estimated_decode_ticks=983961056 estimated_equal_ticks=217256215 equal_share=0.220798

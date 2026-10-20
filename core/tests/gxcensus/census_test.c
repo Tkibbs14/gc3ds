@@ -2,6 +2,8 @@
 #include "../../src/host/gxcensus.c"
 #include <assert.h>
 bool hle_enabled(void) { return false; }
+// This older fixture calls the observer directly with no attributes; X1b's decoder fixture links real fifo.c.
+u32 gx_vertex_size(const GXCore* gx, u32 vat) { (void)gx; (void)vat; return 0; }
 static void putf(GXCore* gx, u32 r, float v) { memcpy(gx->xf + r, &v, 4); }
 int main(int argc, char** argv) {
     assert(argc == 2);

@@ -1,0 +1,20 @@
+GXCENSUS X1 plant=0 start=5000 symbols=GZ2E01/default
+__GXData=00456580 gxData=0044ce80 size=5b0 PI_FIFO_WPTR=0c003014
+lower=whole BP+mask+TEV banks+CP+XF shadow; upper=list bytes+16 array bases; previous field membership
+lighting=affine inverse modelview; quantisation=1/1024; specular vertices excluded; no guest data retained
+native_standins=0 (use GC3DS_NOHLE=1 and no AOT/PORT for complete storing-PC and memory watches)
+X1b decode_clock=fenced_TSC empty_segment_ticks=18 sample=1/64 command counts exact; probes/backend/copies excluded
+total 8 TEV=28613/33506 texture=8370/10263 XF_matrices=7463/58701 XF_lights=18903/19962 CP_arrays=10515/12066 other=15447/19275 lists=1338 upper=0 lower=0 lastuse=910 activeupper=430 activelower=0 activelight=34771 sdk=291147 direct=276555 dlbytes=1620192 lit=115971 lhit=0 spec=0 singular=0 reads=0 stores=0 ptrreads=0 ptrstores=0 depactive=255 deplast=515 light1=34771 light2=69494 light4=69494 pictures=4 dep_bp=12537 dep_cp=6963 dep_xf=105639 dep_tev=9408 dep_mask=540 plan_first=378 plan_changed=225 draw_commands=32209
+decode_total 8 BP_equal commands=34262 samples=570 ticks=28976 raw=39236 segments=570
+decode_total 8 BP_other commands=15045 samples=227 ticks=16896 raw=21000 segments=228
+decode_total 8 CP_equal commands=13944 samples=203 ticks=9106 raw=12760 segments=203
+decode_total 8 CP_change commands=2160 samples=32 ticks=2370 raw=2946 segments=32
+decode_total 8 XF_equal commands=10124 samples=181 ticks=14238 raw=17496 segments=181
+decode_total 8 XF_change commands=7027 samples=96 ticks=17372 raw=19100 segments=96
+decode_total 8 IDX_equal commands=0 samples=0 ticks=0 raw=0 segments=0
+decode_total 8 IDX_change commands=0 samples=0 ticks=0 raw=0 segments=0
+decode_total 8 draw commands=32209 samples=510 ticks=51652 raw=70012 segments=1020
+decode_total 8 call commands=1338 samples=25 ticks=42250 raw=69124 segments=1493
+decode_total 8 other commands=24105 samples=377 ticks=11090 raw=17876 segments=377
+outside PCs=0 (top 20; reads/stores struct, reads/stores pointer)
+X1b_derived estimated_decode_ticks=11947359 estimated_equal_ticks=3163584 equal_share=0.264794

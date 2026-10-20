@@ -1,0 +1,78 @@
+X1b-final 4290->4490 off: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+X1b-final 4290->4490 on: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+X1b-final 4290->4490 plant: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+X1b-final 4290->4490 repeat2: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+X1b-final 4290->4490 repeat3: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+X1b-final 5000->5200 off: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+X1b-final 5000->5200 on: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+X1b-final 5000->5200 plant: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+X1b-final 5000->5200 repeat2: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+X1b-final 5000->5200 repeat3: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+X1b-final 900->1100 off: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+X1b-final 900->1100 on: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+X1b-final 900->1100 plant: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+X1b-final 900->1100 repeat2: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+X1b-final 900->1100 repeat3: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+X1b-final 6590->6790 off: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+X1b-final 6590->6790 on: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+X1b-final 6590->6790 plant: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+X1b-final 6590->6790 repeat2: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+X1b-final 6590->6790 repeat3: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+
+Real decoder synthetic fixtures and failed timing plant
+GXCENSUS: 31 fields; unchanged 99.95%; lists upper/lower 0.00/0.00%; lighting 97.48%; outside PCs 0; plant 0
+GXCENSUS X1b: sampled equal decode budget 19.62%; dependent lists active/last 20.00/20.00%; lighting N=1/2/4 97.76/98.04/98.60%
+X1b decoder/dependency/retention/backend-exclusion oracles passed
+GXCENSUS: 31 fields; unchanged 0.00%; lists upper/lower 0.00/0.00%; lighting 0.00%; outside PCs 1; plant 1
+GXCENSUS X1b: sampled equal decode budget 0.00%; dependent lists active/last 0.00/0.00%; lighting N=1/2/4 0.00/0.00/0.00%
+X1b decoder/dependency/retention/backend-exclusion oracles passed
+PASS: total accounting rejects planted total
+PASS: decode_total accounting rejects planted total
+PASS: normal X1b oracle rejects the planted report
+PASS plant decode: estimated_equal_ticks 681440.4039747756 -> 0
+PASS plant dependency: depactive 2 -> 0, deplast 2 -> 0
+PASS plant retention: light1 1396 -> 0, light2 1400 -> 0, light4 1408 -> 0
+core/tests/gxcensus/run_x1b.sh: line 26: 2218242 Aborted                 "$w/test-time-plant" "$w/bad-time.txt" > "$w/bad-time.log" 2>&1
+test-time-plant: core/tests/gxcensus/x1b_test.c:101: main: Assertion `sampled_backend_ticks && row.dec_ticks[DEC_DRAW]-dstart < sampled_backend_ticks/8' failed.
+PASS: timing oracle rejects planted backend contamination
+
+
+Original direct-observer X1 compatibility fixture
+GXCENSUS: 3 fields; unchanged 83.33%; lists upper/lower 66.67/66.67%; lighting 66.67%; outside PCs 0; plant 0
+GXCENSUS X1b: sampled equal decode budget 0.00%; dependent lists active/last 66.67/66.67%; lighting N=1/2/4 0.00/0.00/0.00%
+GXCENSUS: 3 fields; unchanged 0.00%; lists upper/lower 0.00/0.00%; lighting 0.00%; outside PCs 1; plant 1
+GXCENSUS X1b: sampled equal decode budget 0.00%; dependent lists active/last 0.00/0.00%; lighting N=1/2/4 0.00/0.00/0.00%
+PASS: normal census oracle rejects planted input
+PASS plant a: TEV_same 3 -> 0
+PASS plant b: upper 2 -> 0, lower 2 -> 0
+PASS plant c: sdk 24 -> 12, direct 12 -> 24
+PASS plant d: lhit 8 -> 0
+PASS plant e: reads 0 -> 3, ptrstores 0 -> 3
+
+
+Final corpus accounting, exactness and counter plants
+PASS 4290: exact off/on/plant, accounting, all three X1b plants; equal decode budget 26.54%, dependency 99/99 of 100, lighting 0/0/0 of 0
+PASS 4290: repeated on runs have identical counters/hash/instructions; planted counter inconsistency rejected; budgets 26.54%, 27.84%, 28.63%
+PASS 5000: exact off/on/plant, accounting, all three X1b plants; equal decode budget 18.35%, dependency 17407/18012 of 37464, lighting 2884001/2884001/2884001 of 3247188
+PASS 5000: repeated on runs have identical counters/hash/instructions; planted counter inconsistency rejected; budgets 18.35%, 16.22%, 18.70%
+PASS 6590: exact off/on/plant, accounting, all three X1b plants; equal decode budget 20.93%, dependency 20331/17731 of 33200, lighting 1442826/1442826/1442826 of 2163900
+PASS 6590: repeated on runs have identical counters/hash/instructions; planted counter inconsistency rejected; budgets 20.93%, 21.51%, 19.52%
+PASS 900: exact off/on/plant, accounting, all three X1b plants; equal decode budget 19.35%, dependency 24212/20603 of 49017, lighting 731354/733102/733512 of 4441604
+PASS 900: repeated on runs have identical counters/hash/instructions; planted counter inconsistency rejected; budgets 19.35%, 25.64%, 19.73%
+
+
+Primary CPU runner after census extension
+== speed (PC, single thread)
+INFO BENCH int     115.8 MIPS (116000000 instructions in 1.00 s)
+INFO BENCH alu     103.6 MIPS (104000000 instructions in 1.00 s)
+INFO BENCH fp       47.5 MIPS (48000000 instructions in 1.01 s)
+
+================ SUMMARY ================
+PASS build: core compiles with zero warnings (gcc -std=c11, clang -std=c11, arm-none-eabi-gcc -std=gnu11 armv6k/vfp)
+PASS directed: DIRECTED pass=420 fail=0
+PASS fuzz: FUZZ batches=200 cases=12800 failed_batches=0 mismatched_cases=0
+INFO fuzz coverage: 436891 generated instructions, 261 distinct mnemonics (incl. record/overflow forms)
+PASS self-test plant 1 (rlwimi result bit 8 flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=313
+PASS self-test plant 2 (fadds result LSB flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=181
+PASS disasm: DISASM checked=11806 mnemonic_mismatch=0 operand_mismatch=0
+ALL TESTS PASSED

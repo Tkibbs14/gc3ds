@@ -1,0 +1,23 @@
+make: Entering directory '/mnt/c/Users/tyler/TP3DS/emu/core'
+make: 'build/gcemu' is up to date.
+make: Leaving directory '/mnt/c/Users/tyler/TP3DS/emu/core'
+4290->4490 off: reference captured
+4290->4490 on repeat=1: exact; equal decode budget 26.54%; dep 99/99 of 100; light 0/0/0 of 0
+4290->4490 plant repeat=1: exact; equal decode budget 0.00%; dep 0/0 of 100; light 0/0/0 of 0
+4290->4490 on repeat=2: exact; equal decode budget 27.84%; dep 99/99 of 100; light 0/0/0 of 0
+4290->4490 on repeat=3: exact; equal decode budget 28.63%; dep 99/99 of 100; light 0/0/0 of 0
+5000->5200 off: reference captured
+5000->5200 on repeat=1: exact; equal decode budget 18.35%; dep 17407/18012 of 37464; light 2884001/2884001/2884001 of 3247188
+5000->5200 plant repeat=1: exact; equal decode budget 0.00%; dep 0/0 of 37464; light 0/0/0 of 3247188
+5000->5200 on repeat=2: exact; equal decode budget 16.22%; dep 17407/18012 of 37464; light 2884001/2884001/2884001 of 3247188
+5000->5200 on repeat=3: exact; equal decode budget 18.70%; dep 17407/18012 of 37464; light 2884001/2884001/2884001 of 3247188
+900->1100 off: reference captured
+900->1100 on repeat=1: exact; equal decode budget 19.35%; dep 24212/20603 of 49017; light 731354/733102/733512 of 4441604
+900->1100 plant repeat=1: exact; equal decode budget 0.00%; dep 0/0 of 49017; light 0/0/0 of 4441604
+900->1100 on repeat=2: exact; equal decode budget 25.64%; dep 24212/20603 of 49017; light 731354/733102/733512 of 4441604
+900->1100 on repeat=3: exact; equal decode budget 19.73%; dep 24212/20603 of 49017; light 731354/733102/733512 of 4441604
+6590->6790 off: reference captured
+6590->6790 on repeat=1: exact; equal decode budget 20.93%; dep 20331/17731 of 33200; light 1442826/1442826/1442826 of 2163900
+6590->6790 plant repeat=1: exact; equal decode budget 0.00%; dep 0/0 of 33200; light 0/0/0 of 2163900
+6590->6790 on repeat=2: exact; equal decode budget 21.51%; dep 20331/17731 of 33200; light 1442826/1442826/1442826 of 2163900
+6590->6790 on repeat=3: exact; equal decode budget 19.52%; dep 20331/17731 of 33200; light 1442826/1442826/1442826 of 2163900

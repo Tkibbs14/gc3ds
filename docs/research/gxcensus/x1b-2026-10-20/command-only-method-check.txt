@@ -1,0 +1,9 @@
+make: Entering directory '/mnt/c/Users/tyler/TP3DS/emu/core'
+make: 'build/gcemu' is up to date.
+make: Leaving directory '/mnt/c/Users/tyler/TP3DS/emu/core'
+4290->4490 off: reference captured
+4290->4490 on repeat=1: exact; equal decode budget 65.02%; dep 99/99 of 100; light 0/0/0 of 0
+4290->4490 plant repeat=1: exact; equal decode budget 0.00%; dep 0/0 of 100; light 0/0/0 of 0
+4290->4490 on repeat=2: exact; equal decode budget 68.24%; dep 99/99 of 100; light 0/0/0 of 0
+4290->4490 on repeat=3: exact; equal decode budget 65.91%; dep 99/99 of 100; light 0/0/0 of 0
+5000->5200 off: reference captured

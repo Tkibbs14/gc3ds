@@ -1443,6 +1443,197 @@ are retained with the [complete check summary](gxcensus/x1b-2026-10-20/cpu-check
 Reproduce: `bash core/tests/cpu/run_tests.sh` from the repository root in WSL Debian. This repairs the baseline
 link failure documented in X1; it does not change the interpreter or implement an optimisation.
 
+### X1b: decoder cost, read-before-write keys, and retained lighting (PC, 2026-10-20)
+
+**Scope and runs:** X1b only, no optimisation. The primary CPU runner was repaired and committed separately as
+`70fa649` (preceding subsection). The census companion remains PC-only; the normal runner and decoder contain no
+census calls when off. The four **title states** are the same as X1, each over **200 VI fields**: 4290 -> 4490,
+5000 -> 5200, 900 -> 1100, 6590 -> 6790. **No PC gameplay state exists**; gameplay states are on the 2DS SD card.
+All runs use the raw interpreter (`GC3DS_NOHLE=1`, no AOT/PORT) and `GC3DS_NODRAW=1`; the observer evaluates draw
+dependencies/lighting keys before rasterisation's early return. No device run or speedup is claimed.
+
+Run IDs below are **X1b-final-STATE-r1/r2/r3**, three separate, sequential PC census runs per state (no concurrent
+performance jobs), plus one off reference and one planted run. Host: WSL Debian, Intel Core i5-9300H, gcc 14.2.0.
+Counts and sampled counter readings are **measured** in those named runs. Repeat percentages from exact counts are
+**derived**. Extrapolated full decode costs/shares are **estimates** from sampling, explicitly labelled below.
+
+**(a) Price complete unchanged commands, not unchanged words.** The observer prepass classifies each complete BP,
+CP, direct XF or indexed XF command, before the real executor runs it. An eligible command changes no word:
+all words in an XF transfer must match; BP requires both the selected logical colour bank and its BP mirror to
+match, with the incoming mask already all ones. PE signals, copies, palette loads, cache invalidation and mask
+commands are excluded from eligibility even if bits match. Equal subwords in a mixed XF command are not counted
+as a removable complete command. The existing early returns/version guards still execute; no filtering is built.
+
+The companion samples the first occurrence of each class and then a deterministic pseudorandom 1/64 of events,
+using fenced TSC readings. Timer frames are **exclusive**: child commands, observer work, backend draw calls, EFB
+copies and palette byte copies are paused out. The denominator includes command execution, DL dispatch/scan loops,
+failed partial-command parse attempts, and FIFO ingress append/memmove/dispatch. It is the full PC decoder front
+end, not only successful state-command handlers. Every class's event count, sample count, raw/corrected ticks and
+number of timed segments is retained per field. The minimum of 4,096 empty counter pairs is subtracted per segment;
+TSC ticks are host elapsed-counter units, **not ARM11 cycles or retired instructions**.
+
+For class c, estimated time is `exact_events[c] * corrected_sample_ticks[c] / samples[c]`; sum all classes for the
+denominator, and only BP/CP/XF/indexed-equal classes for the numerator. The table gives **estimated shares**, with
+mean and standard error across the three separate repeats (percentage points), not a measured emulator speed gain.
+
+| Run | Eligible no-op commands (measured, r1) | Estimated share r1 / r2 / r3 | Estimated mean +/- SE |
+|---|---:|---|---:|
+| 4290 | 4,230,219 | 26.54% / 27.84% / 28.63% | 27.67 +/- 0.61 |
+| 5000 | 1,633,074 | 18.35% / 16.22% / 18.70% | 17.75 +/- 0.78 |
+| 900 | 2,070,307 | 19.35% / 25.64% / 19.73% | 21.58 +/- 2.04 |
+| 6590 | 3,583,002 | 20.93% / 21.51% / 19.52% | 20.65 +/- 0.59 |
+
+For scale, the **derived corrected mean ticks per sampled eligible command** in r1 are:
+
+| Run | BP equal | CP equal | XF equal | Indexed XF equal |
+|---|---:|---:|---:|---:|
+| 4290 | 61.95 | 58.39 | 87.76 | not observed |
+| 5000 | 65.56 | 61.96 | 102.59 | not observed |
+| 900 | 54.50 | 64.53 | 84.50 | not observed |
+| 6590 | 57.81 | 52.92 | 81.23 | not observed |
+
+**Verdict (a): a gross budget greater than 3% exists in all four title windows.** This does **not** confirm a net
+filtering gain: a predecode filter must still identify boundaries and compare state, and could simply duplicate the
+cheap guards already present. The estimate includes dispatch, parsing, equality checks and trivial shadow stores
+of no-op commands, not a second saving from state updates the decoder already skips. X1's 58-92% unchanged-word
+share must not be read as removable state-work time. Build item 2 remains a measured-budget candidate, requiring
+an incremental-cost prototype and separate whole-device runs before any performance verdict/default change.
+
+The observer prepass warms input/state and the measured companion still has skip-observer guards in its handlers.
+PC cache, scheduling and timer costs are different from ARM11. Raw unsubtracted samples remain in the reports for
+sensitivity checks; repeat spread is shown rather than selecting the best run. No conversion to total GX-thread
+or game speed is justified by this experiment.
+
+**(b) Dependency-aware incoming state.** Each list starts with an incoming shadow snapshot and a clear written-word
+mask. The command tracer follows the reference decoder/vertex/XF/TEV state-read paths, records a read only before a
+write to that word, and keys `(list bytes+length, all 16 array bases, sorted external word IDs+incoming values)`.
+BP mask consumption/partial writes, separate TEV/konst colour banks and CP-sourced indexed XF loads are included.
+Equality/version-bookkeeping reads are not semantic incoming-state dependencies. Draws select the enabled arrays,
+VAT, actual vertex matrix indices, active texture units/TEV stages/indirect matrices, channels/lights/texgens,
+projection and viewport; they do not key the whole XF file. The renderer's state-initialisation reads are included
+at word granularity, not subject to per-pixel dead-value elimination. This catalogue is evaluated even with NODRAW.
+
+First execution learns the list's read-set signature. **Every later execution retraces and validates the guards**;
+a different read set becomes a different key (word IDs are part of the hash), rather than silently reusing an
+incomplete first manifest. Changed list bytes establish a new manifest. These are observation manifests, not
+translated/cached execution. Previous-active-field sets rotate only when that VI field had list calls. The other
+comparison is the immediately preceding use of the same list address, including uses in the same field.
+
+| Run | Calls (measured) | Hits vs previous field with list calls (measured; derived %) | Hits vs same address's last use |
+|---|---:|---:|---:|
+| 4290 | 100 | 99 (99.00%) | 99 (99.00%) |
+| 5000 | 37,464 | 17,407 (46.46%) | 18,012 (48.08%) |
+| 900 | 49,017 | 24,212 (49.40%) | 20,603 (42.03%) |
+| 6590 | 33,200 | 20,331 (61.24%) | 17,731 (53.41%) |
+
+The reduction from the old full shadow is visible in the **derived mean external words per list call** (the fixed
+16-base prefix is additional; these are reads before writes, not all words the list touches):
+
+| Run | BP | CP | XF | Logical TEV banks | BP mask | First/new-byte manifests (measured) | Guard/read-set changes (measured) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4290 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1 | 0 |
+| 5000 | 9.37 | 5.20 | 78.95 | 7.03 | 0.40 | 3,294 | 7,515 |
+| 900 | 10.05 | 4.55 | 70.10 | 6.16 | 0.45 | 6,341 | 8,410 |
+| 6590 | 10.20 | 5.42 | 94.72 | 7.28 | 0.38 | 2,132 | 10,348 |
+
+**Verdict (b): unclear for the geometry scenes.** All three geometry-state repeat rates lie between the <40% kill
+and >70% support thresholds, for both requested comparisons. The 4290 window exceeds 70%, but it has only 100 tiny
+96-byte list calls and no lit vertices; its external read set is only the BP mask, so it does not establish a
+general geometry-fragment opportunity. The dependency-aware key substantially improves on X1's whole-shadow
+0-2.47% lower bound, but does not clear the build gate for G2. Keep item 5 gated; gameplay and a deliberately
+relocatable key are next measurement options, not implementations authorised by these title data.
+
+This is the current PC reference's dependency catalogue, not proof of bit-exact reuse on every GX/PICA feature.
+Array/TMEM/texture contents, EFB feedback and resource versions are outside this requested state-only key. A future
+cache needs validity checks as well as a matching key; additional backend dependencies can reduce these rates.
+
+**(c) Lighting retention by completed pictures.** N=1,2,4 means the last N **EFB-to-XFB copies**, matching the device
+new-picture instrument, not the last N VI fields or only the last N lit fields. Empty VI fields do not evict keys;
+unlit/specular-only pictures do age them. Lookups exclude the current picture, so repeated draws within one picture
+cannot manufacture hits. Keys are otherwise X1's model-space, 1/1024-quantised light keys, with vertex-selected
+matrix indices and material/ambient/channel inputs. Specular vertices are excluded as before. The first observed
+picture is cold; no warm-up or failed picture is silently removed from the denominator.
+
+| Run | Completed pictures (measured) | Eligible lit vertices (measured) | N=1 hits (measured; derived %) | N=2 hits | N=4 hits | Specular / singular |
+|---|---:|---:|---:|---:|---:|---:|
+| 4290 | 100 | 0 | 0 (n/a) | 0 (n/a) | 0 (n/a) | 0 / 0 |
+| 5000 | 84 | 3,247,188 | 2,884,001 (88.82%) | 2,884,001 (88.82%) | 2,884,001 (88.82%) | 0 / 0 |
+| 900 | 100 | 4,441,604 | 731,354 (16.47%) | 733,102 (16.51%) | 733,512 (16.51%) | 0 / 0 |
+| 6590 | 100 | 2,163,900 | 1,442,826 (66.68%) | 1,442,826 (66.68%) | 1,442,826 (66.68%) | 0 / 0 |
+
+**Verdict (c): scene dependent, and a larger retained window does not rescue state 900.** States 5000 and 6590
+clear >50% already at N=1 and support a lighting cache in those scenes. State 900 remains below <20% even at N=4,
+supporting the bounded-lighting direction there. State 4290 supplies no lighting evidence. This does not authorise
+an approximation: quantisation, changing vertex arrays/skinning, non-rigid normal transforms and exact validity
+still need checks before a real cache, and gameplay remains unmeasured. Item 5 needs scene-dependent evidence,
+not an assumption that a global cache or global light bound works everywhere.
+
+**Planted cases and exactness.** `GXCENSUS_PLANT=1` makes observed unchanged state compare unequal, perturbs the
+incoming dependency key on every list call and the lighting key by picture/field. All three new hit/budget counters
+fall to zero where populated, while the real command/state execution is untouched. The synthetic decoder fixture
+has genuine positive hits for all windows: it proves overwritten and unused state are ignored, reads before later
+writes remain, partial masks and indexed XF reads matter, and changed draw guards do not freeze the first read set.
+It also checks a masked copy whose **raw command** creates an XFB picture even when its masked BP mirror does not.
+The A/B/C/A lighting sequence distinguishes N=1,2,4; unlit pictures test expiry at the window boundary.
+
+The independent `GX_CENSUS_TIMING_PLANT` test deliberately charges a slow backend to decode. Its normal timing
+oracle fails, proving observer/backend exclusion is checked rather than merely claimed. Only its temporary test
+FIFO object has that define; no production timing run uses it. The normal synthetic report oracle rejects the
+ordinary planted report. Field-to-total accounting, repeated counter consistency, state-hash and instruction-count
+comparisons also reject their planted inconsistencies.
+
+All four off/on/plant triples and all eight extra on repeats have identical complete state-hash lines and interpreted
+instruction counts. All repeat runs also have identical non-timing counters. The primary CPU runner was rerun after
+the census extension: **420 directed, 12,800 differential cases, 0 failures; plants caught (313/181 mismatches);
+11,806 disassembly comparisons, 0 mismatches**, with gcc/clang/devkitARM warning checks passing.
+
+| Run | State hash (measured, all modes/repeats identical) | Interpreted instructions (measured) |
+|---|---|---:|
+| 4290 | `51a944177b96fd8f` | 439,627,123 |
+| 5000 | `4658c8957510abdc` | 1,621,605,400 |
+| 900 | `363817a95d0a0766` | 321,460,241 |
+| 6590 | `d7000c85cf89e935` | 503,577,574 |
+
+**Method-check measurements retained, not selected away:** an early 5000 -> 5008 smoke run estimated 26.48% using
+successful commands only. The preliminary 4290 command-only trials estimated 65.02%, 68.24%, 65.91%; they omitted
+partial parses/ingress and are not the final denominator or verdict. A first full-front-end corpus preceded the
+masked-copy edge-case audit; its three-trial estimates are retained below for comparison, separately from the final
+audited corpus above. The final counter sets match that earlier full-front-end corpus exactly; no result depends
+on the masked-copy corner occurring in these title windows. Synthetic timing values in the check log are functional
+test observations, not game performance measurements.
+
+| Earlier full-front-end validation runs | Estimated r1 / r2 / r3 no-op decode share |
+|---|---|
+| 4290 | 28.21% / 28.28% / 25.79% |
+| 5000 | 16.85% / 17.59% / 17.56% |
+| 900 | 18.04% / 19.53% / 18.47% |
+| 6590 | 20.66% / 20.62% / 22.08% |
+
+**Evidence:** [checks and exactness signatures](gxcensus/x1b-2026-10-20/checks.txt), sibling `STATE-on.txt` and
+`STATE-plant.txt` retain per-field counters and decode samples; repeat/validation `*-totals.txt` files retain their
+full measured aggregate counters/sample sums. The run summaries and preliminary method checks are retained too.
+No game data, states, screenshots or generated AOT sources are committed. No 3DS build/run, G2, filtering or lighting
+optimisation was built. Normal PC object files have no census references; the 3DS/ARM code removes the probes at
+compile time.
+
+**Reproduce in WSL Debian, repository root (disc and states read in place):**
+
+```bash
+bash core/tests/cpu/run_tests.sh
+make -C core
+bash core/tests/gxcensus/run.sh
+bash core/tests/gxcensus/run_x1b.sh
+export GC3DS_ISO='/mnt/c/Users/tyler/TP3DS/game/Legend of Zelda, The - Twilight Princess (USA).nkit.iso'
+python3 core/tests/gxcensus/run_title.py --out /root/gxcensus-x1b/final --repeats 3
+python3 core/tests/gxcensus/verify_x1b.py --runs /root/gxcensus-x1b/final --json /root/gxcensus-x1b/final-results.json
+```
+
+`run_title.py` invokes the exact pairs 4290/4490, 5000/5200, 900/1100, 6590/6790 with `--load-state` and absolute
+`--frames` counts, and sets `GC3DS_NOHLE=1 GC3DS_NODRAW=1 OPMIX=1` plus `GXCENSUS=file` for on/plant. It performs the
+off reference, normal census, `GXCENSUS_PLANT=1`, and two additional normal census runs, sequentially per state.
+Symbols default to `/root/tpdecomp/config/GZ2E01/symbols.txt` (`GXCENSUS_SYMBOLS` overrides); the file is unchanged
+from X1. Stop after X1b. Gameplay coverage, net filter cost and device-time validation remain next, unrun work.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

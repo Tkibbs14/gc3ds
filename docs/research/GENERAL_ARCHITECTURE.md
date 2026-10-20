@@ -194,6 +194,20 @@ Ordon states, counted at the decoder:
   AOT/HLE/memo hooks directly. Run X1b-cpu passes 420 directed and 12,800 differential cases; both planted
   CPU bugs are caught (313 / 181 mismatches). Census follow-ups are recorded separately below when run.
 
+- **Result (2026-10-20, X1b; [decoder/dependency/retention follow-ups](MEASUREMENTS.md#x1b-decoder-cost-read-before-write-keys-and-retained-lighting-pc-2026-10-20)):**
+  **(a) Gross budget confirmed above 3%, net filtering gain unproven:** complete no-op commands consume an estimated
+  17.75-27.67% mean share of the full PC decode front end (three sequential repeats per title state, including ingress/partial
+  parses, excluding probes/rendering/copies). Equality guards already avoid state work; item 2 needs a cheap
+  incremental filter before a device performance claim. **(b) Unclear for G2:** dependency-aware geometry-list
+  hits are 46.46/49.40/61.24% vs the previous active list field and 48.08/42.03/53.41% vs last use (5000/900/6590),
+  between the 40/70% thresholds. The tiny 4290 state-only key repeats 99%; it does not decide geometry caching.
+  Item 5 stays gated on gameplay/relocatable-key evidence. **(c) Retained lighting is scene dependent:** N=1/2/4
+  completed-XFB-picture windows give 88.82% at 5000 and 66.68% at 6590 (>50%, cache supported there), but only
+  16.47/16.51/16.51% at 900 (<20%, bounded direction there); 4290 has no lit vertices. Increasing N does not solve
+  every scene. Four 200-field off/on/plant triples plus eight extra on runs match hashes/instruction counts;
+  all three counter plants and the backend-time contamination plant are caught. PC title data only, no optimisation
+  or later experiment built; gameplay, exact cache validity and device-time validation remain unrun.
+
 **X2. L2 lockdown by master (device, probe only, ~1 day; when the owner can restart the 2DS).** Read the L2C-310 TRM
 (ARM DDI 0246H, r3p3) lockdown-by-master section first; read the lockdown registers (0x900-0x93C) through the mirror,
 set cores 1-3 to allocate only into half the ways, re-run the cross-core chase probe (`# timing xcore`) and restore.
@@ -225,11 +239,11 @@ section 5 is trustworthy for "as many games as possible" without it.
 Then builds, each behind a switch, off until measured, scored with separate whole runs, gated by the experiment named:
 
 1. GPR save / restore inlining and the zero-flush call (X3; already the first queued item).
-2. Redundant state filtering at decode (X1 a).
+2. Redundant state filtering at decode (X1b a: gross budget measured; incremental filter cost and device gain still gated).
 3. Fault mode's crash root cause (measured +4-9%; independent of the rest).
 4. The region tier, smallest first: function-scope regions without loops, then loops, then liveness allocation, then
    CR in flags (X4).
-5. G2 + G1 with cached or bounded lighting (X1 b, d; X5).
+5. G2 + G1 with cached or bounded lighting (X1b b, c: geometry key inconclusive, lighting scene dependent; X5).
 6. The GX SDK as a native unit with the command channel (X1 c, e; X3).
 7. The GX pipeline split across cores (X2).
 8. JSystem subtree ports (the HUD pane walk, J3D drawing): still worth doing for TP and the other EAD games, and the

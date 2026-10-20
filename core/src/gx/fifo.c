@@ -312,7 +312,8 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_MASK: gx->bpMask = val & 0xFFFFFF; break;
     case 0x65: {  // LOADTLUT1: copy a palette from RAM (LOADTLUT0 = address >> 5) into texture memory
         u32 ram = (gx->bp[0x64] & 0x1FFFFF) << 5, tmemAddr = (val & 0x3FF) << 9, bytes = ((val >> 10) & 0x7FF) * 32;
-        if (ram + bytes <= PA_MEM1_END && tmemAddr + bytes <= (1u << 20)) ram_to_be(gx->tmem + tmemAddr, s->mem1, ram, bytes);
+        GXCENSUS_WORK(if (ram + bytes <= PA_MEM1_END && tmemAddr + bytes <= (1u << 20))
+            ram_to_be(gx->tmem + tmemAddr, s->mem1, ram, bytes));
         gx->tlutVersion++;
         break;
     }
@@ -320,6 +321,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_PE_TOKEN: pe_token(s, val & 0xFFFF, false); break;
     case BP_PE_TOKEN_INT: pe_token(s, val & 0xFFFF, true); break;
     case BP_COPY_EXEC:
+        GXCENSUS_WORK({
         if (s->on_efb_copy) s->on_efb_copy(s, s->user, val);
         efb_copy(s, gx, val);
         {  // the copy wrote RAM (a bound: rows of h lines or tiles at the copy's stride, or 4 bytes a pixel unstrided)
@@ -327,6 +329,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
             u32 stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5, len = h * stride > w * h * 4 ? h * stride : w * h * 4;
             mem_dirty(gx_copy_dest(gx), len);
         }
+        });
         break;
     }
 }
@@ -382,7 +385,8 @@ static void draw(System* s, GXCore* gx, u8 op, const u8* verts, u32 count, u32 v
     g_dlStats[inList ? 1 : 2]++;
     gx->vertices += count;
     gx->primCount[(op >> 3) & 7]++;
-    if (gx->backend && count) gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, op & 7, verts, count, vsize);
+    GXCENSUS_WORK(if (gx->backend && count)
+        gx->backend->draw(gx->backendCtx, s, (op >> 3) & 7, op & 7, verts, count, vsize));
 }
 
 #ifdef GC3DS_NATIVE
@@ -523,6 +527,17 @@ static u32 exec_one(System* s, GXCore* gx, const u8* p, u32 avail, bool inList) 
     u8 op = (u8)rd8(p);
     u32 cls = op >= 0x80 && op < 0xC0 ? 0 : op == 0x61 ? 1 : op == 0x10 ? 2 : op == 0x08 ? 3 : op == 0x50 ? 4 : 5;
     bool call = op == 0x40 || (op == 0x50 && avail >= 3 && rd8(p + 1) == 0x00 && rd8(p + 2) == 0x60);
+#ifdef GX_CENSUS_PC
+    if (g_gxcensus) {
+        gxcensus_pause(); // exclude child commands and probes from a list call's exclusive decoder time
+        int tag = gxcensus_prepare(s, gx, p, avail, inList);
+        gxcensus_timer_enter(tag, !call);
+        u32 consumed = exec_one_(s, gx, p, avail, inList);
+        gxcensus_timer_leave(consumed);
+        gxcensus_resume();
+        return consumed;
+    }
+#endif
     static u32 n;
     if (call || !g_gxDiag || !g_profClock || (++n & 15)) {
         if (!call) g_gxOpCount[cls]++;
@@ -759,6 +774,15 @@ static void feed(System* s, GXCore* gx, const u8* data, u32 len) {
 
 void gxcore_feed(System* s, GXCore* gx, const u8* data, u32 len) {
     u64 t0 = prof_begin();
+#ifdef GX_CENSUS_PC
+    if (g_gxcensus) {
+        gxcensus_pause();
+        gxcensus_timer_enter(-2, false); // exclusive ingress: append/memmove/dispatch, not child commands
+        feed(s, gx, data, len);
+        gxcensus_timer_leave(len);
+        gxcensus_resume();
+    } else
+#endif
     feed(s, gx, data, len);
     prof_end(PROF_GX, t0);
 }
