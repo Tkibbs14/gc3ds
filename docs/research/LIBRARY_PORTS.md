@@ -86,7 +86,7 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   `calcWeightEnvelopeMtx__12J3DMtxBufferFv!` GXSetTevColorIn GXSetTevAlphaIn GXSetTevColorOp GXSetTevAlphaOp
   GXSetTevOrder GXSetTevSwapMode GXSetTevKColorSel GXSetTevKAlphaSel GXSetTevIndirect GXSetChanCtrl GXSetArray
   __GXSetMatrixIndex GXSetTevColor `__GXSendFlushPrim!`, then (10-20) `__pl__4cXyzCFRC3Vec!` `__mi__4cXyzCFRC3Vec!`
-  `__ml__4cXyzCFf!` (each NAME.dis; `!` = direct mode). The cXyz operators are the `--psxyz` group (off until measured).
+  `__ml__4cXyzCFf!` (each NAME.dis; `!` = direct mode). The cXyz operators are the `--psxyz` group: off, heavy area -0.9% (jobs 660-663).
 - **Tools:** core/tools/porthash.py makes the code-hash table from main.dol and the symbol map; `--port-parts on` times
   each part of a call; `--pmu-split port` / `portcommit` count cycles and events around each half.
 

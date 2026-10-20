@@ -1061,6 +1061,12 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
     default.** Both: heavy area 6.693 (+1.3%), Ordon 9.377 (+1.2%), title 36.93 / 19.44 / 13.19 (+0.7% / 0 / +0.5%).
   - Confirmed losses: `--crstub` 6.546 (-1.0%), `--befloat` 6.557 (-0.8%), `--calls` 6.532 (-1.2%), `--fastfloat`
     6.567 (-0.6%), `--relayout` 20.4% speed (-7.6%, with stalls); `--pipeps` 6.608 (even).
+- **cXyz operator stand-ins (`--psxyz`, jobs 660-663, 10-20; operator+, operator-, operator* translated in direct
+  mode, 2.8% of the heavy area's core 0 between them in job 630's profile; PC HLE_CHECK 0 of 3,024,366 PS calls
+  differed):** heavy area 6.672 -> 6.611 (-0.9%), Ordon 9.325 -> 9.319 (even). **Off.** Direct-mode stand-ins are entry
+  hooks on the 3DS (a block exit and the stand-in dispatch a call), more than these 20-instruction wrappers cost; the
+  same verdict as C20 (GPR save / restore) and C21 (GX setters). A wrapper this small would pay only as code the JIT
+  emits in place.
 - **The rest of the ruled-out switches, re-measured (jobs 626, 632-643, 10-20; heavy area, separate runs, all other
   defaults):** baseline 6.673 / 6.675 frames a second (open and close, two runs of one build: 0.03% apart).
   - Losses confirmed: `--traces on` 6.334 (-5.1%), `--vw2 on` 6.521 (-2.3%), `--steal on` 6.623 (-0.75%),

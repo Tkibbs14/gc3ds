@@ -144,7 +144,7 @@ static const char kPsGx[] = "GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixInde
 static const char kPsFlush[] = "__GXSendFlushPrim";
 static bool g_psflushOn;  // on: heavy area +1.7%, Ordon +0.8% (separate runs, jobs 640, 650-654; its A/B, jobs 452-453, read neutral); --psflush off
 // cXyz's operator+, operator- and operator* (d_com / SComponent; 20 instructions around a PSVEC call): 2.8% of the
-// heavy area's core 0 between them (job 630). --psxyz on.
+// heavy area's core 0 between them (job 630). --psxyz on: heavy area -0.9%, Ordon even (jobs 660-663): off.
 static const char kPsXyz[] = "__pl,__mi,__ml";
 extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
 extern bool g_ringBatch;  // gxthread.c: bursts batched into larger ring records
