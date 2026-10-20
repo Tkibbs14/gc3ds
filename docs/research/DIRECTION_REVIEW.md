@@ -5,6 +5,10 @@ measurements (MEASUREMENTS.md, HANDOFF.md, NATIVE_PORT_PLAN.md, AOT_PLAN.md, RED
 LIBRARY_PORTS.md, GAMES.md, OPT_JIT_PLAN.md, REGION_JIT_PLAN.md) and today's device runs, plus OUTSIDE_RESEARCH.md.
 Every number is labelled **measured** (with its job), **derived** (arithmetic on measured numbers) or **estimate**.
 
+> **Correction (same day, EMULATOR_CEILING.md):** core 0 costs ~22 cycles per guest instruction at today's defaults
+> (Ordon 22.7, heavy area 21.7, cutscene 21.9), not ~35 (job 157, a 10-14 build). The gaps below are 2.7x (cutscene),
+> 3.2x (Ordon) and 4.4x (heavy area); the emulator-only investigation re-derives the ceilings from there.
+
 ## 1. Where gc3ds stands, and what actually limits it
 
 ### The frame budget, by core (measured, 2026-10-20 defaults)
