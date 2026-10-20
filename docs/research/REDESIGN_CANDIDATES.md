@@ -337,6 +337,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   the 1-18 word moves saved.
 - **Re-evaluate when:** the JIT can pass the cached registers to a stand-in (or inline the moves itself: these are
   plain stores and loads it could emit in place, without a call).
+- **2026-10-20, re-opened as the JIT inline form (EMULATOR_CEILING.md H5; design in HANDOFF.md "Next JIT build"):**
+  the offline call count puts the helpers at 22.3% / 16.7% of all calls (cutscene / later stretch), ~6-7% of block
+  boundaries; inlined, no flush and no boundary. Estimate +1.5-2.5% core 0. Not built yet.
 
 ## C21. GX register setters as in-place stand-ins (logged mode)
 

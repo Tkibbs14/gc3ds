@@ -27,6 +27,25 @@
 > offline model ran on 10-20 (`core/tools/hammock.py`, MEASUREMENTS.md "Hammock blocks and inlined leaves"): blocks
 > 1.5-1.85x longer, CR dead at exits only 7-14%, worth ~+3-8% core 0, below the +8-15% estimate; inlining small leaves
 > (H5: GPR save / restore is 17-22% of all calls) is the cheaper first build.
+> - **Next JIT build: inline the GPR save / restore helpers (H5, re-opens C20).** What: at a `bl` whose target is
+>   `_savegpr_N` / `_restgpr_N` (TP: 0x803621A0-0x8036223C; recognise by the callee's words, not the address: a straight
+>   run of `stw rK,d(r11)` / `lwz rK,d(r11)` ending in an unconditional blr), compile the callee's stores / loads in
+>   place through the normal integer codegen and the register cache, write LR = bl's pc + 4, add the callee's count, and
+>   go on after the bl. No call, no flush, no block boundary. Where: next to the paired-single path in jit.c
+>   (`emit_ps_call`, the `bl` check before `is_branch` in the block loop), behind a new switch, off by default.
+> - Why it should pay where C20 lost: C20 called C in place, so every dirty cached GPR was written back first and the
+>   cache forgot them all after a restore (job 322 against 318: cutscene 28.98 -> 28.29%, later 16.35 -> 15.70%). Inlined, a save stores straight from
+>   the cache and a restore loads into it. Offline (MEASUREMENTS.md "Hammock blocks and inlined leaves"): the helpers
+>   take 22.3% (cutscene stretch) / 16.7% (later) of all calls, two block boundaries each: ~6-7% of all boundaries;
+>   they were ~2.4-2.5% of core 0 (jobs 311, 630-631). Estimate +1.5-2.5% core 0.
+> - Exactness: a fault inside the run must look like the callee faulted (g->pc = that store's address, LR already set),
+>   so compile each word with c->pc at its callee address; mark the callee's code page so an icbi there drops the
+>   block. Risks: code growth at every prologue / epilogue (1-18 words each, OPT_CALLS's lesson: watch fetch stalls and
+>   flushes) and register-cache pressure across 18 registers. Checks: the JIT fuzzer with new save / restore cases
+>   (planted bug caught), the qemu whole-game check (same instruction count and last frame), then separate whole runs on
+>   the 2DS (Ordon, heavy area, tp850). Next in line if it pays: other leaves under 16 instructions (39-43% of calls);
+>   OSDisable / OSRestoreInterrupts (9.4% of calls in the later stretch) only once mtmsr's EE-only form is compiled in
+>   place, since mtmsr ends a block today.
 > Earlier next steps, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
 > 0 inclusive, ~6,600 cycles a pane in its own code; designed from the machine code in research/LIBRARY_PORTS.md "The pane
 > walk's design", with the five pane classes gameplay draws and every callee it needs; ~+3-3.5% in Ordon expected);
