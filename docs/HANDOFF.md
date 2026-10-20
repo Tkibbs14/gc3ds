@@ -18,7 +18,10 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
-> Next, by measured size: (1) **the library ports' own cost** (Ordon, jobs 648-649: building their context is 7-8% of
+> Next, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
+> 0 inclusive, ~6,600 cycles a pane in its own code; designed from the machine code in research/LIBRARY_PORTS.md "The pane
+> walk's design", with the five pane classes gameplay draws and every callee it needs; ~+3-3.5% in Ordon expected);
+> (1) **the library ports' own cost** (Ordon, jobs 648-649: building their context is 7-8% of
 > core 0, committing 4-5%; J2DPictureEx::drawSelf 31 + 13 us a call, J3D's concat-view matrix load 4 + 2.7 us at ~8,000
 > calls a second; the ports hold 13-22% of core 0's data-TLB misses): cheaper versions of the three ports on now;
 > (2) new ports from job 630-631's profiles (heavy area / Ordon self time: J2DPane::draw 2.0 / 3.1%,

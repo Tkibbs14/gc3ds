@@ -78,6 +78,28 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   walk's ~3% plus the hook exits; text (J2DTextBoxEx: J2DPrint, JUTResFont) would be the next piece. Not started:
   the per-pane port give-up rate (~2% of J2DPictureEx calls, float edge cases) would abort large subtrees, so the
   give-ups' cause comes first.
+- **The pane walk's design, read from the machine code (2026-10-20; J2DPane::draw 0x802F67E0, 334 instructions):**
+  - Per pane: visible = param && 176(p); the graf context's getGrafType (vtable +32: J2DOrthoGraph 0x802E9C88 `li r3,1;
+    blr`, J2DGrafContext 0x802E9664 `li r3,0`); parent = 12(236(p)) when 236(p); bounds valid when 40 >= 32 and 44 >= 36
+    (fcmpo + cror: `>=`, NaN fails), else return without children; global bounds 48..60 = bounds 32..44 + translate
+    (212, 216) by fadds; visible: clip 64..76 = bounds, rewriteAlpha (vtable +88: J2DPane / J2DPicture / J2DScreen a
+    bare `blr`; J2DPictureEx 0x80306A0C: 178(p) = 19(336(p)) when 336(p)). With a parent: + (parent 48 - 32, 52 - 36),
+    MTXConcat(parent + 128, p + 80, p + 128); visible and ortho: clip = global bounds intersected with the parent's
+    (each `<=` / `>=` test stores the parent's bits); 179 = 178, or 178 * parent 179 / 255 (divw) when 180(p). Without a
+    parent: makeMatrix (vtable +68, 0x80053C00, the same for all five classes) and MTXCopy: leave roots to guest code.
+  - Visible and ortho: J2DOrthoGraph::scissorBounds 0x802E987C (~50 float operations: the clip through the ortho
+    box, clamped); then if the clip is valid or not ortho: a J2DGrafContext copy on the stack (only its scissor box and
+    posMtx matter here), scissor 0x802E90C0 (four words) and setScissor 0x802E8E20 (clamps, orders, fctiwz, then
+    GXSetScissor), GXSetCullMode(177(p)) (port_j2d.c has it), drawSelf (vtable +56: J2DPane 0x802F83C8 `blr`; J2DPictureEx
+    the existing port, with the graf context's posMtx at +124); children through 220(p) / 24(child), each `- 12`,
+    called directly (not virtually) with x = y = 0.
+  - What it needs that the ports do not have: one context for a whole subtree (pipe ~600 bytes a drawn J2DPictureEx:
+    PIPE_CAP 8192 holds ~13), a store log that is not scanned linearly on every read (gx_load_tex_obj logs ~7 words a
+    texture and reads them back; LOG_MAX 64), pane fields written through with an undo list (children read their
+    parent's just-written fields), check mode undoing those before the interpreter runs and comparing them as log
+    entries, and a pre-scan that takes a subtree only when every pane is a J2DPane or J2DPictureEx and the hooked pane
+    has a parent. Expected: the walk's ~6,600 cycles a pane (Ordon: ~3,760 panes a second, 3.1% self) plus its GX calls,
+    ~+3-3.5% in Ordon, ~2.5% in the heavy area.
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
   would take (MSR.FP off: the OS's lazy FP switch).
