@@ -3,11 +3,16 @@
 //         [--trace N [--trace-at CYCLES]] [--profile] [--disc-info] [--press BUTTON@from-to,...]
 //         [--disc game.iso (with a DOL)] [--rtc SECONDS_SINCE_2000] [--from FIELD (for --every/--log)]
 //         [--dump-efb FIELD] [--save-state FIELD:PATH] [--load-state PATH]
+#include "../host/gxcensus.h"
 #include "../cpu/aot.h"
+#include "../cpu/hle.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
+#if !defined(GX_CENSUS_PC) && !defined(__arm__)
+#include <unistd.h>
+#endif
 #include "../boot/boot.h"
 #include "../disc/disc.h"
 #include "jit_glue.h"
@@ -95,6 +100,7 @@ static void on_efb_copy(System* s, void* user, u32 ctl) {
 
 static void on_field(System* s, void* user) {
     Frontend* fe = user;
+    GXCENSUS(gxcensus_field(fe->fields + 1));
     fe->fields++;
     if (fe->from && fe->fields == fe->from) g_logMask = fe->logMask;
     if (fe->dumpEfb) s->gx.core.traceDraws = fe->fields >= fe->dumpEfb && fe->fields <= fe->dumpEfb + 1;
@@ -198,6 +204,17 @@ static bool has_ext(const char* path, const char* ext) {
 }
 
 int main(int argc, char** argv) {
+#if !defined(GX_CENSUS_PC) && !defined(__arm__)
+    // One startup dispatch, no probe branches in the normal PC interpreter or GX decoder.
+    if (getenv("GXCENSUS")) {
+        char path[4096];
+        ssize_t n = readlink("/proc/self/exe", path, sizeof path - 8);
+        if (n < 0) { perror("GXCENSUS executable path"); return 2; }
+        memcpy(path + n, "-census", 8);
+        execv(path, argv);
+        perror("GXCENSUS companion (run make -C core)"); return 2;
+    }
+#endif
     if (argc < 2) {
         fprintf(stderr, "usage: %s program.dol|game.iso [--seconds N | --frames N] [--out DIR] [--every N] [--log cats|all]\n"
                         "       [--trace N [--trace-at CYCLES]] [--profile] [--disc-info] [--press BUTTON@from-to,...]\n"
@@ -282,6 +299,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "loaded state %s at field %u, cycle %llu\n", loadPath, fe.fields, (unsigned long long)sys.cpu.cycles);
     }
 
+    if (getenv("GC3DS_NOHLE")) hle_set_enabled(false);
     // AOT=1: ahead-of-time translated code (aot.h) where it was generated; AOT_CHECK=1 also compares every call with the interpreter.
     if (getenv("AOT")) {
         aot_set_enabled(true);
@@ -302,6 +320,9 @@ int main(int argc, char** argv) {
     // MEMDUMP=file: MEM1 at exit as big-endian words (the guest code the counts refer to).
     const char* edgeHistPath = getenv("EDGEHIST");
     if (edgeHistPath) g_gekkoEdges = calloc(GK_EDGE_N, sizeof(GkEdge));
+#ifdef GX_CENSUS_PC
+    if (getenv("GXCENSUS")) gxcensus_start(&sys, getenv("GXCENSUS"));
+#endif
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     u64 startCycles = sys.cpu.cycles, end = startCycles + (u64)(seconds * GEKKO_HZ);
@@ -334,6 +355,7 @@ int main(int argc, char** argv) {
         h ^= sys.cpu.pc; h *= 0x100000001B3ull;
         fprintf(stderr, "state hash %016llx at cycle %llu\n", (unsigned long long)h, (unsigned long long)sys.cpu.cycles);
     }
+    GXCENSUS(gxcensus_finish());
     host_jit_report();
     if (aot_enabled())
         fprintf(stderr, "aot: %llu runs, %llu calls, %llu guest instructions (%.1f%% of %llu), %llu fallbacks, %llu slow accesses, %llu hash failures\n",

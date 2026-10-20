@@ -34,6 +34,7 @@
 >    decoder hash on the PC, and the GX-ceiling instrument (GX-thread and worker ticks on repeated lists). Needed
 >    because core-0 gains show only up to ~+15-19% until the GX thread (~80-83% busy in gameplay) gets cheaper: 1 and 2
 >    fit under that cap, later core-0 work does not.
+>    X1 completed (2026-10-20): [GX census results](research/MEASUREMENTS.md#x1-gx-redundancy-census-pc-interpreter-title-scenes-2026-10-20); filtering supported, G2/lighting gated, SDK option open (title scenes only).
 > 4. **Cheap device measurements, one run each:** a PMU split on the float stubs in gameplay (H4: build single-precision
 >    floats only above ~15% of core 0); fault counts per minute in steady gameplay (H3, fault mode's crash; only when
 >    James can restart the 2DS).

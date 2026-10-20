@@ -1237,6 +1237,196 @@ guest instruction compiled, rounded (a label slip): **3 (K 12), 4 (K 6), 7 (K 2)
 - **Reproduce:** `PCHIST=pc.bin EDGEHIST=edges.bin MEMDUMP=mem.bin gcemu <disc> --load-state S --frames N`, then
   `python3 core/tools/hammock.py pc.bin edges.bin mem.bin --window 8,16,32,64`.
 
+### X1: GX redundancy census (PC interpreter, title scenes, 2026-10-20)
+
+**Scope:** GENERAL_ARCHITECTURE.md X1 only; measurement, no optimisation. Four **title scenes**, each 200 VI fields:
+`tp_pc_4290 -> 4490`, `tp_pc_5000 -> 5200`, `tp_pc_900 -> 1100`, `tp_pc_6590 -> 6790`. No PC gameplay state exists;
+the gameplay states are on the 2DS SD card. These results do not establish gameplay speed or repeat rates.
+Native stand-ins were off (`GC3DS_NOHLE=1`, no AOT/PORT), so the interpreter sees the actual storing PCs and data
+accesses. Instruction counts therefore differ from the earlier hammock profile with stand-ins enabled.
+Rasterisation was off (`GC3DS_NODRAW=1`); the census decodes every vertex before that early return. No frame or speed
+claim follows from these runs. Counts below are **measured** in the named runs; every percentage is **derived** from
+those counts, pooled over that run's 200 fields, not an estimate or a mean of per-field percentages.
+
+**Implementation:** `GXCENSUS=file` writes one text report (one row per VI field, totals, up to 20 outside PCs) and a
+short stderr summary. `make -C core` also produces `gcemu-census`; the ordinary PC frontend execs this companion
+only when the environment variable is set. The ordinary interpreter and GX decoder have no census calls or branches
+(checked with `nm` on their objects); the extra cost when off is one startup environment check. ARM Linux and 3DS do
+not compile the hooks or companion. No 3DS build or device run was performed for X1.
+
+**(a) Unchanged state writes.** Each effective masked BP value, CP word, direct XF word and indexed XF load is
+compared with its preceding shadow value. E0-E7 compare the selected TEV/konst bank, not the last bank addressed.
+TEV includes BP 06-1F, 28-2F, C0-FD; texture includes BP 30-3F, 60-69, 80-BB; XF matrices are below 0600, lights
+0600-067F; CP arrays are A0-BF; everything else is other. Groups are disjoint. Raw reports retain same/total counts
+for every group in every field.
+
+| Run (start -> end) | Unchanged / all words (measured) | All (derived) | TEV | Texture | XF matrices | XF lights | CP arrays | Other |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4290 -> 4490 | 6,095,021 / 6,592,500 | 92.45% | 93.85% | 86.21% | 89.69% | 99.59% | 50.00% | 93.86% |
+| 5000 -> 5200 | 2,500,974 / 4,305,593 | 58.09% | 85.38% | 81.56% | 12.74% | 94.69% | 87.15% | 80.15% |
+| 900 -> 1100 | 3,337,484 / 5,231,427 | 63.80% | 85.33% | 80.87% | 16.73% | 96.09% | 86.95% | 79.06% |
+| 6590 -> 6790 | 5,276,138 / 7,581,709 | 69.59% | 84.19% | 83.34% | 30.94% | 97.12% | 86.52% | 82.77% |
+
+**Verdict (a): confirmed in these title scenes** (>40% in every run). Build-list item 2 remains supported.
+This is register equality, not permission to suppress side effects: PE tokens/finish, EFB copies, palette loads and
+BP-mask consumption must keep their semantics even when the stored bits compare equal. Matrices are much less
+redundant than material/light state in the geometry scenes.
+
+**(b) Display lists: two requested bounds plus timing diagnostics.** Upper key: full list bytes (64-bit FNV hash
+and length) plus all 16 incoming CP array bases. Lower key: upper plus the **whole** incoming BP/CP/XF shadow,
+including the BP mask and both TEV colour banks; no per-command dependency tracking. This includes irrelevant
+state and words overwritten by the list, so a low lower bound cannot disprove a more precise key. Array contents
+are not hashed. No sampled calls, address-cache evictions, or silent set overflow: a full set aborts.
+
+| Run | Calls (measured) | Prior-VI upper hits (measured; derived %) | Prior-VI lower hits | Prior-active-list-field upper | Prior-active-list-field lower | Same address, last use |
+|---|---:|---:|---:|---:|---:|---:|
+| 4290 | 100 | 0 (0.00%) | 0 (0.00%) | 99 (99.00%) | 0 (0.00%) | 99 (99.00%) |
+| 5000 | 37,464 | 155 (0.41%) | 0 (0.00%) | 30,818 (82.26%) | 0 (0.00%) | 32,582 (86.97%) |
+| 900 | 49,017 | 0 (0.00%) | 0 (0.00%) | 42,357 (86.41%) | 0 (0.00%) | 38,754 (79.06%) |
+| 6590 | 33,200 | 0 (0.00%) | 0 (0.00%) | 30,983 (93.32%) | 820 (2.47%) | 28,479 (85.78%) |
+
+The game generally renders every other VI field. The strict previous-VI counts above are the requested measurement,
+including empty preceding fields. The active-field diagnostic retains the last field with list calls; it does not
+change those strict counters. Job 107 compared the same list address with its **last use**, not the immediately
+preceding VI field, and hashed bases plus strides. The geometry runs' last-use 79.06-86.97% reproduces its approximate
+79-91% range; the strict previous-VI upper does not. At 4290 there is only one 96-byte list per picture, so its 99%
+last-use rate is not representative of the geometry workload.
+
+**Verdict (b): unclear for G2; the whole-shadow key is disproved as a useful key** (strict lower 0%; even active lower
+0-2.47%, below 40%). The active upper is 82.26-93.32% in the geometry runs (>70%), showing the byte-level opportunity,
+but not confirming state-compatible fragments. Keep build-list item 5 gated on a dependency-aware/relocatable key
+and a retained window that survives empty VI fields; do not build G2 from the old job-107 figure alone.
+
+**(c) FIFO sources.** Gather-pipe stores are classified by their actual interpreter instruction PC, over each
+function's symbol extent. The 179 recognised functions occupy the GX SDK link span `8035921C..80360F98`, derived
+from GX/__GX-named endpoints, including the local `__GetImageTileCount` and `__SetSURegs` inside that span. Using
+only GX-prefixed names would wrongly report `__SetSURegs` as game code. DL bytes count the whole called length,
+including NOP padding. The immediate call's 9-byte command belongs to its pipe source; fetched contents belong to
+DL, so these are disjoint source volumes. Immediate store volume can differ from delivered 32-byte bursts at a
+boundary because the write-gather buffer retains a partial burst.
+
+| Run | SDK pipe bytes (measured; derived % of all three) | Other pipe bytes | DL fetched bytes | SDK share of pipe stores (derived) |
+|---|---:|---:|---:|---:|
+| 4290 | 35,785,300 (83.84%) | 6,890,400 (16.14%) | 9,600 (0.02%) | 83.85% |
+| 5000 | 8,152,116 (13.31%) | 7,743,540 (12.64%) | 45,365,376 (74.05%) | 51.29% |
+| 900 | 9,357,674 (13.20%) | 6,874,587 (9.70%) | 54,652,192 (77.10%) | 57.65% |
+| 6590 | 32,624,367 (42.09%) | 11,542,896 (14.89%) | 33,344,000 (43.02%) | 73.87% |
+
+**Verdict (c): confirmed mixed sources.** A native SDK command channel must still accept direct game/JSystem bytes
+and called display lists. In the geometry runs the SDK accounts for only 13.20-42.09% of total source bytes; DLs
+account for 43.02-77.10%. These byte counts bound the immediate decoder work item 4.3.2 could remove; they do not
+price decode/state time (job 512) or confirm a speedup. Build-list item 6 stays gated on X3 and later timing evidence.
+
+**(d) Lighting keys, weighted by vertices.** A vertex counts as lit when any active colour or alpha channel has XF
+lighting enabled. Any enabled specular-light channel excludes the whole vertex and counts it separately. For each
+non-specular vertex, key the list hash (immediate draws use their draw bytes), array bases/strides, matrix index,
+channel controls, ambient/material colours, enabled lights' colour/attenuation, and each light's position/direction
+transformed by the full affine inverse modelview (direction has no translation), rounded to 1/1024 model-space unit.
+Vertex-sourced colours are included when selected. Singular modelviews count as misses, reported separately.
+The per-matrix calculation is reused only within a draw; every vertex is counted and its decoded matrix index is used.
+
+| Run | Non-specular lit vertices (measured) | Prior-VI key hits (measured; derived %) | Prior-active-lit-field hits | Specular vertices | Singular vertices |
+|---|---:|---:|---:|---:|---:|
+| 4290 | 0 | 0 (n/a) | 0 (n/a) | 0 | 0 |
+| 5000 | 3,247,188 | 0 (0.00%) | 2,710,290 (83.47%) | 0 | 0 |
+| 900 | 4,441,604 | 0 (0.00%) | 731,354 (16.47%) | 0 | 0 |
+| 6590 | 2,163,900 | 0 (0.00%) | 1,442,826 (66.68%) | 0 | 0 |
+
+**Verdict (d): unclear overall, strongly scene dependent.** Strict previous-VI hits are 0% (<20%), so that lookup
+window is disproved; it is not evidence that lighting must be approximated/bounded. Retention across empty fields
+changes the result: 5000 and 6590 exceed 50%, while 900 is below 20%; 4290 has no lit vertices. Item 5 must retain
+both cached and bounded-lighting investigations, gated on gameplay and a timing/validity test, rather than assuming
+one lighting solution globally. This is key repetition, not an exact lit-colour-cache implementation: array contents,
+skinning and non-rigid normal transforms may need additional guards. Quantisation estimates an opportunity; it is
+not an authorised rendering approximation. No specular work was observed, so exclusion is synthetically tested only.
+
+**(e) Outside SDK data accesses.** Symbols identify `__GXData` at `80456580` (a pointer) and its `gxData` object at
+`8044CE80`, size `5B0`; the live pointer is followed at startup and after writes. Watch struct loads/stores, pointer
+loads/stores and the PI FIFO write-pointer register at physical `0C003014` (effective alias `CC003014`). The gather
+port itself (`CC008000`) is the source-volume probe in (c), not a readable pointer variable. Fast RAM paths and slow
+MMIO paths use the same interpreter hooks; mapped physical aliases share the watch. Native stand-ins/AOT and
+DMA/cache-line operations are not observed as individual guest load/store instructions, hence native code is off in
+these runs. GXCENSUS reports a warning flag if native stand-ins remain enabled.
+
+**Measured:** all four runs have **0 outside struct loads, 0 struct stores, 0 pointer loads and 0 pointer stores**;
+there are **0 PCs** to list (the report has the top-20 facility). **Verdict (e): confirmed for these title scenes**:
+4.3.2 remains open, and build-list item 6 still needs X3 and gameplay coverage. This is not a proof that all TP
+scenes or other games keep SDK state private.
+
+**Planted self-test:** `GXCENSUS_PLANT=1` corrupts the observed incoming shadow before the ordinary equality test,
+salts list/lighting keys by field, swaps SDK/direct source classifications, and passes a recognisable synthetic
+outside struct reader and pointer writer through the memory-watch path. It never writes guest/GX state.
+The no-disc synthetic fixture has consecutive active fields, ensuring the primary previous-VI counters have hits
+to destroy even where real scenes have none. The normal fixture's oracle rejects the planted fixture:
+
+| Probe | Synthetic normal -> plant (measured) | Real 5000 -> 5200 normal -> plant (measured) |
+|---|---|---|
+| (a) | TEV unchanged 3 -> 0; total unchanged 83.33% -> 0% | unchanged words 2,500,974 -> 0 |
+| (b) | upper/lower hits 2/2 -> 0/0 | active upper 30,818 -> 0 (strict lower already 0) |
+| (c) | SDK/direct bytes 24/12 -> 12/24 | 8,152,116/7,743,540 -> 7,743,540/8,152,116 |
+| (d) | lighting hits 8 -> 0 (12 eligible; 12 specular excluded) | active lighting hits 2,710,290 -> 0 |
+| (e) | outside struct reads/pointer stores 0/0 -> 3/3 | 0/0 -> 200/200 at FFFFFFFC, PLANTED_OUTSIDE |
+
+The 6590 run also moves the nonzero active lower bound: 820 -> 0. All four real plants drive populated prior-field repeat
+counters to zero and add one outside reader/writer per field. The synthetic fixture additionally checks affine
+inverse scaling/translation and invariant model-space light position under common camera translation.
+
+**Exactness and checks:** all four final runs have identical complete `state hash` lines (including cycle) and
+`OPMIX` instruction counts in off/on/plant modes. Both comparison checks have negative self-tests (corrupted
+hash/count rejected).
+
+| Run | State hash (measured, identical in all three modes) | Interpreted instructions (measured) |
+|---|---|---:|
+| 4290 | `51a944177b96fd8f` | 439,627,123 |
+| 5000 | `4658c8957510abdc` | 1,621,605,400 |
+| 900 | `363817a95d0a0766` | 321,460,241 |
+| 6590 | `d7000c85cf89e935` | 503,577,574 |
+
+`core/tests/gxcensus/run.sh` passes and shows all five plants moving their counters. The unmodified required CPU
+runner was executed and **fails to link** optional `aot_*`, `hle_*`, `g_memoRec`/`memo_access` hooks; the same failure
+was reproduced from baseline `7cfa41a0`. It is not reported as passing. The X1-local
+`core/tests/gxcensus/run_cpu_checks.sh` supplies inert, test-only optional hooks and runs that unchanged suite:
+**420 directed cases, 12,800 differential cases, 0 failures; both CPU plants caught (313 and 181 mismatches);
+11,806 disassembly comparisons, 0 mismatches**, with gcc/clang/devkitARM warning checks passing. No optimisation,
+JIT, vertex-transform implementation or 3DS host behaviour was changed.
+
+**Limits:** these are title scenes, not gameplay. First measured fields have no predecessor and count cold misses;
+no extra warm-up is silently discarded. The whole-shadow lower bound deliberately over-keys. Array bases do not
+prove static vertex contents. Quantisation and skinning need an exact cache validity check before any cache is built.
+Symbol recognition here is for GZ2E01 and its contiguous SDK linkage, not an automatic cross-title SDK detector.
+The supplied symbols file SHA-256 is `8b8c98b86b6270543709adbbd489ca4a5cd4fa5c30fd4a410420702fd37a085a`.
+64-bit key hashes have a collision risk; this census does not establish bit-exact cache reuse. No instruction count,
+byte count or repeat share is a measured speedup; X5 timing and gameplay remain unrun.
+
+**Evidence:** [per-field reports and checks](gxcensus/2026-10-20/checks.txt); sibling `STATE-on.txt` and
+`STATE-plant.txt` files retain all counters and outside-PC rows. Only counters and state-hash/instruction-count
+signatures are committed; no commercial game data, screenshots, generated AOT code or save states.
+
+**Exact reproduction (WSL Debian, repository root):**
+
+```bash
+make -C core
+export GC3DS_ISO='/mnt/c/Users/tyler/TP3DS/game/Legend of Zelda, The - Twilight Princess (USA).nkit.iso'
+mkdir -p /root/gxcensus-x1
+for span in 4290:4490 5000:5200 900:1100 6590:6790; do
+    start=${span%:*}; end=${span#*:}
+    for mode in off on plant; do
+        envs=(GC3DS_NOHLE=1 GC3DS_NODRAW=1 OPMIX=1)
+        if [ "$mode" != off ]; then envs+=(GXCENSUS=/root/gxcensus-x1/$start-$mode.txt); fi
+        if [ "$mode" = plant ]; then envs+=(GXCENSUS_PLANT=1); fi
+        env -u GXCENSUS -u GXCENSUS_PLANT -u AOT -u GC3DS_PORT -u PORT_CHECK "${envs[@]}" \
+            core/build/gcemu "$GC3DS_ISO" --load-state /root/tp_pc_$start.state --frames "$end" \
+            --out /root/gxcensus-x1/$start-$mode > /root/gxcensus-x1/$start-$mode.log 2>&1
+    done
+done
+bash core/tests/gxcensus/run.sh
+python3 core/tests/gxcensus/verify.py --runs /root/gxcensus-x1
+bash core/tests/gxcensus/run_cpu_checks.sh
+```
+
+`GXCENSUS_SYMBOLS=/root/tpdecomp/config/GZ2E01/symbols.txt` is the default and can be overridden. `--frames` is the
+absolute boot-field number, not the duration after loading the state. Stop here: X2-X6 and all optimisations are unrun.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

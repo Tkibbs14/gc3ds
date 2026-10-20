@@ -5,10 +5,25 @@ CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -Wno-unused-parameter
 CFLAGS  += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 LDLIBS  := -lm
 BUILD   ?= build
+.DEFAULT_GOAL := $(BUILD)/gcemu
 
 SRC := $(wildcard src/cpu/*.c) $(wildcard src/sys/*.c) $(wildcard src/hw/*.c) $(wildcard src/gx/*.c) $(wildcard src/boot/*.c) \
        $(wildcard src/host/*.c) $(wildcard src/disc/*.c) $(wildcard src/jit/*.c) $(wildcard src/aotgen/*.c)
 OBJ := $(patsubst src/%.c,$(BUILD)/obj/%.o,$(SRC))
+
+# Keep the normal interpreter/decoder free of census branches. The PC frontend
+# execs this companion only when GXCENSUS is present; ARM and 3DS are unchanged.
+ifeq ($(findstring arm,$(shell $(CC) -dumpmachine)),)
+CENSUS_OBJ := $(patsubst src/%.c,$(BUILD)/census-obj/%.o,$(filter-out src/aotgen/%,$(SRC)))
+CENSUS_AOT := $(filter $(BUILD)/obj/aotgen/%,$(OBJ))
+$(BUILD)/gcemu: | $(BUILD)/gcemu-census
+$(BUILD)/gcemu-census: $(CENSUS_OBJ) $(CENSUS_AOT)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+$(BUILD)/census-obj/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DGX_CENSUS_PC -MMD -MP -c $< -o $@
+-include $(CENSUS_OBJ:.o=.d)
+endif
 
 $(BUILD)/gcemu: $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)

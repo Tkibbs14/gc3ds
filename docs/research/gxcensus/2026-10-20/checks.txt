@@ -1,0 +1,48 @@
+4290->4490 off: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+4290->4490 on: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+4290->4490 plant: state hash 51a944177b96fd8f at cycle 36409257495; OPMIX: 439627123 instructions interpreted
+5000->5200 off: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+5000->5200 on: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+5000->5200 plant: state hash 4658c8957510abdc at cycle 42203428422; OPMIX: 1621605400 instructions interpreted
+900->1100 off: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+900->1100 on: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+900->1100 plant: state hash 363817a95d0a0766 at cycle 8919114279; OPMIX: 321460241 instructions interpreted
+6590->6790 off: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+6590->6790 on: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+6590->6790 plant: state hash d7000c85cf89e935 at cycle 55071750103; OPMIX: 503577574 instructions interpreted
+
+Synthetic census plants:
+GXCENSUS: 3 fields; unchanged 83.33%; lists upper/lower 66.67/66.67%; lighting 66.67%; outside PCs 0; plant 0
+GXCENSUS: 3 fields; unchanged 0.00%; lists upper/lower 0.00/0.00%; lighting 0.00%; outside PCs 1; plant 1
+PASS: normal census oracle rejects planted input
+PASS plant a: TEV_same 3 -> 0
+PASS plant b: upper 2 -> 0, lower 2 -> 0
+PASS plant c: sdk 24 -> 12, direct 12 -> 24
+PASS plant d: lhit 8 -> 0
+PASS plant e: reads 0 -> 3, ptrstores 0 -> 3
+
+
+Final report/exactness checker:
+PASS 4290: plant changes state/source/watch counters; repeats 99/0 -> 0/0
+PASS 4290: on/off state hash and interpreted instruction count; both negative checker plants rejected
+PASS 5000: plant changes state/source/watch counters; repeats 30818/2710290 -> 0/0
+PASS 5000: on/off state hash and interpreted instruction count; both negative checker plants rejected
+PASS 6590: plant changes state/source/watch counters; repeats 30983/1442826 -> 0/0
+PASS 6590: on/off state hash and interpreted instruction count; both negative checker plants rejected
+PASS 900: plant changes state/source/watch counters; repeats 42357/731354 -> 0/0
+PASS 900: on/off state hash and interpreted instruction count; both negative checker plants rejected
+
+
+Interpreter suite with test-only inert optional hooks:
+
+PASS build: core compiles with zero warnings (gcc -std=c11, clang -std=c11, arm-none-eabi-gcc -std=gnu11 armv6k/vfp)
+PASS directed: DIRECTED pass=420 fail=0
+PASS fuzz: FUZZ batches=200 cases=12800 failed_batches=0 mismatched_cases=0
+INFO fuzz coverage: 436891 generated instructions, 261 distinct mnemonics (incl. record/overflow forms)
+PASS self-test plant 1 (rlwimi result bit 8 flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=313
+PASS self-test plant 2 (fadds result LSB flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=181
+PASS disasm: DISASM checked=11806 mnemonic_mismatch=0 operand_mismatch=0
+ALL TESTS PASSED
+
+
+Unmodified CPU runner also fails at baseline 7cfa41a0: undefined optional aot/hle/memo symbols; not a passing check.

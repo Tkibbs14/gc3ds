@@ -1,5 +1,6 @@
 // FIFO command processing. Commands arrive through the write-gather pipe (and display lists in RAM) and are executed
 // as soon as they are complete, which keeps PE interrupts and EFB copies in step with the CPU without a GPU thread.
+#include "../host/gxcensus.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "../sys/system.h"
@@ -88,7 +89,9 @@ static inline void merge_break(System* s, GXCore* gx) {
 }
 
 static void xf_write(System* s, GXCore* gx, u32 addr, u32 v) {
-    if (addr >= sizeof gx->xf / 4 || gx->xf[addr] == v) return;
+    if (addr >= sizeof gx->xf / 4) return;
+    GXCENSUS(gxcensus_reg(2, addr, gx->xf[addr], v));
+    if (gx->xf[addr] == v) return;
     merge_break(s, gx);
     // Lights, channel controls and texgen settings: what shader lighting depends on (GXCore.xfLightVersion).
     if (((addr >= 0x600 && addr < 0x680) || (addr >= 0x1009 && addr <= 0x1011) || (addr >= 0x103F && addr <= 0x1047)) &&
@@ -279,6 +282,16 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     u32 mask = gx->bpMask;
     if (reg != BP_MASK) gx->bpMask = 0xFFFFFF;
     u32 nv = (gx->bp[reg] & ~mask) | (val & mask);
+    GXCENSUS({
+        u32 old = gx->bp[reg];
+        // E0-E7 address two separate banks selected by bit 23.
+        if (reg >= 0xe0 && reg <= 0xe7) {
+            u32 i = (reg - 0xe0) / 2;
+            old = nv & (1u << 23) ? (reg & 1 ? gx->kHi[i] : gx->kLo[i]) :
+                                   (reg & 1 ? gx->tevHi[i] : gx->tevLo[i]);
+        }
+        gxcensus_reg(0, reg, old, nv);
+    });
     if (nv != gx->bp[reg] || reg == BP_PE_DONE || reg == BP_PE_TOKEN || reg == BP_PE_TOKEN_INT || reg == BP_COPY_EXEC ||
         reg == 0x65)
         merge_break(s, gx);
@@ -364,6 +377,7 @@ static void dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
 }
 
 static void draw(System* s, GXCore* gx, u8 op, const u8* verts, u32 count, u32 vsize, bool inList) {
+    GXCENSUS(gxcensus_draw(s, gx, op & 7, verts, count, vsize));
     gx->draws++;
     g_dlStats[inList ? 1 : 2]++;
     gx->vertices += count;
@@ -542,6 +556,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
         g_gxWhere = GW_DECCP;
         {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
             u32 v = rd32(p + 2), r = rd8(p + 1);
+            GXCENSUS(gxcensus_reg(1, r, gx->cp[r], v));
             if (gx->cp[r] != v) {
                 merge_break(s, gx);
                 if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
@@ -573,7 +588,9 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
             g_gxWhere = GW_DECNOTE;
             dl_note(gx, addr, s->mem1 + addr, size);
             g_gxWhere = GW_FIFO;
+            GXCENSUS(gxcensus_list(gx, s->mem1 + addr, size));
             run_list(s, gx, s->mem1 + addr, size, true);
+            GXCENSUS(gxcensus_list_end());
         }
         else emu_log(LOG_GX, "display list %08x+%x out of range\n", addr, size);
         return 9;

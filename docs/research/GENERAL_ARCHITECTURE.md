@@ -174,6 +174,22 @@ Ordon states, counted at the decoder:
 - (e) Reads of __GXData and the FIFO pointer from code outside the recognised GX functions (a PC watch over the range).
   **Zero or a short, recognisable list** keeps 4.3.2 open; scattered readers in game code close it.
 
+- **Result (2026-10-20, PC title scenes only; [X1 census](MEASUREMENTS.md#x1-gx-redundancy-census-pc-interpreter-title-scenes-2026-10-20)):**
+  **(a) Confirmed:** unchanged words 58.09-92.45% (derived from measured per-run counts), above 40%; build item 2
+  stays supported, with side-effecting commands protected. **(b) Unclear for G2; whole-shadow variant disproved:**
+  strict previous-VI lower 0%, active-field lower 0-2.47% (<40%); active upper 82.26-93.32% in geometry scenes and
+  last-use 79.06-86.97% reproduce the byte-level opportunity, not incoming-state compatibility. Item 5 needs a
+  dependency-aware/relocatable key and retention across empty VI fields before G2 is built. **(c) Confirmed mixed
+  sources:** SDK immediate bytes 13.20-42.09% of all source bytes in geometry scenes; a native channel must retain
+  direct-byte and DL paths. Byte volume does not price the time saved; item 6 still needs X3/timing evidence.
+  **(d) Unclear overall:** strict previous-VI lighting hits 0% (<20%), but previous-active-field hits are 16.47%,
+  83.47%, 66.68% at states 900, 5000, 6590 (4290 has no lit vertices). This disproves the one-VI lookup window,
+  not retained lighting reuse: item 5 keeps cached/bounded lighting gated on gameplay and exact validity/timing.
+  **(e) Confirmed in these title scenes:** zero outside SDK struct/pointer loads/stores; 4.3.2 stays open, item 6
+  still needs X3 and gameplay. Job 107 used last-use repeats; the immediately preceding VI is often empty. Four
+  200-field off/on/plant triples have identical state hashes and instruction counts; all five synthetic plants
+  move their counters. No optimisation or X2-X6 was built or run.
+
 **X2. L2 lockdown by master (device, probe only, ~1 day; when the owner can restart the 2DS).** Read the L2C-310 TRM
 (ARM DDI 0246H, r3p3) lockdown-by-master section first; read the lockdown registers (0x900-0x93C) through the mirror,
 set cores 1-3 to allocate only into half the ways, re-run the cross-core chase probe (`# timing xcore`) and restore.
