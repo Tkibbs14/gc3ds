@@ -1427,6 +1427,22 @@ bash core/tests/gxcensus/run_cpu_checks.sh
 `GXCENSUS_SYMBOLS=/root/tpdecomp/config/GZ2E01/symbols.txt` is the default and can be overridden. `--frames` is the
 absolute boot-field number, not the duration after loading the state. Stop here: X2-X6 and all optimisations are unrun.
 
+### X1b prerequisite: primary CPU test runner repaired (2026-10-20)
+
+The main `bash core/tests/cpu/run_tests.sh` now directly links `core/tests/cpu/optional_hooks.c`:
+explicit inert implementations of the optional AOT/HLE/memo hooks. These tests exercise the interpreter;
+native stand-ins, AOT dispatch and memory recording remain disabled. The former census-specific hook file
+was moved here, with AOT/HLE prototype headers so interface drift is checked. The old census wrapper now
+only delegates to the primary runner; no compiler/PATH shim is required.
+
+**Measured, run X1b-cpu (default seed/counts, full primary command):** 420 directed cases, 12,800 differential
+cases, 0 failures; 11,806 disassembly comparisons, 0 mismatches. The logic and floating-point planted cases
+fail as required: 313 and 181 mismatches respectively (8 failed batches each). gcc, clang and devkitARM
+warning checks pass. The command's incidental host throughput measurements, not an emulator performance claim,
+are retained with the [complete check summary](gxcensus/x1b-2026-10-20/cpu-checks.txt).
+Reproduce: `bash core/tests/cpu/run_tests.sh` from the repository root in WSL Debian. This repairs the baseline
+link failure documented in X1; it does not change the interpreter or implement an optimisation.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

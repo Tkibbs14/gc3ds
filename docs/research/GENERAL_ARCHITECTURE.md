@@ -190,6 +190,10 @@ Ordon states, counted at the decoder:
   200-field off/on/plant triples have identical state hashes and instruction counts; all five synthetic plants
   move their counters. No optimisation or X2-X6 was built or run.
 
+- **Result (2026-10-20, X1b prerequisite):** the primary CPU test runner now links explicit inert optional
+  AOT/HLE/memo hooks directly. Run X1b-cpu passes 420 directed and 12,800 differential cases; both planted
+  CPU bugs are caught (313 / 181 mismatches). Census follow-ups are recorded separately below when run.
+
 **X2. L2 lockdown by master (device, probe only, ~1 day; when the owner can restart the 2DS).** Read the L2C-310 TRM
 (ARM DDI 0246H, r3p3) lockdown-by-master section first; read the lockdown registers (0x900-0x93C) through the mirror,
 set cores 1-3 to allocate only into half the ways, re-run the cross-core chase probe (`# timing xcore`) and restore.

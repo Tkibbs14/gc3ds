@@ -19,7 +19,7 @@ summary=()
 note() { summary+=("$1"); echo "$1"; }
 
 CFLAGS="-std=c11 -O2 -Wall -Wextra -Werror"
-CORE="$src/gekko.c $src/gekko_mem.c $src/gekko_decode.c $src/gekko_int.c $src/gekko_fpu.c $src/gekko_softfp.c $src/gekko_disasm.c"
+CORE="$src/gekko.c $src/gekko_mem.c $src/gekko_decode.c $src/gekko_int.c $src/gekko_fpu.c $src/gekko_softfp.c $src/gekko_disasm.c $here/optional_hooks.c"
 
 echo "== build"
 if bash "$here/build_core.sh" "$w"; then
