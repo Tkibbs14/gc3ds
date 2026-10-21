@@ -53,6 +53,7 @@ static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 void mirror_probe(FILE* f);  // faultprobe.c: --probe-mirror (Luma's physical-memory mirror, the L2C-310's registers)
+#include "regionbench.h"
 void jit_bench(Jit* j, System* s, FILE* f);  // jitbench.c: --jit-bench only
 const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const char* disc);  // timingprobe.c: --timing-probe
 const char* gpu_probe(void);  // gpuprobe.c: --timing-probe only (GPU micro-benchmarks)
@@ -421,6 +422,7 @@ typedef struct {
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
     bool probeMirror;    // --probe-mirror on: Luma's physical-memory mirror and the L2C-310's registers (read only)
+    unsigned regionBench; // X4: 1 pane, 2 texture, 3 position matrix; captured real call, then exit
     bool jitBench;       // --jit-bench only: JIT microbenchmarks (jitbench.c) after boot, instead of the run
     int timingProbe;     // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots; only: and nothing else
     char lumaDumps[48];  // --luma-dumps N[,N...]: Luma arm11 dumps to report again (a lost run reported them)
@@ -670,6 +672,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
+        else if (!strcmp(a, "--region-bench")) o->regionBench = (unsigned)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
         else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
         else if (!strcmp(a, "--probe-risky")) g_probeRisky = !strcmp(v, "on");  // timingprobe.c: the DMA engine too
@@ -1178,7 +1181,7 @@ static const char* run(const char* path) {
         jit_set_trace_parts(g_jit, g_opt.traceFollow, g_opt.traceSide, g_opt.traceLen);
         jit_invalidate_all(g_jit);
     }
-    g_wdArmed = !g_opt.jitBench;
+    g_wdArmed = !g_opt.jitBench && !g_opt.regionBench;
     if (g_opt.jitBench && g_jit) {  // --jit-bench only: the JIT microbenchmarks with this run's options; no game runs
         gxthread_drain();
         jit_bench(g_jit, &g_sys, g_perf);
@@ -1194,11 +1197,14 @@ static const char* run(const char* path) {
         pica_set_merge(g_opt.merge);
         pica_set_job_ring(g_opt.vwmemKb << 10);
     }
+    region_bench_done = region_bench_pending = false; g_memoBench = NULL;
+    if (g_opt.regionBench && g_jit) region_bench_arm(g_jit, &g_sys, g_perf, g_opt.regionBench);
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     if (g_jit && g_useJit && g_opt.profile) jitsample_stacks(g_sys.mem1);  // inclusive profile (# guest stacks)
     g_profClock = prof_clock;  // X toggles the profile lines
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
+        if (region_bench_done) break;
         g_where = WH_FRONT;
         update_input(&g_sys);
         if (hidKeysDown() & KEY_SELECT) break;
@@ -1207,6 +1213,7 @@ static const char* run(const char* path) {
         if (hidKeysDown() & KEY_X) { g_profClock = g_profClock ? NULL : prof_clock; printf("\x1b[9;0H\x1b[0J"); }
         u64 it0 = svcGetSystemTick(), waitBefore = waitTicks;
         sys_run(&g_sys, CYCLES_PER_FIELD);
+        if (region_bench_pending) { region_bench_execute(); break; }
         if (g_sys.stopRequested) {
             printf("\nstopped at pc=%08x\n", (unsigned)g_sys.cpu.pc);
             if (g_perf) fprintf(g_perf, "# machine stopped at pc=%08x\n", (unsigned)g_sys.cpu.pc);

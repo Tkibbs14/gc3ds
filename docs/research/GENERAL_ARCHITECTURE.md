@@ -236,6 +236,18 @@ checks), and run both versions against captured inputs in a jitbench ring. **Con
 those functions (worth building; expected core 0 +15-30% where it covers). **Disproves** below ~1.2x: the JIT is near
 its floor and core-0 gains must come from elimination only. This replaces the separate H1 and H2 device benches.
 
+- **Result (2026-10-20; [X4 device oracle](MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20), jobs 745-747):**
+  **Confirmed for the targeted tier, not uniformly for every function.** Derived body speedups after matching empty-call
+  subtraction are J2DPane::draw **1.724 +- 0.027x** (above 1.5), GXLoadPosMtxImm **2.507 +- 0.064x** (above 1.5), and
+  GXLoadTexObjPreLoaded **1.028 +- 0.043x** (below 1.2 for this integer path; conservative pipe lowering). The pane
+  includes its copy loops and inlined reached leaves; its final call uses no external bridge. Interpreter live-output,
+  whole-live-memory fingerprint and applicable plants pass; no compiles occur during timing. Current JIT words and
+  real Ordon input states are retained privately on the SD. **Build item 4 is supported as a separate targeted build**,
+  with liveness/flags/inlining together, code size and event/fault handling still gates. The selected old-profile
+  subset is only 4.84%; its derived weighted body gain is 1.609x, about +1.87% core 0 if only that subset improved.
+  The plan's +15-30% remains conditional on roughly 35-61% coverage at that gain, not measured gameplay performance.
+  No region compiler, production optimization, default change or later experiment was built.
+
 **X5. GX ceiling instrument (device, one run).** GX-thread and worker ticks on draws whose X1 key repeats: turns X1's
 shares into time. Confirms 4.3.3 if repeating work holds over ~50% of the GX thread in gameplay.
 
@@ -250,7 +262,7 @@ Then builds, each behind a switch, off until measured, scored with separate whol
 2. Redundant state filtering at decode (X1b a: gross budget measured; incremental filter cost and device gain still gated).
 3. Fault mode's crash root cause (measured +4-9%; independent of the rest).
 4. The region tier, smallest first: function-scope regions without loops, then loops, then liveness allocation, then
-   CR in flags (X4).
+   CR in flags (X4 confirmed targeted headroom; the partial stages are not independently validated).
 5. G2 + G1 with cached or bounded lighting (X1b b, c: geometry key inconclusive, lighting scene dependent; X5).
 6. The GX SDK as a native unit with the command channel (X1 c, e correctness option remains open; X3 did not clear the small-call cost gate).
 7. The GX pipeline split across cores (X2).
@@ -264,4 +276,5 @@ general-emulator goal this review proposes: **X1 (PC census) and X2 (L2 probe) f
 build), **then X3 with the GPR inlining as its first half, then X4**, with the pane walk moving behind the SDK-level
 items. The owner decides; HANDOFF.md's queue is unchanged until then.
 
-2026-10-20 update: X3 is now completed as recorded above; the remaining experiments stay queued.
+2026-10-20 update: X3 and the X4 oracle are completed as recorded above. X4 supports a targeted region-tier build;
+that compiler is unbuilt. The other experiments stay queued.

@@ -16,6 +16,9 @@
 
 void* g_memoRec;   // non-NULL while a call is recorded (gekko_internal.h's accessors call memo_access)
 u32 g_memoAddr;    // the hooked function's entry (0: off)
+#ifdef __3DS__
+u32 (*g_memoBench)(Gekko* g);
+#endif
 MemoStats g_memoStats;
 
 #define SEEN_BITS 15
@@ -116,6 +119,9 @@ u32 g_memoDiff[DIFF_N][3];  // address, count, last value
 static u64 fnv(u64 h, u32 v) { return (h ^ v) * 0x100000001B3ull; }
 
 u32 memo_probe(Gekko* g) {
+#ifdef __3DS__
+    if (g_memoBench) return g_memoBench(g);
+#endif
     MemoStats* st = &g_memoStats;
     st->calls++;
     u32 ret = g->lr, r3 = g->gpr[3];

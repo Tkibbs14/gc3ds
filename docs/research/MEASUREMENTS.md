@@ -1842,6 +1842,154 @@ for run in json.load(open('docs/research/x3/2026-10-20.json'))['device_jobs']:
 PY
 ```
 
+### X4: Hand-compiled function regions on ARM11 (2026-10-20)
+
+**Result: supports a targeted region tier; no compiler built.** The hottest ordinary JIT function selected from
+Ordon, J2DPane::draw, clears X4's >=1.5x gate at **1.724 +- 0.027x** after subtracting the host-entry control.
+GXLoadPosMtxImm is **2.507 +- 0.064x**; GXLoadTexObjPreLoaded is **1.028 +- 0.043x**, below the <1.2x floor criterion
+for this integer path. These are **derived ratios of measured device counts, jobs 745-747**, not gameplay gains.
+The SDK oracles use a conservative C pipe sink; the texture result does not prove an absolute lower bound for every
+possible pipe lowering. The pane result contains no pipe writes or remaining external calls.
+
+**Selection (measured profile, job 631):** `hot_funcs.py` maps 16 hot-block reports to TP USA symbols. Its listed
+blocks cover 72.7% of core-0 samples; shares below are means of the truncated reports, not exhaustive coverage.
+The two largest entries, drawSelf (4.51%) and concat-view matrix load (4.29%), are native ports. The flush-primitive
+entry (1.81%) is now a default stand-in; the shadow scan is also intercepted. The shared save/restore tails
+(1.49% / 1.03%) were X3. Excluding those and unmapped PCs leaves these complete ordinary guest functions:
+
+| Function | Guest entry | Job 631 self samples | Final run | Reference guest instructions/call | Recorded write words | FIFO bytes |
+|---|---|---|---|---|---|---|
+| J2DPane::draw | 802F67E0 | 3.08% | 745 | 373 | 96 | 0 |
+| GXLoadTexObjPreLoaded | 8035E298 | 0.90% | 746 | 82 | 16 | 30 |
+| GXLoadPosMtxImm | 8036024C | 0.86% | 747 | 20 | 0 | 53 |
+
+The last four columns are **measured from real Ordon calls on the 2DS**. This is gameplay-state evidence, unlike
+X1's PC title scenes. The first visible pane with no children is captured; its two context-copy loops execute, while
+its child walk takes the empty branch. The texture call is non-TLUT. These are individual real calls, not a census of
+all calls or all paths. Input-register hashes (measured): `66a5255c9e8236a9`, `dfbcd5a955135b2c`,
+`1d86ba170574dd97`, respectively. Registers and guest memory remain privately on the SD as
+`sdmc:/gc3ds/x4_input_1.state` through `_3.state`; no state, memory dump or game asset is committed.
+
+**What was built:** `--region-bench 1|2|3`, default off, arms the existing memo-entry mechanism, halts at the real
+call, unwinds the running JIT, then runs the experiment in `host3ds/jitbench.c` / `regionbench.inc`. It does not install
+an optimization. `region_oracle.S` is handwritten ARM for the entire functions, including the pane's branches,
+copy loops and child loop. Guest r27-r31 and r1 stay in host r6-r11; f30/f31 stay in d14/d15. Dead CR0 compares use
+ARM flags. The reached leaves are inlined (including the empty virtual methods, GPR helpers, matrix copy/concat and
+cull setter); non-leaf/cold call sites retain a checked call bridge to today's JIT. All final captured calls use
+zero such bridges. Guest memory accesses have no range checks. The matrix leaf holds its input singles in s0-s23,
+uses d12-d15 for paired independent calculations, spills only the two live caller doubles, and preserves the guest's
+single-rounding boundaries and nonvolatile paired lanes. Dead result-to-double-to-single round trips before stores
+are omitted. This is fixed code for the hashed TP binary, not a translator or recognizer for general games.
+
+**Timing and controls:** normal JIT defaults; standard MEM1 mappings, interrupts masked, GX drained, private empty
+FIFO sink. The JIT and oracle emit the same byte stream into that sink. A zero `jit_run` return is handled exactly as
+`gekko_run` handles it: interpret one instruction. The JIT consumes the reference's instruction count and reaches
+its return PC. Each version has seven batches of 256 calls for each PMU pair (instructions, then I/D read misses),
+with state/write-set reset before each call. Those batch sizes are measurement settings. Every interval's last
+output is checked; all final runs report **zero timed compiles (measured)**. Reset-only, empty JIT (`blr`) and empty
+ARM controls are measured in the same run. The empty controls have their own equality check and planted return-PC
+failure. We average the two cycle intervals per repeat and report mean +- SE across seven repeats, without selecting
+minimum cycles or pooling different builds.
+
+The following are **derived per-call body costs from measured PMU counts**, subtracting each version's matching
+empty-call control (which includes reset, entry and return). This removes the C dispatch that a normally linked JIT
+call need not pay. It is an estimate of linked body cost, not a direct timing of a linked full-game region.
+
+| Run / function | Version | Cycles/call body | ARM instructions/call body | Raw PMU I-misses/call |
+|---|---|---|---|---|
+| 745 / pane | JIT | 6,559 +- 79 | 2,565 +- 5 | 62.51 +- 4.32 |
+| 745 / pane | Region oracle | 3,806 +- 15 | 1,409 +- 3 | 5.04 +- 1.22 |
+| 746 / texture | JIT | 1,167 +- 45 | 550 +- 5 | 15.23 +- 1.57 |
+| 746 / texture | Region oracle | 1,137 +- 24 | 776 +- 3 | 0.24 +- 0.08 |
+| 747 / position matrix | JIT | 3,578 +- 38 | 1,918 +- 5 | 23.35 +- 4.01 |
+| 747 / position matrix | Region oracle | 1,431 +- 25 | 977 +- 7 | 0.61 +- 0.41 |
+
+I-misses are raw measured PMU counts including wrappers. Cache interference is not additive: some empty-control
+subtractions give negative miss differences. Those differences remain in the JSON audit and are not interpreted as
+negative physical misses. Cycle/instruction columns above are the derived body costs.
+
+For completeness, **derived full-call costs after reset-only subtraction** (including host entry/return):
+
+| Run | JIT cycles/call | Oracle cycles/call | Ratio |
+|---|---|---|---|
+| 745 | 8,336 +- 71 | 3,870 +- 28 | 2.155 +- 0.026x |
+| 746 | 2,802 +- 18 | 1,251 +- 12 | 2.241 +- 0.019x |
+| 747 | 5,143 +- 36 | 1,555 +- 11 | 3.309 +- 0.038x |
+
+The entry correction matters: job 739's earlier spilled matrix oracle read 1.532x from full calls but only 1.255x
+from bodies. Its final allocation/scheduling and dead-FPR lowering clear the gate in 745. The integer setter's
+2.241x full-call ratio becomes only 1.028x after that correction; it cannot be used to justify a broad tier gain.
+
+**Today's emitted JIT code is captured too (measured successful writes):** `_1.bin`: 38 records / 1,212 ARM words /
+5,304 file bytes; `_2.bin`: 2 / 291 / 1,188; `_3.bin`: 9 / 345 / 1,488, under `sdmc:/gc3ds/x4_jit`. Each record is
+little-endian `(guest PC, host PC, word count)` followed by the emitted hot/exit words, before linking. The records
+include reached blocks and recompilations, not unexecuted paths, shared stubs or the separate cold arena. The matching
+ELF is retained by the relay under build `39e7764efefb1bed` (full SHA256 in the evidence JSON). The dump reader can
+disassemble these outside the repository. Static oracle function sizes are **derived from that ELF's symbols**:
+pane 7,396 bytes, texture 1,096, position 492; these include cold branches and are not dynamic instruction counts.
+
+**Exactness and plants (measured, 745-747):** both versions match the interpreter for caller-visible memory, FIFO,
+return PC/stack, nonvolatile GPRs, both lanes of nonvolatile FPRs and CR2-CR4. A fingerprint of all MEM1 after undo
+also checks for writes absent from the recorded set. Value comparisons omit only the known callee frames (derived
+from the prologues/captured path: 336 / 64 / 0 bytes), not an arbitrary span below SP. A planted extra write below
+the stack, outside those frames, proves it is still covered. PC, GPR, FPR, CR, FIFO length/content, recorded-memory and
+extra-write plants are applied where relevant and reversed before timing; every applied difference is caught. This
+uses the owner-approved dead-volatile boundary contract, as the port checker does. It is not a claim of identical
+volatile registers, dead stack bytes, guest timing or a full architectural state hash.
+
+Supplemental run **X4-oracle-strict-final**: six synthetic qemu-arm calls pass (position, texture, pane early exit, root,
+parent and nonempty child walk), with six planted register differences caught. **X4-cpu**: warning-free core builds,
+420 directed / 12,800 differential cases pass, planted bugs give 313 / 181 mismatches, 11,806 disassembly cases pass.
+**X4-score**: known ratio 1.75 is reproduced and four invalid evidence plants rejected. The dump reader decodes an
+open ARM example and rejects a truncated-record plant. PC and device builds complete; the device build adds no new
+warnings (the existing devkitARM crtn executable-stack warning remains). The production JIT is unchanged, so no new
+whole-game JIT/fuzzer speed-path check or gameplay speed run is claimed.
+
+**Audit of preliminary runs:** 726/729 had no valid timing: the harness initially treated a zero JIT return as an
+error; 726's old plant flag is not valid evidence because its base comparison failed. 727/728 were reset-only
+preliminaries; 730-732 expanded leaves but still used the call bridge / reset-only controls. 733-738 added full-memory
+and then empty-entry controls. The fingerprint rejected 734/737: the recorder's lazy `rhost` map omitted the first
+LR save on a cold page. X4 now primes standard data mappings before recording; the general recorder is unchanged.
+739-741 validate that correction and retain the earlier scalar/spilled matrix oracle. Every run's raw measurement
+lines, final summaries and roles are retained in [the evidence JSON](x4/2026-10-20.json); rejected runs are not included
+in the verdict. 742-744 add the final allocation and checked dump I/O but still exclude an overly broad span
+below SP in the fingerprint. Final review narrowed value exceptions to the actual frames and removed the fingerprint exclusion
+entirely; 745-747 repeat the experiment with that stricter guard and a planted write in the formerly excluded span.
+
+**Limits and build decision:** this is a warm, isolated benchmark with one real input per function. It omits event
+polls, exception/fault recovery, arbitrary BATs, compilation, inter-core cache pressure and whole-game code layout.
+Unexecuted branches and broader class/TLUT input distributions have not been validated. No range-check removal is
+safe for production merely because valid captured inputs passed. The pane's gain requires allocation, leaf inlining
+and flags together; this does not validate every intermediate compiler stage. The SDK pipe lowering is conservative.
+
+**Derived conditional arithmetic**, using job 631's selected self-time weights: the three bodies average **1.609x**
+within their **4.84%** listed subset. Improving only that subset implies about **+1.87% core 0**, not +15-30%.
+At the same average gain, +15-30% core 0 would require approximately **35-61% coverage**. That coverage and a gameplay
+speedup remain unmeasured. X4 therefore supports building a targeted region tier (architecture build item 4), with
+code size and event/fault correctness still gates. It does not justify replacing every integer SDK leaf, changing a
+default, or claiming the architecture plan's whole-core estimate as a measured result. Stop at this oracle experiment.
+
+Exact reproduction (WSL; captured inputs/code stay outside git):
+
+```bash
+bash core/host3ds/build.sh
+# First capture from the real Ordon state; repeat for N=1,2,3.
+bash core/tools/relay.sh queue --game Twilight --state sdmc:/gc3ds/states/tp_ordon.state --seconds 90 --region-bench 1
+# The final runs replayed the saved entries:
+bash core/tools/relay.sh queue --game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1
+bash core/tools/relay.sh queue --game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2
+bash core/tools/relay.sh queue --game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3
+bash core/tools/relay.sh log 745
+bash core/tools/relay.sh log 746
+bash core/tools/relay.sh log 747
+python3 core/tools/region_score.py core/out/relay_745.csv core/out/relay_746.csv core/out/relay_747.csv
+python3 core/tools/region_score.py --self-test
+python3 core/tests/region/run_check.py /root/hm_cut/mem.bin
+NO_BENCH=1 bash core/tests/cpu/run_tests.sh
+# After a private SD copy; the destination must be outside the repository:
+python3 core/tests/region/dump_arm.py /private/x4_jit_1.bin /private/x4-arm
+```
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

@@ -237,3 +237,6 @@ void jit_bench(Jit* j, System* s, FILE* f) {
     fprintf(f, "# jitbench: done\n");
     fflush(f);
 }
+
+#include "gxthread.h"
+#include "regionbench.inc"

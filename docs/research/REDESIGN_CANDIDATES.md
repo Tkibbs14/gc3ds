@@ -560,3 +560,22 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **2026-10-20, later: the callback read stage by stage (`--shdwcb`, now on):** later stretch +1.1% (+3.8% pictures),
   heavy area +0.22%, Ordon +0.7%. Reading everything first was the cost (~1,300 ARM instructions, ~43 micro-TLB misses
   a call), not the I-cache.
+
+
+## C33. A second tier of function-scope regions (X4 oracle)
+
+- **Status:** next (headroom measured 2026-10-20), compiler **not built**. [X4 results](MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20),
+  device jobs 745-747; retains C13's words-only and C14's duplicated-trace rejections as distinct experiments.
+- **What:** function regions including loops, liveness allocation, dead CR fields kept in ARM flags and reached
+  leaves inlined; current block JIT remains the fallback. X4 handwrote ARM, not a compiler.
+- **Evidence (derived from measured PMU body costs after matching empty-entry controls):** pane 1.724 +- 0.027x,
+  position matrix 2.507 +- 0.064x, integer texture setter 1.028 +- 0.043x. The hot pane clears the >=1.5x gate;
+  integer SDK work does not improve uniformly. All three live-output comparisons and applicable plants pass.
+- **Cost / limits:** event polls, faults, wider inputs, whole-game layout and inter-core pressure remain unpriced.
+  The gain needs allocation/inlining/flags together; the preliminary spilled matrix leaf read only 1.255x.
+  Pipe writes use a conservative callback lowering. Current JIT dumps and captured Ordon inputs stay on the SD.
+- **Build decision:** supports a targeted tier as architecture section 6 item 4, behind a switch, then scored with
+  separate whole gameplay runs. No default change follows from this microbenchmark.
+- **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
+  consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
+  coverage at the derived 1.609x subset gain, not a measured gameplay result.

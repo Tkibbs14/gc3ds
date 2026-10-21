@@ -25,6 +25,7 @@
 > **Queue for the next session (set 2026-10-20; one list reconciling DIRECTION_REVIEW.md section 6 and
 > EMULATOR_CEILING.md section 8, emulator first per the owner):**
 > 1. **X3 completed (2026-10-20):** GPR word inlining is positive in gameplay; native GPR/GX/cXyz do not turn positive; all off. [Results](research/MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20).
+>    **X4 completed (2026-10-20):** Ordon body oracle 1.724x pane / 1.028x texture / 2.507x matrix; targeted region tier supported, compiler unbuilt; [evidence and limits](research/MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20).
 > 2. **The HUD: the J2D pane walk as one port** (W1; design in research/LIBRARY_PORTS.md "The pane walk's design").
 >    First its prerequisite: why ~2% of J2DPictureEx port calls give up (float edge cases), because a give-up inside a
 >    walked subtree would abort the whole subtree. Then the walk. ~+3-3.5% Ordon, ~2.5% heavy area (estimate), and it

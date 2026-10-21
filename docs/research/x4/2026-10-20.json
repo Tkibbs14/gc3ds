@@ -1,0 +1,3505 @@
+{
+  "experiment": "X4: handwritten function-region oracle",
+  "date_local": "2026-10-20 America/New_York",
+  "measured": "ARM11 device PMU counts; each sample is an interval of 256 calls, repeated seven times per event pair",
+  "derived": "control subtraction, means, standard errors and speed ratios computed by core/tools/region_score.py",
+  "final_build_sha256": "39e7764efefb1bed11f62fc8d9fee36b961498ea5bbd8920261383b967b8e70a",
+  "profile": {
+    "job": 631,
+    "sample_reports": 16,
+    "selected_self_percent": {
+      "J2DPane::draw": 3.08,
+      "GXLoadTexObjPreLoaded": 0.9,
+      "GXLoadPosMtxImm": 0.86
+    },
+    "note": "old profile of Ordon walk; truncated hot-block reports; native ports/stand-ins, shared save/restore tails and unmapped PCs excluded"
+  },
+  "runs": {
+    "726": {
+      "status": "done",
+      "build": "cffbec401ea69fea",
+      "created": "2026-10-21T00:57:44.23415+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/states/tp_ordon.state --seconds 90 --region-bench 3",
+      "role": "invalid: zero JIT return treated as error; old plant flag cannot count",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench check oracle FAIL jit FAIL plant CAUGHT callouts 0"
+      ]
+    },
+    "727": {
+      "status": "done",
+      "build": "cffbec401ea69fea",
+      "created": "2026-10-21T00:57:52.366726+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/states/tp_ordon.state --seconds 90 --region-bench 2",
+      "role": "preliminary: no empty-call or full-memory control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 15 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 8727.172 ev0 5559.37109 ev1 8.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 8605.645 ev0 8.44922 ev1 23.12500 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7217.852 ev0 5175.56641 ev1 34.11328 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7178.629 ev0 0.22266 ev1 5.26172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5865.984 ev0 4376.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5880.391 ev0 0.08984 ev1 2.45312 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 8803.301 ev0 5571.98438 ev1 8.04297 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 8742.418 ev0 17.47266 ev1 23.50391 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7235.109 ev0 5168.30078 ev1 34.00000 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7236.207 ev0 4.17188 ev1 4.90625 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5975.051 ev0 4376.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5968.723 ev0 0.51562 ev1 4.69922 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 8919.242 ev0 5583.60547 ev1 8.44922 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 8677.316 ev0 7.99609 ev1 24.73828 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7255.840 ev0 5168.30859 ev1 34.00391 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7191.281 ev0 4.15234 ev1 2.69141 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5879.094 ev0 4376.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5862.141 ev0 0.08594 ev1 1.50391 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 8635.332 ev0 5569.05859 ev1 8.14062 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 8690.945 ev0 8.99609 ev1 24.82422 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7237.062 ev0 5168.30469 ev1 34.00391 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7177.910 ev0 0.35547 ev1 6.30469 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5931.477 ev0 4376.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5880.977 ev0 0.10938 ev1 2.47656 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 8641.449 ev0 5559.37500 ev1 8.00391 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 8631.270 ev0 9.54297 ev1 23.05469 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7246.418 ev0 5183.60938 ev1 34.26562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7265.863 ev0 1.08984 ev1 6.75000 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5911.027 ev0 4377.09375 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5887.664 ev0 0.07031 ev1 2.96875 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 8554.801 ev0 5559.37109 ev1 8.00781 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 8492.344 ev0 0.51562 ev1 23.37500 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7180.227 ev0 5168.30469 ev1 34.00391 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7178.109 ev0 0.09766 ev1 5.32031 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5973.094 ev0 4396.33594 ev1 4.12500 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5874.699 ev0 0.06250 ev1 1.76953 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 8613.262 ev0 5559.37500 ev1 8.00391 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 8673.531 ev0 12.42969 ev1 22.90625 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7178.129 ev0 5168.30469 ev1 34.00391 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7175.387 ev0 0.08203 ev1 5.47266 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5872.391 ev0 4376.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5967.223 ev0 0.83594 ev1 3.65234 calls 256"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 2762.7208571428573,
+          "se": 37.2917526465167,
+          "n": 7
+        },
+        "region": {
+          "mean": 1301.7205000000001,
+          "se": 16.764152426631444,
+          "n": 7
+        },
+        "ratio_of_means": 2.1223610269200317
+      }
+    },
+    "728": {
+      "status": "done",
+      "build": "cffbec401ea69fea",
+      "created": "2026-10-21T00:57:59.077756+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/states/tp_ordon.state --seconds 90 --region-bench 1",
+      "role": "preliminary: no leaf inlining / no empty-call control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 96 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 5",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 15249.359 ev0 8158.33594 ev1 7.01172 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 15014.840 ev0 42.75781 ev1 78.51172 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 23341.004 ev0 10921.93750 ev1 13.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 23518.453 ev0 173.37109 ev1 102.02734 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6909.582 ev0 4943.28125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6900.699 ev0 0.08984 ev1 23.71875 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 15457.004 ev0 8160.21875 ev1 7.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 15164.918 ev0 60.93750 ev1 76.95703 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 22846.516 ev0 10939.00000 ev1 13.10938 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 23197.473 ev0 152.82812 ev1 98.74219 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6911.770 ev0 4942.28516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6990.414 ev0 1.04688 ev1 24.83594 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 15235.527 ev0 8158.33203 ev1 7.01562 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 15050.594 ev0 54.11328 ev1 78.22656 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 23963.473 ev0 10940.89844 ev1 13.10156 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 22676.520 ev0 114.85547 ev1 98.70312 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6911.082 ev0 4943.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6905.668 ev0 0.09375 ev1 23.94141 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 15374.918 ev0 8205.88672 ev1 7.67578 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 14953.230 ev0 42.12500 ev1 76.96094 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 23567.820 ev0 10921.93750 ev1 13.01172 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 23444.605 ev0 154.72656 ev1 99.59766 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6908.871 ev0 4943.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6908.426 ev0 0.07812 ev1 23.83594 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 15097.133 ev0 8177.06641 ev1 7.25781 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 15159.188 ev0 55.33203 ev1 78.53125 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 23120.980 ev0 10959.19922 ev1 13.67188 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 23364.395 ev0 152.64453 ev1 100.52344 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6950.773 ev0 4951.64062 ev1 4.14062 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6915.156 ev0 0.08594 ev1 24.24609 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 15229.754 ev0 8159.52344 ev1 7.01953 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15306.477 ev0 63.85938 ev1 78.93359 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 23155.348 ev0 10938.84766 ev1 13.08594 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 23199.918 ev0 146.05859 ev1 99.03516 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6912.695 ev0 4943.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 7003.305 ev0 1.07422 ev1 25.13281 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 15492.648 ev0 8158.33984 ev1 7.01172 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 15417.328 ev0 78.94531 ev1 77.07812 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 23185.324 ev0 10940.66016 ev1 13.12500 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 22703.969 ev0 113.75391 ev1 98.30469 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6915.918 ev0 4942.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6900.359 ev0 0.07812 ev1 23.70703 calls 256"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 8304.157142857142,
+          "se": 45.53179405956148,
+          "n": 7
+        },
+        "region": {
+          "mean": 16310.077142857142,
+          "se": 81.53289015473845,
+          "n": 7
+        },
+        "ratio_of_means": 0.5091427263110081
+      }
+    },
+    "729": {
+      "status": "done",
+      "build": "0b9f01b0152d2154",
+      "created": "2026-10-21T01:04:27.471792+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "invalid: zero JIT return treated as error",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench mismatch pc 80360280/8006a500 sp 803dacf8/803dacf8 pipe 5/53 firstdiff 5 bad 1 regs 0 fpr 0 cr 0",
+        "# regionbench mismatch pc 8006a500/8006a500 sp 803dacf8/803dacf8 pipe 53/53 firstdiff 53 bad 1 regs 0 fpr 0 cr 0",
+        "# regionbench check oracle FAIL jit FAIL plant NOT-RUN callouts 0"
+      ]
+    },
+    "730": {
+      "status": "done",
+      "build": "11ddb2e952ad6d06",
+      "created": "2026-10-21T01:13:31.85501+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "preliminary: two empty leaves still dispatched",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 95 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench external target 802f83cc ret 802f6934 guest 1",
+        "# regionbench external target 802f83c8 ret 802f6c9c guest 1",
+        "# regionbench mismatch pc 802f6cd8/802f6cd8 sp 803da968/803da968 pipe 0/0 firstdiff 0 bad 0 regs 1 fpr 0 cr 0",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 2",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 15969.359 ev0 8139.35547 ev1 7.01172 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 15367.105 ev0 63.90625 ev1 81.16406 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 17399.492 ev0 8387.43359 ev1 27.00781 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 17484.918 ev0 68.28516 ev1 82.73828 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6934.199 ev0 4946.19531 ev1 4.10938 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6858.184 ev0 0.08984 ev1 22.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 14948.562 ev0 8139.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 15166.473 ev0 56.90625 ev1 78.99609 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 17643.645 ev0 8413.06641 ev1 27.25391 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 17649.812 ev0 93.48047 ev1 81.48828 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6853.227 ev0 4934.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6855.910 ev0 0.07031 ev1 21.91016 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 15535.566 ev0 8139.34375 ev1 7.01172 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 15403.430 ev0 71.22266 ev1 80.73438 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 17499.582 ev0 8387.43750 ev1 27.00781 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 17871.246 ev0 106.20312 ev1 81.24219 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6955.586 ev0 4951.72656 ev1 4.12500 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6902.113 ev0 0.38281 ev1 22.45312 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 15857.105 ev0 8139.35156 ev1 7.00781 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 15804.309 ev0 110.59375 ev1 78.74609 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 17528.340 ev0 8405.62109 ev1 27.10938 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 17439.129 ev0 64.76562 ev1 82.30078 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6851.684 ev0 4934.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6850.113 ev0 0.07422 ev1 21.47656 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 15451.855 ev0 8158.86328 ev1 7.17188 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 15767.059 ev0 100.79297 ev1 79.51953 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 17428.219 ev0 8397.30469 ev1 27.16797 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 17441.352 ev0 68.19922 ev1 82.56641 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6901.008 ev0 4945.25000 ev1 4.14453 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6936.961 ev0 0.52734 ev1 22.42188 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 15959.859 ev0 8139.35938 ev1 7.00781 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15465.613 ev0 79.54297 ev1 78.81250 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 17543.207 ev0 8406.00781 ev1 27.11719 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 17521.184 ev0 76.71094 ev1 81.52734 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6857.168 ev0 4933.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6845.172 ev0 0.07422 ev1 21.47656 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 16108.277 ev0 8188.02344 ev1 7.68750 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 15788.797 ev0 102.48828 ev1 78.92578 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 17268.195 ev0 8387.43359 ev1 27.00781 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 17513.719 ev0 79.78906 ev1 82.60938 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6855.750 ev0 4934.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6856.789 ev0 0.03125 ev1 21.96484 calls 256"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 8734.250357142857,
+          "se": 112.10026930465052,
+          "n": 7
+        },
+        "region": {
+          "mean": 10637.012571428571,
+          "se": 41.90734284441,
+          "n": 7
+        },
+        "ratio_of_means": 0.8211187397299305
+      }
+    },
+    "731": {
+      "status": "done",
+      "build": "11ddb2e952ad6d06",
+      "created": "2026-10-21T01:13:38.485752+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "preliminary: reset-only control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 15 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench mismatch pc 8035e450/8035e450 sp 803dad30/803dad30 pipe 30/30 firstdiff 29 bad 0 regs 0 fpr 0 cr 0",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 8691.922 ev0 5555.35547 ev1 9.01953 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 8775.793 ev0 12.28516 ev1 23.25391 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7219.527 ev0 5170.31250 ev1 26.01953 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7352.809 ev0 8.15234 ev1 8.38672 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5922.363 ev0 4374.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5938.188 ev0 0.08594 ev1 5.71875 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 8615.645 ev0 5555.35156 ev1 9.01172 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 8614.332 ev0 7.34375 ev1 22.21484 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7309.504 ev0 5185.79688 ev1 26.06641 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7221.703 ev0 0.27734 ev1 8.39062 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5871.348 ev0 4374.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5897.109 ev0 0.01562 ev1 3.21094 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 8637.457 ev0 5555.35156 ev1 9.02344 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 8592.180 ev0 9.38672 ev1 21.77734 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7218.398 ev0 5170.30859 ev1 26.01953 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7307.539 ev0 1.38672 ev1 9.48438 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5923.246 ev0 4386.56250 ev1 4.17188 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5993.746 ev0 0.46875 ev1 4.06641 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 8576.410 ev0 5555.35938 ev1 9.01953 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 8610.531 ev0 7.43359 ev1 22.02344 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7255.004 ev0 5177.35547 ev1 26.15234 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7350.078 ev0 8.18750 ev1 8.29688 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5995.348 ev0 4394.08984 ev1 4.13281 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5927.152 ev0 0.09766 ev1 4.33203 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 8621.629 ev0 5555.35938 ev1 9.01562 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 8654.152 ev0 10.46484 ev1 21.89062 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7399.594 ev0 5170.30078 ev1 26.01562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7397.297 ev0 9.42578 ev1 9.10938 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5870.762 ev0 4374.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6013.566 ev0 0.93359 ev1 6.40625 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 8663.355 ev0 5555.35156 ev1 9.02344 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 8805.750 ev0 12.65234 ev1 23.62109 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7399.949 ev0 5170.30859 ev1 26.01953 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7402.316 ev0 12.23438 ev1 8.55469 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5922.652 ev0 4374.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5920.906 ev0 0.08203 ev1 4.16016 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 8830.613 ev0 5574.64453 ev1 9.11719 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 8742.543 ev0 16.52734 ev1 21.93750 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7340.945 ev0 5181.34766 ev1 26.14844 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7221.574 ev0 0.23828 ev1 8.41797 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5946.066 ev0 4384.45703 ev1 4.14453 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5909.520 ev0 0.16406 ev1 3.41406 calls 256"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 2741.4528571428573,
+          "se": 32.40282862537098,
+          "n": 7
+        },
+        "region": {
+          "mean": 1381.7332142857142,
+          "se": 23.983543823952328,
+          "n": 7
+        },
+        "ratio_of_means": 1.984068146295556
+      }
+    },
+    "732": {
+      "status": "done",
+      "build": "11ddb2e952ad6d06",
+      "created": "2026-10-21T01:13:46.233679+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "preliminary: reset-only control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench mismatch pc 8006a500/8006a500 sp 803dacf8/803dacf8 pipe 53/53 firstdiff 52 bad 0 regs 0 fpr 0 cr 0",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 11188.883 ev0 6742.39453 ev1 18.01172 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 11264.203 ev0 42.47266 ev1 18.36719 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7043.402 ev0 5168.30078 ev1 19.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7144.164 ev0 1.45312 ev1 2.54297 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5757.188 ev0 4273.85547 ev1 3.17188 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5712.867 ev0 0.07422 ev1 0.25391 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 11454.906 ev0 6742.39453 ev1 18.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 11495.391 ev0 53.41797 ev1 17.54688 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7021.852 ev0 5170.03906 ev1 19.01953 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7041.863 ev0 0.07812 ev1 1.70312 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5814.594 ev0 4283.53516 ev1 3.12500 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5713.695 ev0 0.07031 ev1 0.26953 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 11171.473 ev0 6742.39062 ev1 18.00781 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 11042.629 ev0 28.50000 ev1 17.50391 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7057.012 ev0 5168.31641 ev1 19.01562 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7031.984 ev0 0.12500 ev1 1.26562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5712.586 ev0 4264.26953 ev1 3.01562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5792.289 ev0 1.00391 ev1 1.31641 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 11252.891 ev0 6742.38281 ev1 18.01172 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 11236.809 ev0 42.42969 ev1 18.19531 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7034.535 ev0 5168.31641 ev1 19.01562 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7010.707 ev0 0.19922 ev1 0.30469 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5711.973 ev0 4264.27734 ev1 3.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5806.820 ev0 1.06641 ev1 1.45703 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 11199.562 ev0 6742.39062 ev1 18.01172 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 11010.000 ev0 26.53125 ev1 18.27344 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7033.203 ev0 5168.30859 ev1 19.01562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7044.922 ev0 0.18750 ev1 1.81250 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5711.930 ev0 4264.27734 ev1 3.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5710.234 ev0 0.07422 ev1 0.12500 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 11174.898 ev0 6759.21094 ev1 18.12891 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 11373.113 ev0 38.17969 ev1 19.31250 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7046.230 ev0 5168.30859 ev1 19.01562 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7124.879 ev0 0.11328 ev1 5.25391 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5710.797 ev0 4264.27734 ev1 3.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5711.262 ev0 0.04688 ev1 0.20312 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 11268.344 ev0 6758.19141 ev1 18.11328 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 10972.027 ev0 25.49219 ev1 14.50781 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7046.074 ev0 5168.31641 ev1 19.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7042.984 ev0 0.14844 ev1 1.72656 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5711.297 ev0 4264.26953 ev1 3.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5754.527 ev0 0.05078 ev1 2.14062 calls 256"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 5483.790714285714,
+          "se": 46.82222360427053,
+          "n": 7
+        },
+        "region": {
+          "mean": 1313.6965714285714,
+          "se": 16.234001957762114,
+          "n": 7
+        },
+        "ratio_of_means": 4.174320641122173
+      }
+    },
+    "733": {
+      "status": "done",
+      "build": "83177ef89dab8dcc",
+      "created": "2026-10-21T01:24:39.344736+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "preliminary: scalar/spilled matrix leaf, reset-only control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 95 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 15615.574 ev0 8141.37891 ev1 6.01562 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 15630.551 ev0 114.85547 ev1 61.70312 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 11823.746 ev0 6756.37109 ev1 24.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 11896.352 ev0 8.07422 ev1 17.66797 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6482.887 ev0 4938.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6476.520 ev0 0.07031 ev1 0.25781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 14957.004 ev0 8141.35156 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 15140.414 ev0 70.89453 ev1 63.76172 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 11934.531 ev0 6771.77344 ev1 24.08984 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 11836.516 ev0 10.36328 ev1 16.27344 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6481.688 ev0 4938.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6510.719 ev0 0.04688 ev1 1.81641 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 15169.152 ev0 8149.47266 ev1 6.11719 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 15212.223 ev0 71.91797 ev1 63.46484 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 12622.207 ev0 6756.37109 ev1 24.01562 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 11835.230 ev0 10.45312 ev1 15.56250 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6481.613 ev0 4938.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6475.297 ev0 0.03516 ev1 0.25781 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 15605.105 ev0 8155.18750 ev1 6.08594 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 15585.539 ev0 110.87109 ev1 61.76953 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 11980.320 ev0 6756.37109 ev1 24.01562 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 11981.434 ev0 24.40234 ev1 15.94922 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6573.418 ev0 4954.61719 ev1 4.10938 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6479.711 ev0 0.09766 ev1 0.36328 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 15197.793 ev0 8141.35156 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 15268.809 ev0 87.85156 ev1 60.98828 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 12081.633 ev0 6770.67578 ev1 24.07422 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 12155.113 ev0 27.85547 ev1 17.83984 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6483.812 ev0 4938.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6477.918 ev0 0.10547 ev1 0.30469 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 15179.945 ev0 8141.35156 ev1 6.01172 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15264.414 ev0 73.12500 ev1 63.83594 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 12030.340 ev0 6764.25000 ev1 24.14062 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 11988.297 ev0 20.37109 ev1 15.73438 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6483.734 ev0 4938.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6563.754 ev0 0.40625 ev1 2.92969 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 15173.328 ev0 8157.75000 ev1 6.10547 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 15126.355 ev0 71.90625 ev1 63.55859 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 11900.453 ev0 6756.36328 ev1 24.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 11815.164 ev0 6.51172 ev1 15.87891 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6574.547 ev0 4952.39844 ev1 4.13281 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6521.512 ev0 0.34766 ev1 1.09375 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_1.bin"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 8789.934,
+          "se": 85.94427221032196,
+          "n": 7
+        },
+        "region": {
+          "mean": 5486.729,
+          "se": 58.828679175211796,
+          "n": 7
+        },
+        "ratio_of_means": 1.6020353839236454
+      }
+    },
+    "734": {
+      "status": "done",
+      "build": "83177ef89dab8dcc",
+      "created": "2026-10-21T01:24:46.534254+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "invalid: cold-page recorder omitted first LR save; fingerprint rejected",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 15 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench check oracle FAIL jit FAIL plant NOT-RUN callouts 0",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_2.bin"
+      ]
+    },
+    "735": {
+      "status": "done",
+      "build": "83177ef89dab8dcc",
+      "created": "2026-10-21T01:24:53.083802+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "preliminary: reset-only control",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 11242.914 ev0 6807.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 11221.445 ev0 36.49609 ev1 14.03516 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7343.230 ev0 5300.91406 ev1 7.07812 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7228.664 ev0 0.13672 ev1 0.31641 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5699.148 ev0 4263.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5697.734 ev0 0.05469 ev1 0.11719 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 11043.191 ev0 6807.36719 ev1 6.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 11159.414 ev0 32.41797 ev1 13.89453 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7324.934 ev0 5301.85547 ev1 7.08203 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7274.215 ev0 0.14062 ev1 2.27734 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5702.027 ev0 4263.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5698.516 ev0 0.08984 ev1 0.13672 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 11157.043 ev0 6841.16797 ev1 6.69922 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 11128.988 ev0 34.50391 ev1 14.00391 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7227.984 ev0 5286.35156 ev1 7.01172 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7328.988 ev0 1.10938 ev1 2.08594 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5701.539 ev0 4263.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5696.738 ev0 0.04297 ev1 0.12891 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 11091.676 ev0 6818.71875 ev1 6.16797 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 11175.727 ev0 37.96484 ev1 14.90625 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7308.832 ev0 5294.00391 ev1 7.17578 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7416.520 ev0 1.29297 ev1 3.35156 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5791.566 ev0 4263.28125 ev1 3.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5699.910 ev0 0.06250 ev1 0.21094 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 11183.555 ev0 6807.35938 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 11102.594 ev0 43.92188 ev1 13.96484 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7273.824 ev0 5286.36328 ev1 7.01172 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7249.746 ev0 0.14844 ev1 1.25000 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5775.645 ev0 4276.43750 ev1 3.08203 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5750.016 ev0 0.34375 ev1 0.82031 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 11079.395 ev0 6807.36719 ev1 6.00781 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 11303.070 ev0 50.42969 ev1 14.69922 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7251.312 ev0 5286.36328 ev1 7.01172 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7249.957 ev0 0.10156 ev1 1.28125 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5788.203 ev0 4281.94531 ev1 3.12891 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5699.938 ev0 0.04688 ev1 0.23828 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 11193.793 ev0 6807.36719 ev1 6.00781 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 11215.250 ev0 45.44922 ev1 13.98438 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7225.707 ev0 5286.35156 ev1 7.01172 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7248.984 ev0 0.12500 ev1 1.21875 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5698.805 ev0 4263.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5780.922 ev0 0.92188 ev1 1.30469 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_3.bin"
+      ],
+      "derived_reset_only_diagnostic": {
+        "jit": {
+          "mean": 5436.953428571428,
+          "se": 20.23283362108313,
+          "n": 7
+        },
+        "region": {
+          "mean": 1555.1564285714287,
+          "se": 19.666145460939155,
+          "n": 7
+        },
+        "ratio_of_means": 3.4960813772064263
+      }
+    },
+    "736": {
+      "status": "done",
+      "build": "7aab38ccd79b06bd",
+      "created": "2026-10-21T01:28:49.679062+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "intermediate: scalar/spilled matrix leaf, empty-call corrected",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 95 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 14891.312 ev0 8141.37500 ev1 6.01172 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 14553.996 ev0 51.15625 ev1 50.71094 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 11882.961 ev0 6759.20312 ev1 24.01172 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 11898.844 ev0 19.10547 ev1 9.01953 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6482.715 ev0 4938.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6480.355 ev0 0.03906 ev1 0.39453 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 8056.812 ev0 5573.35156 ev1 6.02734 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 8053.031 ev0 4.22266 ev1 12.93359 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 6581.066 ev0 4984.28125 ev1 5.02734 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 6579.285 ev0 0.04297 ev1 0.36719 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 14833.977 ev0 8157.80859 ev1 6.13672 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 15045.688 ev0 68.07031 ev1 53.00000 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 12643.645 ev0 6758.37500 ev1 24.01562 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 12776.992 ev0 91.44141 ev1 9.87500 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6483.223 ev0 4938.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6480.938 ev0 0.05859 ev1 0.43750 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 8004.953 ev0 5573.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 8008.254 ev0 0.33203 ev1 13.23438 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 6585.613 ev0 4984.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 6584.879 ev0 0.08203 ev1 0.60547 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 14448.910 ev0 8155.32812 ev1 6.10156 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 14627.355 ev0 44.10938 ev1 51.74219 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 11762.465 ev0 6758.37500 ev1 24.01562 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 11798.688 ev0 12.82031 ev1 8.42578 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6671.137 ev0 4979.28125 ev1 4.69531 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6594.770 ev0 0.08203 ev1 5.35547 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7980.594 ev0 5573.35156 ev1 6.02734 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7985.426 ev0 0.32422 ev1 12.57812 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 6583.184 ev0 4984.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 6580.992 ev0 0.08203 ev1 0.41406 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 14970.621 ev0 8154.46094 ev1 6.18359 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 15219.754 ev0 82.35938 ev1 54.39844 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 11768.508 ev0 6790.14453 ev1 24.66406 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 11667.973 ev0 4.36719 ev1 7.07812 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6482.898 ev0 4938.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6526.566 ev0 0.06641 ev1 2.38672 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 8095.777 ev0 5588.73047 ev1 6.10938 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 8027.102 ev0 2.33594 ev1 12.72656 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 6637.684 ev0 4993.94531 ev1 5.17969 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 6581.934 ev0 0.07812 ev1 0.45703 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 14980.617 ev0 8141.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 15133.895 ev0 71.25000 ev1 54.57031 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 11783.023 ev0 6758.37500 ev1 24.01172 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 11776.438 ev0 12.40625 ev1 7.74219 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6481.332 ev0 4938.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6481.844 ev0 0.05469 ev1 0.43750 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 8277.762 ev0 5591.27734 ev1 6.24219 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 8143.871 ev0 12.33203 ev1 13.15234 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 6581.156 ev0 4984.28125 ev1 5.02734 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6580.223 ev0 0.04688 ev1 0.41016 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 14993.078 ev0 8141.37891 ev1 6.01172 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15091.875 ev0 77.05078 ev1 51.32422 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 11952.219 ev0 6773.76953 ev1 24.10938 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 11738.004 ev0 8.37500 ev1 8.40234 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6494.879 ev0 4939.49219 ev1 4.01953 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6479.832 ev0 0.06641 ev1 0.37891 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 8114.680 ev0 5573.35156 ev1 6.02734 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 8259.102 ev0 11.23828 ev1 15.22266 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6583.285 ev0 4984.28125 ev1 5.02734 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6583.480 ev0 0.08203 ev1 0.56250 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 14683.328 ev0 8141.37109 ev1 6.02734 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 14747.527 ev0 60.74609 ev1 50.80469 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 12016.094 ev0 6770.94141 ev1 24.07422 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 11790.906 ev0 14.37891 ev1 7.71484 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6538.637 ev0 4948.31641 ev1 4.16797 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6585.410 ev0 0.36328 ev1 1.60938 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 8072.340 ev0 5574.57031 ev1 6.02344 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 8072.414 ev0 5.17969 ev1 13.05859 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 6582.316 ev0 4984.28125 ev1 5.02734 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 6680.082 ev0 0.98438 ev1 2.36328 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_1.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 14872.995214285715,
+            "se": 81.0754617138711,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 8147.58482,
+            "se": 2.9522439348803906,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 64.96317,
+            "se": 5.212650247421446,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 11946.911428571428,
+            "se": 129.65910425577496,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6767.026227142857,
+            "se": 4.579948314906742,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 23.270648571428573,
+            "se": 11.49547557582805,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 6518.895428571428,
+            "se": 21.934767369740293,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4945.75056,
+            "se": 5.758300625928291,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.10435285714285714,
+            "se": 0.04343706222605221,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 8082.294142857143,
+            "se": 32.487155218807466,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5578.284597142857,
+            "se": 3.0432825555473153,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 5.137835714285714,
+            "se": 1.851180026972316,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 6593.227071428571,
+            "se": 7.446721759901417,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4985.664061428572,
+            "se": 1.3802087967205956,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.19977714285714288,
+            "se": 0.130927214343628,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 8354.099785714285,
+              "se": 98.88462921228289,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 3201.8342599999996,
+              "se": 5.484355676040978,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 64.85881714285715,
+              "se": 5.218756547513299,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 5428.016,
+              "se": 137.549073191387,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1821.2756671428567,
+              "se": 8.292320188447867,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 23.166295714285717,
+              "se": 11.501965726482803,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.5438154067005305,
+            "se": 0.036028574003301075,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 6790.701071428572,
+              "se": 65.30551014457511,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2569.3002228571427,
+              "se": 4.313077191899577,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 59.82533428571429,
+              "se": 4.75312035517915,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 5353.684357142857,
+              "se": 130.9410377958119,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1781.3621657142855,
+              "se": 3.4997784075660525,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 23.07087142857143,
+              "se": 11.51154717568892,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.272156070248858,
+            "se": 0.028503984895297974,
+            "n": 7
+          }
+        }
+      }
+    },
+    "737": {
+      "status": "done",
+      "build": "7aab38ccd79b06bd",
+      "created": "2026-10-21T01:28:56.505878+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "invalid: cold-page recorder omission; fingerprint rejected",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 15 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench unrecorded live memory writes; FAILED",
+        "# regionbench check oracle FAIL jit FAIL plant NOT-RUN callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_2.bin"
+      ]
+    },
+    "738": {
+      "status": "done",
+      "build": "7aab38ccd79b06bd",
+      "created": "2026-10-21T01:29:03.503601+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "intermediate: empty-call corrected",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 10920.664 ev0 6823.36328 ev1 5.08984 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 10967.660 ev0 30.46484 ev1 14.37109 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7239.570 ev0 5288.36328 ev1 7.00781 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7234.625 ev0 0.07422 ev1 0.11328 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5706.895 ev0 4264.10938 ev1 3.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5699.883 ev0 0.05469 ev1 0.14453 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7098.578 ev0 4904.55859 ev1 5.14062 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7166.309 ev0 1.75391 ev1 7.78125 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5802.012 ev0 4309.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5800.324 ev0 0.05469 ev1 0.17969 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 10974.426 ev0 6810.76562 ev1 5.04297 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 11072.277 ev0 38.46484 ev1 14.40234 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7237.266 ev0 5288.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7236.824 ev0 0.09375 ev1 0.23438 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5745.859 ev0 4271.74609 ev1 3.05469 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5701.910 ev0 0.04297 ev1 0.26172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7130.172 ev0 4894.36719 ev1 5.02734 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7123.469 ev0 6.22656 ev1 6.19141 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5799.504 ev0 4309.26562 ev1 4.02734 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5800.422 ev0 0.03906 ev1 0.19922 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 10856.891 ev0 6808.36328 ev1 5.02734 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 11061.027 ev0 35.82422 ev1 16.16016 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7239.258 ev0 5288.36328 ev1 7.00781 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7237.766 ev0 0.10547 ev1 0.24219 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5699.738 ev0 4263.28125 ev1 3.01562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5698.922 ev0 0.04688 ev1 0.13281 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7205.844 ev0 4894.36719 ev1 5.01562 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7195.582 ev0 12.28125 ev1 5.64453 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5890.168 ev0 4328.23438 ev1 4.13672 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5801.613 ev0 0.08203 ev1 0.24609 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 10964.266 ev0 6808.36328 ev1 5.02734 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 10993.410 ev0 32.40625 ev1 14.58984 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7239.238 ev0 5288.36328 ev1 7.00781 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7260.590 ev0 0.11719 ev1 1.21875 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5738.223 ev0 4271.13672 ev1 3.13672 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5867.379 ev0 1.00781 ev1 2.24609 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7156.375 ev0 4894.35938 ev1 5.01562 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7146.801 ev0 8.30078 ev1 5.95312 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5799.359 ev0 4309.28125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5798.984 ev0 0.07031 ev1 0.12891 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 10932.672 ev0 6808.37109 ev1 5.02734 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 11033.641 ev0 32.02344 ev1 16.05469 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7241.109 ev0 5288.36328 ev1 7.00781 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7237.367 ev0 0.10938 ev1 0.20703 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5700.102 ev0 4263.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5699.055 ev0 0.05078 ev1 0.12500 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7149.387 ev0 4894.36719 ev1 5.02734 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7150.812 ev0 8.23828 ev1 6.14062 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5800.590 ev0 4309.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 5903.328 ev0 1.07812 ev1 2.35156 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 10901.418 ev0 6808.35547 ev1 5.00781 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 10889.770 ev0 24.59766 ev1 15.41797 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7239.785 ev0 5288.36328 ev1 7.00781 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7235.941 ev0 0.09375 ev1 0.14844 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5744.043 ev0 4273.14062 ev1 3.16406 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5796.836 ev0 0.35547 ev1 1.32812 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7242.766 ev0 4908.41406 ev1 5.10547 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7160.980 ev0 9.20312 ev1 5.86328 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 5800.133 ev0 4309.28125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 5799.062 ev0 0.07422 ev1 0.12500 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 11111.000 ev0 6808.37891 ev1 5.01562 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 11115.543 ev0 46.40234 ev1 14.53125 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7326.195 ev0 5304.07422 ev1 7.07812 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7277.961 ev0 0.47656 ev1 0.82422 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5701.547 ev0 4263.28906 ev1 3.01172 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5700.215 ev0 0.04297 ev1 0.18359 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7189.836 ev0 4894.36719 ev1 5.02734 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7336.969 ev0 12.66797 ev1 7.56250 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5801.406 ev0 4309.27344 ev1 4.01172 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5854.195 ev0 0.05859 ev1 2.13672 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_3.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 10985.333214285714,
+            "se": 25.959820391294905,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6810.851561428572,
+            "se": 2.1124956606902585,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 34.31194142857143,
+            "se": 2.599210696689092,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7248.8210714285715,
+            "se": 9.039337918514898,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5290.606584285714,
+            "se": 2.2446062219695757,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.15290285714285715,
+            "se": 0.054195980861098905,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5728.614785714286,
+            "se": 15.721901932251933,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4267.14174,
+            "se": 1.7384403378822706,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.2287957142857143,
+            "se": 0.13689305397970766,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7175.277142857143,
+            "se": 18.579467291979633,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4897.828684285714,
+            "se": 2.2746305452114246,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 8.381695714285714,
+            "se": 1.4045222673493902,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5817.935714285714,
+            "se": 8.902819984525763,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4311.985491428572,
+            "se": 2.7081490347339647,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.20814571428571427,
+            "se": 0.14509444862960555,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 5256.718428571428,
+              "se": 34.800095475790584,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2543.709821428571,
+              "se": 3.0216867814898336,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 34.08314571428571,
+              "se": 2.647539770053249,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1520.2062857142857,
+              "se": 19.30864896905539,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1023.4648442857141,
+              "se": 3.308245501012761,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -0.07589285714285716,
+              "se": 0.15577840854902847,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 3.4596800942126356,
+            "se": 0.025513628724257567,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 3810.056071428571,
+              "se": 24.93255304779857,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1913.0228771428572,
+              "se": 2.2876389615347383,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 25.930245714285714,
+              "se": 2.3556378009877017,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1430.8853571428572,
+              "se": 11.711949127521297,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 978.6210928571427,
+              "se": 3.7947741577952527,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -0.05524285714285714,
+              "se": 0.16170922622490808,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.6636151896619427,
+            "se": 0.024863450039990277,
+            "n": 7
+          }
+        }
+      }
+    },
+    "739": {
+      "status": "done",
+      "build": "0dc9a53e992273bc",
+      "created": "2026-10-21T01:33:45.93234+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "intermediate: scalar/spilled matrix leaf, recorder primed",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 96 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 14652.777 ev0 8151.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 14942.297 ev0 58.11328 ev1 56.23828 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 11967.742 ev0 6770.06641 ev1 26.11328 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 11933.172 ev0 9.97266 ev1 17.88672 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6486.945 ev0 4942.29688 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6485.656 ev0 0.05859 ev1 0.46484 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 8273.051 ev0 5592.07422 ev1 6.12891 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 8094.426 ev0 3.41406 ev1 14.47266 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 6588.488 ev0 4988.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 6586.527 ev0 0.06641 ev1 0.36328 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 14706.988 ev0 8151.35156 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 14692.516 ev0 44.52734 ev1 56.03125 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 11881.336 ev0 6761.37109 ev1 26.00781 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 11896.441 ev0 9.40625 ev1 16.82812 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6485.832 ev0 4942.29688 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6484.570 ev0 0.08203 ev1 0.39062 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 8081.543 ev0 5574.37500 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 8125.027 ev0 2.81641 ev1 15.77734 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 6588.301 ev0 4988.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 6586.438 ev0 0.05078 ev1 0.34766 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 15232.434 ev0 8151.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 15295.699 ev0 90.61328 ev1 54.03125 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 12007.430 ev0 6779.58203 ev1 26.07031 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 11956.113 ev0 9.80859 ev1 17.83594 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6488.766 ev0 4942.29688 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6484.594 ev0 0.05859 ev1 0.37109 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 8205.293 ev0 5608.21875 ev1 6.60156 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 8152.695 ev0 3.55859 ev1 15.68750 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 6590.562 ev0 4988.30078 ev1 5.01172 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 6588.289 ev0 0.06250 ev1 0.47266 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 14769.660 ev0 8151.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 14700.910 ev0 50.43359 ev1 55.60547 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 12918.543 ev0 6777.37891 ev1 26.04297 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 11807.984 ev0 1.10156 ev1 17.61719 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6488.613 ev0 4942.29688 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6529.773 ev0 0.50000 ev1 1.14453 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 8151.098 ev0 5598.34766 ev1 6.48828 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 8140.582 ev0 10.24609 ev1 14.25391 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 6647.312 ev0 4998.90234 ev1 5.07812 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 6594.781 ev0 0.13672 ev1 0.67578 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 14723.977 ev0 8151.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 14666.723 ev0 47.24219 ev1 55.56641 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 11873.109 ev0 6763.05469 ev1 25.98047 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 11958.559 ev0 7.23047 ev1 18.98438 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6486.207 ev0 4942.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6483.996 ev0 0.05859 ev1 0.36328 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 8013.484 ev0 5574.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 8076.066 ev0 4.25391 ev1 13.88672 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 6585.863 ev0 4988.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6587.820 ev0 0.08203 ev1 0.43359 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 14621.000 ev0 8165.36719 ev1 7.10156 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 14887.145 ev0 66.82422 ev1 53.86328 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 11765.359 ev0 6761.36719 ev1 26.00781 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 11748.121 ev0 0.32422 ev1 16.52734 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6571.234 ev0 4956.80469 ev1 4.09375 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6485.762 ev0 0.09766 ev1 0.45312 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 8015.375 ev0 5574.37500 ev1 6.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 8011.449 ev0 0.26172 ev1 14.01562 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6588.098 ev0 4988.29688 ev1 5.01562 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6587.250 ev0 0.07812 ev1 0.39844 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 15013.551 ev0 8166.83203 ev1 7.11328 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 15176.668 ev0 74.67969 ev1 56.62500 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 11926.668 ev0 6761.36719 ev1 26.00781 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 11884.352 ev0 10.35938 ev1 16.95312 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6488.242 ev0 4942.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6582.547 ev0 1.11328 ev1 2.32031 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 8268.336 ev0 5591.52734 ev1 6.32031 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 8200.109 ev0 13.32812 ev1 13.85938 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 6587.145 ev0 4988.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 6632.152 ev0 0.52734 ev1 1.10547 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_1.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 14863.024642857143,
+            "se": 84.78927815976341,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 8155.56306,
+            "se": 2.725216333954393,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 61.776227142857145,
+            "se": 6.313990786793478,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 11966.066357142858,
+            "se": 71.41764843891343,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6767.741072857143,
+            "se": 3.0169954895098163,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 6.8861614285714285,
+            "se": 1.6411406691622235,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 6502.338357142858,
+            "se": 8.334119326538309,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4944.368307142857,
+            "se": 2.072730593267064,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.28124857142857146,
+            "se": 0.1513629984574857,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 8129.181,
+            "se": 30.066011419121747,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5587.612722857143,
+            "se": 5.119737409125034,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 5.411271428571429,
+            "se": 1.7461789244020356,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 6595.644714285714,
+            "se": 5.245763946200034,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4989.812502857143,
+            "se": 1.5149729567438577,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.14341428571428572,
+            "se": 0.06483184005590166,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 8360.686285714286,
+              "se": 83.95784720271827,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 3211.194752857143,
+              "se": 2.225121333929335,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 61.49497857142857,
+              "se": 6.284076201105999,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 5463.728,
+              "se": 72.74574788154447,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1823.3727657142856,
+              "se": 4.218980849799616,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 6.604912857142857,
+              "se": 1.6348705892555913,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.5318271210623768,
+            "se": 0.025145772305274768,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 6733.843642857143,
+              "se": 69.11274561899995,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2567.9503371428573,
+              "se": 6.292216351547696,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 56.36495571428571,
+              "se": 6.415896726248037,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 5370.421642857143,
+              "se": 67.49524777484031,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1777.9285700000003,
+              "se": 2.5549729816221483,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 6.742747142857143,
+              "se": 1.6268073573629018,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.2552158390545634,
+            "se": 0.021658430578201552,
+            "n": 7
+          }
+        }
+      }
+    },
+    "740": {
+      "status": "done",
+      "build": "0dc9a53e992273bc",
+      "created": "2026-10-21T01:33:52.497413+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "intermediate: recorder primed",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 16 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 8682.480 ev0 5576.11328 ev1 9.07812 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 8818.602 ev0 20.44922 ev1 26.64062 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7105.027 ev0 5195.36328 ev1 10.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7102.824 ev0 0.18359 ev1 4.20312 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5841.035 ev0 4382.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5891.406 ev0 0.50781 ev1 0.77734 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7513.223 ev0 5024.62891 ev1 6.20703 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7666.719 ev0 15.57422 ev1 16.06250 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5944.258 ev0 4428.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5944.371 ev0 0.07031 ev1 0.21875 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 8819.648 ev0 5558.40234 ev1 9.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 8826.691 ev0 23.54297 ev1 26.37500 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7105.633 ev0 5195.35938 ev1 10.01562 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7097.242 ev0 0.17969 ev1 4.63281 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5916.496 ev0 4397.78906 ev1 4.10938 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5843.379 ev0 0.07422 ev1 0.28516 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7524.684 ev0 5014.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7517.773 ev0 11.23438 ev1 14.34766 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5945.621 ev0 4428.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5944.074 ev0 0.07422 ev1 0.20703 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 8709.762 ev0 5558.40625 ev1 9.01562 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 8807.301 ev0 17.48828 ev1 27.29688 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7097.383 ev0 5195.36328 ev1 10.01562 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7096.355 ev0 0.18750 ev1 4.60156 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5841.133 ev0 4382.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5839.734 ev0 0.03906 ev1 0.14844 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7521.254 ev0 5014.37500 ev1 6.01172 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7522.352 ev0 11.19922 ev1 14.94141 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5943.656 ev0 4428.30078 ev1 5.01172 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 6070.477 ev0 0.90234 ev1 2.99219 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 8628.750 ev0 5558.40625 ev1 9.01562 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 8753.641 ev0 19.37891 ev1 26.23438 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7103.070 ev0 5195.35938 ev1 10.01562 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7093.711 ev0 0.18359 ev1 4.46094 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5840.402 ev0 4382.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5838.473 ev0 0.02734 ev1 0.08984 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7562.184 ev0 5030.17969 ev1 6.08984 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7554.598 ev0 10.28906 ev1 15.61719 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 6044.855 ev0 4452.82812 ev1 5.51953 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5945.598 ev0 0.07031 ev1 0.26953 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 8727.559 ev0 5558.40234 ev1 9.01562 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 8744.125 ev0 17.53125 ev1 26.27734 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7099.348 ev0 5195.35938 ev1 10.01562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7191.133 ev0 1.25000 ev1 5.92969 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5842.488 ev0 4382.29688 ev1 4.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5841.246 ev0 0.06250 ev1 0.19531 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7529.078 ev0 5014.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7521.152 ev0 11.21484 ev1 14.83203 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5944.402 ev0 4428.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 5943.488 ev0 0.07031 ev1 0.17578 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 8806.738 ev0 5558.40234 ev1 9.01562 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 8802.137 ev0 17.42188 ev1 27.30078 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7097.348 ev0 5195.36328 ev1 10.01562 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7099.395 ev0 0.20312 ev1 4.76172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5842.090 ev0 4382.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5839.699 ev0 0.05859 ev1 0.12500 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7519.602 ev0 5014.37109 ev1 6.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7572.352 ev0 11.73047 ev1 15.45312 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6036.277 ev0 4447.30859 ev1 5.12109 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 5944.871 ev0 0.05859 ev1 0.24219 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 8749.734 ev0 5558.40625 ev1 9.01562 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 8862.023 ev0 18.32422 ev1 27.66797 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7099.703 ev0 5195.35938 ev1 10.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7141.039 ev0 0.44922 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5841.379 ev0 4382.29297 ev1 4.01172 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5921.020 ev0 0.87500 ev1 1.32812 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7576.820 ev0 5022.62500 ev1 6.13672 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7535.449 ev0 11.24609 ev1 15.20312 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5946.102 ev0 4428.29688 ev1 5.01562 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5944.238 ev0 0.07031 ev1 0.22656 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_2.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 8767.085071428572,
+            "se": 17.67957093600659,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5560.93415,
+            "se": 2.5298551079119918,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 19.162390000000002,
+            "se": 0.8463853042483777,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7109.229357142857,
+            "se": 6.7222708541887215,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5195.361051428571,
+            "se": 0.0007879189846907497,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.37667285714285714,
+            "se": 0.15017724258061088,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5855.7128571428575,
+            "se": 7.329734480601769,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4384.507255714286,
+            "se": 2.213634116134244,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.23493142857142857,
+            "se": 0.12462012457729234,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7545.517142857143,
+            "se": 9.541098482176864,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5019.274552857143,
+            "se": 2.4638052003864535,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 11.784040000000001,
+            "se": 0.6521177728900261,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5967.306285714286,
+            "se": 10.878751258245385,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4434.517858571428,
+            "se": 4.060034152942479,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.1880557142857143,
+            "se": 0.11906162817667845,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 2911.372214285714,
+              "se": 14.265723508206154,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1176.4268942857138,
+              "se": 3.6289199180890908,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 18.927458571428573,
+              "se": 0.8560169169290449,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1253.5165,
+              "se": 9.783758324508037,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 810.8537957142852,
+              "se": 2.213912892233806,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 0.14174142857142857,
+              "se": 0.19726646087907365,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.3235576057782166,
+            "se": 0.023872252123324306,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 1221.5679285714284,
+              "se": 22.126178009378886,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 541.659597142857,
+              "se": 2.8201087567973153,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 7.37835,
+              "se": 0.960573090471566,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1141.9230714285713,
+              "se": 15.844378321599063,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 760.8431928571428,
+              "se": 4.060026163366761,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 0.18861714285714284,
+              "se": 0.2101518771849391,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.0707814242247633,
+            "se": 0.022992630171702,
+            "n": 7
+          }
+        }
+      }
+    },
+    "741": {
+      "status": "done",
+      "build": "0dc9a53e992273bc",
+      "created": "2026-10-21T01:33:59.059579+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "intermediate: recorder primed",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 11033.242 ev0 6830.01562 ev1 5.10938 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 11112.949 ev0 36.54297 ev1 21.44141 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7236.941 ev0 5287.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7235.117 ev0 0.13281 ev1 0.24609 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5696.547 ev0 4260.28516 ev1 3.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5695.379 ev0 0.04297 ev1 0.11328 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7298.438 ev0 4905.06641 ev1 5.08984 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7279.684 ev0 10.26562 ev1 10.31641 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5800.027 ev0 4306.29297 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5800.051 ev0 0.07031 ev1 0.23438 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 11234.445 ev0 6808.36719 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 11088.805 ev0 34.38281 ev1 23.25000 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7235.324 ev0 5287.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7320.363 ev0 1.14453 ev1 1.39062 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5698.785 ev0 4260.29297 ev1 3.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5696.758 ev0 0.06250 ev1 0.10156 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7241.957 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7293.098 ev0 6.71094 ev1 11.11328 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5803.555 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5937.633 ev0 0.64062 ev1 1.75391 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 11282.840 ev0 6826.95703 ev1 5.12891 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 11134.773 ev0 42.42578 ev1 21.21094 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7235.605 ev0 5287.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7235.438 ev0 0.11719 ev1 0.26172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5696.875 ev0 4260.29297 ev1 3.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5695.602 ev0 0.04297 ev1 0.14453 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7320.406 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7421.574 ev0 14.48047 ev1 11.59375 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5799.805 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5798.531 ev0 0.05859 ev1 0.15625 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 11193.816 ev0 6817.81641 ev1 5.15234 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 11130.930 ev0 38.50391 ev1 21.39844 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7273.020 ev0 5295.02344 ev1 7.15234 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7275.953 ev0 0.50000 ev1 0.77734 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5877.215 ev0 4300.94531 ev1 3.63672 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5697.422 ev0 0.05859 ev1 0.21484 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7360.719 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7171.004 ev0 4.29297 ev1 10.08594 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5799.125 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5798.785 ev0 0.05859 ev1 0.16797 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 11051.891 ev0 6808.36328 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 11159.645 ev0 34.38281 ev1 24.37109 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7237.078 ev0 5287.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7275.414 ev0 0.59766 ev1 0.71484 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5697.207 ev0 4260.28516 ev1 3.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5702.836 ev0 0.13281 ev1 0.18750 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7121.383 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7111.633 ev0 0.25000 ev1 10.26172 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5929.297 ev0 4335.34766 ev1 4.26953 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 5899.105 ev0 0.49219 ev1 1.23438 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 10957.523 ev0 6808.36719 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 11060.781 ev0 34.42188 ev1 23.03125 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7236.156 ev0 5287.35547 ev1 7.00781 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7235.328 ev0 0.09375 ev1 0.26172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5696.664 ev0 4260.28516 ev1 3.01172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5775.871 ev0 1.03125 ev1 1.18359 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7124.207 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7118.906 ev0 0.25391 ev1 10.28125 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 5798.461 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 5797.777 ev0 0.03906 ev1 0.12500 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 11054.328 ev0 6817.60547 ev1 5.12109 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 11185.844 ev0 36.42969 ev1 24.32422 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7303.582 ev0 5288.52734 ev1 7.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7236.109 ev0 0.12109 ev1 0.29688 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5805.035 ev0 4268.90625 ev1 3.13672 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5794.598 ev0 0.56641 ev1 1.22266 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7170.047 ev0 4892.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7328.230 ev0 14.19531 ev1 10.25781 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5799.043 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5895.086 ev0 1.66406 ev1 1.48047 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_3.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 11120.129428571428,
+            "se": 24.93059765591847,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6816.784598571428,
+            "se": 3.4257459894469253,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 36.72712142857143,
+            "se": 1.1133368392112508,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7255.102,
+            "se": 7.29252569089623,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5288.618304285715,
+            "se": 1.0802093071601286,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.3867185714285714,
+            "se": 0.1484131512018388,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5730.485285714286,
+            "se": 17.205432476074932,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4267.327568571429,
+            "se": 5.73295088022752,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.2767857142857143,
+            "se": 0.1444772930891472,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7240.091857142857,
+            "se": 34.62538709904192,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4894.17467,
+            "se": 1.8152900000000693,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 7.207031428571429,
+            "se": 2.270818788282395,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5832.5915,
+            "se": 17.46447497779408,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4310.438061428572,
+            "se": 4.151599907660629,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.4319171428571429,
+            "se": 0.22515647955222995,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 5389.6441428571425,
+              "se": 30.74148871962736,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2549.4570299999996,
+              "se": 6.501309642113777,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 36.450335714285714,
+              "se": 1.1777864656186872,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1524.6167142857146,
+              "se": 15.073215671805839,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1021.2907357142857,
+              "se": 4.655131805418469,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 0.10993285714285715,
+              "se": 0.24822784207173829,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 3.5363278397625635,
+            "se": 0.025556259134056607,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 3880.0375714285715,
+              "se": 23.673156938475152,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1922.6099285714286,
+              "se": 2.650465318635154,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 29.52009,
+              "se": 1.78870018078971,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1422.5105,
+              "se": 15.523106930054427,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 978.1802428571427,
+              "se": 4.488961577428214,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -0.04519857142857145,
+              "se": 0.2598845553265505,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.7303391189729393,
+            "se": 0.04399376873817928,
+            "n": 7
+          }
+        }
+      }
+    },
+    "742": {
+      "status": "done",
+      "build": "eba3c168472efb4e",
+      "created": "2026-10-21T01:44:11.580331+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "intermediate allocated oracle; overly broad below-SP fingerprint exclusion, superseded by strict final rerun",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 96 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench ARM record pc 802f67e0 words 38 file-bytes 164 saved",
+        "# regionbench ARM record pc 803621d4 words 25 file-bytes 276 saved",
+        "# regionbench ARM record pc 802f6804 words 29 file-bytes 404 saved",
+        "# regionbench ARM record pc 802f6824 words 16 file-bytes 480 saved",
+        "# regionbench ARM record pc 802f6830 words 22 file-bytes 580 saved",
+        "# regionbench ARM record pc 802e9c88 words 4 file-bytes 608 saved",
+        "# regionbench ARM record pc 802f6848 words 11 file-bytes 664 saved",
+        "# regionbench ARM record pc 802f6854 words 19 file-bytes 752 saved",
+        "# regionbench ARM record pc 802f6864 words 46 file-bytes 948 saved",
+        "# regionbench ARM record pc 802f6880 words 37 file-bytes 1108 saved",
+        "# regionbench ARM record pc 802f6894 words 13 file-bytes 1172 saved",
+        "# regionbench ARM record pc 802f68a0 words 102 file-bytes 1592 saved",
+        "# regionbench ARM record pc 802f6900 words 44 file-bytes 1780 saved",
+        "# regionbench ARM record pc 802f83cc words 2 file-bytes 1800 saved",
+        "# regionbench ARM record pc 802f6934 words 11 file-bytes 1856 saved",
+        "# regionbench ARM record pc 802f693c words 119 file-bytes 2344 saved",
+        "# regionbench ARM record pc 802f699c words 14 file-bytes 2412 saved",
+        "# regionbench ARM record pc 802f6a24 words 20 file-bytes 2504 saved",
+        "# regionbench ARM record pc 802f6adc words 38 file-bytes 2668 saved",
+        "# regionbench ARM record pc 802f6af8 words 15 file-bytes 2740 saved",
+        "# regionbench ARM record pc 802f6b10 words 14 file-bytes 2808 saved",
+        "# regionbench ARM record pc 802f6b18 words 39 file-bytes 2976 saved",
+        "# regionbench ARM record pc 802f6b30 words 37 file-bytes 3136 saved",
+        "# regionbench ARM record pc 802f6b44 words 13 file-bytes 3200 saved",
+        "# regionbench ARM record pc 802f6b58 words 150 file-bytes 3812 saved",
+        "# regionbench ARM record pc 802f6bec words 31 file-bytes 3948 saved",
+        "# regionbench ARM record pc 802f6c00 words 37 file-bytes 4108 saved",
+        "# regionbench ARM record pc 802f6c14 words 31 file-bytes 4244 saved",
+        "# regionbench ARM record pc 802f6c28 words 51 file-bytes 4460 saved",
+        "# regionbench ARM record pc 802f6c74 words 11 file-bytes 4516 saved",
+        "# regionbench ARM record pc 8035c984 words 39 file-bytes 4684 saved",
+        "# regionbench ARM record pc 802f6c7c words 27 file-bytes 4804 saved",
+        "# regionbench ARM record pc 802f83c8 words 2 file-bytes 4824 saved",
+        "# regionbench ARM record pc 802f6c9c words 30 file-bytes 4956 saved",
+        "# regionbench ARM record pc 802f6ce8 words 12 file-bytes 5016 saved",
+        "# regionbench ARM record pc 802f6cf0 words 26 file-bytes 5132 saved",
+        "# regionbench ARM record pc 80362220 words 25 file-bytes 5244 saved",
+        "# regionbench ARM record pc 802f6d08 words 12 file-bytes 5304 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 15010.344 ev0 8163.58203 ev1 6.09766 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 14835.539 ev0 56.94141 ev1 58.96484 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 10427.066 ev0 6390.32031 ev1 7.01172 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 10354.211 ev0 0.43750 ev1 12.35156 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6494.562 ev0 4942.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6491.215 ev0 0.08594 ev1 0.56250 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 8269.062 ev0 5584.75781 ev1 6.05469 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 8166.348 ev0 4.36328 ev1 19.44531 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 6692.242 ev0 4998.74609 ev1 5.12891 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 6705.629 ev0 3.28906 ev1 1.42578 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 15306.047 ev0 8148.35547 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 15170.566 ev0 75.01953 ev1 62.00000 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 10355.859 ev0 6390.32031 ev1 7.01562 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 10352.852 ev0 0.57422 ev1 12.13281 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6492.387 ev0 4943.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6489.277 ev0 0.04297 ev1 0.42188 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 8363.648 ev0 5577.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 8508.441 ev0 18.06641 ev1 22.41406 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 6630.527 ev0 4988.29688 ev1 5.01562 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 6629.586 ev0 4.10156 ev1 0.48828 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 15074.383 ev0 8157.88281 ev1 6.11719 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 14949.543 ev0 61.03125 ev1 59.38672 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 10520.391 ev0 6406.66797 ev1 7.11328 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 10402.777 ev0 4.44922 ev1 12.43750 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6493.988 ev0 4943.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6542.199 ev0 0.47266 ev1 1.32422 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 8311.461 ev0 5577.35156 ev1 6.01562 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 8314.230 ev0 14.27344 ev1 19.51953 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 6732.918 ev0 5016.06250 ev1 5.27344 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 6690.449 ev0 0.34766 ev1 1.88281 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 15288.547 ev0 8148.35547 ev1 6.01562 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 15403.387 ev0 101.76172 ev1 59.58594 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 10518.613 ev0 6418.62500 ev1 7.28125 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 10353.137 ev0 0.40625 ev1 12.37109 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6493.359 ev0 4942.78125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6543.176 ev0 0.52734 ev1 1.43359 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 8274.223 ev0 5599.85938 ev1 6.45312 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 8188.484 ev0 4.35547 ev1 19.43750 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 6633.266 ev0 4988.29297 ev1 5.01562 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 6715.258 ev0 3.94141 ev1 2.10938 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 15458.227 ev0 8148.36719 ev1 6.01562 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 15175.422 ev0 76.62500 ev1 60.50391 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 10356.945 ev0 6390.32031 ev1 7.01562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 10452.676 ev0 2.10547 ev1 14.14453 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6492.699 ev0 4943.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6491.453 ev0 0.08984 ev1 0.51953 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 8248.355 ev0 5577.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 8251.613 ev0 8.33594 ev1 19.66797 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 6592.297 ev0 4988.29297 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6587.023 ev0 0.10547 ev1 0.37891 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 15704.617 ev0 8162.37891 ev1 6.11328 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15164.766 ev0 88.97656 ev1 59.88281 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 10468.375 ev0 6390.32031 ev1 7.01172 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 10421.117 ev0 4.53906 ev1 12.30859 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6652.523 ev0 4943.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6583.070 ev0 1.10156 ev1 1.91797 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 8211.168 ev0 5577.35156 ev1 6.01562 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 8213.195 ev0 6.37500 ev1 19.54688 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6588.156 ev0 4988.29297 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6588.453 ev0 0.05469 ev1 0.51562 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 15147.898 ev0 8159.45703 ev1 6.14844 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 14954.078 ev0 53.73047 ev1 62.51953 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 10564.148 ev0 6390.32031 ev1 7.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 10561.039 ev0 18.44531 ev1 12.37500 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6493.535 ev0 4942.78516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6490.457 ev0 0.08594 ev1 0.51172 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 8234.660 ev0 5594.78906 ev1 6.11328 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 8141.371 ev0 0.32031 ev1 19.77734 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 6592.094 ev0 4988.29688 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 6588.398 ev0 0.13281 ev1 0.42578 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_1.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 15188.811714285715,
+            "se": 73.18428708183804,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 8155.482701428571,
+            "se": 2.6137820767536835,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 73.44084857142857,
+            "se": 6.674025302019561,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 10436.371857142856,
+            "se": 25.09613443382055,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6396.699217142857,
+            "se": 4.319304036507963,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 4.422432857142857,
+            "se": 2.434092558489483,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 6517.421428571429,
+            "se": 17.37131457639997,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4943.353237142857,
+            "se": 0.20176779716996512,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.34375,
+            "se": 0.14739564193660804,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 8264.0185,
+            "se": 32.31152708970978,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5584.118304285715,
+            "se": 3.602245434553454,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 8.012835714285714,
+            "se": 2.3346609669835283,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 6640.449714285714,
+            "se": 20.450439688152684,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4993.754465714286,
+            "se": 3.998865900749256,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 1.71038,
+            "se": 0.7375998008857287,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 8671.390285714286,
+              "se": 64.97296715712382,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 3212.129464285714,
+              "se": 2.665965320148956,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 73.09709857142857,
+              "se": 6.591576042382547,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 3918.9504285714283,
+              "se": 29.124226555932587,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1453.34598,
+              "se": 4.374340547728331,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 4.078682857142857,
+              "se": 2.4530329798878947,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.2137256580339737,
+            "se": 0.027812723513815325,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 6924.793214285714,
+              "se": 79.10433657652779,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2571.3643971428573,
+              "se": 4.614730146736965,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 65.42801285714286,
+              "se": 6.996040586665777,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 3795.9221428571427,
+              "se": 36.00424650082032,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1402.9447514285714,
+              "se": 4.964135258936375,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 2.712052857142857,
+              "se": 2.9190029617749653,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.8247778375480643,
+            "se": 0.020971288737059404,
+            "n": 7
+          }
+        }
+      }
+    },
+    "743": {
+      "status": "done",
+      "build": "eba3c168472efb4e",
+      "created": "2026-10-21T01:44:17.894557+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "intermediate allocated oracle; overly broad below-SP fingerprint exclusion, superseded by strict final rerun",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 16 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench ARM record pc 8035e298 words 216 file-bytes 876 saved",
+        "# regionbench ARM record pc 8035e3c4 words 75 file-bytes 1188 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 8670.945 ev0 5563.37109 ev1 8.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 8683.508 ev0 10.32812 ev1 21.72656 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7217.418 ev0 5200.33984 ev1 9.00391 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7211.223 ev0 8.13281 ev1 2.40625 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5897.254 ev0 4383.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5843.180 ev0 0.05859 ev1 0.13672 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7476.355 ev0 5033.65234 ev1 6.10547 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7330.129 ev0 0.29688 ev1 10.51172 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5945.691 ev0 4428.29297 ev1 5.01562 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5945.406 ev0 0.06641 ev1 0.22266 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 8587.359 ev0 5563.37891 ev1 8.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 8629.891 ev0 10.46094 ev1 21.73047 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7069.332 ev0 5200.34375 ev1 9.00391 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7249.453 ev0 1.51562 ev1 4.69531 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5849.895 ev0 4383.78125 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5848.844 ev0 0.09375 ev1 0.24219 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7384.848 ev0 5016.36719 ev1 6.01172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7366.562 ev0 4.24609 ev1 10.54297 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5943.633 ev0 4428.29297 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5944.586 ev0 0.09766 ev1 0.23828 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 8580.594 ev0 5563.37891 ev1 8.01562 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 8698.648 ev0 9.93359 ev1 23.18750 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7204.230 ev0 5200.34375 ev1 9.00391 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7138.312 ev0 0.64062 ev1 3.06250 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5950.938 ev0 4410.16797 ev1 4.50391 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5849.973 ev0 0.10547 ev1 0.25391 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7379.344 ev0 5016.37109 ev1 6.01562 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7368.523 ev0 4.30469 ev1 10.44922 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 6022.289 ev0 4441.67578 ev1 5.09375 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5946.738 ev0 0.10547 ev1 0.32031 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 8538.105 ev0 5563.37500 ev1 8.01562 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 8559.016 ev0 5.43750 ev1 21.64062 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7081.789 ev0 5201.54688 ev1 9.01172 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7098.457 ev0 0.33594 ev1 2.71484 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5847.844 ev0 4383.78516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5877.871 ev0 0.08594 ev1 1.61719 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7460.738 ev0 5034.21094 ev1 6.11328 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7360.824 ev0 4.29297 ev1 10.44922 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5944.664 ev0 4428.29688 ev1 5.01562 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5943.324 ev0 0.07812 ev1 0.17969 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 8637.695 ev0 5563.37500 ev1 8.01562 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 8636.586 ev0 10.61328 ev1 21.70703 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7113.082 ev0 5200.34375 ev1 9.00391 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7233.160 ev0 1.47266 ev1 4.63672 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5848.578 ev0 4383.78516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5846.676 ev0 0.07031 ev1 0.25000 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7390.570 ev0 5016.36719 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7432.312 ev0 4.78906 ev1 10.83203 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5955.594 ev0 4429.46484 ev1 5.02344 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6034.758 ev0 0.46484 ev1 1.29688 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 8648.062 ev0 5577.97656 ev1 8.08594 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 8575.801 ev0 6.50781 ev1 21.65625 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7142.777 ev0 5200.34375 ev1 9.00000 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7127.734 ev0 4.26562 ev1 1.81641 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5846.727 ev0 4383.78516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5884.109 ev0 0.34375 ev1 0.75391 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7397.523 ev0 5016.37500 ev1 6.01562 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7391.270 ev0 5.32422 ev1 10.48438 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6027.680 ev0 4445.22656 ev1 5.22266 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6041.562 ev0 0.30859 ev1 1.42969 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 8630.438 ev0 5563.37500 ev1 8.01953 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 8613.891 ev0 8.39844 ev1 21.40625 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7071.668 ev0 5200.33984 ev1 9.00000 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7088.758 ev0 0.16016 ev1 2.48438 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5848.625 ev0 4383.78125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5919.277 ev0 0.97266 ev1 1.23828 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7343.102 ev0 5016.36328 ev1 6.01172 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7330.992 ev0 0.26562 ev1 10.57031 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5946.668 ev0 4428.29297 ev1 5.01562 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5943.289 ev0 0.09766 ev1 0.16406 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_2.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 8620.752785714285,
+            "se": 14.842397779052925,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5565.461495714286,
+            "se": 2.0858442948427123,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 8.811382857142858,
+            "se": 0.7926412711420514,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7146.242357142857,
+            "se": 18.117620650742708,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5200.514508571428,
+            "se": 0.17206331511046305,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 2.36049,
+            "se": 1.0948956631461237,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5868.556500000001,
+            "se": 7.080839024135019,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4387.552457142858,
+            "se": 3.7692522152858112,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.24720999999999999,
+            "se": 0.12650211748651255,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7386.649428571429,
+            "se": 10.087901254442706,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5021.386718571428,
+            "se": 3.239658442179935,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 3.3599328571428573,
+            "se": 0.807793763229777,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5970.420142857142,
+            "se": 13.44272860611087,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4432.791852857143,
+            "se": 2.7840521154858373,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.17410714285714285,
+            "se": 0.05769848309115593,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 2752.1962857142853,
+              "se": 14.853143181806718,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1177.9090385714285,
+              "se": 4.6014395831969095,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 8.564172857142857,
+              "se": 0.8316603546197561,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1277.685857142857,
+              "se": 20.13257728270818,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 812.962051428571,
+              "se": 3.8014864658781207,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 2.1132799999999996,
+              "se": 1.137141026438464,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.156403515489915,
+            "se": 0.02603688008821789,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 1234.1033571428568,
+              "se": 18.78153061194831,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 544.0747771428574,
+              "se": 4.2819382771661685,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 5.45145,
+              "se": 1.2505392734108183,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1175.8222142857144,
+              "se": 20.989308429944664,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 767.7226557142856,
+              "se": 2.8348548860044986,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 2.186382857142857,
+              "se": 1.0981161361269802,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.050946518947242,
+            "se": 0.020054171103111463,
+            "n": 7
+          }
+        }
+      }
+    },
+    "744": {
+      "status": "done",
+      "build": "eba3c168472efb4e",
+      "created": "2026-10-21T01:44:25.476713+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "intermediate allocated oracle; overly broad below-SP fingerprint exclusion, superseded by strict final rerun",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench ARM record pc 8036024c words 106 file-bytes 436 saved",
+        "# regionbench ARM record pc 80360280 words 102 file-bytes 856 saved",
+        "# regionbench ARM record pc 80360280 words 35 file-bytes 1008 saved",
+        "# regionbench ARM record pc 80360284 words 30 file-bytes 1140 saved",
+        "# regionbench ARM record pc 80360288 words 25 file-bytes 1252 saved",
+        "# regionbench ARM record pc 8036028c words 20 file-bytes 1344 saved",
+        "# regionbench ARM record pc 80360290 words 15 file-bytes 1416 saved",
+        "# regionbench ARM record pc 80360294 words 10 file-bytes 1468 saved",
+        "# regionbench ARM record pc 80360298 words 2 file-bytes 1488 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 10763.047 ev0 6805.37891 ev1 6.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 10924.594 ev0 20.41016 ev1 20.60938 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7245.441 ev0 5287.35547 ev1 7.01172 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7243.762 ev0 0.14062 ev1 0.28125 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5700.465 ev0 4260.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5696.938 ev0 0.07422 ev1 0.12109 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7145.602 ev0 4891.37109 ev1 5.01562 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7201.148 ev0 0.83594 ev1 11.10547 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5801.082 ev0 4306.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5890.281 ev0 0.94141 ev1 1.33594 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 10902.051 ev0 6839.21875 ev1 6.76562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 10721.992 ev0 9.59375 ev1 19.31641 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7305.223 ev0 5287.34766 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7305.703 ev0 4.17969 ev1 0.25781 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5699.211 ev0 4260.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5698.473 ev0 0.09766 ev1 0.17188 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7432.914 ev0 4906.74609 ev1 5.10938 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7306.797 ev0 12.03906 ev1 10.54688 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5800.953 ev0 4306.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5799.941 ev0 0.10547 ev1 0.19531 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 10846.391 ev0 6805.38281 ev1 6.01172 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 10840.984 ev0 12.76953 ev1 20.10156 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7403.375 ev0 5307.26562 ev1 7.12500 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7311.684 ev0 4.22656 ev1 0.33203 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5703.121 ev0 4260.88281 ev1 3.01562 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5742.039 ev0 0.39844 ev1 0.71094 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7283.293 ev0 4917.33984 ev1 5.54688 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7181.840 ev0 3.37891 ev1 10.44922 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5839.922 ev0 4306.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5838.875 ev0 4.07812 ev1 0.14453 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 10905.473 ev0 6823.35938 ev1 6.13281 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 10922.949 ev0 22.58203 ev1 19.44531 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7304.383 ev0 5287.34766 ev1 7.01172 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7304.410 ev0 4.14062 ev1 0.21875 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5700.406 ev0 4260.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5734.762 ev0 0.48828 ev1 0.62891 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7279.168 ev0 4891.37109 ev1 5.01562 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7349.789 ev0 9.90234 ev1 11.91406 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5800.684 ev0 4306.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5927.434 ev0 0.55859 ev1 1.61719 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 10737.242 ev0 6806.57031 ev1 6.02344 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 10722.859 ev0 14.59375 ev1 17.32031 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7304.043 ev0 5287.34766 ev1 7.01172 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7368.461 ev0 3.87109 ev1 1.37500 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5700.031 ev0 4260.28906 ev1 3.01172 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5696.836 ev0 0.05078 ev1 0.16797 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7204.668 ev0 4891.36328 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7200.465 ev0 4.26953 ev1 10.44141 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5799.168 ev0 4306.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 5834.055 ev0 0.39062 ev1 0.62500 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 10735.410 ev0 6805.38281 ev1 6.01562 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 10934.711 ev0 20.08203 ev1 19.51172 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7433.746 ev0 5295.67578 ev1 7.14453 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7483.121 ev0 10.43750 ev1 1.26172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5698.449 ev0 4260.28906 ev1 3.01562 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5697.609 ev0 0.05859 ev1 0.15234 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7143.336 ev0 4891.37500 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7138.629 ev0 0.26172 ev1 10.58203 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 5921.215 ev0 4323.94141 ev1 4.13281 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 5844.238 ev0 3.99609 ev1 0.29297 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 10887.516 ev0 6805.37500 ev1 6.00781 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 10971.980 ev0 25.44531 ev1 19.42188 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7394.461 ev0 5287.34766 ev1 7.01172 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7393.398 ev0 10.12500 ev1 0.29297 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5812.355 ev0 4285.46094 ev1 3.30078 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5698.891 ev0 0.07031 ev1 0.19922 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7143.391 ev0 4891.37500 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7136.828 ev0 0.27344 ev1 10.39062 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5928.461 ev0 4339.57031 ev1 4.80078 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5844.594 ev0 0.10547 ev1 2.11719 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_3.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 10844.085642857142,
+            "se": 25.05679749582117,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6812.952567142857,
+            "se": 5.043453027940405,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 17.925222857142856,
+            "se": 2.1611153054325514,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7342.943642857143,
+            "se": 26.16652164838065,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5291.38393,
+            "se": 2.8951619976954053,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 5.303011428571429,
+            "se": 1.3980171626414806,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5712.827571428572,
+            "se": 8.121856598114645,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4263.969864285715,
+            "se": 3.5828222463940818,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.17689714285714286,
+            "se": 0.06971448140585336,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7224.847714285715,
+            "se": 33.26672414058695,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4897.277341428571,
+            "se": 3.9838365439440104,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 4.422991428571429,
+            "se": 1.8030616330173475,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5847.921642857143,
+            "se": 12.222182747109576,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4313.565288571429,
+            "se": 4.996766922624143,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 1.4536814285714286,
+            "se": 0.6757813388692718,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 5131.258071428571,
+              "se": 19.937008042423848,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2548.982702857143,
+              "se": 6.897100362767239,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 17.748325714285713,
+              "se": 2.161399067701572,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1630.1160714285716,
+              "se": 25.18711478221996,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1027.414065714286,
+              "se": 5.060401328595023,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 5.126114285714285,
+              "se": 1.4153534530771508,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 3.1523453906708747,
+            "se": 0.05085177804884628,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 3619.2379285714287,
+              "se": 42.9504709147957,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1915.675225714286,
+              "se": 5.6069632011356765,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 13.502231428571429,
+              "se": 3.4329405125423333,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1495.022,
+              "se": 21.89221378682608,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 977.8186414285716,
+              "se": 6.011549870281628,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 3.8493299999999997,
+              "se": 1.3833063572349642,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.4240666809479707,
+            "se": 0.046637548231170924,
+            "n": 7
+          }
+        }
+      }
+    },
+    "745": {
+      "status": "done",
+      "build": "39e7764efefb1bed",
+      "created": "2026-10-21T02:05:10.786384+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_1.state --seconds 90 --region-bench 1",
+      "role": "strict final: all-MEM1 fingerprint; exact known frame exclusion only for value comparison; near-stack write plant",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_1.state",
+        "# regionbench capture pc 802f67e0 r3 814c9e94 guest 373 writes 96 pipe 0 why 0 input-reg-hash 66a5255c9e8236a9",
+        "# regionbench ARM record pc 802f67e0 words 38 file-bytes 164 saved",
+        "# regionbench ARM record pc 803621d4 words 25 file-bytes 276 saved",
+        "# regionbench ARM record pc 802f6804 words 29 file-bytes 404 saved",
+        "# regionbench ARM record pc 802f6824 words 16 file-bytes 480 saved",
+        "# regionbench ARM record pc 802f6830 words 22 file-bytes 580 saved",
+        "# regionbench ARM record pc 802e9c88 words 4 file-bytes 608 saved",
+        "# regionbench ARM record pc 802f6848 words 11 file-bytes 664 saved",
+        "# regionbench ARM record pc 802f6854 words 19 file-bytes 752 saved",
+        "# regionbench ARM record pc 802f6864 words 46 file-bytes 948 saved",
+        "# regionbench ARM record pc 802f6880 words 37 file-bytes 1108 saved",
+        "# regionbench ARM record pc 802f6894 words 13 file-bytes 1172 saved",
+        "# regionbench ARM record pc 802f68a0 words 102 file-bytes 1592 saved",
+        "# regionbench ARM record pc 802f6900 words 44 file-bytes 1780 saved",
+        "# regionbench ARM record pc 802f83cc words 2 file-bytes 1800 saved",
+        "# regionbench ARM record pc 802f6934 words 11 file-bytes 1856 saved",
+        "# regionbench ARM record pc 802f693c words 119 file-bytes 2344 saved",
+        "# regionbench ARM record pc 802f699c words 14 file-bytes 2412 saved",
+        "# regionbench ARM record pc 802f6a24 words 20 file-bytes 2504 saved",
+        "# regionbench ARM record pc 802f6adc words 38 file-bytes 2668 saved",
+        "# regionbench ARM record pc 802f6af8 words 15 file-bytes 2740 saved",
+        "# regionbench ARM record pc 802f6b10 words 14 file-bytes 2808 saved",
+        "# regionbench ARM record pc 802f6b18 words 39 file-bytes 2976 saved",
+        "# regionbench ARM record pc 802f6b30 words 37 file-bytes 3136 saved",
+        "# regionbench ARM record pc 802f6b44 words 13 file-bytes 3200 saved",
+        "# regionbench ARM record pc 802f6b58 words 150 file-bytes 3812 saved",
+        "# regionbench ARM record pc 802f6bec words 31 file-bytes 3948 saved",
+        "# regionbench ARM record pc 802f6c00 words 37 file-bytes 4108 saved",
+        "# regionbench ARM record pc 802f6c14 words 31 file-bytes 4244 saved",
+        "# regionbench ARM record pc 802f6c28 words 51 file-bytes 4460 saved",
+        "# regionbench ARM record pc 802f6c74 words 11 file-bytes 4516 saved",
+        "# regionbench ARM record pc 8035c984 words 39 file-bytes 4684 saved",
+        "# regionbench ARM record pc 802f6c7c words 27 file-bytes 4804 saved",
+        "# regionbench ARM record pc 802f83c8 words 2 file-bytes 4824 saved",
+        "# regionbench ARM record pc 802f6c9c words 30 file-bytes 4956 saved",
+        "# regionbench ARM record pc 802f6ce8 words 12 file-bytes 5016 saved",
+        "# regionbench ARM record pc 802f6cf0 words 26 file-bytes 5132 saved",
+        "# regionbench ARM record pc 80362220 words 25 file-bytes 5244 saved",
+        "# regionbench ARM record pc 802f6d08 words 12 file-bytes 5304 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 14611.766 ev0 8146.38281 ev1 7.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 14679.754 ev0 49.06250 ev1 56.46094 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 10443.367 ev0 6387.33203 ev1 7.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 10485.938 ev0 10.50391 ev1 14.39453 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 6490.070 ev0 4942.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 6486.316 ev0 0.06250 ev1 0.45312 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 8500.699 ev0 5596.62109 ev1 6.11328 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 8356.250 ev0 18.19531 ev1 18.70703 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 6590.574 ev0 4988.28906 ev1 5.01562 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 6621.582 ev0 0.08594 ev1 1.98828 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 14871.461 ev0 8146.39453 ev1 7.00781 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 14831.973 ev0 53.66016 ev1 56.41406 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 10394.031 ev0 6395.64844 ev1 7.15625 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 10483.449 ev0 5.68750 ev1 13.02734 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 6488.566 ev0 4941.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 6485.230 ev0 0.05469 ev1 0.45703 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 8342.590 ev0 5577.35938 ev1 6.01172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 8461.000 ev0 21.51172 ev1 20.78125 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 6588.391 ev0 4988.28906 ev1 5.01562 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 6586.988 ev0 0.08984 ev1 0.44531 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 14683.578 ev0 8146.39453 ev1 7.00781 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 14630.355 ev0 51.05859 ev1 55.17969 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 10526.004 ev0 6412.87109 ev1 7.23438 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 10328.574 ev0 0.54297 ev1 11.22266 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 6488.035 ev0 4941.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 6639.129 ev0 0.54297 ev1 2.62109 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 8192.895 ev0 5577.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 8175.973 ev0 4.35156 ev1 18.70703 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 6589.035 ev0 4988.28906 ev1 5.01562 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 6687.281 ev0 1.21875 ev1 2.28125 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 15230.934 ev0 8146.38672 ev1 7.00781 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 15052.742 ev0 73.77734 ev1 54.92188 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 10348.285 ev0 6394.95703 ev1 7.12500 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 10418.531 ev0 2.04688 ev1 13.03516 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 6490.039 ev0 4942.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 6590.227 ev0 0.31250 ev1 1.85938 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 8246.605 ev0 5577.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 8251.863 ev0 10.30078 ev1 18.43750 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 6642.789 ev0 4988.28125 ev1 5.01172 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 6641.027 ev0 4.03906 ev1 0.52734 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 14900.246 ev0 8160.46094 ev1 7.08984 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 14843.055 ev0 61.92578 ev1 54.74219 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 10376.730 ev0 6395.61328 ev1 7.14844 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 10403.887 ev0 5.41406 ev1 11.26953 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 6683.961 ev0 4966.57031 ev1 4.26562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 6589.395 ev0 0.49219 ev1 1.69141 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 8232.645 ev0 5577.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 8249.688 ev0 10.34766 ev1 18.81250 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 6588.449 ev0 4988.28125 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6585.750 ev0 0.04688 ev1 0.44141 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 15137.434 ev0 8160.34766 ev1 7.07422 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 15069.211 ev0 74.83984 ev1 54.83984 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 10377.582 ev0 6395.96875 ev1 7.16016 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 10421.426 ev0 6.53906 ev1 14.05859 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 6545.281 ev0 4955.25781 ev1 4.14062 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 6586.070 ev0 0.53125 ev1 1.63281 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 8560.758 ev0 5592.01562 ev1 6.08984 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 8380.512 ev0 18.31250 ev1 18.67578 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 6586.441 ev0 4988.28125 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6584.473 ev0 0.04688 ev1 0.35547 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 14769.352 ev0 8146.38672 ev1 7.00781 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 14984.199 ev0 73.23828 ev1 56.35938 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 10379.082 ev0 6397.17969 ev1 7.17969 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 10384.031 ev0 4.51953 ev1 11.21875 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 6490.703 ev0 4942.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 6539.770 ev0 0.52734 ev1 1.09766 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 8255.578 ev0 5600.34375 ev1 6.39844 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 8269.438 ev0 5.87500 ev1 20.51953 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 6589.922 ev0 4987.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 6604.254 ev0 0.05859 ev1 1.21875 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_1.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 14878.289999999999,
+            "se": 73.01401820916043,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 8150.393415714286,
+            "se": 2.584829264621225,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 62.50892714285714,
+            "se": 4.3224357029962555,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 10412.208357142857,
+            "se": 12.04331797824724,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6397.081472857142,
+            "se": 2.9045689590685146,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 5.0362728571428566,
+            "se": 1.2160974706426295,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 6542.342285714286,
+            "se": 19.90489881430762,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4947.32366,
+            "se": 3.7236465371901772,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.3604914285714286,
+            "se": 0.08341754707004799,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 8319.749571428572,
+            "se": 41.99025433904261,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5585.488282857143,
+            "se": 3.9386566350559313,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 12.69921857142857,
+            "se": 2.5209211697299296,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 6606.2111428571425,
+            "se": 9.15105685590082,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4988.142855714285,
+            "se": 0.1423069399113674,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.7979914285714286,
+            "se": 0.5641071785127892,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 8335.947714285714,
+              "se": 71.32263847256883,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 3203.0697557142857,
+              "se": 1.541635814948725,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 62.14843571428572,
+              "se": 4.27950232354009,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 3869.866071428572,
+              "se": 28.30498036385055,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1449.7578128571424,
+              "se": 5.037176595506391,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 4.675781428571429,
+              "se": 1.2627945934776275,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.154920894633166,
+            "se": 0.026489987555562554,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 6558.5404285714285,
+              "se": 78.83495342043862,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2564.905132857143,
+              "se": 4.828152729839351,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 49.80970857142857,
+              "se": 5.397377186141267,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 3805.9972142857146,
+              "se": 15.255434698609426,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1408.9386171428569,
+              "se": 2.908556199332381,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 4.238281428571429,
+              "se": 1.6139802756752346,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.7238104634349702,
+            "se": 0.026950748043932816,
+            "n": 7
+          }
+        }
+      }
+    },
+    "746": {
+      "status": "done",
+      "build": "39e7764efefb1bed",
+      "created": "2026-10-21T02:05:19.511888+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_2.state --seconds 90 --region-bench 2",
+      "role": "strict final: all-MEM1 fingerprint; exact known frame exclusion only for value comparison; near-stack write plant",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_2.state",
+        "# regionbench capture pc 8035e298 r3 803dae10 guest 82 writes 16 pipe 30 why 0 input-reg-hash dfbcd5a955135b2c",
+        "# regionbench ARM record pc 8035e298 words 216 file-bytes 876 saved",
+        "# regionbench ARM record pc 8035e3c4 words 75 file-bytes 1188 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 8744.453 ev0 5584.39844 ev1 8.11328 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 8560.523 ev0 10.36328 ev1 18.56250 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7121.094 ev0 5202.33594 ev1 8.01562 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7114.207 ev0 0.14453 ev1 4.50781 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5843.160 ev0 4382.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5840.020 ev0 0.03125 ev1 0.22266 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7420.680 ev0 5017.36328 ev1 6.01172 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7489.195 ev0 9.10547 ev1 9.83984 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5943.812 ev0 4427.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5997.004 ev0 4.09766 ev1 0.26562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 8671.602 ev0 5565.35547 ev1 8.01562 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 8714.996 ev0 20.35156 ev1 18.64062 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7117.164 ev0 5202.33594 ev1 8.01953 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7113.781 ev0 0.11719 ev1 4.51562 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5842.707 ev0 4382.28906 ev1 4.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5922.617 ev0 1.08594 ev1 1.30859 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7425.938 ev0 5017.35938 ev1 6.01562 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7433.727 ev0 9.26172 ev1 8.67188 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 6008.465 ev0 4428.28906 ev1 5.01562 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 6009.309 ev0 4.07812 ev1 0.31250 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 8723.066 ev0 5565.35547 ev1 8.01953 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 8732.395 ev0 20.30078 ev1 18.94922 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7223.320 ev0 5222.25781 ev1 8.10156 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7172.746 ev0 0.72266 ev1 4.83594 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5940.781 ev0 4407.48438 ev1 4.49609 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5843.492 ev0 0.08984 ev1 0.25391 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7470.707 ev0 5017.36719 ev1 6.01172 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7409.277 ev0 8.25781 ev1 8.35547 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5944.223 ev0 4428.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5964.891 ev0 0.06641 ev1 1.23047 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 8823.598 ev0 5579.93359 ev1 8.09375 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 8610.672 ev0 11.33594 ev1 18.67188 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7123.730 ev0 5202.33203 ev1 8.01562 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7110.043 ev0 0.16016 ev1 3.71875 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5931.883 ev0 4382.28125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5840.695 ev0 0.02734 ev1 0.20312 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7459.367 ev0 5017.36328 ev1 6.01172 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7546.285 ev0 12.55469 ev1 9.72656 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5944.145 ev0 4428.29297 ev1 5.01562 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5996.379 ev0 4.05078 ev1 0.23047 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 8639.000 ev0 5565.35547 ev1 8.01562 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 8623.547 ev0 12.46875 ev1 18.32422 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7112.773 ev0 5202.33594 ev1 8.01562 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7121.938 ev0 0.14062 ev1 4.24609 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5966.055 ev0 4408.19141 ev1 4.31641 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5844.664 ev0 0.09375 ev1 0.35156 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7444.957 ev0 5017.35938 ev1 6.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7563.266 ev0 20.25781 ev1 8.21875 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 6011.227 ev0 4436.18359 ev1 5.14062 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 6046.648 ev0 1.87891 ev1 1.23828 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 8684.668 ev0 5565.34766 ev1 8.01562 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 8749.258 ev0 17.34375 ev1 20.06250 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7119.359 ev0 5202.33203 ev1 8.01562 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7108.746 ev0 0.19141 ev1 3.32812 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5842.406 ev0 4382.28125 ev1 4.01172 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5884.234 ev0 0.55078 ev1 0.85547 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7568.980 ev0 5017.35547 ev1 6.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7566.965 ev0 20.17578 ev1 8.23047 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 5942.586 ev0 4428.28906 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 6183.660 ev0 1.45312 ev1 4.44141 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 8621.348 ev0 5565.35938 ev1 8.01953 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 8617.438 ev0 14.42188 ev1 18.65625 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7125.164 ev0 5202.33594 ev1 8.01562 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7118.250 ev0 0.19531 ev1 4.65234 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5841.305 ev0 4382.28906 ev1 4.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5910.793 ev0 0.07812 ev1 3.21875 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7705.383 ev0 5037.29297 ev1 6.10938 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7674.598 ev0 27.20703 ev1 8.31641 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5944.473 ev0 4428.28906 ev1 5.01562 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5942.293 ev0 0.09766 ev1 0.21094 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_2.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 8679.754571428572,
+            "se": 16.90611637291755,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5570.157925714286,
+            "se": 3.1385138249153015,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 15.226562857142858,
+            "se": 1.5700869656361536,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7128.736785714285,
+            "se": 11.583877744241617,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5205.180804285714,
+            "se": 2.846167704309059,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.23884,
+            "se": 0.08132197436293412,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5878.200857142857,
+            "se": 7.84301195386723,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4389.586495714286,
+            "se": 4.713122590901001,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.2795742857142857,
+            "se": 0.15119987433632254,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7512.808928571429,
+            "se": 34.554349193289184,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5020.208707142857,
+            "se": 2.847377493594352,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 15.260044285714285,
+            "se": 2.769224977890158,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5991.365357142857,
+            "se": 16.48199410710362,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4429.274551428572,
+            "se": 1.1601032971092657,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 2.246094285714286,
+            "se": 0.693025291958784,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 2801.5537142857142,
+              "se": 18.263697866212592,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1180.5714300000002,
+              "se": 6.614460141912668,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 14.946988571428571,
+              "se": 1.4742401870801245,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1250.5359285714285,
+              "se": 11.889558533610472,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 815.5943085714283,
+              "se": 3.6513640457052308,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -0.040734285714285716,
+              "se": 0.1891631533996027,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.241061375873633,
+            "se": 0.0186136566654718,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 1166.945642857143,
+              "se": 45.09751476453081,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 549.9492185714288,
+              "se": 4.744378421995661,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -0.0334814285714286,
+              "se": 3.4614447103901216,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1137.3714285714286,
+              "se": 23.87206434143827,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 775.9062528571427,
+              "se": 3.221962255938745,
+              "n": 7
+            },
+            "imisses": {
+              "mean": -2.0072542857142857,
+              "se": 0.7448777897009655,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 1.0282716685638142,
+            "se": 0.04247651753724784,
+            "n": 7
+          }
+        }
+      }
+    },
+    "747": {
+      "status": "done",
+      "build": "39e7764efefb1bed",
+      "created": "2026-10-21T02:05:26.219469+00:00",
+      "args": "--game Twilight --state sdmc:/gc3ds/x4_input_3.state --seconds 90 --region-bench 3",
+      "role": "strict final: all-MEM1 fingerprint; exact known frame exclusion only for value comparison; near-stack write plant",
+      "measured_lines": [
+        "# regionbench saving real-call input sdmc:/gc3ds/x4_input_3.state",
+        "# regionbench capture pc 8036024c r3 80434ac8 guest 20 writes 0 pipe 53 why 0 input-reg-hash 1d86ba170574dd97",
+        "# regionbench ARM record pc 8036024c words 106 file-bytes 436 saved",
+        "# regionbench ARM record pc 80360280 words 102 file-bytes 856 saved",
+        "# regionbench ARM record pc 80360280 words 35 file-bytes 1008 saved",
+        "# regionbench ARM record pc 80360284 words 30 file-bytes 1140 saved",
+        "# regionbench ARM record pc 80360288 words 25 file-bytes 1252 saved",
+        "# regionbench ARM record pc 8036028c words 20 file-bytes 1344 saved",
+        "# regionbench ARM record pc 80360290 words 15 file-bytes 1416 saved",
+        "# regionbench ARM record pc 80360294 words 10 file-bytes 1468 saved",
+        "# regionbench ARM record pc 80360298 words 2 file-bytes 1488 saved",
+        "# regionbench check oracle PASS jit PASS plant CAUGHT callouts 0",
+        "# regionbench empty controls PASS plant CAUGHT",
+        "# regionbench sample rep 0 arm jit pair 0 cycles 10841.992 ev0 6806.37500 ev1 6.00781 calls 256",
+        "# regionbench sample rep 0 arm jit pair 1 cycles 10628.992 ev0 8.41406 ev1 17.20703 calls 256",
+        "# regionbench sample rep 0 arm region pair 0 cycles 7305.137 ev0 5286.33984 ev1 7.00391 calls 256",
+        "# regionbench sample rep 0 arm region pair 1 cycles 7229.723 ev0 0.09766 ev1 0.22656 calls 256",
+        "# regionbench sample rep 0 arm reset pair 0 cycles 5700.938 ev0 4261.26562 ev1 3.01172 calls 256",
+        "# regionbench sample rep 0 arm reset pair 1 cycles 5749.707 ev0 0.43359 ev1 1.00000 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 0 cycles 7421.941 ev0 4893.35156 ev1 5.01172 calls 256",
+        "# regionbench sample rep 0 arm jit_empty pair 1 cycles 7324.152 ev0 16.27734 ev1 8.43359 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 0 cycles 5796.789 ev0 4306.28516 ev1 4.01172 calls 256",
+        "# regionbench sample rep 0 arm region_empty pair 1 cycles 5795.816 ev0 0.02734 ev1 0.13281 calls 256",
+        "# regionbench sample rep 1 arm jit pair 0 cycles 10884.211 ev0 6806.36719 ev1 6.01172 calls 256",
+        "# regionbench sample rep 1 arm jit pair 1 cycles 10988.359 ev0 27.29297 ev1 18.26562 calls 256",
+        "# regionbench sample rep 1 arm region pair 0 cycles 7231.031 ev0 5286.35156 ev1 7.01172 calls 256",
+        "# regionbench sample rep 1 arm region pair 1 cycles 7230.754 ev0 0.12109 ev1 0.26953 calls 256",
+        "# regionbench sample rep 1 arm reset pair 0 cycles 5700.703 ev0 4261.26562 ev1 3.01172 calls 256",
+        "# regionbench sample rep 1 arm reset pair 1 cycles 5701.648 ev0 0.05859 ev1 0.24219 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 0 cycles 7278.633 ev0 4893.35156 ev1 5.01172 calls 256",
+        "# regionbench sample rep 1 arm jit_empty pair 1 cycles 7268.090 ev0 14.26172 ev1 7.98047 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 0 cycles 5860.703 ev0 4316.64844 ev1 4.15625 calls 256",
+        "# regionbench sample rep 1 arm region_empty pair 1 cycles 5974.375 ev0 1.10938 ev1 2.08594 calls 256",
+        "# regionbench sample rep 2 arm jit pair 0 cycles 10931.766 ev0 6806.37500 ev1 6.01562 calls 256",
+        "# regionbench sample rep 2 arm jit pair 1 cycles 10948.492 ev0 32.46484 ev1 15.47656 calls 256",
+        "# regionbench sample rep 2 arm region pair 0 cycles 7231.105 ev0 5286.35156 ev1 7.00781 calls 256",
+        "# regionbench sample rep 2 arm region pair 1 cycles 7229.281 ev0 0.15234 ev1 0.19141 calls 256",
+        "# regionbench sample rep 2 arm reset pair 0 cycles 5700.562 ev0 4261.26562 ev1 3.01172 calls 256",
+        "# regionbench sample rep 2 arm reset pair 1 cycles 5741.758 ev0 0.46875 ev1 0.70312 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 0 cycles 7350.023 ev0 4909.74219 ev1 5.09766 calls 256",
+        "# regionbench sample rep 2 arm jit_empty pair 1 cycles 7268.738 ev0 13.28906 ev1 8.39062 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 0 cycles 5797.062 ev0 4306.28516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 2 arm region_empty pair 1 cycles 5846.180 ev0 0.47656 ev1 0.76562 calls 256",
+        "# regionbench sample rep 3 arm jit pair 0 cycles 10825.727 ev0 6829.87891 ev1 6.44922 calls 256",
+        "# regionbench sample rep 3 arm jit pair 1 cycles 10644.516 ev0 10.46094 ev1 17.35938 calls 256",
+        "# regionbench sample rep 3 arm region pair 0 cycles 7346.535 ev0 5303.22266 ev1 7.07812 calls 256",
+        "# regionbench sample rep 3 arm region pair 1 cycles 7231.391 ev0 0.16797 ev1 0.28906 calls 256",
+        "# regionbench sample rep 3 arm reset pair 0 cycles 5700.504 ev0 4261.26562 ev1 3.01172 calls 256",
+        "# regionbench sample rep 3 arm reset pair 1 cycles 5700.973 ev0 0.06250 ev1 0.19922 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 0 cycles 7154.270 ev0 4893.35156 ev1 5.01172 calls 256",
+        "# regionbench sample rep 3 arm jit_empty pair 1 cycles 7225.051 ev0 9.27344 ev1 8.05469 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 0 cycles 5858.301 ev0 4323.12891 ev1 4.21094 calls 256",
+        "# regionbench sample rep 3 arm region_empty pair 1 cycles 5797.480 ev0 0.07812 ev1 0.18750 calls 256",
+        "# regionbench sample rep 4 arm jit pair 0 cycles 10921.398 ev0 6822.89062 ev1 6.08594 calls 256",
+        "# regionbench sample rep 4 arm jit pair 1 cycles 10971.504 ev0 35.75781 ev1 15.76953 calls 256",
+        "# regionbench sample rep 4 arm region pair 0 cycles 7351.715 ev0 5312.17578 ev1 7.53516 calls 256",
+        "# regionbench sample rep 4 arm region pair 1 cycles 7229.566 ev0 0.12891 ev1 0.20312 calls 256",
+        "# regionbench sample rep 4 arm reset pair 0 cycles 5701.363 ev0 4261.27344 ev1 3.01562 calls 256",
+        "# regionbench sample rep 4 arm reset pair 1 cycles 5699.398 ev0 0.05859 ev1 0.13281 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 0 cycles 7244.277 ev0 4893.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 4 arm jit_empty pair 1 cycles 7433.484 ev0 18.77344 ev1 9.36719 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 0 cycles 5798.695 ev0 4306.28516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 4 arm region_empty pair 1 cycles 5797.527 ev0 0.05859 ev1 0.21875 calls 256",
+        "# regionbench sample rep 5 arm jit pair 0 cycles 10864.488 ev0 6815.89062 ev1 6.16797 calls 256",
+        "# regionbench sample rep 5 arm jit pair 1 cycles 10864.094 ev0 28.53906 ev1 15.40625 calls 256",
+        "# regionbench sample rep 5 arm region pair 0 cycles 7231.422 ev0 5286.35156 ev1 7.00781 calls 256",
+        "# regionbench sample rep 5 arm region pair 1 cycles 7386.852 ev0 3.01172 ev1 1.87109 calls 256",
+        "# regionbench sample rep 5 arm reset pair 0 cycles 5794.523 ev0 4286.17578 ev1 3.47266 calls 256",
+        "# regionbench sample rep 5 arm reset pair 1 cycles 5701.020 ev0 0.04297 ev1 0.20703 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 0 cycles 7202.617 ev0 4893.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 5 arm jit_empty pair 1 cycles 7304.562 ev0 14.33594 ev1 8.25000 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 0 cycles 5796.012 ev0 4306.28516 ev1 4.01562 calls 256",
+        "# regionbench sample rep 5 arm region_empty pair 1 cycles 5840.312 ev0 0.41797 ev1 0.64844 calls 256",
+        "# regionbench sample rep 6 arm jit pair 0 cycles 10786.316 ev0 6806.37500 ev1 6.01562 calls 256",
+        "# regionbench sample rep 6 arm jit pair 1 cycles 10897.688 ev0 20.49219 ev1 18.86719 calls 256",
+        "# regionbench sample rep 6 arm region pair 0 cycles 7247.621 ev0 5287.57031 ev1 7.01953 calls 256",
+        "# regionbench sample rep 6 arm region pair 1 cycles 7279.438 ev0 0.57031 ev1 0.78516 calls 256",
+        "# regionbench sample rep 6 arm reset pair 0 cycles 5701.922 ev0 4261.27344 ev1 3.01562 calls 256",
+        "# regionbench sample rep 6 arm reset pair 1 cycles 5701.402 ev0 0.05859 ev1 0.21094 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 0 cycles 7292.957 ev0 4893.35938 ev1 5.01172 calls 256",
+        "# regionbench sample rep 6 arm jit_empty pair 1 cycles 7139.742 ev0 0.86719 ev1 8.92969 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 0 cycles 5975.109 ev0 4347.02734 ev1 4.59766 calls 256",
+        "# regionbench sample rep 6 arm region_empty pair 1 cycles 5799.359 ev0 0.08984 ev1 0.25000 calls 256",
+        "# regionbench timed compiles 0; jit ARM dump sdmc:/gc3ds/x4_jit_3.bin"
+      ],
+      "derived": {
+        "kind": "derived from measured device PMU batches",
+        "repeats": 7,
+        "jit": {
+          "cycles": {
+            "mean": 10857.110214285714,
+            "se": 34.87890607855116,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 6813.450334285714,
+            "se": 3.668800528883115,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 23.345981428571427,
+            "se": 4.014511028895186,
+            "n": 7
+          }
+        },
+        "region": {
+          "cycles": {
+            "mean": 7268.683642857142,
+            "se": 11.409756561045151,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 5292.623324285714,
+            "se": 4.016823703560421,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.6071428571428571,
+            "se": 0.4055447001357104,
+            "n": 7
+          }
+        },
+        "reset": {
+          "cycles": {
+            "mean": 5714.030071428571,
+            "se": 6.897247027091476,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4264.826448571429,
+            "se": 3.5582221775590366,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.16908285714285715,
+            "se": 0.07297338029701507,
+            "n": 7
+          }
+        },
+        "jit_empty": {
+          "cycles": {
+            "mean": 7279.181214285714,
+            "se": 24.85064000106611,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4895.69643,
+            "se": 2.3409604664782924,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 12.439732857142857,
+            "se": 2.216973637883425,
+            "n": 7
+          }
+        },
+        "region_empty": {
+          "cycles": {
+            "mean": 5838.122857142857,
+            "se": 17.487524343805045,
+            "n": 7
+          },
+          "instructions": {
+            "mean": 4315.99219,
+            "se": 5.7558452641991416,
+            "n": 7
+          },
+          "imisses": {
+            "mean": 0.32254285714285713,
+            "se": 0.14821552034138674,
+            "n": 7
+          }
+        },
+        "full_call": {
+          "jit": {
+            "cycles": {
+              "mean": 5143.080142857142,
+              "se": 36.19682269036264,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 2548.6238857142857,
+              "se": 4.819284122835908,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 23.176898571428573,
+              "se": 4.026961977458009,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1554.6535714285712,
+              "se": 11.288836449083215,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1027.7968757142858,
+              "se": 6.019133929731597,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 0.43806,
+              "se": 0.43547995694952696,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 3.309495059562587,
+            "se": 0.03767200762639188,
+            "n": 7
+          }
+        },
+        "body": {
+          "jit": {
+            "cycles": {
+              "mean": 3577.9289999999996,
+              "se": 38.33792792470035,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 1917.7539042857145,
+              "se": 4.945780631735714,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 10.906248571428572,
+              "se": 3.9141976173987003,
+              "n": 7
+            }
+          },
+          "region": {
+            "cycles": {
+              "mean": 1430.5607857142857,
+              "se": 25.46351152696768,
+              "n": 7
+            },
+            "instructions": {
+              "mean": 976.6311342857141,
+              "se": 7.325400950538449,
+              "n": 7
+            },
+            "imisses": {
+              "mean": 0.2846,
+              "se": 0.4223293942162297,
+              "n": 7
+            }
+          },
+          "speedup": {
+            "mean": 2.5074258293038536,
+            "se": 0.06390996617441021,
+            "n": 7
+          }
+        }
+      }
+    }
+  },
+  "conditional_derivations": {
+    "profile_weighted_selected_subset_body_speedup": 1.608826458129319,
+    "selected_profile_share_percent": 4.84,
+    "whole_core_gain_if_only_selected_profile_share_improved_percent": 1.865769325913913,
+    "coverage_fraction_for_core_gain_15pct": 0.3446744577526925,
+    "coverage_fraction_for_core_gain_30pct": 0.609808656023995,
+    "note": "Arithmetic on old truncated self-profile and isolated body costs, NOT measured gameplay gains or validated coverage."
+  },
+  "checks": {
+    "cpu_run": "X4-cpu: 420 directed; 12800 differential; plants 313/181 mismatches; 11806 disassembly cases; all pass",
+    "arm_oracle_run": "X4-oracle-strict-final: six synthetic qemu-arm calls; memory compared except exact known frames; all outputs match and all six planted register differences caught",
+    "scorer_run": "X4-score: known 1.75 ratio; four invalid evidence plants rejected",
+    "device_final": "745-747: reference live ABI/word/FIFO equality; all-MEM1 fingerprint after undo; exact 336/64/0 known dead-frame exceptions only for word values; PC/GPR/FPR/CR/FIFO/recorded-memory/extra near-stack-write plants; empty-control plant; every interval last replay checked; zero timed compiles",
+    "not_run": "No production JIT/optimization changed; no new whole-game JIT/fuzzer/device speed claim.",
+    "dump_reader": "X4-dump: open ARM bx-lr example decoded outside repo; truncated-record plant rejected"
+  },
+  "final_runs": [
+    745,
+    746,
+    747
+  ],
+  "imiss_note": "Raw per-call PMU I-miss means are physical counts including wrappers. Control-subtracted I-miss differences are nonadditive and can be negative; retained for audit, not interpreted as negative physical misses.",
+  "native_oracle_bytes": {
+    "kind": "derived from final ELF symbol sizes",
+    "pane": 7396,
+    "texture": 1096,
+    "position": 492
+  },
+  "dump_records": {
+    "745": {
+      "kind": "measured successful SD writes",
+      "records": 38,
+      "arm_words": 1212,
+      "file_bytes": 5304
+    },
+    "746": {
+      "kind": "measured successful SD writes",
+      "records": 2,
+      "arm_words": 291,
+      "file_bytes": 1188
+    },
+    "747": {
+      "kind": "measured successful SD writes",
+      "records": 9,
+      "arm_words": 345,
+      "file_bytes": 1488
+    }
+  }
+}

@@ -40,10 +40,11 @@ export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 CFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+SFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
 PICAFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.v.pica)))
 export LD   := $(CC)
 
-export OFILES_SOURCES := $(CFILES:.c=.o)
+export OFILES_SOURCES := $(CFILES:.c=.o) $(SFILES:.S=.o)
 export OFILES_BIN     := $(PICAFILES:.v.pica=.shbin.o)
 export OFILES         := $(OFILES_BIN) $(OFILES_SOURCES)
 export HFILES         := $(PICAFILES:.v.pica=_shbin.h)
