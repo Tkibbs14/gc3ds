@@ -33,6 +33,8 @@
 >   decode cost 18-28% of the PC front end, device gain unproven); display-list keys with read-before-write state
 >   repeat 42-61% (between the G2 thresholds); lighting reuse 16-89% by scene; no code outside the GX SDK touches
 >   __GXData (the SDK-as-a-unit option stays open). The CPU test runner works again (`core/tests/cpu/run_tests.sh`).
+> **Library atlas (10-21): research/LIBRARY_ATLAS.md** maps SDK / middleware / microcode families and the features that
+> gate other games (EFB to RAM, CPU EFB reads, bounding box, MMU, FPRF); its section 9 proposes X6's game set.
 > **Next (in order):** X5 (GX-thread and worker time on repeating draws, one device run) and **X6, a second game to
 > gameplay**: every conclusion above is from Twilight Princess alone. Then, by what those show: the HUD pane walk
 > (research/LIBRARY_PORTS.md, prerequisite: why ~2% of J2DPictureEx port calls give up), a targeted region tier, G1 + G2.

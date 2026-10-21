@@ -83,6 +83,7 @@ screenshots), which is how gameplay save states for benchmarks are made; `--pres
 | `docs/research/MEASUREMENTS.md` | Every measurement, with its job, conditions and what it informs |
 | `docs/research/PERF_LEVERS.md`, `docs/research/REDESIGN_CANDIDATES.md` | Ranked levers; every idea with its evidence and status |
 | `docs/research/DIRECTION_REVIEW.md` | The 2026-10-20 independent review: what limits gc3ds (two walls), library ports by Amdahl, execution models, ranked directions, experiments, ceilings |
+| `docs/research/LIBRARY_ATLAS.md` | The GameCube library beyond TP: SDK libraries and versions, middleware families, audio microcode families, which games stress which features (Dolphin per-game settings for 588 titles), recognition tools, other emulators' library HLE |
 | `docs/research/GENERAL_ARCHITECTURE.md` | The architecture for a general emulator: the system as one budget, conclusions re-opened, candidates by kind (optimise / eliminate / move the ceiling), ranked experiments X1-X6 with what confirms or disproves each |
 | `docs/research/EMULATOR_CEILING.md` | How far emulation alone can go: today's cost model (~22 cycles per guest instruction), the lower bound, every rejected idea re-examined, proposals with disproving experiments, a roadmap |
 | `docs/research/OUTSIDE_RESEARCH.md` | What published work (other ARM JITs, the TP decomp and Dusklight, frame skipping, 3DS homebrew) says that bears on gc3ds |
