@@ -51,6 +51,9 @@ static bool g_gxThread;       // the GX thread exists (gxthread_start succeeded)
 
 static void on_icbi(void* ctx, u32 pa) { jit_invalidate(ctx, pa); }
 
+extern bool g_l2lockRunPending, g_l2lockUnsafe;
+bool l2lock_run_begin(FILE* f), l2lock_run_end(FILE* f);
+bool l2lock_probe(FILE* f, u8* mem, u32 memBytes);  // timingprobe.c: X2, probe only
 void fault_probe(FILE* f, const u8* mem1);  // faultprobe.c: --probe-faults
 void mirror_probe(FILE* f);  // faultprobe.c: --probe-mirror (Luma's physical-memory mirror, the L2C-310's registers)
 #include "regionbench.h"
@@ -421,6 +424,9 @@ typedef struct {
     u32 traceLen;        // --trace-len N: block length limit (0: the JIT's default)
     bool unattended;     // arguments or relay: no "press A" at the end
     bool probeFaults;    // --probe-faults on: the fault-handling probe (faultprobe.c) at the run's start
+    bool l2lockPlant;    // --l2lock plant: force a handled error after applying, test outer restoration
+    bool l2lockHalf;     // --l2lock half: X2 conditional whole-run scoring only, never a default
+    bool probeL2Lock;    // --probe-l2lock only: X2, restore before returning; never boots the guest
     bool probeMirror;    // --probe-mirror on: Luma's physical-memory mirror and the L2C-310's registers (read only)
     unsigned regionBench; // X4: 1 pane, 2 texture, 3 position matrix; captured real call, then exit
     bool jitBench;       // --jit-bench only: JIT microbenchmarks (jitbench.c) after boot, instead of the run
@@ -671,6 +677,11 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--pmu-split")) o->pmuSplit = !strcmp(v, "on") ? 1 : !strcmp(v, "hle") ? 2 : !strcmp(v, "fast") ? 3 : !strcmp(v, "empty") ? 4 : !strcmp(v, "port") ? 5 : !strcmp(v, "portcommit") ? 6 : !strcmp(v, "cb") ? 7 : !strcmp(v, "path") ? 8 : 0;
         else if (!strcmp(a, "--profile")) o->profile = !strcmp(v, "on");
         else if (!strcmp(a, "--probe-faults")) o->probeFaults = !strcmp(v, "on");
+        else if (!strcmp(a, "--l2lock")) {
+            o->l2lockHalf = !strcmp(v, "half") || !strcmp(v, "plant");
+            o->l2lockPlant = !strcmp(v, "plant");
+        }
+        else if (!strcmp(a, "--probe-l2lock")) o->probeL2Lock = !strcmp(v, "only");
         else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
         else if (!strcmp(a, "--region-bench")) o->regionBench = (unsigned)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
@@ -947,7 +958,11 @@ static char g_runErr[400];  // why the last run failed (relay jobs report it)
 
 // Runs one program with g_opt; returns "done" (time limit or SELECT), "stopped" (the machine stopped) or "failed".
 static bool g_ranGame;  // a program ran in this process (remote_mode restarts before the next job)
-static const char* run(const char* path) {
+// Keep the log alive for the outer finally wrapper whenever X2 holds a hardware transaction.
+static void run_perf_close(void) {
+    if (!g_l2lockRunPending && g_perf) { fclose(g_perf); g_perf = NULL; }
+}
+static const char* run_body(const char* path) {
     size_t size = 0;
     u8* dol = NULL;
     char err[256];
@@ -967,6 +982,15 @@ static const char* run(const char* path) {
     if (g_jit) {
         jit_invalidate_all(g_jit);
         if (g_useJit) jit_attach(g_jit); else gekko_set_jit(&g_sys.cpu, NULL, NULL);
+    }
+    if (g_opt.probeL2Lock) {
+        perf_open(path);
+        crashlog_report(g_perf);
+        bool ok = g_perf && l2lock_probe(g_perf, g_sys.mem1, MEM1_SIZE);
+        run_perf_close();
+        free(dol);
+        if (!ok) snprintf(g_runErr, sizeof g_runErr, "X2 probe/readback/restore failed; inspect # l2lock lines");
+        return ok ? "done" : "failed";
     }
     // --timing-probe: the hardware micro-benchmarks, while MEM1 and the JIT's buffer are still free (the boot below
     // overwrites MEM1; the JIT starts empty again).
@@ -1000,17 +1024,11 @@ static const char* run(const char* path) {
                 fclose(gf);
             }
             probe_live = NULL;
-            if (g_perf) {
-                fclose(g_perf);
-                g_perf = NULL;
-            }
+            run_perf_close();
             free(dol);
             return "done";
         }
-        if (g_perf) {
-            fclose(g_perf);
-            g_perf = NULL;
-        }
+        run_perf_close();
     }
     bool booted = dol ? boot_dol(&g_sys, dol, size, err, sizeof err) : boot_disc(&g_sys, &g_disc, err, sizeof err);
     free(dol);
@@ -1041,6 +1059,15 @@ static const char* run(const char* path) {
     if (timing && g_perf) {
         fputs(timing, g_perf);
         fflush(g_perf);
+    }
+    if (g_opt.l2lockHalf && (!g_perf || !l2lock_run_begin(g_perf))) {
+        snprintf(g_runErr, sizeof g_runErr, "X2 scoring partition refused; inspect lockdown readback");
+        return "failed";
+    }
+    if (g_opt.l2lockPlant) {
+        fprintf(g_perf, "# l2lock run: PLANTED handled error after partition\n");
+        snprintf(g_runErr, sizeof g_runErr, "X2 planted handled error (restoration must still verify)");
+        return "failed";
     }
     const char* result = "done";
     bool saved = false;
@@ -1185,7 +1212,7 @@ static const char* run(const char* path) {
     if (g_opt.jitBench && g_jit) {  // --jit-bench only: the JIT microbenchmarks with this run's options; no game runs
         gxthread_drain();
         jit_bench(g_jit, &g_sys, g_perf);
-        if (g_perf) { fclose(g_perf); g_perf = NULL; }
+        run_perf_close();
         return "done";
     }
     if (g_pica) {
@@ -2165,13 +2192,28 @@ static const char* run(const char* path) {
     }
     g_wdArmed = false;
     l2pf_end();  // the kernel's L2 prefetch setting back
-    if (g_perf) { fclose(g_perf); g_perf = NULL; }
+    run_perf_close();
     gxthread_drain();
     if (g_opt.unattended) return result;
     printf("\nPress A to return to the menu\n");
     while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & (KEY_A | KEY_START)) break; gspWaitForVBlank(); }
     return result;
 }
+static const char* run(const char* path) {
+    if (g_l2lockUnsafe) {
+        snprintf(g_runErr, sizeof g_runErr, "X2 restoration failed earlier: restart the 2DS before more jobs");
+        return "failed";
+    }
+    const char* result = run_body(path);
+    bool restored = l2lock_run_end(g_perf);
+    run_perf_close();
+    if (!restored || g_l2lockUnsafe) {
+        snprintf(g_runErr, sizeof g_runErr, "X2: HARDWARE RESTORATION FAILED; restart the 2DS");
+        return "failed";
+    }
+    return result;
+}
+
 
 // The first program whose path contains `name` (ignoring case), or -1.
 static int find_program(const char* name) {
@@ -2386,6 +2428,10 @@ static void post_native_shots(void) {
 }
 
 static void remote_mode(const char* selfPath) {
+    if (g_l2lockUnsafe) {
+        printf("X2 restoration failed: power-cycle the 2DS before continuing remote jobs.\n");
+        return;
+    }
     char err[256];
     consoleClear();
     printf("Remote runs: starting the network...\n");
@@ -2559,12 +2605,14 @@ static void remote_mode(const char* selfPath) {
         g_relayRun = true;
         g_crashJob = job.id;
         g_crashSelf = selfPath;
-        crashlog_recover = crash_recover;  // a crash in this run restarts gc3ds by itself
+        // A fatal X2 crash cannot unwind its MMIO transaction. Do not auto-relaunch into unknown system registers.
+        crashlog_recover = (o.l2lockHalf || o.probeL2Lock) ? NULL : crash_recover;
         const char* result = run(g_files[gi]);
         crashlog_recover = NULL;
         g_relayRun = false;
         if (g_runErr[0]) relay_note(g_runErr);
         relay_job_end(result);
+        if (g_l2lockUnsafe) return;  // leave the queue alone; an app relaunch would lose the unsafe latch
         opts_default(&g_opt);
         lastPoll = 0;
     }

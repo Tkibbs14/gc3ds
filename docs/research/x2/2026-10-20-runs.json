@@ -1,0 +1,1716 @@
+{
+  "local_date": "2026-10-20",
+  "kind": "measured 2DS registers/log samples; scores and ratios derived",
+  "performance_build_sha256": "86342a5619fa6a8a0d048889199373696b6f042cae193151c4bc37302eaa9c71",
+  "manual_url": "https://documentation-service.arm.com/static/5e8e1df188295d1e18d365bb",
+  "manual_sha256": "7905475a394e1e4fc042423f321f6eaa30721566b1e831a539e719b8eea2aea6",
+  "whole_runs": [
+    {
+      "job": 750,
+      "state": "tp_area2",
+      "seconds": 180,
+      "mode": "baseline",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "180"
+      ],
+      "standard_score": "relay_750.csv          speed 22.738 fields/s 13.604 frames/s 6.815 (13 windows) fields per copy 1:5 2:901",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "settled_derived": {
+        "speed_pct": 22.737559055118112,
+        "fields_s": 13.603622047244095,
+        "gxwait_pct": 0.537007874015748,
+        "gxthread_pct": 90.46456692913385,
+        "vwork_pct": 33.36614173228347,
+        "stall_data_m": 179.49142857142857,
+        "stall_inst_m": 203.81071428571428,
+        "icmiss_k": 8148.732857142857,
+        "dcrmiss_k": 1610.7942857142857,
+        "pmu_mcyc": 803.0204724409449,
+        "core0_speed": 22.86205584195593,
+        "rows": 127
+      },
+      "measured_transaction_lines": []
+    },
+    {
+      "job": 751,
+      "state": "tp_area2",
+      "seconds": 180,
+      "mode": "half",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "180",
+        "--l2lock",
+        "half"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_751.csv          speed 22.789 fields/s 13.635 frames/s 6.835 (13 windows) fields per copy 1:5 2:901",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "settled_derived": {
+        "speed_pct": 22.789375,
+        "fields_s": 13.63546875,
+        "gxwait_pct": 0.8328125,
+        "gxthread_pct": 91.7125,
+        "vwork_pct": 34.0046875,
+        "stall_data_m": 178.17357142857142,
+        "stall_inst_m": 202.84571428571428,
+        "icmiss_k": 8182.605,
+        "dcrmiss_k": 1615.2828571428572,
+        "pmu_mcyc": 803.03515625,
+        "core0_speed": 22.982614953838713,
+        "rows": 128
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    },
+    {
+      "job": 752,
+      "state": "tp_area2",
+      "seconds": 180,
+      "mode": "half-vw2",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "180",
+        "--l2lock",
+        "half",
+        "--vw2",
+        "on"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_752.csv          speed 22.411 fields/s 13.407 frames/s 6.718 (12 windows) fields per copy 1:4 2:832",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          1
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "settled_derived": {
+        "speed_pct": 22.41064,
+        "fields_s": 13.40704,
+        "gxwait_pct": 0.39840000000000003,
+        "gxthread_pct": 88.152,
+        "vwork_pct": 26.0616,
+        "stall_data_m": 179.9242857142857,
+        "stall_inst_m": 209.30285714285714,
+        "icmiss_k": 8039.612142857143,
+        "dcrmiss_k": 1587.9935714285714,
+        "pmu_mcyc": 802.9656,
+        "core0_speed": 22.501546308572536,
+        "rows": 125
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    },
+    {
+      "job": 753,
+      "state": "tp_area2",
+      "seconds": 180,
+      "mode": "half-steal",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "180",
+        "--l2lock",
+        "half",
+        "--steal",
+        "on"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_753.csv          speed 22.749 fields/s 13.611 frames/s 6.821 (13 windows) fields per copy 1:5 2:901",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          1
+        ]
+      },
+      "settled_derived": {
+        "speed_pct": 22.748671875,
+        "fields_s": 13.6109375,
+        "gxwait_pct": 0.32109375,
+        "gxthread_pct": 90.11015625,
+        "vwork_pct": 30.4203125,
+        "stall_data_m": 178.90214285714285,
+        "stall_inst_m": 204.48571428571427,
+        "icmiss_k": 8174.064285714286,
+        "dcrmiss_k": 1611.3635714285715,
+        "pmu_mcyc": 802.95546875,
+        "core0_speed": 22.822490326264035,
+        "rows": 128
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    },
+    {
+      "job": 754,
+      "state": "tp850",
+      "seconds": 310,
+      "mode": "baseline",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "310"
+      ],
+      "standard_score": "relay_754.csv  cutscene 36.89 (119 rows)  later 23.65 (128 rows)  movie 0.00 (0 rows)  later pictures/s 7.77",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "guest_clock_aligned": {
+        "cutscene": {
+          "guest_seconds": [
+            25.0,
+            60.0
+          ],
+          "derived_host_seconds": [
+            35.925000000000004,
+            129.17249999999999
+          ],
+          "derived_speed_pct": 37.534518351698445,
+          "derived_core0_speed_pct": 38.01076421401671
+        },
+        "later_geometry": {
+          "guest_seconds": [
+            75.0,
+            92.0
+          ],
+          "derived_host_seconds": [
+            174.39062499999997,
+            230.9
+          ],
+          "derived_speed_pct": 30.0835038433888,
+          "derived_core0_speed_pct": 30.11217226996623
+        }
+      },
+      "fixed_real_time_windows": {
+        "cutscene": {
+          "speed_pct": 36.88512605042017,
+          "fields_s": 22.090840336134455,
+          "gxwait_pct": 1.3697478991596639,
+          "gxthread_pct": 54.34285714285714,
+          "vwork_pct": 22.041176470588237,
+          "stall_data_m": 179.43846153846152,
+          "stall_inst_m": 207.99692307692308,
+          "icmiss_k": 8104.866923076923,
+          "dcrmiss_k": 1620.1299999999999,
+          "pmu_mcyc": 802.390756302521,
+          "rows": 119
+        },
+        "later": {
+          "speed_pct": 23.64921875,
+          "fields_s": 13.746796875,
+          "gxwait_pct": 3.0375,
+          "gxthread_pct": 29.42578125,
+          "vwork_pct": 4.11015625,
+          "stall_data_m": 158.94285714285715,
+          "stall_inst_m": 174.87857142857143,
+          "icmiss_k": 7699.939285714286,
+          "dcrmiss_k": 1364.1871428571428,
+          "pmu_mcyc": 782.03828125,
+          "rows": 128
+        }
+      },
+      "measured_transaction_lines": []
+    },
+    {
+      "job": 755,
+      "state": "tp850",
+      "seconds": 310,
+      "mode": "half",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "310",
+        "--l2lock",
+        "half"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_755.csv  cutscene 37.34 (121 rows)  later 23.57 (129 rows)  movie 0.00 (0 rows)  later pictures/s 7.82",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "guest_clock_aligned": {
+        "cutscene": {
+          "guest_seconds": [
+            25.0,
+            60.0
+          ],
+          "derived_host_seconds": [
+            35.65,
+            127.86666666666667
+          ],
+          "derived_speed_pct": 37.954093620097595,
+          "derived_core0_speed_pct": 38.41286106488863
+        },
+        "later_geometry": {
+          "guest_seconds": [
+            75.0,
+            92.0
+          ],
+          "derived_host_seconds": [
+            172.75,
+            228.7875
+          ],
+          "derived_speed_pct": 30.336828016952936,
+          "derived_core0_speed_pct": 30.349392922878625
+        }
+      },
+      "fixed_real_time_windows": {
+        "cutscene": {
+          "speed_pct": 37.338595041322314,
+          "fields_s": 22.363719008264464,
+          "gxwait_pct": 1.0826446280991735,
+          "gxthread_pct": 54.93801652892562,
+          "vwork_pct": 21.749586776859505,
+          "stall_data_m": 176.80153846153846,
+          "stall_inst_m": 204.49692307692308,
+          "icmiss_k": 8182.140769230769,
+          "dcrmiss_k": 1636.596923076923,
+          "pmu_mcyc": 802.4371900826446,
+          "rows": 121
+        },
+        "later": {
+          "speed_pct": 23.566744186046513,
+          "fields_s": 13.702248062015503,
+          "gxwait_pct": 2.9100775193798447,
+          "gxthread_pct": 33.47519379844961,
+          "vwork_pct": 4.285271317829458,
+          "stall_data_m": 157.9857142857143,
+          "stall_inst_m": 174.10857142857142,
+          "icmiss_k": 7897.174285714285,
+          "dcrmiss_k": 1399.3285714285714,
+          "pmu_mcyc": 781.0178294573643,
+          "rows": 129
+        }
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    },
+    {
+      "job": 756,
+      "state": "tp850",
+      "seconds": 310,
+      "mode": "half-vw2",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "310",
+        "--l2lock",
+        "half",
+        "--vw2",
+        "on"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_756.csv  cutscene 36.89 (119 rows)  later 23.64 (128 rows)  movie 0.00 (0 rows)  later pictures/s 7.76",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          1
+        ],
+        "steal": [
+          0
+        ]
+      },
+      "guest_clock_aligned": {
+        "cutscene": {
+          "guest_seconds": [
+            25.0,
+            60.0
+          ],
+          "derived_host_seconds": [
+            36.1725,
+            129.30256410256408
+          ],
+          "derived_speed_pct": 37.581848930603684,
+          "derived_core0_speed_pct": 38.19072727728792
+        },
+        "later_geometry": {
+          "guest_seconds": [
+            75.0,
+            92.0
+          ],
+          "derived_host_seconds": [
+            174.590625,
+            231.0
+          ],
+          "derived_speed_pct": 30.136834524403074,
+          "derived_core0_speed_pct": 30.15190797282958
+        }
+      },
+      "fixed_real_time_windows": {
+        "cutscene": {
+          "speed_pct": 36.88647058823529,
+          "fields_s": 22.09109243697479,
+          "gxwait_pct": 1.4394957983193277,
+          "gxthread_pct": 51.463025210084034,
+          "vwork_pct": 14.5109243697479,
+          "stall_data_m": 178.3969230769231,
+          "stall_inst_m": 209.40076923076924,
+          "icmiss_k": 8095.1876923076925,
+          "dcrmiss_k": 1621.6676923076923,
+          "pmu_mcyc": 802.4016806722689,
+          "rows": 119
+        },
+        "later": {
+          "speed_pct": 23.64375,
+          "fields_s": 13.74359375,
+          "gxwait_pct": 9.00078125,
+          "gxthread_pct": 33.190625,
+          "vwork_pct": 3.33515625,
+          "stall_data_m": 159.26285714285714,
+          "stall_inst_m": 175.48,
+          "icmiss_k": 7648.479285714286,
+          "dcrmiss_k": 1369.142857142857,
+          "pmu_mcyc": 781.42890625,
+          "rows": 128
+        }
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    },
+    {
+      "job": 757,
+      "state": "tp850",
+      "seconds": 310,
+      "mode": "half-steal",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "310",
+        "--l2lock",
+        "half",
+        "--steal",
+        "on"
+      ],
+      "transaction": {
+        "restoration": "verified",
+        "planted_handled_error": false,
+        "aux": "0x32890000",
+        "registers": {
+          "saved": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "partition": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00005555",
+            "90c": "00005555",
+            "910": "00005555",
+            "914": "00005555",
+            "918": "00005555",
+            "91c": "00005555",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          },
+          "restored": {
+            "900": "00000000",
+            "904": "00000000",
+            "908": "00000000",
+            "90c": "00000000",
+            "910": "00000000",
+            "914": "00000000",
+            "918": "00000000",
+            "91c": "00000000",
+            "920": "00000000",
+            "924": "00000000",
+            "928": "00000000",
+            "92c": "00000000",
+            "930": "00000000",
+            "934": "00000000",
+            "938": "00000000",
+            "93c": "00000000"
+          }
+        }
+      },
+      "standard_score": "relay_757.csv  cutscene 37.27 (120 rows)  later 23.58 (129 rows)  movie 0.00 (0 rows)  later pictures/s 7.83",
+      "build": "86342a5619fa6a8a",
+      "relay_status": "done",
+      "observed_switches": {
+        "vw2": [
+          0
+        ],
+        "steal": [
+          1
+        ]
+      },
+      "guest_clock_aligned": {
+        "cutscene": {
+          "guest_seconds": [
+            25.0,
+            60.0
+          ],
+          "derived_host_seconds": [
+            35.655,
+            127.96969696969697
+          ],
+          "derived_speed_pct": 37.91378962278241,
+          "derived_core0_speed_pct": 38.38631030511159
+        },
+        "later_geometry": {
+          "guest_seconds": [
+            75.0,
+            92.0
+          ],
+          "derived_host_seconds": [
+            172.95,
+            228.925
+          ],
+          "derived_speed_pct": 30.370701205895475,
+          "derived_core0_speed_pct": 30.382561124798144
+        }
+      },
+      "fixed_real_time_windows": {
+        "cutscene": {
+          "speed_pct": 37.268,
+          "fields_s": 22.320833333333333,
+          "gxwait_pct": 1.2333333333333334,
+          "gxthread_pct": 52.913333333333334,
+          "vwork_pct": 19.260833333333334,
+          "stall_data_m": 176.62615384615384,
+          "stall_inst_m": 205.10615384615386,
+          "icmiss_k": 8173.746153846154,
+          "dcrmiss_k": 1638.5992307692309,
+          "pmu_mcyc": 802.525,
+          "rows": 120
+        },
+        "later": {
+          "speed_pct": 23.576201550387598,
+          "fields_s": 13.707906976744185,
+          "gxwait_pct": 5.444961240310078,
+          "gxthread_pct": 28.600775193798448,
+          "vwork_pct": 4.065891472868217,
+          "stall_data_m": 158.03142857142856,
+          "stall_inst_m": 174.17214285714286,
+          "icmiss_k": 7912.100714285714,
+          "dcrmiss_k": 1394.452857142857,
+          "pmu_mcyc": 781.2488372093023,
+          "rows": 129
+        }
+      },
+      "measured_transaction_lines": [
+        "# l2lock run: id 410000c9 control 00000001 aux 32890000; selectors 1-3, half ways",
+        "# l2lock: saved 900 00000000 read",
+        "# l2lock: saved 904 00000000 read",
+        "# l2lock: saved 908 00000000 read",
+        "# l2lock: saved 90c 00000000 read",
+        "# l2lock: saved 910 00000000 read",
+        "# l2lock: saved 914 00000000 read",
+        "# l2lock: saved 918 00000000 read",
+        "# l2lock: saved 91c 00000000 read",
+        "# l2lock: saved 920 00000000 read",
+        "# l2lock: saved 924 00000000 read",
+        "# l2lock: saved 928 00000000 read",
+        "# l2lock: saved 92c 00000000 read",
+        "# l2lock: saved 930 00000000 read",
+        "# l2lock: saved 934 00000000 read",
+        "# l2lock: saved 938 00000000 read",
+        "# l2lock: saved 93c 00000000 read",
+        "# l2lock: write 908 00005555",
+        "# l2lock: write 90c 00005555",
+        "# l2lock: write 910 00005555",
+        "# l2lock: write 914 00005555",
+        "# l2lock: write 918 00005555",
+        "# l2lock: write 91c 00005555",
+        "# l2lock: partition 900 00000000 read",
+        "# l2lock: partition 904 00000000 read",
+        "# l2lock: partition 908 00005555 read",
+        "# l2lock: partition 90c 00005555 read",
+        "# l2lock: partition 910 00005555 read",
+        "# l2lock: partition 914 00005555 read",
+        "# l2lock: partition 918 00005555 read",
+        "# l2lock: partition 91c 00005555 read",
+        "# l2lock: partition 920 00000000 read",
+        "# l2lock: partition 924 00000000 read",
+        "# l2lock: partition 928 00000000 read",
+        "# l2lock: partition 92c 00000000 read",
+        "# l2lock: partition 930 00000000 read",
+        "# l2lock: partition 934 00000000 read",
+        "# l2lock: partition 938 00000000 read",
+        "# l2lock: partition 93c 00000000 read",
+        "# l2lock run: begin VERIFIED",
+        "# l2lock: write 91c 00000000",
+        "# l2lock: write 918 00000000",
+        "# l2lock: write 914 00000000",
+        "# l2lock: write 910 00000000",
+        "# l2lock: write 90c 00000000",
+        "# l2lock: write 908 00000000",
+        "# l2lock run: restore VERIFIED",
+        "# l2lock: restored 900 00000000 read",
+        "# l2lock: restored 904 00000000 read",
+        "# l2lock: restored 908 00000000 read",
+        "# l2lock: restored 90c 00000000 read",
+        "# l2lock: restored 910 00000000 read",
+        "# l2lock: restored 914 00000000 read",
+        "# l2lock: restored 918 00000000 read",
+        "# l2lock: restored 91c 00000000 read",
+        "# l2lock: restored 920 00000000 read",
+        "# l2lock: restored 924 00000000 read",
+        "# l2lock: restored 928 00000000 read",
+        "# l2lock: restored 92c 00000000 read",
+        "# l2lock: restored 930 00000000 read",
+        "# l2lock: restored 934 00000000 read",
+        "# l2lock: restored 938 00000000 read",
+        "# l2lock: restored 93c 00000000 read"
+      ]
+    }
+  ],
+  "handled_error_plants": [
+    {
+      "job": 749,
+      "build": "73f563d42ff72fae",
+      "relay_status": "failed (intentional)",
+      "restoration": "verified",
+      "planted_handled_error": true,
+      "aux": "0x32890000",
+      "registers": {
+        "saved": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "partition": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00005555",
+          "90c": "00005555",
+          "910": "00005555",
+          "914": "00005555",
+          "918": "00005555",
+          "91c": "00005555",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "restored": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        }
+      },
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "10",
+        "--l2lock",
+        "plant"
+      ]
+    },
+    {
+      "job": 762,
+      "build": "62a2adc4447aee00",
+      "relay_status": "failed (intentional)",
+      "args": [
+        "--game",
+        "Twilight",
+        "--seconds",
+        "10",
+        "--l2lock",
+        "plant"
+      ],
+      "restoration": "verified",
+      "planted_handled_error": true,
+      "aux": "0x32890000",
+      "registers": {
+        "saved": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "partition": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00005555",
+          "90c": "00005555",
+          "910": "00005555",
+          "914": "00005555",
+          "918": "00005555",
+          "91c": "00005555",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "restored": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        }
+      }
+    }
+  ],
+  "chase_runs": [
+    {
+      "cache_id": "0x410000c9",
+      "control": "0x1",
+      "aux": "0x32890000",
+      "registers": {
+        "saved": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "partition": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00005555",
+          "90c": "00005555",
+          "910": "00005555",
+          "914": "00005555",
+          "918": "00005555",
+          "91c": "00005555",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "restored": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        }
+      },
+      "restoration": "verified",
+      "timings": {
+        "baseline": {
+          "alone": {
+            "measured_cycles": [
+              30.332,
+              30.372,
+              30.442
+            ],
+            "derived_mean": 30.382,
+            "derived_se": 0.03214550253664305
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              121.147,
+              122.675,
+              124.398
+            ],
+            "derived_mean": 122.74,
+            "derived_se": 0.9390454373103191
+          }
+        },
+        "partition": {
+          "alone": {
+            "measured_cycles": [
+              30.442,
+              30.403,
+              30.313
+            ],
+            "derived_mean": 30.386,
+            "derived_se": 0.03819685850956888
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              32.469,
+              33.46,
+              32.989
+            ],
+            "derived_mean": 32.97266666666667,
+            "derived_se": 0.28619360191621634
+          }
+        },
+        "restored": {
+          "alone": {
+            "measured_cycles": [
+              30.346,
+              30.387,
+              30.373
+            ],
+            "derived_mean": 30.368666666666666,
+            "derived_se": 0.012032363765186852
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              123.941,
+              122.062,
+              122.223
+            ],
+            "derived_mean": 122.742,
+            "derived_se": 0.6012988718876289
+          }
+        }
+      },
+      "derived_chase_speedup": 3.72247720334014,
+      "verdict": "supported: chase approaches 30-40 cycles",
+      "limitation": "AXI USER selector to CPU-core wiring unverified; no-change does not isolate bus from eviction",
+      "job": 748,
+      "build": "74f6f566d0f9a763",
+      "kind": "measured samples; derived mean/SE/ratio",
+      "args": [
+        "--game",
+        "Twilight",
+        "--probe-l2lock",
+        "only",
+        "--seconds",
+        "60"
+      ]
+    },
+    {
+      "cache_id": "0x410000c9",
+      "control": "0x1",
+      "aux": "0x32890000",
+      "registers": {
+        "saved": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "partition": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00005555",
+          "90c": "00005555",
+          "910": "00005555",
+          "914": "00005555",
+          "918": "00005555",
+          "91c": "00005555",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        },
+        "restored": {
+          "900": "00000000",
+          "904": "00000000",
+          "908": "00000000",
+          "90c": "00000000",
+          "910": "00000000",
+          "914": "00000000",
+          "918": "00000000",
+          "91c": "00000000",
+          "920": "00000000",
+          "924": "00000000",
+          "928": "00000000",
+          "92c": "00000000",
+          "930": "00000000",
+          "934": "00000000",
+          "938": "00000000",
+          "93c": "00000000"
+        }
+      },
+      "restoration": "verified",
+      "timings": {
+        "baseline": {
+          "alone": {
+            "measured_cycles": [
+              30.349,
+              30.345,
+              30.409
+            ],
+            "derived_mean": 30.367666666666665,
+            "derived_se": 0.02069889959501318
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              122.279,
+              123.229,
+              128.213
+            ],
+            "derived_mean": 124.57366666666667,
+            "derived_se": 1.8402160501177862
+          }
+        },
+        "partition": {
+          "alone": {
+            "measured_cycles": [
+              30.407,
+              30.414,
+              30.384
+            ],
+            "derived_mean": 30.401666666666667,
+            "derived_se": 0.009061518146045685
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              33.185,
+              33.215,
+              33.416
+            ],
+            "derived_mean": 33.272,
+            "derived_se": 0.07251896303726162
+          }
+        },
+        "restored": {
+          "alone": {
+            "measured_cycles": [
+              30.372,
+              30.342,
+              30.38
+            ],
+            "derived_mean": 30.364666666666665,
+            "derived_se": 0.011566234381931825
+          },
+          "core2-streams": {
+            "measured_cycles": [
+              123.219,
+              122.053,
+              124.391
+            ],
+            "derived_mean": 123.221,
+            "derived_se": 0.6749232055081056
+          }
+        }
+      },
+      "derived_chase_speedup": 3.7440991424220567,
+      "verdict": "supported: chase approaches 30-40 cycles",
+      "limitation": "AXI USER selector to CPU-core wiring unverified; no-change does not isolate bus from eviction",
+      "job": 763,
+      "build": "62a2adc4447aee00",
+      "kind": "measured samples; derived means/SE/ratio",
+      "args": [
+        "--game",
+        "Twilight",
+        "--probe-l2lock",
+        "only",
+        "--seconds",
+        "60"
+      ]
+    }
+  ],
+  "checks": {
+    "transaction_cases": 150,
+    "source_mutation_plants_caught": 4,
+    "invalid_report_plants_rejected": 7,
+    "invalid_clock_plants_rejected": 3,
+    "known_clock_wait_plant_caught": true,
+    "observed_CSV_switch_flags_checked": true,
+    "switch_flag_plant_caught": true,
+    "final_diagnostic_counts": {
+      "main": 3,
+      "faultprobe": 0,
+      "timingprobe": 4,
+      "all_match_parent": true,
+      "new_diagnostic_plants_rejected": true
+    }
+  },
+  "limits": [
+    "One whole run per mode/scene; tiny differences not significance claims.",
+    "Title decision windows chosen from control 754 before helper results; emu_s rounding and GX-wait sampling limit precision.",
+    "Combined selectors affect core2 traffic; individual core1/core3 selector wiring unverified.",
+    "No full nominal movie 320-420s window or Ordon walk in this batch.",
+    "Current unpartitioned helper-on variants were not rerun, so historical penalty reductions are not causal partition estimates."
+  ],
+  "final_hardened_build_sha256": "62a2adc4447aee00f20f45d8303123dbd005cd55cee6abb7a0a3f6da877e4913",
+  "cancelled_before_execution": [
+    758,
+    759,
+    760,
+    761
+  ],
+  "final_hardening": "Restore main crash recorder after MMIO; disable automatic fatal-crash relaunch for L2 modes; stop relay after failed restore. No deliberate fatal-crash test."
+}

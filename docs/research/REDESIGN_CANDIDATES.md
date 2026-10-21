@@ -45,6 +45,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   likely paid already for the core-3 worker's gathers: less vertex work helps core 0 too (raises C9, C6).
 - **Re-evaluate when:** the gather no longer streams through guest RAM (C1, C6), or core 0 stops being L2-sensitive.
 
+- **X2 re-score (2026-10-20):** the half-way register setting is accepted and protects the core-2 chase, but vw2
+  still loses: heavy -1.66% speed / -2.09% core 0 (752 vs 751), title matched cut/later -0.98%/-0.66%
+  (756 vs 755; derived). Rejection and default-off status stand for this setting; see the X2 measurement section.
+
 ## C3. Display-list vertex cache on the CPU
 
 - **Status:** built, off by default (`--dlcache on`). Result: no gain (jobs 111-119); kept as the evidence for C1.
@@ -230,6 +234,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 - **Status:** rejected 2026-10-15 (job 164): GX-side waits fell, core 0 slowed 3-5% (L2, as C2). Kept, off.
 - **Re-evaluate when:** the gathers stop streaming guest RAM (C1), so the jobs no longer pollute the L2.
+
+- **X2 re-score (2026-10-20):** with half-way allocation, stealing is heavy -0.18% speed / -0.70% core 0
+  (753 vs 751), matched title -0.11%/+0.11% (757 vs 755; derived). The old large title penalty is absent,
+  but the tiny differences demonstrate no gain. Kept off; X2's working hardware gate does not alone justify it.
 
 ## C16. Float load / store stubs in big-endian data mode (OPT_BEFLOAT)
 
@@ -579,3 +587,20 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.
+
+
+## C34. L2C-310 allocation partition by master (X2)
+
+- **Status:** probe built, hardware mechanism confirmed 2026-10-20; experimental, default off. No production policy.
+- **What:** preserve core-0 allocation freedom and restrict selector-1..3 D/I allocations to half the ways;
+  probe through Luma's mirror, verify all readbacks and restore on every handled exit. Individual core1/core3
+  selector wiring remains unverified. Hardware jobs require James home to restart.
+- **Evidence:** job 748's measured samples give derived streaming chase 122.74 -> 32.97 -> 122.74 cycles/load
+  (original / partition / restored). Eight separate runs 750-757 give only modest partition-alone changes and no
+  positive vw2/steal result; [X2 details](MEASUREMENTS.md#x2-l2-lockdown-by-master-on-the-new-2ds-xl-2026-10-20).
+- **Cost / limits:** kernel-adjacent system-wide registers, all streaming cores share the remaining ways, and code/
+  data larger than the reserved share still compete. Bus pressure remains. A fatal kernel failure cannot run cleanup.
+- **Build decision:** architecture 4.3.4's hardware precondition is open; a larger GX split still needs workload
+  evidence. The tested partition, vw2 and stealing remain off. No additional optimisation is started.
+- **Re-evaluate when:** a partitioned whole workload shows a repeatable gain with verified restoration and correct
+  pacing, rather than assuming the isolated chase speedup applies to the emulator.

@@ -8,6 +8,7 @@
 // - whether an unaligned LDR loads the right bytes (SCTLR.U) or faults (SCTLR.A).
 // If delivery does not work the process dies at the first test (the default handler).
 #include <3ds.h>
+#include "crashlog.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -186,4 +187,24 @@ void mirror_probe(FILE* f) {
     threadOnException(NULL, NULL, NULL);
     fprintf(f, "# mirror probe: done\n");
     fflush(f);
+}
+
+// X2's MMIO accesses recover a delivered data abort so the transaction can restore earlier successful stores.
+// Used only outside guest execution. Restore the main crash recorder after each guarded MMIO access.
+bool mirror_mmio_read(unsigned offset, u32* value) {
+    threadOnException(handler, g_hstack + sizeof g_hstack, WRITE_DATA_TO_HANDLER_STACK);
+    u32 hits = g_hits;
+    *value = fp_load(0x97E10000u + offset);
+    bool ok = hits == g_hits;
+    crashlog_thread(CRASH_MAIN);
+    return ok;
+}
+bool mirror_mmio_write(unsigned offset, u32 value) {
+    threadOnException(handler, g_hstack + sizeof g_hstack, WRITE_DATA_TO_HANDLER_STACK);
+    u32 hits = g_hits;
+    u32 result = fp_store(0x97E10000u + offset, value);
+    __sync_synchronize();
+    bool ok = result == 0 && hits == g_hits;
+    crashlog_thread(CRASH_MAIN);
+    return ok;
 }

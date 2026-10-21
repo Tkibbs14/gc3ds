@@ -1990,6 +1990,184 @@ NO_BENCH=1 bash core/tests/cpu/run_tests.sh
 python3 core/tests/region/dump_arm.py /private/x4_jit_1.bin /private/x4-arm
 ```
 
+
+### X2: L2 lockdown by master on the New 2DS XL (2026-10-20)
+
+**Hardware gate:** James explicitly confirmed he was home and able to restart before job 748 was queued. This is
+measurement-only host code, off by default; no region compiler, GX optimisation or production default was built.
+
+**Manual read first:** [ARM DDI 0246H, L2C-310 r3p3](https://documentation-service.arm.com/static/5e8e1df188295d1e18d365bb),
+section 2.3.6 (pp. 2-18..21), section 3.3.4 (auxiliary control) and section 3.3.11 (pp. 3-27..31,
+tables 3-17 and 3-20..35). Document SHA-256 `7905475a394e1e4fc042423f321f6eaa30721566b1e831a539e719b8eea2aea6`.
+The master feature is optional. Selection uses AXI `AyUSER[7:5]`, not an architectural CPU number; the manual's
+Cortex-A9 example is not proof of Nintendo's wiring. A set bit prevents allocation into a way; hits remain shared.
+Auxiliary bit 16 selects 8/16 ways, bit 26 controls non-secure lockdown writes. Auxiliary control cannot be changed
+while the cache is enabled and is never written here. Register offsets from mirror VA `0x97E10000`:
+
+| Purpose | Offset(s), configuration rather than timing measurements |
+|---|---|
+| Cache ID / control / auxiliary control | `0x000` / `0x100` / `0x104` (read only in this experiment) |
+| Data / instruction lockdown, selector m = 0..7 | `0x900 + 8*m` / `0x904 + 8*m`, every word through `0x93C` snapshotted |
+| Modified D/I pairs, selectors 1..3 | `0x908, 0x90C, 0x910, 0x914, 0x918, 0x91C` |
+
+**Probe:** `--probe-l2lock only` bypasses guest boot and the full timing/GPU suites. The decoder/JIT are unchanged.
+It reuses timingprobe.c's random 1 MB dependent chase and the core-2 4 MB store streamer, same allocation and linked
+cycle throughout, without cache-maintenance tricks. Each phase has three alone/streaming trials; each trial reports
+the minimum cycle count over the existing nine PMU-pair measurements after adaptive warm-up. The minimum and PMU
+events are from separate measurements, so events cannot be multiplied by that minimum as a synchronous sample.
+All sixteen lockdown words plus auxiliary/control are verified after restoration. The six attempted stores are
+marked before issuing them; delivered MMIO aborts enter cleanup, which continues across failures and retries once.
+Every handled exit restores; a kernel hang, power loss or undelivered abort cannot execute user cleanup. No such
+failure occurred in job 748. A failed restoration stops the relay and refuses further jobs until the 2DS is power-cycled.
+
+**Measured, job 748, build `74f6f566d0f9a763`:** ID `410000c9`, control `00000001`, auxiliary `32890000` (16-way,
+NS-lockdown bit clear). All sixteen lockdown words started zero. Each selector-1..3 D/I word accepted and read back
+`00005555`, prohibiting allocation into the even-numbered eight ways; selector 0 and selectors 4..7 stayed zero.
+All sixteen returned to zero; auxiliary/control equality verified. These writes worked despite the NS permission
+bit being clear; this does not establish the security tagging of the mirror accesses.
+
+| Phase, job 748 | Alone, measured cycles/load (three trials) | Core 2 streams, measured cycles/load | Derived streaming mean +- SE |
+|---|---|---|---|
+| Original registers | 30.332, 30.372, 30.442 | 121.147, 122.675, 124.398 | 122.740 +- 0.939 |
+| Half-way allocation for selectors 1..3 | 30.442, 30.403, 30.313 | 32.469, 33.460, 32.989 | 32.973 +- 0.286 |
+| Original registers restored | 30.346, 30.387, 30.373 | 123.941, 122.062, 122.223 | 122.742 +- 0.601 |
+
+**Chase verdict: confirmed**, inside the requested 30-40-cycle band. Derived speedup under streaming is **3.722x**;
+the reversed effect after restoration supports allocation/eviction coupling, rather than an unavoidable bus-only
+limit. The combined selector setting demonstrably constrains the core-2 traffic; individual core-to-selector wiring
+for cores 1/3 is not established. Raw samples and derived arithmetic: [chase evidence](x2/2026-10-20-chase.json).
+
+**Conditional whole runs:** `--l2lock half` uses the same transaction only for X2 scoring. An outer wrapper restores on
+all returns, keeping perf.csv open until cleanup finishes. `--l2lock plant` forces a handled error immediately after
+successful application, so restoration is exercised on a failing run. Defaults stay untouched. Whole-run results
+are recorded below; the synthetic chase alone does not decide their speed verdict.
+
+**Heavy gameplay, measured runs 750-753, final scoring build `86342a5619fa6a8a`:** 180 s each from
+`tp_area2.state`, no presses, scored from 50 s with runs.py. The numbers below are **derived means and ratios** of
+those runs; core-0 speed is each row's speed divided by `(1 - gxwait_pct/100)`. The half-only run is the helper
+control, so partitioning's own effect is not credited to a helper. No pooled A/B mean is used.
+
+| Run | Mode | Mean speed % | Mean core-0 speed % | Speed vs half control | Core 0 vs half control |
+|---|---|---|---|---|---|
+| 750 | baseline | 22.738 | 22.862 | -0.23% | -0.52% |
+| 751 | half | 22.789 | 22.983 | +0.00% | +0.00% |
+| 752 | half-vw2 | 22.411 | 22.502 | -1.66% | -2.09% |
+| 753 | half-steal | 22.749 | 22.822 | -0.18% | -0.70% |
+
+Measured frame counters scored by runs.py give derived rates **6.815 / 6.835 / 6.718 / 6.821 pictures/s** in that
+order. Almost all pictures retain two VI fields. Half-only versus the unpartitioned control is +0.23% speed and
++0.53% core 0 (derived); this small effect is not an established production gain. **VW2 still loses; stealing has no
+demonstrated gain.** Each mode has one run, so the tiny stealing difference is not a significance claim.
+Current unpartitioned helper-on variants were not re-run; smaller penalties than historical jobs cannot be
+causally credited to partitioning alone. Title
+re-scores and their limits follow below.
+
+**Title scoring correction, chosen from control 754 before helper results:** the standard title_sections.py output
+is retained, but its real-time 165-300 s window mixes geometry with the following movie in these runs. Control
+754 already reports nonzero THP IDCT calls at real_s 252.3 (measured); its draw rate is down to 44 draws/s at 253.3,
+versus 72,998 at 211.1. A setting that shifts this transition changes the mix in a fixed host-time mean.
+For the X2 decision, l2lock_score.py therefore compares the **same guest-clock intervals** (`emu_s`): 25-60 s
+inside the cutscene and 75-92 s inside later geometry. The control reaches them at derived real-time intervals
+35.925-129.1725 s and 174.390625-230.9 s. These windows were fixed before the vw2/steal title results.
+Speed is derived as `100 * guest-clock span / host duration`; core-0 speed divides by host duration with the
+recorded GX-wait shares removed. Boundary times are linearly interpolated from rounded CSV clocks; core-0 figures
+are profile-based estimates. Very small differences are not significance claims. No complete standard 320-420 s
+movie window or Ordon walk is measured by this X2 batch. Whole-run input is unchanged; only scoring selects content.
+
+**Title, measured runs 754-757, build `86342a5619fa6a8a`, 310 s each:** derived matching-guest-clock scores below.
+Changes are relative to half-only run 755, not to unpartitioned run 754. Core-0 values are derived profile estimates.
+
+| Run | Mode | Cutscene speed / core 0 % | Later geometry speed / core 0 % | Speed change cut / later | Core-0 change cut / later |
+|---|---|---|---|---|---|
+| 754 | baseline | 37.535 / 38.011 | 30.084 / 30.112 | -1.11% / -0.84% | -1.05% / -0.78% |
+| 755 | half | 37.954 / 38.413 | 30.337 / 30.349 | +0.00% / +0.00% | +0.00% / +0.00% |
+| 756 | half-vw2 | 37.582 / 38.191 | 30.137 / 30.152 | -0.98% / -0.66% | -0.58% / -0.65% |
+| 757 | half-steal | 37.914 / 38.386 | 30.371 / 30.383 | -0.11% / +0.11% | -0.07% / +0.11% |
+
+For traceability, title_sections.py's fixed host-time cutscene/later means are respectively **36.89/23.65,
+37.34/23.57, 36.89/23.64 and 37.27/23.58%** (derived, runs 754-757). Its mixed-window later pictures/s are
+**7.77, 7.82, 7.76, 7.83**. Its movie field prints zero with zero rows because the runs end before 320 s; that zero
+is not a measured movie result. In particular the mixed window makes vw2 look +0.33% later, while matched geometry
+is -0.66%. Sampled GX-wait shares can exceed 100% during the movie; per-row core-0 divisions there are invalid and
+are excluded from the decision. Both selected geometry windows have valid shares.
+
+**Build decision:** the allocation/eviction mechanism is **confirmed**, clearing architecture 4.3.4's hardware gate.
+Partitioning alone gives derived +0.23% heavy / +1.12% title cutscene / +0.84% later geometry in these single runs;
+this is not enough evidence to promote a kernel-adjacent default. **VW2 does not turn positive** in any tested scene.
+**Stealing is neutral in the title and not a demonstrated gain in gameplay**; its old multi-percent title penalty is
+absent at this resolution, but that is not a speed win. Keep all three switches off. Section 6 build item 7 still
+needs a repeatable whole-workload gain before a larger parallel pipeline is justified. The synthetic result rules
+out an unavoidable bus-only explanation for that chase; it does not remove bus pressure or prove that the game's
+hot code/data fit in the protected share. No optimisation beyond the requested experimental register setting is built.
+
+Raw register evidence, derived scores, exact arguments and observed switch flags are in
+[the whole-run evidence](x2/2026-10-20-runs.json). All eight speed runs use one build. Final safety hardening and
+its separate checks are recorded below; they are not pooled into these performance comparisons.
+
+**Final safety checks, measured jobs 762-763, build `62a2adc4447aee00`:** after the eight speed runs, review
+hardened the cold error paths: guarded MMIO restores the main crash recorder, L2 experiments disable automatic
+fatal-crash relaunch, and a failed register restoration stops the relay before it can restart into another job.
+Job 762 deliberately returns a handled error after applying the partition; relay status is failed as intended,
+while all sixteen lockdown words, auxiliary/control and the report checker verify restoration. Job 749 exercised
+the earlier version of that same handled-error path. No deliberately fatal crash is tested or claimed recoverable.
+Jobs 758-761 were cancelled before execution while this hardening was completed; they contribute no measurements.
+The final 3DS build adds no warnings; both hardware checks use the final source. The speed comparisons remain
+on their single earlier build, without pooling builds or treating error-path hardening as a measured speed gain.
+
+Repeat chase job 763 gives measured streaming samples **122.279/123.229/128.213** original,
+**33.185/33.215/33.416** partitioned and **123.219/122.053/124.391** restored cycles/load. Derived means +- SE are
+**124.574 +- 1.840 -> 33.272 +- 0.073 -> 123.221 +- 0.675**, a derived **3.744x** chase speedup. Alone means are
+30.368 / 30.402 / 30.365 cycles/load (derived). Readbacks and restoration verify again, confirming job 748's verdict
+on the hardened final build. Full samples and both handled-error records are in the whole-run evidence JSON.
+
+**Local validation, run X2-transaction:** 150 synthetic register cases passed, including every snapshot/apply/restore
+I/O failure in 8/16-way geometries, stores that reach hardware before reporting failure, ignored writes and aliases.
+Four planted source bugs (mask polarity, missing readback, lost failed-store cleanup, skipped restoration writes)
+all fail. **Run X2-report:** the normal, unavailable and no-change synthetic reports pass their expected verdicts; seven invalid
+report plants are rejected (partition, restoration, missing trial, truncation, duplicate snapshot and two whole-run
+cleanup failures). The guest-clock scorer reproduces 50% speed / 62.5% core-0 speed on a known synthetic trace;
+three invalid-clock/wait plants are rejected and a planted wait change fails the known-value comparison.
+Plants never deliberately corrupt hardware. The 3DS build passes with no new warnings: the
+existing main.c truncation, timingprobe.c k_ldr_ind uninitialised-variable and crtn executable-stack warnings remain;
+compiling the parent main/timingprobe sources independently reproduces their three/four diagnostics exactly;
+the warning comparison rejects an injected new diagnostic. No JIT/interpreter edits or
+unrun emulation exactness checks are claimed.
+
+Reproduce in WSL Debian (hardware commands only while James confirms he can restart):
+
+```sh
+python3 core/tests/l2lock/run_check.py
+python3 core/tools/l2lock_score.py --self-test
+bash core/host3ds/build.sh
+bash core/tools/relay.sh queue --game Twilight --probe-l2lock only --seconds 60
+bash core/tools/relay.sh log JOB
+python3 core/tools/l2lock_score.py core/out/relay_JOB.csv
+# Handled-error check; relay status must be failed, but the restore line must verify:
+bash core/tools/relay.sh queue --game Twilight --seconds 10 --l2lock plant
+python3 core/tools/l2lock_score.py --whole-run core/out/relay_JOB.csv
+# Only after the chase succeeds; separate whole runs, never A/B pooling:
+for scene in tp_area2:180 tp850:310; do
+    state=${scene%:*}; seconds=${scene#*:}
+    for mode in baseline half vw2 steal; do
+        extra=()
+        case "$mode" in
+            half) extra=(--l2lock half);;
+            vw2) extra=(--l2lock half --vw2 on);;
+            steal) extra=(--l2lock half --steal on);;
+        esac
+        bash core/tools/relay.sh queue --game Twilight --state "sdmc:/gc3ds/states/$state.state" \
+            --seconds "$seconds" "${extra[@]}"
+    done
+done
+# Fetch each log, validate every partitioned run, then score:
+python3 core/tools/l2lock_score.py --whole-run core/out/relay_JOB.csv
+python3 core/tools/runs.py core/out/relay_{750,751,752,753}.csv
+python3 core/tools/title_sections.py core/out/relay_{754,755,756,757}.csv
+for job in 754 755 756 757; do
+    python3 core/tools/l2lock_score.py --title-clock "core/out/relay_$job.csv"
+done
+```
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

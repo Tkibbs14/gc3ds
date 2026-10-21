@@ -29,6 +29,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pmu.h"
+#include "l2lock.h"
+
+bool g_l2lockUnsafe;  // refuse subsequent jobs after a failed restoration; only a restart clears this
 
 void jit_host_sync_icache(void* start, u32 bytes);
 
@@ -295,8 +298,10 @@ static void k_sync(void* c, u32 n) { while (n--) jit_host_sync_icache(g_word, 4)
 // ---- another core's traffic ----
 static volatile u32 g_stop;
 static u8* g_streamMem;
+static volatile s32 g_streamCore;
 static void streamer(void* arg) {
     u32 bytes = (u32)(uintptr_t)arg, v = 0;
+    g_streamCore = svcGetProcessorID();
     while (!g_stop) {
         for (u32* p = (u32*)g_streamMem, *e = (u32*)(g_streamMem + bytes); p < e && !g_stop; p += 8) p[0] = p[4] = v++;
     }
@@ -867,4 +872,144 @@ const char* timing_probe(u32* code, u32 codeWords, u8* mem, u32 memBytes, const 
     }
     out("# timing: probe end after %.1f s\n", (double)(svcGetSystemTick() - t0) / SYSCLOCK_ARM11);
     return buf;
+}
+
+// X2 deliberately bypasses the full timing/GPU suite and game boot. No production cache setting changes.
+bool mirror_mmio_read(unsigned offset, u32* value);
+bool mirror_mmio_write(unsigned offset, u32 value);
+static bool lock_read(void* ctx, unsigned offset, uint32_t* value) {
+    (void)ctx;
+    bool ok = mirror_mmio_read(offset, value);
+    if (!ok) out("# l2lock: READ FAULT offset %03x\n", offset);
+    return ok;
+}
+static bool lock_write(void* ctx, unsigned offset, uint32_t value) {
+    (void)ctx;
+    out("# l2lock: write %03x %08lx\n", offset, (unsigned long)value);
+    bool ok = mirror_mmio_write(offset, value);
+    if (!ok) out("# l2lock: WRITE FAULT offset %03x\n", offset);
+    return ok;
+}
+static bool lock_dump(const char* phase, const L2LockIo* io) {
+    bool ok = true;
+    for (unsigned i = 0; i < L2LOCK_WORDS; i++) {
+        uint32_t value = 0;
+        bool read = io->read(io->ctx, L2LOCK_FIRST + i * 4, &value);
+        out("# l2lock: %s %03x %08lx %s\n", phase, L2LOCK_FIRST + i * 4,
+            (unsigned long)value, read ? "read" : "FAULT");
+        if (!read) ok = false;
+    }
+    return ok;
+}
+static bool lock_chase(const char* phase, void** start) {
+    for (unsigned trial = 0; trial < 3; trial++) {
+        char param[80];
+        snprintf(param, sizeof param, "l2lock-%s trial%u 1024K alone", phase, trial);
+        measure("xcore", param, k_chase, &start, 8);
+        g_stop = 0;
+        g_streamCore = -1;
+        Thread t = threadCreate(streamer, (void*)(uintptr_t)(4u << 20), 4096, 0x30, 2, false);
+        if (!t) { out("# l2lock: ERROR creating core2 streamer\n"); return false; }
+        svcSleepThread(2000000);
+        bool ok = g_streamCore == 2;
+        out("# l2lock: %s trial%u streamer core %ld\n", phase, trial, (long)g_streamCore);
+        if (ok) {
+            snprintf(param, sizeof param, "l2lock-%s trial%u 1024K core2-streams", phase, trial);
+            measure("xcore", param, k_chase, &start, 8);
+        }
+        g_stop = 1;
+        Result joined = threadJoin(t, U64_MAX);
+        if (R_SUCCEEDED(joined)) threadFree(t);
+        if (!ok || R_FAILED(joined)) { out("# l2lock: ERROR stopping core2 streamer\n"); return false; }
+    }
+    return true;
+}
+bool l2lock_probe(FILE* f, u8* mem, u32 memBytes) {
+    static char buf[32 << 10];
+    g_out = buf; g_outLen = 0; g_outCap = sizeof buf; buf[0] = 0;
+    probe_live = f;
+    bool measured = false, restored = false;
+    void** start = NULL;
+    L2Lock state;
+    memset(&state, 0, sizeof state);
+    const L2LockIo io = {NULL, lock_read, lock_write};
+    out("# l2lock: X2 ARM DDI0246H r3p3; mirror %08lx; core0 %ld\n",
+        (unsigned long)L2LOCK_BASE, (long)svcGetProcessorID());
+    out("# l2lock: master selector = AyUSER[7:5]; assumes selectors 1-3 are cores 1-3; unverified SoC wiring\n");
+    if (!mem || memBytes < (14u << 20) || svcGetProcessorID() != 0) goto cleanup;
+    if (!l2lock_snapshot(&state, &io)) goto cleanup;
+    out("# l2lock: id %08lx control@100 %08lx aux@104 %08lx NS-lockdown %u ways %u (aux read only)\n",
+        (unsigned long)state.id, (unsigned long)state.control, (unsigned long)state.aux,
+        (unsigned)((state.aux >> 26) & 1), (state.aux & (1u << 16)) ? 16 : 8);
+    if (!lock_dump("saved", &io)) goto cleanup;
+    g_pmuOk = pmu_init(); g_badRun = 0;
+    out("# l2lock: counters %s; nine pairs per measurement, minimum cycles, identical chase throughout\n",
+        g_pmuOk ? "PMU" : "tick fallback");
+    u32* order = (u32*)(mem + memBytes - (2u << 20));
+    start = build_cycle(mem, (1u << 20) / 32, line_addr, order);
+    g_streamMem = mem + (8u << 20);
+    if (!lock_chase("baseline", start)) goto cleanup;
+    if (!l2lock_apply(&state, &io)) {
+        out("# l2lock: APPLY FAILED at %03x (zero/ignored/aliased readback, access fault, or unsupported setup)\n",
+            state.badOffset);
+        lock_dump("rejected", &io);
+        goto cleanup;
+    }
+    if (!lock_dump("partition", &io)) goto cleanup;
+    measured = lock_chase("partition", start);
+cleanup:
+    // There are no returns between the first MMIO store and this cleanup. Even a failed write is restored.
+    restored = l2lock_restore(&state, &io);
+    if (!restored) {
+        out("# l2lock: retrying full restoration after error\n");
+        restored = l2lock_restore(&state, &io);
+    }
+    out("# l2lock: restore %s attempted-mask %04x\n",
+        !state.snapshot ? "NOT-TOUCHED" : restored ? "VERIFIED" : "FAILED", state.attempted);
+    if (state.snapshot && !lock_dump("restored", &io)) restored = false;
+    if (measured && restored) measured = lock_chase("restored", start);
+    if (!restored) g_l2lockUnsafe = true;
+    out("# l2lock: end measured %u restored %u; no guest boot\n", measured, restored);
+    probe_live = NULL;
+    return measured && restored;
+}
+
+// X2's conditional whole-run scoring uses the SAME transaction after the chase supports it. Default off.
+// main.c owns the finally wrapper and defers closing perf.csv until this has restored the hardware.
+static L2Lock g_runLock;
+bool g_l2lockRunPending;
+bool l2lock_run_begin(FILE* f) {
+    static char buf[8 << 10];
+    g_out = buf; g_outLen = 0; g_outCap = sizeof buf; buf[0] = 0;
+    probe_live = f;
+    g_l2lockRunPending = true;
+    const L2LockIo io = {NULL, lock_read, lock_write};
+    bool ok = l2lock_snapshot(&g_runLock, &io);
+    if (ok) {
+        out("# l2lock run: id %08lx control %08lx aux %08lx; selectors 1-3, half ways\n",
+            (unsigned long)g_runLock.id, (unsigned long)g_runLock.control, (unsigned long)g_runLock.aux);
+        ok = lock_dump("saved", &io) && l2lock_apply(&g_runLock, &io);
+    }
+    if (ok) ok = lock_dump("partition", &io);
+    out("# l2lock run: begin %s\n", ok ? "VERIFIED" : "FAILED");
+    probe_live = NULL;
+    return ok;
+}
+bool l2lock_run_end(FILE* f) {
+    if (!g_l2lockRunPending) return true;
+    // Reset the bounded output buffer: normal perf logging does not append to it during the run.
+    g_outLen = 0; g_out[0] = 0;
+    probe_live = f;
+    const L2LockIo io = {NULL, lock_read, lock_write};
+    bool ok = l2lock_restore(&g_runLock, &io);
+    if (!ok) {
+        out("# l2lock run: retrying restoration\n");
+        ok = l2lock_restore(&g_runLock, &io);
+    }
+    out("# l2lock run: restore %s\n", ok ? "VERIFIED" : "FAILED");
+    if (g_runLock.snapshot && !lock_dump("restored", &io)) ok = false;
+    if (!ok) g_l2lockUnsafe = true;
+    g_l2lockRunPending = false;
+    probe_live = NULL;
+    return ok;
 }

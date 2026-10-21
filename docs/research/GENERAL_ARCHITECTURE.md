@@ -215,6 +215,17 @@ set cores 1-3 to allocate only into half the ways, re-run the cross-core chase p
 stealing (the -7.4% / -3.3% losses must vanish). **Disproves** if the registers read back zero or do not change the
 chase: the coupling is the bus, not eviction, and the idle cores stay limited to light work (4.3.4 closed; G3 shrinks).
 
+
+- **Result (2026-10-20, jobs 748-757, 762-763; [methods and numbers](MEASUREMENTS.md#x2-l2-lockdown-by-master-on-the-new-2ds-xl-2026-10-20)):**
+  **Hardware confirmed:** half-way selector-1..3 writes read back, and the streaming chase changes from derived
+  122.74 to 32.97 cycles/load, then 122.74 after verified restoration. This is allocation/eviction coupling, not an
+  unavoidable bus-only floor for this probe. **VW2 does not turn positive:** heavy -1.66%, title cut/later geometry
+  -0.98%/-0.66% against partitioned controls. **Stealing has no demonstrated gain:** heavy -0.18%, title -0.11%/+0.11%
+  (derived; tiny differences are not significance claims). Title decisions use identical guest-clock content because
+  the old host-time later window mixes in the movie. All switches stay off. 4.3.4's hardware gate is cleared, but
+  build item 7 remains gated on whole-workload benefit; these helpers do not justify a larger split by themselves.
+  Final-build repeat 763 confirms 124.57 -> 33.27 -> 123.22 cycles/load; handled-error plants 749/762 restore.
+
 **X3. Zero-flush native calls (build + device A/B, ~3-5 days).** One mechanism, two uses: the queued GPR save / restore
 inlining (HANDOFF.md) and a call path that keeps the register cache. Re-score the rejected small stand-ins with it: C20
 (GPR helpers), C21 (GX setters), the cXyz operators, one separate whole run each. **Confirms** if they turn positive
@@ -265,7 +276,7 @@ Then builds, each behind a switch, off until measured, scored with separate whol
    CR in flags (X4 confirmed targeted headroom; the partial stages are not independently validated).
 5. G2 + G1 with cached or bounded lighting (X1b b, c: geometry key inconclusive, lighting scene dependent; X5).
 6. The GX SDK as a native unit with the command channel (X1 c, e correctness option remains open; X3 did not clear the small-call cost gate).
-7. The GX pipeline split across cores (X2).
+7. The GX pipeline split across cores (X2 clears the hardware gate; a repeatable whole-workload gain is still required).
 8. JSystem subtree ports (the HUD pane walk, J3D drawing): still worth doing for TP and the other EAD games, and the
    test of the subtree Amdahl prediction, but under the general-purpose goal they rank below SDK-level work.
 
