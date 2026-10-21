@@ -14,6 +14,11 @@
 #include <string.h>
 #include "gekko_internal.h"
 #include "hle.h"
+#include "gpr_helper.h"
+#ifdef JIT_FUZZ_X3
+#include "../../tests/jit/x3_native.h"
+extern u32 jit_debug_plant;
+#endif
 #include "gekko_softfp.h"
 #include "hle_psops.h"
 
@@ -194,6 +199,12 @@ static u32 ps_icall(Gekko* g, u32 target);
 typedef struct { const char* name; u32 size, first; u64 hash; u32 (*fn)(Gekko*); bool pipe, gprs, fpu, direct; } PsDef;
 #include "hle_ps_gen.inc"
 #define NDEF (sizeof g_psDefs / sizeof g_psDefs[0])
+typedef struct {
+    u32 def;
+    u32 (*fn)(Gekko*, const HleFastArgs*);
+    u32 inputs, writes, fpInputs, fpWrites, group;
+} PsFastDef;
+#include "hle_ps_fast.inc"
 
 u64 g_psCalls[NDEF + 1], g_psRefused;  // per function (and all, last), and calls refused
 u64 g_psRefusedBy[NDEF], g_psStops[NDEF];
@@ -280,7 +291,7 @@ const char* hle_ps_name(u32 k) { return k < NDEF ? g_psDefs[k].name : "all"; }
 static inline u32 rdw(u32 pa) { return ram_rd32(g_m, pa); }
 static inline u32 be32p(const u8* p) { return BE32(p); }
 
-static int find(u32 pc) {
+static int find_(u32 pc, bool respect_group) {
     u32 pa = pc & 0x0FFFFFFFu, top = pc >> 28;
     if ((top != 0x8 && top != 0xC) || (pc & 3) || !g_m || pa + 4 > g_size) return -1;
     u32 w = rdw(pa);
@@ -288,7 +299,7 @@ static int find(u32 pc) {
     for (u32 d = 0; d < NDEF && !cand; d++) cand = g_psDefs[d].first == w;
     if (!cand) return -1;
     int k = known_get(pc);
-    if (k != KEMPTY) return k >= 0 && !g_defOff[k] ? k : -1;
+    if (k != KEMPTY) return k >= 0 && (!respect_group || !g_defOff[k]) ? k : -1;
     int found = KNOT;
     for (u32 d = 0; d < NDEF; d++) {
         const PsDef* f = &g_psDefs[d];
@@ -303,12 +314,20 @@ static int find(u32 pc) {
         break;
     }
     known_put(pc, found);
-    return found >= 0 && !g_defOff[found] ? found : -1;
+    return found >= 0 && (!respect_group || !g_defOff[found]) ? found : -1;
 }
+static int find(u32 pc) { return find_(pc, true); }
 
 // On the 3DS the JIT calls the stand-ins in place of `bl` (hle_ps_inline): an entry hook costs a block exit, the
 // generic stand-in dispatch and a lookup for the return, more than these 8-50 instructions (2DS job 313: the later
 // stretch 14% slower with hooks, ~230k calls/s). Elsewhere (the PC's interpreter, HLE_CHECK) they are entry hooks.
+#ifndef __3DS__
+static u32 fast_check_groups(void) {
+    static int groups = -1;
+    if (groups < 0) groups = getenv("HLE_FAST") ? atoi(getenv("HLE_FAST")) & 7 : 0;
+    return (u32)groups;
+}
+#endif
 bool hle_ps_is_hook(u32 pc) {
 #ifdef __3DS__
     // Direct-mode stand-ins are entry hooks too: they are reached through bctrl (callbacks) and as regions of a function,
@@ -317,7 +336,9 @@ bool hle_ps_is_hook(u32 pc) {
     int d = find(pc);
     return d >= 0 && g_psDefs[d].direct;
 #else
-    return g_on && find(pc) >= 0;
+    HleFastInfo f;
+    return g_on && (find(pc) >= 0 || ((fast_check_groups() & HLE_FAST_GPR) &&
+           hle_ps_fast_info(pc, HLE_FAST_GPR, &f)));
 #endif
 }
 
@@ -333,8 +354,19 @@ int hle_ps_inline(u32 target, bool* gprs, u32* size) {
 static u32 ps_call(Gekko* g, int d);
 static u32 ps_native(Gekko* g) {
     int d = find(g->pc);
-    if (d < 0) return 0;
-    u32 n = ps_call(g, d);
+    u32 n;
+#ifndef __3DS__
+    HleFastInfo f;
+    if (fast_check_groups() && hle_ps_fast_info(g->pc, fast_check_groups(), &f)) {
+        HleFastArgs a;
+        memcpy(a.gpr, g->gpr, sizeof a.gpr); a.cr = g->cr; a.xer = g->xer;
+        n = hle_ps_fast_call(g, f.id, &a) & 0x3fffffffu;
+    } else
+#endif
+    {
+        if (d < 0) return 0;
+        n = ps_call(g, d);
+    }
     if (n && !g_psMid) g->pc = g->lr;  // (stopped inside: g->pc is where)
     return n;
 }
@@ -357,6 +389,113 @@ u32 hle_ps_inline_call(Gekko* g, u32 d) {
     if (!n) return 0;
     if (g_psMid) { g_psStops[d]++; return n | 0x40000000u; }
     if (g_psStop) { g_psStops[d]++; return n | 0x80000000u; }
+    return n;
+}
+
+// Only these three sets enter the experimental ABI. Other stand-ins retain their existing path and switches.
+bool hle_ps_fast_info(u32 target, u32 groups, HleFastInfo* out) {
+    u32 pa = target & 0x0fffffffu;
+    GprHelper h;
+#ifdef JIT_FUZZ_X3
+    if (target == X3_TEST_PC && (groups & HLE_FAST_XYZ) && g_m) {
+        bool same = true;
+        for (u32 i = 0; i < sizeof x3_native_words/4; i++) same &= rdw(pa+4*i) == x3_native_words[i];
+        if (same) {
+            *out = (HleFastInfo){X3_TEST_ID, sizeof x3_native_words, 0x80000018u, 0x80000008u, 0, 2, 0};
+            return true;
+        }
+    }
+#endif
+    if ((groups & HLE_FAST_GPR) && (target >> 28 == 8 || target >> 28 == 12) &&
+        g_m && gpr_helper_match(g_m, g_size, pa, &h)) {
+        u32 regs = 0xffffffffu << h.first;
+        *out = (HleFastInfo){0x10000u | (h.load ? 0x100u : 0) | h.first, h.words*4,
+            (1u << 11) | (h.load ? 0 : regs), h.load ? regs : 0, 0, 0, h.load ? regs : 0};
+        // Noncanonical displacements are valid for JIT inlining but are not encoded in the native descriptor.
+        return h.displacement == (s32)(h.first*4)-128;
+    }
+    int d = g_on ? find_(target, false) : -1;
+    if (d < 0) return false;
+    for (u32 k = 0; k < sizeof g_psFast/sizeof g_psFast[0]; k++) {
+        const PsFastDef* f = &g_psFast[k];
+        if ((groups & f->group) && f->def == (u32)d) {
+            *out = (HleFastInfo){k, g_psDefs[d].size, f->inputs, f->writes, f->fpInputs, f->fpWrites, 0};
+            return true;
+        }
+    }
+    return false;
+}
+
+static u32 ps_fast_call_(Gekko* g, u32 id, const HleFastArgs* a) {
+    g_psStop = g_psMid = false;
+    if (!(g->msr & MSR_DR)) return 0;
+#ifdef JIT_FUZZ_X3
+    if (id == X3_TEST_ID) {
+        u8* p = region(a->gpr[4], 4);
+        if (!p) return 0;
+        STW32(p, a->gpr[31]);
+        g->gpr[3] = a->gpr[3]; g->gpr[31] = a->gpr[3]+1;
+        g->xer = a->xer;
+        u8* q = region(a->gpr[4]+4, 4);
+        if (!q || !(g->msr & MSR_FP)) { g_psMid = true; g->pc = X3_TEST_PC+8; return 2 | 0x40000000u; }
+        float f = U2F(BE32(q));
+        g->fpr[1].ps0 = g->fpr[1].ps1 = (double)(f+f);
+        g->gpr[3] = BE32(q); g->gpr[31] = BE32(p);
+        return 7;
+    }
+#endif
+    if (id & 0x10000u) {
+        u32 first = id & 31, n = 32-first;
+        if (first < 14) return 0;
+        u32 ea = a->gpr[11] + first*4-128;
+        // The JIT proved the MEM1 BATs, not the guest's locked-cache BAT. Other regions use the original helper.
+        bool other_region = ea >> 28 != 8 && ea >> 28 != 12;
+#ifdef JIT_FUZZ_X3
+        if (jit_debug_plant == 19) other_region = false;
+#endif
+        if (other_region) return 0;
+        u8* p = region(ea, 4*n);
+        if (!p) return 0; // no access has run: the cold refusal path materialises the caller and enters the helper
+        // The rejected C20 functions were straight copies, not per-word loops. Keep the native experiment so too.
+#define GPR_LOAD(k) case k: g->gpr[k] = BE32(p); p += 4; __attribute__((fallthrough))
+#define GPR_SAVE(k) case k: STW32(p, a->gpr[k]); p += 4; __attribute__((fallthrough))
+        if (id & 0x100u) {
+            switch (first) {
+                GPR_LOAD(14); GPR_LOAD(15); GPR_LOAD(16); GPR_LOAD(17); GPR_LOAD(18); GPR_LOAD(19);
+                GPR_LOAD(20); GPR_LOAD(21); GPR_LOAD(22); GPR_LOAD(23); GPR_LOAD(24); GPR_LOAD(25);
+                GPR_LOAD(26); GPR_LOAD(27); GPR_LOAD(28); GPR_LOAD(29); GPR_LOAD(30);
+                case 31: g->gpr[31] = BE32(p);
+            }
+        } else {
+            switch (first) {
+                GPR_SAVE(14); GPR_SAVE(15); GPR_SAVE(16); GPR_SAVE(17); GPR_SAVE(18); GPR_SAVE(19);
+                GPR_SAVE(20); GPR_SAVE(21); GPR_SAVE(22); GPR_SAVE(23); GPR_SAVE(24); GPR_SAVE(25);
+                GPR_SAVE(26); GPR_SAVE(27); GPR_SAVE(28); GPR_SAVE(29); GPR_SAVE(30);
+                case 31: STW32(p, a->gpr[31]);
+            }
+        }
+#undef GPR_LOAD
+#undef GPR_SAVE
+        return n+1;
+    }
+    if (id >= sizeof g_psFast/sizeof g_psFast[0]) return 0;
+    const PsFastDef* f = &g_psFast[id];
+    // Input XER is an explicit argument too; direct-mode nested calls preserve its other bits via guest state.
+    g->xer = a->xer;
+    g_psStop = g_psMid = false;
+    u32 n = f->fn(g, a);
+    if (!n) return 0;
+    g_psCalls[f->def]++; g_psCalls[NDEF]++;
+    if (g_psMid || g_psStop) g_psStops[f->def]++;
+    return n | (g_psMid ? 0x40000000u : g_psStop ? 0x80000000u : 0);
+}
+
+u64 g_psFastCalls[3], g_psFastRefused[3];
+u32 hle_ps_fast_call(Gekko* g, u32 id, const HleFastArgs* a) {
+    u32 n = ps_fast_call_(g, id, a);
+    u32 group = id & 0x10000u ? 0 : id < sizeof g_psFast/sizeof g_psFast[0] &&
+                g_psFast[id].group == HLE_FAST_XYZ ? 2 : 1;
+    if (n) g_psFastCalls[group]++; else g_psFastRefused[group]++;
     return n;
 }
 
@@ -390,6 +529,10 @@ static u32 ps_call(Gekko* g, int d) {
 // r3, r4, r5 (the arguments' matrices and vectors). The interpreter's result stands.
 static struct { u64 calls, bad, mid; } g_pchk;
 static void pchk_report(void) {
+    fprintf(stderr, "HLE_FAST calls GPR/GX/cXyz %llu/%llu/%llu; refused %llu/%llu/%llu\n",
+        (unsigned long long)g_psFastCalls[0], (unsigned long long)g_psFastCalls[1],
+        (unsigned long long)g_psFastCalls[2], (unsigned long long)g_psFastRefused[0],
+        (unsigned long long)g_psFastRefused[1], (unsigned long long)g_psFastRefused[2]);
     fprintf(stderr, "HLE_CHECK (PS library): %llu stand-in calls compared with the interpreter, %llu differed (%llu stopped inside)\n",
             (unsigned long long)g_pchk.calls, (unsigned long long)g_pchk.bad, (unsigned long long)g_pchk.mid);
     for (u32 d = 0; d < NDEF; d++)
@@ -405,7 +548,9 @@ static void cap_put(const u8* data, u32 len) {
 }
 static u32 ps_checked(Gekko* g) {
     int d = find(g->pc);
-    if (d < 0) return 0;
+    HleFastInfo f;
+    if (d < 0 && !(fast_check_groups() && hle_ps_fast_info(g->pc, fast_check_groups(), &f))) return 0;
+    const char* name = d < 0 ? "GPR helper (X3)" : g_psDefs[d].name;
     enum { NW = 4 };
     u8* w[NW];
     static u8 before[NW][64], native[NW][64];
@@ -414,7 +559,7 @@ static u32 ps_checked(Gekko* g) {
     w[3] = sda ? region(be32p(sda), 64) : NULL;
     for (int k = 0; k < NW; k++) if (w[k]) memcpy(before[k], w[k], 64);
     extern void (*gp_capture)(const u8* data, u32 len);
-    bool pipe = g_psDefs[d].pipe;
+    bool pipe = d >= 0 && g_psDefs[d].pipe;
     if (pipe) { gp_capture = cap_put; g_capSel = 0; g_capN[0] = g_capN[1] = 0; }
     Gekko g0 = *g;
     g_nscap = 0; g_scapFull = false; g_scapOn = true;
@@ -424,6 +569,7 @@ static u32 ps_checked(Gekko* g) {
     if (!n) { gp_capture = NULL; return 0; }
     const bool mid = g_psMid;
     Gekko gn = *g;
+    if (getenv("HLE_FAST_PLANT")) gn.gpr[14] ^= 1; // checker self-test; the interpreter's state still stands
     for (int k = 0; k < NW; k++) if (w[k]) { memcpy(native[k], w[k], 64); }
     static u8 snat[CAP_MAX][4];  // each recorded store's bytes as the stand-in left them
     for (u32 i = 0; i < g_nscap; i++) for (u32 k = 0; k < g_scap[i].size; k++) snat[i][k] = (u8)ramp_rd8(g_scap[i].p + k);
@@ -451,6 +597,7 @@ static u32 ps_checked(Gekko* g) {
     bool same = steps == n && g->pc == gn.pc && g->lr == gn.lr && g->gpr[1] == gn.gpr[1] && g->gpr[2] == gn.gpr[2] &&
                 !memcmp(&g->gpr[13], &gn.gpr[13], 19 * 4) && !memcmp(&g->fpr[1], &gn.fpr[1], sizeof(FPR)) &&
                 !memcmp(&g->fpr[14], &gn.fpr[14], 18 * sizeof(FPR)) && (g->cr & 0x00FFF000u) == (gn.cr & 0x00FFF000u) && mem;
+    if (d < 0) same = same && !memcmp(g->gpr, gn.gpr, sizeof g->gpr); // internal helpers preserve volatile inputs too
     // Stopped inside the function (direct mode): guest code goes on from there, so everything must match, except the
     // volatile FPRs (f0, f2-f13) after a call to another stand-in: those leave them as dead state (the ABI), and code
     // after a call writes them before it reads them.
@@ -461,7 +608,7 @@ static u32 ps_checked(Gekko* g) {
     }
     if (mid) g_pchk.mid++;
     if (!same && g_pchk.bad++ < 20) {
-        fprintf(stderr, "HLE_CHECK %s call %llu: native %u insns to %08x, interpreter %u to %08x%s\n", g_psDefs[d].name,
+        fprintf(stderr, "HLE_CHECK %s call %llu: native %u insns to %08x, interpreter %u to %08x%s\n", name,
                 (unsigned long long)g_pchk.calls, n, gn.pc, steps, g->pc, mem ? "" : "; memory differs");
         for (int k = 0; k < NW; k++)
             if (w[k] && memcmp(w[k], native[k], 64))

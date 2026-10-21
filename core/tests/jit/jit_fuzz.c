@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include "../../src/jit/jit.h"
 #include "../../src/sys/system.h"
+#include "../../src/cpu/hle.h"
 
 static System A, B;
 static u64 g_in[32][2];  // the FPRs the case started from
@@ -454,7 +455,9 @@ static u32 g_smcSkips;  // chain cases not compared: the program stored into its
 static u32 g_overBudget;  // chain runs that went past their budget (OPT_LATCH: only blocks that may loop check it)
 static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
 static bool alias_unchecked(u32 ea) {
-    if (ea - 0x7FFF0000u < 0x01820000u || ea - 0xC0000000u < 0x01800000u || ea < 0x01800000u) return false;  // MEM1 and its guards
+    // Fault accesses clear bit 30 before adding RRAM. 0x7ffffxxx aliases 0x3ffffxxx, not MEM1's lower guard.
+    u32 mapped = jit_debug_plant == 17 ? ea : ea & ~JIT_FAULT_BIC;
+    if (mapped - 0x7FFF0000u < 0x01820000u || ea < 0x01800000u) return false; // MEM1 and its real guards
     if (ea - 0xC8000000u < 0x00400000u || ea - 0xCC000000u < 0x00010000u || ea - 0xE0000000u < 0x00010000u) return false;
     return true;
 }
@@ -767,6 +770,7 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     return (u32)(n1 + n2);
 }
 
+#include "x3_cases.inc"
 int main(int argc, char** argv) {
     u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 20000;
     if (argc > 2) rng ^= strtoull(argv[2], NULL, 0) * 0x2545F4914F6CDD1Dull;
@@ -810,6 +814,9 @@ int main(int argc, char** argv) {
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3 && plant != 9) jit_debug_plant = (u32)plant;
     u32 fails = 0, floats = 0;
+#ifndef __3DS__
+    if (!plant || plant == 13 || plant == 14 || plant == 17 || plant == 18 || plant == 19) fails += x3_cases(plant);
+#endif
     for (u32 k = 0; k < cases && fails < 10; k++) {
         g_case = k;
         St st;

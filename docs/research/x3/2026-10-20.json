@@ -1,0 +1,2991 @@
+{
+  "date": "2026-10-20",
+  "scope": "X3 only; all new switches default off",
+  "labels": {
+    "test_counts": "measured final3 software runs",
+    "hardware": "measured per whole run; row_se is within-run variation, not independent-run uncertainty",
+    "deltas": "derived separately per run; no pooled A/B",
+    "native_counter_totals": "derived sum of measured 10-second reports after 50 real seconds; excludes startup and unreported tail"
+  },
+  "source_and_binary_sha256": {
+    "core/src/cpu/gpr_helper.h": "cbe5196266cfd44337328e849d8b4e9307e211b315e6006f337714b160c8dabb",
+    "core/src/cpu/hle.h": "de582536dc4e5efd927543c60d098a9f8b34e58397892d54e9cd5314680c95e9",
+    "core/src/cpu/hle_ps.c": "1af0db1a61623c0891e4ed141c3180ea80b97756ce038d83b925a489d5fb33e1",
+    "core/src/cpu/hle_ps_fast.inc": "218cf7456b4367200d44df8b176929592ab6f3ced604c26d1e78178f1a1af091",
+    "core/src/jit/jit.c": "47469eb11fa0b419f01355d08907c080773947dc6939c0d3cb830e6a777a6165",
+    "core/src/jit/jit.h": "90a15fd6429cd55a8b81a7e1faf964863568ea549775ffc443df74e152c6f20c",
+    "core/src/host/jit_glue.c": "26d1d624d492a8097381e51290f575b177cdab608c230cb8aa531e698dc9a215",
+    "core/host3ds/main.c": "08e9e5a809b098046df3fa0b65b58e000064d9ff5f19b570ff977d7288b01ccc",
+    "core/tests/jit/x3_cases.inc": "bd3fd52798c6fd2cced00de8c11af1b4e38ff342f94e8ce94204b5f53ae7c222",
+    "core/tests/jit/x3_native.h": "d69add0ddc2692a7b339eae32c9670c871d402be3728779dea3050ef3ba1cef2",
+    "core/tests/jit/jit_fuzz.c": "796956eeec0431e760c30ad3f783c5bc70c5f6bcd1d4ac67db68e3668cef0d4c",
+    "core/tests/jit/run_jit_fuzz.sh": "beea6f7a00487002ebb1282261cde29eeb9d83084c5daa4055b770fc50e7c5a5",
+    "core/build/gcemu": "443cabd5541a56b7950cb3326ac80d6b81cb4d43d2f0907bf1604cababf3092a",
+    "core/build-arm/gcemu": "9c223a14b1724d0990bd50b48376e5202df9c72621693ba61763c651328e6fbe",
+    "core/host3ds/gc3ds.3dsx": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+    "core/tests/jit/run_x3_matrix.sh": "5436a400c3a12c3e3a046473b783267d783792a3737e3b74d835b1ca9423a7c4"
+  },
+  "jit_matrix": {
+    "default": [
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 11042) fails=0",
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 0) fails=0",
+      "self-test plant 1: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 2: JIT FUZZ cases=8000 (float 37) fails=10 (planted)",
+      "self-test plant 3: JIT FUZZ cases=8000 (float 804) fails=10 (planted)",
+      "self-test plant 4: JIT FUZZ cases=8000 (float 24) fails=10 (planted)",
+      "self-test plant 5: JIT FUZZ cases=8000 (float 237) fails=10 (planted)",
+      "self-test plant 6: JIT FUZZ cases=8000 (float 103) fails=10 (planted)",
+      "self-test plant 7: JIT FUZZ cases=8000 (float 11) fails=12 (planted)",
+      "self-test plant 9: JIT FUZZ cases=8000 (float 169) fails=10 (planted)",
+      "self-test plant 12: JIT FUZZ cases=8000 (float 4480) fails=8 (planted)",
+      "self-test plant 13: JIT FUZZ cases=8000 (float 0) fails=195 (planted)",
+      "self-test plant 14: JIT FUZZ cases=8000 (float 0) fails=87 (planted)",
+      "self-test plant 17: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 18: JIT FUZZ cases=8000 (float 0) fails=88 (planted)",
+      "self-test plant 19: JIT FUZZ cases=8000 (float 0) fails=72 (planted)",
+      "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot and callee-saved cache retention)",
+      "fault mode on: 1783 sites patched by faults, 5 cases not compared (a DSI or an unmapped access at an address aliasing host memory)",
+      "fault mode on: 8337 sites patched by faults, 34 cases not compared (a DSI or an unmapped access at an address aliasing host memory)"
+    ],
+    "opt7": [
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 11042) fails=0",
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 0) fails=0",
+      "self-test plant 1: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 2: JIT FUZZ cases=8000 (float 55) fails=10 (planted)",
+      "self-test plant 3: JIT FUZZ cases=8000 (float 804) fails=10 (planted)",
+      "self-test plant 4: JIT FUZZ cases=8000 (float 24) fails=10 (planted)",
+      "self-test plant 5: JIT FUZZ cases=8000 (float 237) fails=10 (planted)",
+      "self-test plant 6: JIT FUZZ cases=8000 (float 103) fails=10 (planted)",
+      "self-test plant 7: JIT FUZZ cases=8000 (float 11) fails=12 (planted)",
+      "self-test plant 9: JIT FUZZ cases=8000 (float 169) fails=10 (planted)",
+      "self-test plant 12: JIT FUZZ cases=8000 (float 4480) fails=8 (planted)",
+      "self-test plant 13: JIT FUZZ cases=8000 (float 0) fails=195 (planted)",
+      "self-test plant 14: JIT FUZZ cases=8000 (float 0) fails=87 (planted)",
+      "self-test plant 17: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 18: JIT FUZZ cases=8000 (float 0) fails=88 (planted)",
+      "self-test plant 19: JIT FUZZ cases=8000 (float 0) fails=72 (planted)",
+      "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot and callee-saved cache retention)",
+      "fault mode on: 1783 sites patched by faults, 5 cases not compared (a DSI or an unmapped access at an address aliasing host memory)",
+      "fault mode on: 8337 sites patched by faults, 34 cases not compared (a DSI or an unmapped access at an address aliasing host memory)"
+    ],
+    "checked1": [
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 11042) fails=0",
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 0) fails=0",
+      "self-test plant 1: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 2: JIT FUZZ cases=8000 (float 37) fails=10 (planted)",
+      "self-test plant 3: JIT FUZZ cases=8000 (float 805) fails=10 (planted)",
+      "self-test plant 4: JIT FUZZ cases=8000 (float 25) fails=10 (planted)",
+      "self-test plant 5: JIT FUZZ cases=8000 (float 370) fails=10 (planted)",
+      "self-test plant 6: JIT FUZZ cases=8000 (float 116) fails=10 (planted)",
+      "self-test plant 7: JIT FUZZ cases=8000 (float 11) fails=12 (planted)",
+      "self-test plant 9: JIT FUZZ cases=8000 (float 229) fails=10 (planted)",
+      "self-test plant 12: JIT FUZZ cases=8000 (float 4480) fails=8 (planted)",
+      "self-test plant 13: JIT FUZZ cases=8000 (float 0) fails=196 (planted)",
+      "self-test plant 14: JIT FUZZ cases=8000 (float 0) fails=87 (planted)",
+      "self-test plant 17: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 18: JIT FUZZ cases=8000 (float 0) fails=88 (planted)",
+      "self-test plant 19: JIT FUZZ cases=8000 (float 0) fails=72 (planted)",
+      "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot and callee-saved cache retention)",
+      "fault mode off: 0 sites patched by faults, 0 cases not compared (a DSI or an unmapped access at an address aliasing host memory)",
+      "fault mode off: 0 sites patched by faults, 0 cases not compared (a DSI or an unmapped access at an address aliasing host memory)"
+    ],
+    "checked3": [
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 11082) fails=0",
+      "X3 directed cases=636 fails=0 (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)",
+      "JIT FUZZ cases=20000 (float 0) fails=0",
+      "self-test plant 1: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 2: JIT FUZZ cases=8000 (float 37) fails=10 (planted)",
+      "self-test plant 3: JIT FUZZ cases=8000 (float 805) fails=10 (planted)",
+      "self-test plant 4: JIT FUZZ cases=8000 (float 25) fails=10 (planted)",
+      "self-test plant 5: JIT FUZZ cases=8000 (float 370) fails=10 (planted)",
+      "self-test plant 6: JIT FUZZ cases=8000 (float 116) fails=10 (planted)",
+      "self-test plant 7: JIT FUZZ cases=8000 (float 11) fails=12 (planted)",
+      "self-test plant 9: JIT FUZZ cases=8000 (float 229) fails=10 (planted)",
+      "self-test plant 12: JIT FUZZ cases=8000 (float 4480) fails=8 (planted)",
+      "self-test plant 13: JIT FUZZ cases=8000 (float 0) fails=196 (planted)",
+      "self-test plant 14: JIT FUZZ cases=8000 (float 0) fails=87 (planted)",
+      "self-test plant 17: JIT FUZZ cases=8000 (float 4480) fails=1 (planted)",
+      "self-test plant 18: JIT FUZZ cases=8000 (float 0) fails=88 (planted)",
+      "self-test plant 19: JIT FUZZ cases=8000 (float 0) fails=72 (planted)",
+      "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot and callee-saved cache retention)",
+      "fault mode off: 0 sites patched by faults, 0 cases not compared (a DSI or an unmapped access at an address aliasing host memory)",
+      "fault mode off: 0 sites patched by faults, 0 cases not compared (a DSI or an unmapped access at an address aliasing host memory)"
+    ]
+  },
+  "qemu_game": [
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "off",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "gprinline",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zgpr",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 162947/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zgx",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/58721/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zxyz",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/9549; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "off",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "gprinline",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zgpr",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 25364/0/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zgx",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/10836/0; refused 0/0/0"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zxyz",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/1982; refused 0/0/0"
+      ]
+    }
+  ],
+  "pc_hle": [
+    "PASS 4290-4490: measured calls=4112564 differed=0 partial=0; ['HLE_FAST calls GPR/GX/cXyz 2387966/1505100/200; refused 0/0/0']",
+    "PASS 5000-5200: measured calls=9376584 differed=0 partial=0; ['HLE_FAST calls GPR/GX/cXyz 3333037/489048/59428; refused 0/0/0']",
+    "PASS 900-1100: measured calls=2867899 differed=0 partial=0; ['HLE_FAST calls GPR/GX/cXyz 1452562/569809/99403; refused 0/0/0']",
+    "PASS 6590-6790: measured calls=4825171 differed=0 partial=0; ['HLE_FAST calls GPR/GX/cXyz 2153727/1554881/70595; refused 0/0/0']",
+    "PASS 5000-5020-stops: measured calls=928486 differed=0 partial=2868; ['HLE_FAST calls GPR/GX/cXyz 327122/46576/5660; refused 0/0/0']",
+    "PASS: planted result rejected 5000-5002-plant: measured calls=80943 differed=80943 partial=0; ['HLE_FAST calls GPR/GX/cXyz 25473/3918/2; refused 0/0/0']"
+  ],
+  "cpu": [
+    "PASS build: core compiles with zero warnings (gcc -std=c11, clang -std=c11, arm-none-eabi-gcc -std=gnu11 armv6k/vfp)",
+    "PASS directed: DIRECTED pass=420 fail=0",
+    "PASS fuzz: FUZZ batches=200 cases=12800 failed_batches=0 mismatched_cases=0",
+    "INFO fuzz coverage: 436891 generated instructions, 261 distinct mnemonics (incl. record/overflow forms)",
+    "PASS self-test plant 1 (rlwimi result bit 8 flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=313",
+    "PASS self-test plant 2 (fadds result LSB flipped): caught, FUZZ batches=8 cases=512 failed_batches=8 mismatched_cases=181",
+    "PASS disasm: DISASM checked=11806 mnemonic_mismatch=0 operand_mismatch=0",
+    "ALL TESTS PASSED"
+  ],
+  "preliminary_game_before_budget_fix": [
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "off",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash b0bc0f6bbbd29812 at cycle 7865035679"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "gprinline",
+      "instructions": 37039660,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 27e2f7c3a3be042f at cycle 7865035697"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zgpr",
+      "instructions": 37039660,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 163012/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 27e2f7c3a3be042f at cycle 7865035697"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zgx",
+      "instructions": 37039663,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/58779/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 948793470e12b474 at cycle 7865067121"
+      ]
+    },
+    {
+      "state": 950,
+      "end": 970,
+      "mode": "zxyz",
+      "instructions": 37039667,
+      "frame_sha256": "8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/9576; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 5a5ebf6eac50b27b at cycle 7865066496"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "off",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash cced405e2a2bf7e8 at cycle 6924399437"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "gprinline",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 91ef0e9feea43305 at cycle 6924399836"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zgpr",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 25380/0/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 91ef0e9feea43305 at cycle 6924399836"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zgx",
+      "instructions": 8561343,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/10846/0; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 189cfcba7276228d at cycle 6924399449"
+      ]
+    },
+    {
+      "state": 850,
+      "end": 854,
+      "mode": "zxyz",
+      "instructions": 8561347,
+      "frame_sha256": "8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c",
+      "counts": [
+        "JIT_X3 calls GPR/GX/cXyz 0/0/1987; refused 0/0/0"
+      ],
+      "state_hash": [
+        "state hash 1d62122206b13229 at cycle 6924399991"
+      ]
+    }
+  ],
+  "preliminary_device": {
+    "sha256": "af6a6bd17fc29a078212decd25b9eca8c36ba6180d0987923d933f567ff1b623",
+    "excluded_from_final_comparisons": true,
+    "705": {
+      "scene": "Ordon",
+      "speed_pct": 31.603,
+      "pictures_s": 9.413
+    },
+    "706": {
+      "scene": "heavy",
+      "speed_pct": 22.605,
+      "pictures_s": 6.775
+    },
+    "707": {
+      "scene": "title",
+      "cutscene_speed_pct": 36.76,
+      "later_speed_pct": 23.49,
+      "movie_speed_pct": 13.32,
+      "later_pictures_s": 7.7
+    }
+  },
+  "device_jobs": [
+    {
+      "job": 708,
+      "scene": "ordon",
+      "mode": "baseline-first",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 709,
+      "scene": "heavy",
+      "mode": "baseline-first",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 710,
+      "scene": "title",
+      "mode": "baseline-first",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 711,
+      "scene": "ordon",
+      "mode": "gprinline",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "on",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 712,
+      "scene": "heavy",
+      "mode": "gprinline",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "on",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 713,
+      "scene": "title",
+      "mode": "gprinline",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "on",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 714,
+      "scene": "ordon",
+      "mode": "zgpr",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "on",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 715,
+      "scene": "heavy",
+      "mode": "zgpr",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "on",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 716,
+      "scene": "title",
+      "mode": "zgpr",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "on",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 717,
+      "scene": "ordon",
+      "mode": "zgx",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "on",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 718,
+      "scene": "heavy",
+      "mode": "zgx",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "on",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 719,
+      "scene": "title",
+      "mode": "zgx",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "on",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 720,
+      "scene": "ordon",
+      "mode": "zxyz",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "on",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 721,
+      "scene": "heavy",
+      "mode": "zxyz",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "on",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 722,
+      "scene": "title",
+      "mode": "zxyz",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "on",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 723,
+      "scene": "ordon",
+      "mode": "baseline-last",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_ordon.state",
+        "--seconds",
+        "180",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off",
+        "--press",
+        "SUP@40-159,SRIGHT@160-279,SDOWN@280-399,SLEFT@400-519,SUP@520-639,SRIGHT@640-759,SDOWN@760-879,SLEFT@880-999,SUP@1000-1119,SRIGHT@1120-1239,SDOWN@1240-1359,SLEFT@1360-1479,SUP@1480-1599,SRIGHT@1600-1719,SDOWN@1720-1839,SLEFT@1840-1959,SUP@1960-2079,SRIGHT@2080-2199,SDOWN@2200-2319,SLEFT@2320-2439,SUP@2440-2559,SRIGHT@2560-2679,SDOWN@2680-2799,SLEFT@2800-2919"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 724,
+      "scene": "heavy",
+      "mode": "baseline-last",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp_area2.state",
+        "--seconds",
+        "150",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    },
+    {
+      "job": 725,
+      "scene": "title",
+      "mode": "baseline-last",
+      "args": [
+        "--game",
+        "Twilight",
+        "--state",
+        "sdmc:/gc3ds/states/tp850.state",
+        "--seconds",
+        "420",
+        "--gprinline",
+        "off",
+        "--zgpr",
+        "off",
+        "--zgx",
+        "off",
+        "--zxyz",
+        "off",
+        "--psgx",
+        "off",
+        "--psxyz",
+        "off"
+      ],
+      "build_sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d"
+    }
+  ],
+  "matrix_stale_binary_plant": "measured: exit 2 and fresh X3_OUT diagnostic; no checks started",
+  "frozen_source_check": {
+    "files_checked": 16,
+    "result": "all match frozen hashes",
+    "plant": "wrong checksum rejected"
+  },
+  "source_parent_commit": "46d1082",
+  "device_results": [
+    {
+      "job": 708,
+      "mode": "baseline-first",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 180.0,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 125,
+            "mean": 31.6164,
+            "row_se": 0.20646109998363274
+          },
+          "fields_s": {
+            "n": 125,
+            "mean": 18.91696,
+            "row_se": 0.12384137742003001
+          },
+          "gxwait_pct": {
+            "n": 125,
+            "mean": 1.0728,
+            "row_se": 0.12637566119287164
+          },
+          "jitcode_pct": {
+            "n": 125,
+            "mean": 51.6848,
+            "row_se": 0.10776950313725871
+          },
+          "compiles_s": {
+            "n": 125,
+            "mean": 21.752,
+            "row_se": 3.556759235324274
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8656.78642857143,
+            "row_se": 64.68375826345259
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 270.3492857142857,
+            "row_se": 1.2825688783790492
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 221.23285714285714,
+            "row_se": 1.377988432211701
+          }
+        }
+      },
+      "score": "relay_708.csv          speed 31.616 fields/s 18.917 frames/s 9.418 (12 windows) fields per copy 1:6 2:1176",
+      "last_jit": [
+        "# jit code: 7.99 host words per guest instruction, 53% of the buffer; fused compare-branches 12114, cached GPR reads 446088, pipe stores 10575581, links 38511; GPU queue at 0",
+        "# jit cache 10s: 33884 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.3, exit stubs 1.1, cold 1.4"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    },
+    {
+      "job": 709,
+      "mode": "baseline-first",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 150.1,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 98,
+            "mean": 22.636530612244897,
+            "row_se": 0.07247918105297665
+          },
+          "fields_s": {
+            "n": 98,
+            "mean": 13.541734693877551,
+            "row_se": 0.046176789939337555
+          },
+          "gxwait_pct": {
+            "n": 98,
+            "mean": 0.42244897959183675,
+            "row_se": 0.07511167941881243
+          },
+          "jitcode_pct": {
+            "n": 98,
+            "mean": 42.25408163265306,
+            "row_se": 0.05555921108087079
+          },
+          "compiles_s": {
+            "n": 98,
+            "mean": 12.23469387755102,
+            "row_se": 1.8008227437097146
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8398.57,
+            "row_se": 60.35525235862018
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 278.9190909090909,
+            "row_se": 0.23527722350628627
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 206.35999999999999,
+            "row_se": 1.4843223124620624
+          }
+        }
+      },
+      "score": "relay_709.csv          speed 22.637 fields/s 13.542 frames/s 6.787 (10 windows) fields per copy 1:4 2:693",
+      "last_jit": [
+        "# jit code: 8.13 host words per guest instruction, 43% of the buffer; fused compare-branches 9830, cached GPR reads 424926, pipe stores 7958101, links 31636; GPU queue at 0",
+        "# jit cache 10s: 26856 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.2, exit stubs 1.0, cold 1.3"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    },
+    {
+      "job": 710,
+      "mode": "baseline-first",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 419.7,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 36.796083333333335,
+            "row_se": 0.21747955555523021
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 22.03783333333333,
+            "row_se": 0.13200740490080895
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.2933333333333332,
+            "row_se": 0.17526983332124113
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 37.560833333333335,
+            "row_se": 0.12671952218023588
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 34.416666666666664,
+            "row_se": 9.018993212221167
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8201.374615384615,
+            "row_se": 52.14556409355555
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 281.1269230769231,
+            "row_se": 1.2103995868155744
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 209.07615384615383,
+            "row_se": 1.6378693705392655
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 127,
+            "mean": 23.604094488188977,
+            "row_se": 0.7043998825452895
+          },
+          "fields_s": {
+            "n": 127,
+            "mean": 13.728346456692913,
+            "row_se": 0.39758381246757535
+          },
+          "gxwait_pct": {
+            "n": 127,
+            "mean": 4.616535433070866,
+            "row_se": 1.7881264720900998
+          },
+          "jitcode_pct": {
+            "n": 127,
+            "mean": 50.61889763779528,
+            "row_se": 0.8523182266966873
+          },
+          "compiles_s": {
+            "n": 127,
+            "mean": 90.62204724409449,
+            "row_se": 38.47017347063664
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8011.451428571429,
+            "row_se": 239.58057598406015
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 305.0057142857143,
+            "row_se": 5.011483813771984
+          },
+          "stall_inst_m": {
+            "n": 15,
+            "mean": 180.864,
+            "row_se": 5.645658913840665
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 94,
+            "mean": 13.403085106382978,
+            "row_se": 0.16883698062327349
+          },
+          "fields_s": {
+            "n": 94,
+            "mean": 8.001914893617021,
+            "row_se": 0.10336870819011337
+          },
+          "gxwait_pct": {
+            "n": 94,
+            "mean": 14.356382978723405,
+            "row_se": 3.4121807855625477
+          },
+          "jitcode_pct": {
+            "n": 94,
+            "mean": 63.569148936170215,
+            "row_se": 0.02457725835673594
+          },
+          "compiles_s": {
+            "n": 94,
+            "mean": 5.595744680851064,
+            "row_se": 1.4023804931514703
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7608.983,
+            "row_se": 240.12854032348778
+          },
+          "inst_m": {
+            "n": 10,
+            "mean": 307.987,
+            "row_se": 1.0356716017477117
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 155.267,
+            "row_se": 4.1952340816693425
+          }
+        }
+      },
+      "score": "relay_710.csv  cutscene 36.80 (120 rows)  later 23.60 (127 rows)  movie 13.40 (94 rows)  later pictures/s 7.70",
+      "last_jit": [
+        "# jit code: 7.89 host words per guest instruction, 64% of the buffer; fused compare-branches 14766, cached GPR reads 474765, pipe stores 14717076, links 45851; GPU queue at 0",
+        "# jit cache 10s: 41684 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.3, cold 1.5"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    },
+    {
+      "job": 711,
+      "mode": "gprinline",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 179.1,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 123,
+            "mean": 31.86918699186992,
+            "row_se": 0.1989113243649748
+          },
+          "fields_s": {
+            "n": 123,
+            "mean": 19.068048780487803,
+            "row_se": 0.11945579756598515
+          },
+          "gxwait_pct": {
+            "n": 123,
+            "mean": 1.0170731707317073,
+            "row_se": 0.15443899290146748
+          },
+          "jitcode_pct": {
+            "n": 123,
+            "mean": 56.31056910569106,
+            "row_se": 0.13047965627340638
+          },
+          "compiles_s": {
+            "n": 123,
+            "mean": 23.333333333333332,
+            "row_se": 3.639650633352384
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8678.315,
+            "row_se": 65.27813975134102
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 271.325,
+            "row_se": 1.0900144922920028
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 225.4007142857143,
+            "row_se": 1.31784141865005
+          }
+        }
+      },
+      "score": "relay_711.csv          speed 31.869 fields/s 19.068 frames/s 9.494 (12 windows) fields per copy 1:6 2:1190",
+      "last_jit": [
+        "# jit code: 8.01 host words per guest instruction, 58% of the buffer; fused compare-branches 12429, cached GPR reads 460272, pipe stores 10682111, links 37169; GPU queue at 0",
+        "# jit cache 10s: 33004 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.2, cold 1.5"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        333687.0
+      ]
+    },
+    {
+      "job": 712,
+      "mode": "gprinline",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 149.1,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 98,
+            "mean": 22.765408163265306,
+            "row_se": 0.07375677902742542
+          },
+          "fields_s": {
+            "n": 98,
+            "mean": 13.619081632653062,
+            "row_se": 0.04851141721430981
+          },
+          "gxwait_pct": {
+            "n": 98,
+            "mean": 0.4897959183673469,
+            "row_se": 0.08340645948320045
+          },
+          "jitcode_pct": {
+            "n": 98,
+            "mean": 45.714285714285715,
+            "row_se": 0.06877241042084846
+          },
+          "compiles_s": {
+            "n": 98,
+            "mean": 13.693877551020408,
+            "row_se": 1.752423596825546
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8369.338181818182,
+            "row_se": 58.53171877969918
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 279.4145454545455,
+            "row_se": 0.300255538549669
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 209.98454545454544,
+            "row_se": 1.6907724773747455
+          }
+        }
+      },
+      "score": "relay_712.csv          speed 22.765 fields/s 13.619 frames/s 6.826 (10 windows) fields per copy 1:4 2:693",
+      "last_jit": [
+        "# jit code: 8.14 host words per guest instruction, 47% of the buffer; fused compare-branches 9929, cached GPR reads 435961, pipe stores 7958101, links 30417; GPU queue at 0",
+        "# jit cache 10s: 25927 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.2, exit stubs 1.1, cold 1.4"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        333687.0
+      ]
+    },
+    {
+      "job": 713,
+      "mode": "gprinline",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 419.8,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 37.031416666666665,
+            "row_se": 0.21982655805866091
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 22.179916666666667,
+            "row_se": 0.13228420384120332
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.1883333333333332,
+            "row_se": 0.17101273288439697
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 40.94083333333333,
+            "row_se": 0.15085422422144112
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 36.483333333333334,
+            "row_se": 8.655659757927449
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8358.460769230769,
+            "row_se": 53.99876390396189
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 280.9661538461538,
+            "row_se": 1.2595418064241375
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 216.04,
+            "row_se": 1.6106341321641942
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 128,
+            "mean": 23.509843749999998,
+            "row_se": 0.7123826915480275
+          },
+          "fields_s": {
+            "n": 128,
+            "mean": 13.665625,
+            "row_se": 0.3999005128185747
+          },
+          "gxwait_pct": {
+            "n": 128,
+            "mean": 4.284375,
+            "row_se": 2.0990933074686424
+          },
+          "jitcode_pct": {
+            "n": 128,
+            "mean": 55.2140625,
+            "row_se": 0.9261642322010778
+          },
+          "compiles_s": {
+            "n": 128,
+            "mean": 90.5859375,
+            "row_se": 37.34568730329489
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8234.051428571429,
+            "row_se": 182.41137874142748
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 305.33714285714285,
+            "row_se": 5.253291948400872
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 184.40428571428572,
+            "row_se": 6.044344438070041
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 94,
+            "mean": 13.377872340425531,
+            "row_se": 0.17399657564274673
+          },
+          "fields_s": {
+            "n": 94,
+            "mean": 7.998510638297873,
+            "row_se": 0.10660351426176497
+          },
+          "gxwait_pct": {
+            "n": 94,
+            "mean": 11.180851063829786,
+            "row_se": 2.7661169638812737
+          },
+          "jitcode_pct": {
+            "n": 94,
+            "mean": 69.03191489361701,
+            "row_se": 0.01920477889159634
+          },
+          "compiles_s": {
+            "n": 94,
+            "mean": 4.5638297872340425,
+            "row_se": 1.5441758913411678
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7827.139,
+            "row_se": 216.79135111617754
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 308.40818181818184,
+            "row_se": 1.8102891874362943
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 156.436,
+            "row_se": 4.366209696190863
+          }
+        }
+      },
+      "score": "relay_713.csv  cutscene 37.03 (120 rows)  later 23.51 (128 rows)  movie 13.38 (94 rows)  later pictures/s 7.74",
+      "last_jit": [
+        "# jit code: 7.93 host words per guest instruction, 69% of the buffer; fused compare-branches 14997, cached GPR reads 490385, pipe stores 14699584, links 44148; GPU queue at 0",
+        "# jit cache 10s: 40454 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.5, exit stubs 1.4, cold 1.6"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        333687.0
+      ]
+    },
+    {
+      "job": 714,
+      "mode": "zgpr",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 179.9,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 124,
+            "mean": 30.973951612903225,
+            "row_se": 0.20764577816936297
+          },
+          "fields_s": {
+            "n": 124,
+            "mean": 18.530967741935484,
+            "row_se": 0.12529155190470428
+          },
+          "gxwait_pct": {
+            "n": 124,
+            "mean": 1.1241935483870968,
+            "row_se": 0.14026861088369694
+          },
+          "jitcode_pct": {
+            "n": 124,
+            "mean": 56.056451612903224,
+            "row_se": 0.13252892313551232
+          },
+          "compiles_s": {
+            "n": 124,
+            "mean": 22.282258064516128,
+            "row_se": 3.3910791563637606
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8920.234285714287,
+            "row_se": 58.35840075984327
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 271.60857142857145,
+            "row_se": 1.1548254504625803
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 225.29357142857143,
+            "row_se": 1.6597820614061882
+          }
+        }
+      },
+      "score": "relay_714.csv          speed 30.974 fields/s 18.531 frames/s 9.210 (12 windows) fields per copy 1:6 2:1152",
+      "last_jit": [
+        "# jit code: 8.64 host words per guest instruction, 58% of the buffer; fused compare-branches 12304, cached GPR reads 450074, pipe stores 10375914, links 36970; GPU queue at 0",
+        "# jit cache 10s: 32783 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.3, cold 1.5"
+      ],
+      "calls": [
+        [
+          16633549,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        595831.0
+      ]
+    },
+    {
+      "job": 715,
+      "mode": "zgpr",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 149.9,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 96,
+            "mean": 22.196666666666665,
+            "row_se": 0.07369547741763305
+          },
+          "fields_s": {
+            "n": 96,
+            "mean": 13.278020833333333,
+            "row_se": 0.04703899553237128
+          },
+          "gxwait_pct": {
+            "n": 96,
+            "mean": 0.35520833333333335,
+            "row_se": 0.0655253699305251
+          },
+          "jitcode_pct": {
+            "n": 96,
+            "mean": 45.70625,
+            "row_se": 0.06787521606698835
+          },
+          "compiles_s": {
+            "n": 96,
+            "mean": 13.520833333333334,
+            "row_se": 1.6112936917617195
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8712.752727272727,
+            "row_se": 60.7459933896266
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 280.3690909090909,
+            "row_se": 0.36219144748060705
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 211.86818181818182,
+            "row_se": 1.8066074777085361
+          }
+        }
+      },
+      "score": "relay_715.csv          speed 22.197 fields/s 13.278 frames/s 6.651 (9 windows) fields per copy 1:3 2:622",
+      "last_jit": [
+        "# jit code: 8.77 host words per guest instruction, 47% of the buffer; fused compare-branches 9863, cached GPR reads 427798, pipe stores 7342627, links 30277; GPU queue at 0",
+        "# jit cache 10s: 25772 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.3, exit stubs 1.1, cold 1.4"
+      ],
+      "calls": [
+        [
+          11894698,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        595831.0
+      ]
+    },
+    {
+      "job": 716,
+      "mode": "zgpr",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 420.1,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 36.02733333333333,
+            "row_se": 0.2228366503422652
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 21.576666666666668,
+            "row_se": 0.13586043533649741
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.115,
+            "row_se": 0.1531446744634844
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 40.87916666666667,
+            "row_se": 0.14396786052662067
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 27.825,
+            "row_se": 5.1176448553554605
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8553.636923076923,
+            "row_se": 45.26504460744078
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 281.35769230769233,
+            "row_se": 1.08966129402682
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 215.06384615384616,
+            "row_se": 1.8865979890762599
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 126,
+            "mean": 23.72301587301587,
+            "row_se": 0.6878974847012466
+          },
+          "fields_s": {
+            "n": 126,
+            "mean": 13.78404761904762,
+            "row_se": 0.38819429235471775
+          },
+          "gxwait_pct": {
+            "n": 126,
+            "mean": 2.7261904761904763,
+            "row_se": 1.1046195515839363
+          },
+          "jitcode_pct": {
+            "n": 126,
+            "mean": 54.55079365079365,
+            "row_se": 0.9300573431932109
+          },
+          "compiles_s": {
+            "n": 126,
+            "mean": 109.10317460317461,
+            "row_se": 44.57466834085424
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8495.972857142857,
+            "row_se": 147.79136624929617
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 313.2185714285714,
+            "row_se": 0.6759087144480955
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 187.95714285714286,
+            "row_se": 5.411818409087248
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 93,
+            "mean": 13.157634408602151,
+            "row_se": 0.1691153727485882
+          },
+          "fields_s": {
+            "n": 93,
+            "mean": 7.86247311827957,
+            "row_se": 0.1023834307806198
+          },
+          "gxwait_pct": {
+            "n": 93,
+            "mean": 10.361290322580645,
+            "row_se": 2.8789737796615387
+          },
+          "jitcode_pct": {
+            "n": 93,
+            "mean": 69.77204301075268,
+            "row_se": 0.019361330790063216
+          },
+          "compiles_s": {
+            "n": 93,
+            "mean": 4.290322580645161,
+            "row_se": 1.1440825503397412
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7740.115,
+            "row_se": 173.1470295266104
+          },
+          "inst_m": {
+            "n": 10,
+            "mean": 307.687,
+            "row_se": 1.2557432947152118
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 157.404,
+            "row_se": 5.275684094661719
+          }
+        }
+      },
+      "score": "relay_716.csv  cutscene 36.03 (120 rows)  later 23.72 (126 rows)  movie 13.16 (93 rows)  later pictures/s 7.58",
+      "last_jit": [
+        "# jit code: 8.51 host words per guest instruction, 70% of the buffer; fused compare-branches 15120, cached GPR reads 480517, pipe stores 14383420, links 44334; GPU queue at 0",
+        "# jit cache 10s: 40714 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.6, exit stubs 1.4, cold 1.7"
+      ],
+      "calls": [
+        [
+          36330827,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        595831.0
+      ]
+    },
+    {
+      "job": 717,
+      "mode": "zgx",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 179.2,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 124,
+            "mean": 31.07564516129032,
+            "row_se": 0.20825191407502708
+          },
+          "fields_s": {
+            "n": 124,
+            "mean": 18.59209677419355,
+            "row_se": 0.1258110469750538
+          },
+          "gxwait_pct": {
+            "n": 124,
+            "mean": 0.9580645161290322,
+            "row_se": 0.11609351235785513
+          },
+          "jitcode_pct": {
+            "n": 124,
+            "mean": 54.93467741935484,
+            "row_se": 0.1317091162843455
+          },
+          "compiles_s": {
+            "n": 124,
+            "mean": 23.096774193548388,
+            "row_se": 3.599571239343978
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8726.132857142857,
+            "row_se": 59.871324112803855
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 272.3614285714286,
+            "row_se": 0.8563523827570546
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 221.15285714285713,
+            "row_se": 1.5136000417356725
+          }
+        }
+      },
+      "score": "relay_717.csv          speed 31.076 fields/s 18.592 frames/s 9.246 (12 windows) fields per copy 1:6 2:1157",
+      "last_jit": [
+        "# jit code: 8.30 host words per guest instruction, 57% of the buffer; fused compare-branches 12199, cached GPR reads 446268, pipe stores 7858099, links 38438; GPU queue at 0",
+        "# jit cache 10s: 33802 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.2, cold 1.5"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          9006928,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        1120119.0
+      ]
+    },
+    {
+      "job": 718,
+      "mode": "zgx",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 149.2,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 96,
+            "mean": 22.168333333333333,
+            "row_se": 0.07416814506707081
+          },
+          "fields_s": {
+            "n": 96,
+            "mean": 13.2603125,
+            "row_se": 0.04725663722180364
+          },
+          "gxwait_pct": {
+            "n": 96,
+            "mean": 0.38333333333333336,
+            "row_se": 0.06824341537972774
+          },
+          "jitcode_pct": {
+            "n": 96,
+            "mean": 44.83645833333333,
+            "row_se": 0.07577262547384002
+          },
+          "compiles_s": {
+            "n": 96,
+            "mean": 12.072916666666666,
+            "row_se": 1.5693923279009203
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8471.274545454546,
+            "row_se": 62.10989649387078
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 280.22,
+            "row_se": 0.20545736120354985
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 206.99727272727273,
+            "row_se": 1.9186548748864711
+          }
+        }
+      },
+      "score": "relay_718.csv          speed 22.168 fields/s 13.260 frames/s 6.640 (9 windows) fields per copy 1:3 2:622",
+      "last_jit": [
+        "# jit code: 8.48 host words per guest instruction, 46% of the buffer; fused compare-branches 9773, cached GPR reads 425273, pipe stores 5268250, links 31300; GPU queue at 0",
+        "# jit cache 10s: 26515 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.2, exit stubs 1.1, cold 1.4"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          6719546,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        1120119.0
+      ]
+    },
+    {
+      "job": 719,
+      "mode": "zgx",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 419.7,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 36.32908333333334,
+            "row_se": 0.22317055805114394
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 21.756916666666665,
+            "row_se": 0.1342525628877283
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.3408333333333333,
+            "row_se": 0.19149089187565865
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 40.22,
+            "row_se": 0.15045495896736386
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 32.11666666666667,
+            "row_se": 7.602531490279467
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8307.016153846154,
+            "row_se": 56.686138794766855
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 281.64384615384614,
+            "row_se": 1.0619397699260977
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 206.8830769230769,
+            "row_se": 1.8880533268134987
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 127,
+            "mean": 23.578976377952756,
+            "row_se": 0.7067882138488633
+          },
+          "fields_s": {
+            "n": 127,
+            "mean": 13.698818897637794,
+            "row_se": 0.39777695303287725
+          },
+          "gxwait_pct": {
+            "n": 127,
+            "mean": 2.0291338582677163,
+            "row_se": 0.8794819223490659
+          },
+          "jitcode_pct": {
+            "n": 127,
+            "mean": 53.62834645669291,
+            "row_se": 0.8690701707440168
+          },
+          "compiles_s": {
+            "n": 127,
+            "mean": 99.15748031496064,
+            "row_se": 41.23831929501155
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8055.4457142857145,
+            "row_se": 296.70835933940896
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 309.67285714285714,
+            "row_se": 3.912331789533853
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 173.40928571428572,
+            "row_se": 8.923773068883438
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 94,
+            "mean": 13.167978723404255,
+            "row_se": 0.16959501870056412
+          },
+          "fields_s": {
+            "n": 94,
+            "mean": 7.870744680851064,
+            "row_se": 0.1004598485945092
+          },
+          "gxwait_pct": {
+            "n": 94,
+            "mean": 9.695744680851064,
+            "row_se": 2.747324946254964
+          },
+          "jitcode_pct": {
+            "n": 94,
+            "mean": 67.17659574468085,
+            "row_se": 0.0292288414112985
+          },
+          "compiles_s": {
+            "n": 94,
+            "mean": 4.404255319148936,
+            "row_se": 1.6700025514453394
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7447.949,
+            "row_se": 256.71670849163235
+          },
+          "inst_m": {
+            "n": 10,
+            "mean": 311.202,
+            "row_se": 0.8389872201383964
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 151.596,
+            "row_se": 3.976856156424176
+          }
+        }
+      },
+      "score": "relay_719.csv  cutscene 36.33 (120 rows)  later 23.58 (127 rows)  movie 13.17 (94 rows)  later pictures/s 7.62",
+      "last_jit": [
+        "# jit code: 8.15 host words per guest instruction, 68% of the buffer; fused compare-branches 14780, cached GPR reads 475349, pipe stores 9289663, links 45752; GPU queue at 0",
+        "# jit cache 10s: 41569 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.5, exit stubs 1.3, cold 1.6"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          21852159,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        1120119.0
+      ]
+    },
+    {
+      "job": 720,
+      "mode": "zxyz",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 180.0,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 125,
+            "mean": 31.58912,
+            "row_se": 0.19894959698862294
+          },
+          "fields_s": {
+            "n": 125,
+            "mean": 18.9004,
+            "row_se": 0.11945815301845515
+          },
+          "gxwait_pct": {
+            "n": 125,
+            "mean": 0.9552,
+            "row_se": 0.14079706741814044
+          },
+          "jitcode_pct": {
+            "n": 125,
+            "mean": 52.4048,
+            "row_se": 0.11291936032179718
+          },
+          "compiles_s": {
+            "n": 125,
+            "mean": 21.824,
+            "row_se": 3.3874924401772564
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8699.516428571429,
+            "row_se": 57.63964120316705
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 271.0264285714286,
+            "row_se": 1.292415154246582
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 221.495,
+            "row_se": 1.363403445809037
+          }
+        }
+      },
+      "score": "relay_720.csv          speed 31.589 fields/s 18.900 frames/s 9.410 (12 windows) fields per copy 1:6 2:1175",
+      "last_jit": [
+        "# jit code: 8.05 host words per guest instruction, 54% of the buffer; fused compare-branches 12141, cached GPR reads 447182, pipe stores 10568943, links 38448; GPU queue at 0",
+        "# jit cache 10s: 33831 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.3, exit stubs 1.2, cold 1.4"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          215201,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        2168695.0
+      ]
+    },
+    {
+      "job": 721,
+      "mode": "zxyz",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 149.8,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 97,
+            "mean": 22.460309278350515,
+            "row_se": 0.07259938880233545
+          },
+          "fields_s": {
+            "n": 97,
+            "mean": 13.436288659793814,
+            "row_se": 0.04646787854903319
+          },
+          "gxwait_pct": {
+            "n": 97,
+            "mean": 0.4175257731958763,
+            "row_se": 0.08791946962126439
+          },
+          "jitcode_pct": {
+            "n": 97,
+            "mean": 43.41237113402062,
+            "row_se": 0.06453737249350212
+          },
+          "compiles_s": {
+            "n": 97,
+            "mean": 12.65979381443299,
+            "row_se": 1.6695348986791734
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8608.04,
+            "row_se": 62.022824141967774
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 281.82545454545453,
+            "row_se": 0.4403766231851256
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 209.48909090909092,
+            "row_se": 1.6867318882412585
+          }
+        }
+      },
+      "score": "relay_721.csv          speed 22.460 fields/s 13.436 frames/s 6.730 (10 windows) fields per copy 1:4 2:693",
+      "last_jit": [
+        "# jit code: 8.22 host words per guest instruction, 44% of the buffer; fused compare-branches 9867, cached GPR reads 426746, pipe stores 7933531, links 31587; GPU queue at 0",
+        "# jit cache 10s: 26797 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.2, exit stubs 1.0, cold 1.3"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          3248823,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        2168695.0
+      ]
+    },
+    {
+      "job": 722,
+      "mode": "zxyz",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 419.1,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 36.63591666666667,
+            "row_se": 0.2260058592183554
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 21.941,
+            "row_se": 0.13699682058916773
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.1083333333333334,
+            "row_se": 0.1270357111029211
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 38.229166666666664,
+            "row_se": 0.12546493831730623
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 33.291666666666664,
+            "row_se": 9.126211180378757
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8294.232307692308,
+            "row_se": 60.98892189395532
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 281.0769230769231,
+            "row_se": 1.1490706303832967
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 210.85615384615386,
+            "row_se": 1.7177924632345911
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 127,
+            "mean": 23.503937007874015,
+            "row_se": 0.7031796760156033
+          },
+          "fields_s": {
+            "n": 127,
+            "mean": 13.675984251968504,
+            "row_se": 0.39706458317587323
+          },
+          "gxwait_pct": {
+            "n": 127,
+            "mean": 3.3236220472440947,
+            "row_se": 1.2759514349527952
+          },
+          "jitcode_pct": {
+            "n": 127,
+            "mean": 51.488188976377955,
+            "row_se": 0.8600825832211058
+          },
+          "compiles_s": {
+            "n": 127,
+            "mean": 96.7007874015748,
+            "row_se": 40.089029335791395
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8067.6050000000005,
+            "row_se": 270.04027177227874
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 305.19,
+            "row_se": 5.763920655134084
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 178.44285714285715,
+            "row_se": 7.201033383455387
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 93,
+            "mean": 13.365268817204301,
+            "row_se": 0.17300864540182362
+          },
+          "fields_s": {
+            "n": 93,
+            "mean": 7.978817204301075,
+            "row_se": 0.10531247050430713
+          },
+          "gxwait_pct": {
+            "n": 93,
+            "mean": 6.751612903225807,
+            "row_se": 2.1670961631899144
+          },
+          "jitcode_pct": {
+            "n": 93,
+            "mean": 64.70967741935483,
+            "row_se": 0.015446034494370726
+          },
+          "compiles_s": {
+            "n": 93,
+            "mean": 4.698924731182796,
+            "row_se": 1.696997385880435
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7757.984,
+            "row_se": 161.43923424551352
+          },
+          "inst_m": {
+            "n": 10,
+            "mean": 308.168,
+            "row_se": 1.6837338137471591
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 156.645,
+            "row_se": 4.217954019558666
+          }
+        }
+      },
+      "score": "relay_722.csv  cutscene 36.64 (120 rows)  later 23.50 (127 rows)  movie 13.37 (93 rows)  later pictures/s 7.67",
+      "last_jit": [
+        "# jit code: 7.93 host words per guest instruction, 65% of the buffer; fused compare-branches 14842, cached GPR reads 476233, pipe stores 14686565, links 45924; GPU queue at 0",
+        "# jit cache 10s: 41764 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.3, cold 1.6"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1841901,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        2168695.0
+      ]
+    },
+    {
+      "job": 723,
+      "mode": "baseline-last",
+      "scene": "ordon",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 179.9,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 125,
+            "mean": 31.64384,
+            "row_se": 0.20764715059058023
+          },
+          "fields_s": {
+            "n": 125,
+            "mean": 18.93344,
+            "row_se": 0.12423718751360367
+          },
+          "gxwait_pct": {
+            "n": 125,
+            "mean": 0.9152,
+            "row_se": 0.11862141459281288
+          },
+          "jitcode_pct": {
+            "n": 125,
+            "mean": 51.6912,
+            "row_se": 0.10793077829435775
+          },
+          "compiles_s": {
+            "n": 125,
+            "mean": 21.624,
+            "row_se": 3.4690644643858257
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 8695.347142857143,
+            "row_se": 64.61534294057485
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 271.40714285714284,
+            "row_se": 1.4058904450507814
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 220.96285714285713,
+            "row_se": 1.2725074444703028
+          }
+        }
+      },
+      "score": "relay_723.csv          speed 31.644 fields/s 18.933 frames/s 9.426 (12 windows) fields per copy 1:6 2:1175",
+      "last_jit": [
+        "# jit code: 8.00 host words per guest instruction, 53% of the buffer; fused compare-branches 12118, cached GPR reads 446101, pipe stores 10575594, links 38512; GPU queue at 0",
+        "# jit cache 10s: 33886 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.3, exit stubs 1.1, cold 1.4"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    },
+    {
+      "job": 724,
+      "mode": "baseline-last",
+      "scene": "heavy",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 150.0,
+      "sections": {
+        "settled": {
+          "speed_pct": {
+            "n": 98,
+            "mean": 22.648061224489794,
+            "row_se": 0.07216609785661054
+          },
+          "fields_s": {
+            "n": 98,
+            "mean": 13.548877551020409,
+            "row_se": 0.045870930683617236
+          },
+          "gxwait_pct": {
+            "n": 98,
+            "mean": 0.5571428571428572,
+            "row_se": 0.1440086141846871
+          },
+          "jitcode_pct": {
+            "n": 98,
+            "mean": 42.251020408163264,
+            "row_se": 0.05523784995127908
+          },
+          "compiles_s": {
+            "n": 98,
+            "mean": 12.193877551020408,
+            "row_se": 1.7956078308688603
+          },
+          "icmiss_k": {
+            "n": 11,
+            "mean": 8390.07909090909,
+            "row_se": 60.29868854980548
+          },
+          "inst_m": {
+            "n": 11,
+            "mean": 278.8718181818182,
+            "row_se": 0.2010238257331615
+          },
+          "stall_inst_m": {
+            "n": 11,
+            "mean": 205.7990909090909,
+            "row_se": 1.563355048689983
+          }
+        }
+      },
+      "score": "relay_724.csv          speed 22.648 fields/s 13.549 frames/s 6.792 (10 windows) fields per copy 1:4 2:693",
+      "last_jit": [
+        "# jit code: 8.13 host words per guest instruction, 43% of the buffer; fused compare-branches 9829, cached GPR reads 424919, pipe stores 7958101, links 31633; GPU queue at 0",
+        "# jit cache 10s: 26851 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.2, exit stubs 1.0, cold 1.3"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    },
+    {
+      "job": 725,
+      "mode": "baseline-last",
+      "scene": "title",
+      "sha256": "871a05981ef37a0efe651b24b443e58dcbfb7dd2d32a753e7d84641c686ec27d",
+      "last_real_s": 419.9,
+      "sections": {
+        "cutscene": {
+          "speed_pct": {
+            "n": 120,
+            "mean": 36.79441666666666,
+            "row_se": 0.2212899474400088
+          },
+          "fields_s": {
+            "n": 120,
+            "mean": 22.036666666666665,
+            "row_se": 0.13389815589890672
+          },
+          "gxwait_pct": {
+            "n": 120,
+            "mean": 1.0808333333333333,
+            "row_se": 0.1449345251252992
+          },
+          "jitcode_pct": {
+            "n": 120,
+            "mean": 37.525,
+            "row_se": 0.12480376753991387
+          },
+          "compiles_s": {
+            "n": 120,
+            "mean": 34.541666666666664,
+            "row_se": 8.84012129523529
+          },
+          "icmiss_k": {
+            "n": 13,
+            "mean": 8201.334615384616,
+            "row_se": 55.47838910061476
+          },
+          "inst_m": {
+            "n": 13,
+            "mean": 280.9669230769231,
+            "row_se": 1.2348198169272029
+          },
+          "stall_inst_m": {
+            "n": 13,
+            "mean": 208.77923076923076,
+            "row_se": 1.6153659034325278
+          }
+        },
+        "later": {
+          "speed_pct": {
+            "n": 127,
+            "mean": 23.520708661417324,
+            "row_se": 0.7168366152214635
+          },
+          "fields_s": {
+            "n": 127,
+            "mean": 13.668976377952756,
+            "row_se": 0.40207923904220955
+          },
+          "gxwait_pct": {
+            "n": 127,
+            "mean": 6.0566929133858265,
+            "row_se": 2.2914238281675305
+          },
+          "jitcode_pct": {
+            "n": 127,
+            "mean": 50.666141732283464,
+            "row_se": 0.8722414659620829
+          },
+          "compiles_s": {
+            "n": 127,
+            "mean": 110.28346456692914,
+            "row_se": 46.07555064954479
+          },
+          "icmiss_k": {
+            "n": 14,
+            "mean": 7851.2814285714285,
+            "row_se": 325.6755917393689
+          },
+          "inst_m": {
+            "n": 14,
+            "mean": 305.6435714285714,
+            "row_se": 5.27920569357759
+          },
+          "stall_inst_m": {
+            "n": 14,
+            "mean": 178.00714285714287,
+            "row_se": 5.9095407519983345
+          }
+        },
+        "movie": {
+          "speed_pct": {
+            "n": 94,
+            "mean": 13.4,
+            "row_se": 0.1747421540648663
+          },
+          "fields_s": {
+            "n": 94,
+            "mean": 8.010425531914894,
+            "row_se": 0.106591598237246
+          },
+          "gxwait_pct": {
+            "n": 94,
+            "mean": 10.588297872340425,
+            "row_se": 2.5403766928231297
+          },
+          "jitcode_pct": {
+            "n": 94,
+            "mean": 63.67872340425532,
+            "row_se": 0.011406703350279542
+          },
+          "compiles_s": {
+            "n": 94,
+            "mean": 3.4148936170212765,
+            "row_se": 1.1214725398432774
+          },
+          "icmiss_k": {
+            "n": 10,
+            "mean": 7691.692,
+            "row_se": 206.25576943742004
+          },
+          "inst_m": {
+            "n": 10,
+            "mean": 308.537,
+            "row_se": 1.6552945692870196
+          },
+          "stall_inst_m": {
+            "n": 10,
+            "mean": 154.052,
+            "row_se": 4.331056273525483
+          }
+        }
+      },
+      "score": "relay_725.csv  cutscene 36.79 (120 rows)  later 23.52 (127 rows)  movie 13.40 (94 rows)  later pictures/s 7.71",
+      "last_jit": [
+        "# jit code: 7.89 host words per guest instruction, 64% of the buffer; fused compare-branches 14744, cached GPR reads 474243, pipe stores 14693015, links 45884; GPU queue at 0",
+        "# jit cache 10s: 41699 blocks, flushes 0, compile fails 0/0/0, traces follow 1 side 15 len 0 link 1: b followed 0, side exits 0, calls followed 0",
+        "# jit words per guest instruction (all blocks kept so far): hot 2.4, exit stubs 1.3, cold 1.5"
+      ],
+      "calls": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "error_lines": [],
+      "opt_masks": [
+        71543.0
+      ]
+    }
+  ],
+  "derived_speed_deltas": [
+    {
+      "job": 708,
+      "mode": "baseline-first",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": 0.0,
+      "versus_closing_pct": -0.08671513950266885
+    },
+    {
+      "job": 709,
+      "mode": "baseline-first",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": 0.0,
+      "versus_closing_pct": -0.05091213826474705
+    },
+    {
+      "job": 710,
+      "mode": "baseline-first",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": 0.0,
+      "versus_closing_pct": 0.004529672753816882
+    },
+    {
+      "job": 710,
+      "mode": "baseline-first",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": 0.0,
+      "versus_closing_pct": 0.3545208946379885
+    },
+    {
+      "job": 710,
+      "mode": "baseline-first",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": 0.0,
+      "versus_closing_pct": 0.02302318196252262
+    },
+    {
+      "job": 711,
+      "mode": "gprinline",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": 0.7995438818775069,
+      "versus_closing_pct": 0.712135416782278
+    },
+    {
+      "job": 712,
+      "mode": "gprinline",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": 0.5693343791415284,
+      "versus_closing_pct": 0.5181323805705018
+    },
+    {
+      "job": 713,
+      "mode": "gprinline",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": 0.639560822823082,
+      "versus_closing_pct": 0.6441194655892213
+    },
+    {
+      "job": 713,
+      "mode": "gprinline",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": -0.39929825834301713,
+      "versus_closing_pct": -0.04619295946277635
+    },
+    {
+      "job": 713,
+      "mode": "gprinline",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": -0.18811166054178985,
+      "versus_closing_pct": -0.16513178786917715
+    },
+    {
+      "job": 714,
+      "mode": "zgpr",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": -2.0320099286976867,
+      "versus_closing_pct": -2.1169630079559743
+    },
+    {
+      "job": 715,
+      "mode": "zgpr",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": -1.9431597231613473,
+      "versus_closing_pct": -1.9930825572611388
+    },
+    {
+      "job": 716,
+      "mode": "zgpr",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": -2.089216922996795,
+      "versus_closing_pct": -2.084781884932718
+    },
+    {
+      "job": 716,
+      "mode": "zgpr",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": 0.5038167631738588,
+      "versus_closing_pct": 0.8601237935079942
+    },
+    {
+      "job": 716,
+      "mode": "zgpr",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": -1.8313000016983771,
+      "versus_closing_pct": -1.8086984432675313
+    },
+    {
+      "job": 717,
+      "mode": "zgx",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": -1.7103618334461834,
+      "versus_closing_pct": -1.7955938302989805
+    },
+    {
+      "job": 718,
+      "mode": "zgx",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": -2.0683261358889538,
+      "versus_closing_pct": -2.1181852450916305
+    },
+    {
+      "job": 719,
+      "mode": "zgx",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": -1.2691568169619472,
+      "versus_closing_pct": -1.2646846328586814
+    },
+    {
+      "job": 719,
+      "mode": "zgx",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": -0.10641420813151115,
+      "versus_closing_pct": 0.24772942590378655
+    },
+    {
+      "job": 719,
+      "mode": "zgx",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": -1.7541213915500453,
+      "versus_closing_pct": -1.73150206414735
+    },
+    {
+      "job": 720,
+      "mode": "zxyz",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": -0.08628433344719522,
+      "versus_closing_pct": -0.17292465136974355
+    },
+    {
+      "job": 721,
+      "mode": "zxyz",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": -0.7784820779870638,
+      "versus_closing_pct": -0.8289978743798998
+    },
+    {
+      "job": 722,
+      "mode": "zxyz",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": -0.4352818347967302,
+      "versus_closing_pct": -0.4307718788856052
+    },
+    {
+      "job": 722,
+      "mode": "zxyz",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": -0.42432248508867954,
+      "versus_closing_pct": -0.07130590232096168
+    },
+    {
+      "job": 722,
+      "mode": "zxyz",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": -0.28214615425121714,
+      "versus_closing_pct": -0.2591879313111889
+    },
+    {
+      "job": 723,
+      "mode": "baseline-last",
+      "scene": "ordon",
+      "section": "settled",
+      "versus_opening_pct": 0.08679039991903448,
+      "versus_closing_pct": 0.0
+    },
+    {
+      "job": 724,
+      "mode": "baseline-last",
+      "scene": "heavy",
+      "section": "settled",
+      "versus_opening_pct": 0.050938071926354134,
+      "versus_closing_pct": 0.0
+    },
+    {
+      "job": 725,
+      "mode": "baseline-last",
+      "scene": "title",
+      "section": "cutscene",
+      "versus_opening_pct": -0.00452946758374706,
+      "versus_closing_pct": 0.0
+    },
+    {
+      "job": 725,
+      "mode": "baseline-last",
+      "scene": "title",
+      "section": "later",
+      "versus_opening_pct": -0.35326848404787503,
+      "versus_closing_pct": 0.0
+    },
+    {
+      "job": 725,
+      "mode": "baseline-last",
+      "scene": "title",
+      "section": "movie",
+      "versus_opening_pct": -0.023017882513542975,
+      "versus_closing_pct": 0.0
+    }
+  ],
+  "benchmark_metadata_check": {
+    "jobs": 18,
+    "result": "done, identical relay build, expected option masks, active native counters, no error lines",
+    "plants_rejected": [
+      "wrong option mask",
+      "zero native calls",
+      "unknown build/job"
+    ]
+  }
+}

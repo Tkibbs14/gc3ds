@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "../cpu/gekko_internal.h"
 #include "../cpu/hle.h"
+#include "../cpu/gpr_helper.h"
 #include "../cpu/aot.h"
 #include "arm_emit.h"
 #include "jit.h"
@@ -437,7 +438,7 @@ typedef struct {
     bool pr;            // MSR[PR]: supervisor-only instructions are left to the interpreter (it raises the exception)
     bool noLink;        // the block is a polling loop: its exits always return to the dispatcher, which skips the loop
     bool trace;         // blocks follow unconditional branches and continue past conditional ones (side exits), see trace_branch
-    u32 gpc[MAX_BLOCK_INSNS], gpa[MAX_BLOCK_INSNS];  // guest address and physical address of each compiled instruction (a trace is not linear)
+    u32 gpc[MAX_BLOCK_INSNS], gpa[MAX_BLOCK_INSNS], nGuest;  // caller words, excluding inlined instructions
     Jit* j;
     // ARM flags still holding the compare behind CR field flagsFld: set where update_crf_from_flags ends (flagsAt);
     // flagsLive when that was the end of the previous instruction.
@@ -1858,6 +1859,83 @@ static void emit_fallback(Cg* c, u32 inst) {
 // The function's instructions come off RDC as it reports them (its branches make the count vary). Bit 31 of the result:
 // its gather-pipe bytes made the GP ask the CPU to stop: leave after it (at the return address), as compiled pipe
 // stores do (stop_tail). Bit 30: it stopped inside (direct mode): leave for g->pc.
+// Read an entry operand without allocating/evicting a cache slot. Argument collection must not flush the cache.
+static void fast_operand(Cg* c, u32 id, u32 off) {
+    int k = slot_of(&c->rc, id);
+    if (k < 0) ldr_imm(&c->e, R3, RG, rc_off(id));
+    else if (c->rc.swap[k]) rev(&c->e, R3, kSlot[k]);
+    else mov_reg(&c->e, R3, kSlot[k]);
+    str_imm(&c->e, R3, SP, off);
+}
+
+// Keep the original call/return budget boundaries without flushing the hot register cache. Near an event, enter
+// the original callee instead of executing a noninterruptible native/inline body. emit_time is patched for the
+// whole block, so LR here is the budget before the instruction represented by c->count (not guest LR).
+static void call_budget(Cg* c, u32 bound, u32 resume, bool after) {
+    if (jit_debug_plant == 18) return; // self-test: let the new call run across an original event boundary
+    tfix_add(c, false);
+    dp_imm(&c->e, ADD, 0, LR, RDC, 0);
+    dp_imm(&c->e, CMP, 1, 0, LR, bound+1);
+    exit_snap(c, after ? C_LE : C_LT, true, resume, NULL);
+}
+
+static void emit_fast_call(Cg* c, u32 target, const HleFastInfo* f) {
+    Emit* e = &c->e;
+    bool gpr = (f->id & 0x10000u) != 0;
+    load_const(e, R1, c->pc+4); str_imm(e, R1, RG, OFF_LR);
+    // Static GX paths are acyclic. cXyz's single nested PSVEC body is shorter than 64 instructions.
+    call_budget(c, f->size/4 + (f->fpWrites ? 64 : 0), target, false);
+    for (u32 r = 0; r < 32; r++) if (f->fpInputs & (1u << r)) fc_sync(c, r);
+    Rc before = c->rc, mid = c->rc;
+    dp_imm(e, SUB, 0, SP, SP, sizeof(HleFastArgs)); // 8-byte aligned; native callees preserve r4-r11 and s16-s31
+    for (u32 r = 0; r < 32; r++) if (f->inputs & (1u << r)) fast_operand(c, r, 4*r);
+    if (!gpr) {
+        if (!f->fpWrites) fast_operand(c, ID_CR, offsetof(HleFastArgs, cr));
+        fast_operand(c, ID_XER, offsetof(HleFastArgs, xer));
+    }
+    mov_reg(e, R0, RG); load_const(e, R1, f->id); mov_reg(e, R2, SP);
+    call(c, (const void*)hle_ps_fast_call);
+    dp_imm(e, ADD, 0, SP, SP, sizeof(HleFastArgs));
+    dp_imm(e, CMP, 1, 0, R0, 0);
+    exit_snap(c, C_EQ, true, target, &before); // nothing ran: restore all inputs and enter the real helper
+    dp_imm(e, BIC, 0, R1, R0, IMM(0xc0000000u));
+    dp_reg(e, SUB, 0, RDC, RDC, R1);
+    // Partial execution has already materialised its writes. Only untouched caller slots may be flushed over it.
+    for (int k = 0; k < NSLOT; k++) {
+        int id = mid.id[k];
+        if ((id >= 0 && id < 32 && (f->partialWrites & (1u << id))) ||
+            (!gpr && f->fpWrites && id == ID_XER)) mid.id[k] = -1;
+    }
+    for (int k = 0; k < NFS; k++)
+        if (mid.fid[k] >= 0 && (f->fpWrites & (1u << ((u32)mid.fid[k]/2)))) mid.fid[k] = -1;
+    dp_imm(e, TST, 1, 0, R0, IMM(0x40000000u));
+    exit_snap(c, C_NE, false, 0, &mid);
+    for (int k = 0; k < NSLOT; k++) {
+        int id = c->rc.id[k];
+        if (id >= 0 && id < 32 && (f->restored & (1u << id))) {
+            ldr_imm(e, kSlot[k], RG, OFF_GPR(id));
+            c->rc.dirty[k] = c->rc.swap[k] = false;
+        } else if (!gpr && (id == 0 || (id >= 3 && id <= 12) || (f->fpWrites && id == ID_XER))) {
+            c->rc.id[k] = -1; c->rc.dirty[k] = c->rc.swap[k] = false;
+        }
+    }
+    // GPR helpers are internal prologue fragments: r3-r12 can be live across them and must be retained too.
+    for (int k = 0; k < NFS; k++) if (c->rc.fid[k] >= 0 &&
+        (f->fpWrites & (1u << ((u32)c->rc.fid[k]/2)))) {
+        c->rc.fid[k] = -1; c->rc.fdirty[k] = false;
+    }
+    for (u32 r = 0; r < 32; r++) if (f->fpWrites & (1u << r)) c->single &= ~(3ull << (2*r));
+    if (jit_debug_plant == 14) // self-test: lose an unrelated callee-saved dirty cache entry
+        for (int k = 0; k < NSLOT; k++) if (c->rc.id[k] >= 14 && c->rc.id[k] < 32) {
+            c->rc.id[k] = -1; c->rc.dirty[k] = false; break;
+        }
+    c->chk &= ~(gpr ? f->restored : 0x1ff9u);
+    c->flagsAt = NO_BRANCH;
+    dp_imm(e, TST, 1, 0, R0, IMM(0x80000000u));
+    exit_snap(c, C_NE, true, c->pc+4, NULL);
+    call_budget(c, 0, c->pc+4, true);
+}
+
 static void emit_ps_call(Cg* c, u32 target, u32 d, bool gprs) {
     Emit* e = &c->e;
     c->single = 0;  // it writes FPRs in guest state
@@ -3962,6 +4040,39 @@ static void fault_add(Jit* j, u32 key, u32 val) {
     j->faultN++;
 }
 
+// X3: the regular memory emitters keep cached values and their precise exception snapshots.
+static bool emit_gpr_inline(Cg* c, u32 target, u32 pa, const GprHelper* h) {
+    if (MAX_BLOCK_INSNS + c->countExtra + h->words > 240) return false; // Entry.count and SUB immediate
+    u32 caller = c->pc, before = c->count;
+    load_const(&c->e, R1, caller+4);
+    str_imm(&c->e, R1, RG, OFF_LR);
+    call_budget(c, h->words, target, false);
+    for (u32 k = 0; k+1 < h->words; k++) {
+        c->pc = target+4*k;
+        c->count = before+k+1;
+        c->pinned = c->fpinned = 0;
+        c->tailN = 0; c->tailFpr = -1;
+        c->flagsLive = false;
+        c->chk &= ~c->chkClear;
+        kconst_after(c, c->kprev);
+        u32 w = ram_rd32(c->j->ram, pa+4*k);
+        u64 rd, wr;
+        gekko_regs(w, &rd, &wr); c->chkClear = (u32)wr;
+        if (jit_debug_plant == 13 && k == 0) w ^= 4; // self-test: wrong helper stack slot
+        if (!compile_int(c, w) || c->pendingStop) { c->e.overflow = true; return true; }
+        c->kprev = w;
+    }
+    kconst_after(c, c->kprev);
+    c->kprev = 0x4e800020u;
+    c->chk &= ~c->chkClear; c->chkClear = 0;
+    c->countExtra += h->words; c->count = before+h->words;
+    c->pc = caller; c->flagsAt = NO_BRANCH;
+    call_budget(c, 0, caller+4, true);
+    c->j->stats.instrsCompiled += h->words;
+    c->j->stats.instrsNative += h->words;
+    return true;
+}
+
 static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
@@ -4069,6 +4180,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         c->count = i + 1 + c->countExtra;
         c->gpc[i] = c->pc;
         c->gpa[i] = ipa;
+        c->nGuest = i+1;
         if ((ipa >> 12) < sizeof j->codePages) j->codePages[ipa >> 12] = 1;
         t.nextPc = c->pc + 4;  // a followed branch changes these
         t.nextPa = ipa + 4;
@@ -4125,7 +4237,32 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if ((inst >> 26) == 18 && (inst & 1)) {  // bl to an SDK paired-single function: its stand-in in place (hle_ps.c)
             s32 li = ((s32)(inst << 6)) >> 6 & ~3;
             u32 target = (inst & 2) ? (u32)li : c->pc + (u32)li, size = 0, tpa;
+            GprHelper gh;
+            u32 endpa;
+            if ((j->opt & OPT_GPRINLINE) && gk_translate(g, target, false, false, &tpa, false) &&
+                gpr_helper_match(j->ram, j->ramSize, tpa, &gh) &&
+                gk_translate(g, target+4*gh.words-4, false, false, &endpa, false) &&
+                endpa == tpa+4*gh.words-4 && emit_gpr_inline(c, target, tpa, &gh)) {
+                j->codePages[tpa >> 12] = j->codePages[endpa >> 12] = 1;
+                t.lrKnown = false;
+                j->stats.instrsNative++;
+                continue;
+            }
             bool gprs = false;
+            HleFastInfo fast;
+            u32 groups = ((j->opt & OPT_ZGPR) ? HLE_FAST_GPR : 0) |
+                         ((j->opt & OPT_ZGX) ? HLE_FAST_GX : 0) | ((j->opt & OPT_ZXYZ) ? HLE_FAST_XYZ : 0);
+            if (groups && c->fastmem && hle_ps_fast_info(target, groups, &fast) &&
+                gk_translate(g, target, false, false, &tpa, false) && tpa == (target & 0x0fffffffu) &&
+                tpa <= j->ramSize && fast.size <= j->ramSize-tpa &&
+                gk_translate(g, target+fast.size-4, false, false, &endpa, false) && endpa == tpa+fast.size-4) {
+                emit_fast_call(c, target, &fast);
+                j->codePages[tpa >> 12] = j->codePages[endpa >> 12] = 1;
+                t.lrKnown = false;
+                j->stats.instrsNative++;
+                j->stats.instrsCompiled += fast.size/4;
+                continue;
+            }
             int d = hle_ps_inline(target, &gprs, &size);
             if (d >= 0 && gk_translate(g, target, false, false, &tpa, false) && tpa + size <= j->ramSize &&
                 ((tpa + size - 1) >> 12) < sizeof j->codePages) {
@@ -4267,7 +4404,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
         if (want && (big ? c->count >= 16 && big-- > 0 : pc == dumpPc)) {
             fprintf(stderr, "JIT_DUMP pc %08x guest %u hot %u exit %u cold %u\n", pc, c->count, hotEnd, exitWords, c->alt.n);
-            for (u32 k = 0; k < c->count && c->gpa[k] + 4 <= j->ramSize; k++) {
+            for (u32 k = 0; k < c->nGuest && c->gpa[k] + 4 <= j->ramSize; k++) {
                 char dis[96];
                 gekko_disasm(c->gpc[k], ram_rd32(j->ram, c->gpa[k]), dis, sizeof dis);
                 fprintf(stderr, "JIT_GUEST %08x %s\n", c->gpc[k], dis);

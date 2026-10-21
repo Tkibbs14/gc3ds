@@ -85,5 +85,12 @@ extern u64 g_psWhy[6];  // refusals by reason (hle_ps.c ps_call)  // per functio
 // (LR set by the caller).
 int hle_ps_inline(u32 target, bool* gprs, u32* size);
 u32 hle_ps_inline_call(Gekko* g, u32 d);  // instructions run (0 refused); bit 31: the GP asked the CPU to stop
+// X3 explicit entry operands. The JIT fills only `inputs`; unrelated dirty cache entries never enter guest memory.
+typedef struct { u32 gpr[32], cr, xer; } HleFastArgs;
+typedef struct { u32 id, size, inputs, partialWrites, fpInputs, fpWrites, restored; } HleFastInfo;
+enum { HLE_FAST_GPR = 1, HLE_FAST_GX = 2, HLE_FAST_XYZ = 4 };
+bool hle_ps_fast_info(u32 target, u32 groups, HleFastInfo* info);
+u32 hle_ps_fast_call(Gekko* g, u32 id, const HleFastArgs* args);
+extern u64 g_psFastCalls[3], g_psFastRefused[3]; // GPR, GX, cXyz; successful/refused experimental ABI calls
 // Where the stand-ins' gather-pipe bytes go (the system's gp_fifo_write).
 void hle_ps_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx);

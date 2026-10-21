@@ -329,7 +329,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C20. __save_gpr / __restore_gpr as in-place stand-ins
 
-- **Status:** rejected 2026-10-17 (jobs 321-326); exact on the PC.
+- **Status:** legacy C form rejected 2026-10-17 (jobs 321-326); X3 native form still rejected, word-inline form positive/off (2026-10-20; result below); exact on the PC.
 - **What:** the CodeWarrior runtime's register save and restore (2.5% of the cutscene, job 311), entered at each
   `_savegpr_N`, as C called in place of `bl` (ps_translate.py `__save_gpr.dis@K`).
 - **Result:** a small loss (job 322 with them: cutscene 28.29%, later 15.70%, against 28.98 / 16.35 without, job
@@ -340,6 +340,13 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **2026-10-20, re-opened as the JIT inline form (EMULATOR_CEILING.md H5; design in HANDOFF.md "Next JIT build"):**
   the offline call count puts the helpers at 22.3% / 16.7% of all calls (cutscene / later stretch), ~6-7% of block
   boundaries; inlined, no flush and no boundary. Estimate +1.5-2.5% core 0. Not built yet.
+
+- **2026-10-20 X3 result (jobs 708-725):** word-inline helpers are built, off, and positive in separate gameplay
+  runs (+0.80% / +0.57% Ordon / heavy, derived versus opening controls). The retained-register C form remains
+  rejected (-2.03% / -1.94%); keeping cached callee-saved registers did not make it profitable. Closing controls
+  preserve the verdict. [Checks, title results and limits](MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20). The old estimate above was not attained.
+  Re-evaluate native helpers only with a materially different call convention; further ordinary leaf inlining is a
+  separate build, not part of X3.
 
 ## C21. GX register setters as in-place stand-ins (logged mode)
 
@@ -353,6 +360,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   (job 323: cutscene 21.8%): quadratic log reads, one pointer reload per byte.
 - **Re-evaluate when:** the translator can prove a computed address stays within a range checked at entry (e.g.
   __GXData + small index), so these run without the log; or when calls get cheaper (C20).
+
+- **2026-10-20 X3 result (jobs 708-725):** the selected GX setter group remains rejected with the retained-register
+  native path (-1.71% / -2.07% Ordon / heavy, derived versus opening controls). The closing controls preserve the
+  loss; the new `--zgx` stays off. [Exactness checks, title results and limits](MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20). Small-SDK automatic
+  replacement did not clear its cost gate; re-evaluate with a different call convention or larger eliminated subtree.
 
 ## C22. Cheaper compares and more register-cache slots (lever 3 of 2026-10-17)
 

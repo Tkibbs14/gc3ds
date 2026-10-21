@@ -84,12 +84,28 @@ bool host_jit_enable(System* s) {
     jit_set_sched(g_hostJit, getenv("GC3DS_NOSCHED") ? 0 : SCHED_ALL);
     jit_set_mem_stamps(g_hostJit, &g_memStamps);  // dcbf / dcbst / dcbz stamp their page for the display-list cache
     if (getenv("GC3DS_OPT")) jit_set_opt(g_hostJit, (u32)strtoul(getenv("GC3DS_OPT"), NULL, 0));  // optimizing-JIT stages (with GC3DS_NOFAULTMEM)
+    if (getenv("GC3DS_X3")) { // qemu whole-game gate: bit 0 inline, 1 native GPR, 2 native GX, 3 native cXyz
+        u32 x = (u32)strtoul(getenv("GC3DS_X3"), NULL, 0);
+        u32 mask = jit_opt(g_hostJit) & ~(OPT_GPRINLINE | OPT_ZGPR | OPT_ZGX | OPT_ZXYZ);
+        jit_set_opt(g_hostJit, mask | ((x & 1) ? OPT_GPRINLINE : 0) | ((x & 2) ? OPT_ZGPR : 0) |
+                    ((x & 4) ? OPT_ZGX : 0) | ((x & 8) ? OPT_ZXYZ : 0));
+        // X3 only replaces bl sites. Short-budget refusals and indirect entries execute the original code.
+        hle_ps_set_group("GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixIndex", false);
+        hle_ps_set_group("__pl,__mi,__ml", false);
+    }
     s->icbiCtx = g_hostJit;
     return true;
 }
 
 static void print_line(const char* line) { fprintf(stderr, "%s\n", line); }
-void host_jit_report(void) { if (g_hostJit) jit_print_stats(g_hostJit, print_line); }
+void host_jit_report(void) {
+    if (!g_hostJit) return;
+    jit_print_stats(g_hostJit, print_line);
+    fprintf(stderr, "JIT_X3 calls GPR/GX/cXyz %llu/%llu/%llu; refused %llu/%llu/%llu\n",
+        (unsigned long long)g_psFastCalls[0], (unsigned long long)g_psFastCalls[1],
+        (unsigned long long)g_psFastCalls[2], (unsigned long long)g_psFastRefused[0],
+        (unsigned long long)g_psFastRefused[1], (unsigned long long)g_psFastRefused[2]);
+}
 #else
 bool jit_host_fault_init(const u8* ram) { (void)ram; return false; }
 bool host_jit_enable(System* s) { (void)s; return false; }

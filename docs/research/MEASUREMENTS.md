@@ -1634,6 +1634,214 @@ off reference, normal census, `GXCENSUS_PLANT=1`, and two additional normal cens
 Symbols default to `/root/tpdecomp/config/GZ2E01/symbols.txt` (`GXCENSUS_SYMBOLS` overrides); the file is unchanged
 from X1. Stop after X1b. Gameplay coverage, net filter cost and device-time validation remain next, unrun work.
 
+### X3: GPR helper inlining and retained-register native calls (2026-10-20)
+
+Scope: X3 only. Four independent switches, all off by default: `--gprinline`, `--zgpr`, `--zgx`, `--zxyz`.
+The legacy `--psgx` and `--psxyz` groups stay off, including on short-budget fallback paths.
+Recognition of GPR suffix helpers uses instruction words, consecutive registers and aligned displacements, then
+plain `blr`, rather than TP addresses. Inlining uses normal integer emitters and cached operands, sets LR at the BL,
+uses each callee PC for exception snapshots, accounts for the full callee, and marks every callee code page for icbi.
+
+The native path copies descriptor-selected entry operands from existing cache slots into a 136-byte host-stack
+argument block (34 words; derived from `HleFastArgs`), without allocating or evicting cache slots. Unrelated
+cached r14-r31 remain in host callee-saved registers across C. SDK volatile GPR slots are discarded (owner-approved
+ABI dead state); internal GPR prologue helpers retain volatile arguments too. Restore helpers reload their written
+cached registers. FP inputs are selectively materialised and written FP lanes invalidated. Refusal and partial-stop
+exits preserve the appropriate snapshot. Native GPR accepts MEM1 only: the JIT's MEM1 proof does not prove the
+locked-cache BAT. Unsupported regions enter the original guest helper. Entry-operand variants are generated from
+the existing translated C by `ps_fast.py`; the existing translations remain byte-identical.
+
+A budget guard preserves the original BL/return event boundaries: insufficient budget enters the original callee;
+completed calls yield at the original return boundary when needed. The first qemu attempt matched frames but changed
+instruction totals by 3-4 instructions, so it failed the exactness gate. The guards and paired budget fixtures were
+added before scoring hardware. An earlier default/OPT7 chain run also exposed four out-of-scope comparisons from the old
+fault-alias classifier: clearing JIT_FAULT_BIC bit 30 maps 0x7ffffxxx to 0x3ffffxxx, outside compared MEM1. The checker
+now classifies this alias correctly and has a plant that restores the wrong classification. Neither failed run is
+counted as passing. The alias correction is a harness scope fix, not a production memory fix; exact behaviour at
+those excluded aliases remains unvalidated.
+
+Checks and measurements below use whole runs. The PC states are title scenes, not gameplay. Hardware gameplay uses
+Ordon's scripted square walk and the heavy-area state on the 2DS SD card. No game data or state files are committed.
+
+**Software exactness (measured, final3 runs).** The CPU suite passed 420 directed and 12,800 differential
+cases, with 436,891 generated instructions over 261 mnemonics; both logic/FP plants were caught (313/181 mismatches),
+and all 11,806 disassembly comparisons matched. Its gcc/clang/devkitARM compile checks passed. The 3DS build completed;
+existing warnings remain (including the old CMPU macro and toolchain executable-stack warning), with no warning
+introduced by the new code. The generator equality check passed and its deliberately different output failed.
+
+| PC HLE_CHECK title run (measured) | PS-library calls checked | New GPR / GX / cXyz calls | Differences |
+|---|---:|---:|---:|
+| 4290 -> 4490 | 4,112,564 | 2,387,966 / 1,505,100 / 200 | 0 |
+| 5000 -> 5200 | 9,376,584 | 3,333,037 / 489,048 / 59,428 | 0 |
+| 900 -> 1100 | 2,867,899 | 1,452,562 / 569,809 / 99,403 | 0 |
+| 6590 -> 6790 | 4,825,171 | 2,153,727 / 1,554,881 / 70,595 | 0 |
+
+Derived sums: 21,182,218 PS-library comparisons, including 13,675,756 calls through the new operand variants
+(9,327,292 GPR, 4,118,838 GX, 229,626 cXyz). The forced-stop 5000 -> 5020 run checked 928,486 calls, with
+2,868 stops inside callees and zero differences. The 5000 -> 5002 result plant produced 80,943 differences in
+80,943 checks, so the oracle cannot silently accept that corruption. These PC checks use interpreter entry operands;
+the differential JIT fixtures separately exercise extraction from dirty cached slots, preserved r31, refusal,
+partial stores, FP-unavailable exits, precise DSI, mirrored RAM, callee-page invalidation and short event budgets.
+
+The final directed corpus contains 636 cases: every save/restore suffix r14-r31 in both inline/native modes,
+seven memory/code forms (including mapped and unmapped locked cache), four synthetic native-ABI cases and
+128 paired original/new runs over budgets 1-32. Plant 13 changes a helper slot, 14 loses a preserved dirty slot,
+17 restores the bad fault-alias classifier, 18 removes event guards and 19 bypasses the native memory guard.
+The standalone memory-guard check passed all 636 cases; plant 19 produced 72 failures, including a wrong DSI.
+The fixtures contain synthetic instructions only. The existing generated SDK translations were not regenerated
+or edited; the new entry variants derive from that unchanged source.
+
+The required final3 JIT matrix passed: default/seed 1, OPT=7/seed 1, checked memory/seed 1 and checked
+memory/seed 3 each generated 20,000 single-block and 20,000 linked-chain cases with zero failures, plus 636 directed
+cases per invocation. All existing plants and new plants 13,14,17,18,19 were caught in all four configurations.
+Plant 13 produced 195 failures in default/OPT=7 and 196 in checked-memory runs; plants 14,17,18,19 produced
+87,1,88,72 respectively in every configuration. The fault-alias classifier
+still deliberately excludes unmapped aliases outside the compared RAM windows; correcting that classifier does
+not expand the emulated memory model. No production memory semantics changed for that fix.
+
+Measured exclusions: default and OPT=7 each left 5 single-block and 34 linked-chain fault-alias cases un-compared;
+both checked-memory runs left zero cases un-compared. The generated-case count is not a claim that these aliases
+were validated. Faults patched 1,783 single-block / 8,337 chain sites in each fault-mode run.
+
+All ten final3 qemu runs reached the requested field and passed the instruction-count / last-frame gate,
+with each option tested separately against off. Both the planted count and planted frame signature were rejected
+for each starting state. Measured counts and final-frame SHA-256:
+
+| State -> field | Instructions, all five modes (measured) | Final frame SHA-256, all modes |
+|---|---:|---|
+| 950 -> 970 | 37,039,663 | `8a7c99c6a6557b5bf99953b695c0e7569d575cf16e6ca884864b296c2f88484e` |
+| 850 -> 854 | 8,561,347 | `8a208fc4c96e1a00d0744025026beaad7ae3420f27689bde3597c0182797d96c` |
+
+Measured native successes (GPR / GX / cXyz respectively, in their independent runs): 950 -> 970 had
+162,947 / 58,721 / 9,549; 850 -> 854 had 25,364 / 10,836 / 1,982. All reported zero runtime refusals.
+These totals do not count near-budget sites that went directly to the original guest helper before calling C.
+HLE_CHECK uses the existing ABI comparison contract: volatile dead registers and private callee frames are
+excluded by the owner's earlier approval. Neither it nor the final-frame test proves full machine-state equality
+outside that contract; the new GPR directed fixtures compare all GPRs and precise exception state.
+
+**2DS whole runs (measured; derived relative changes).** All jobs use build `871a05981ef37a0e`. Each speed is a per-run mean plus/minus its row standard error in percentage points. These row errors do not measure independent-run uncertainty. No opening/closing controls are pooled.
+
+
+Ordon: rows from 50 real seconds; pictures/s from the existing `runs.py` windows.
+
+| Mode / job | Speed % (measured mean ± row SE) | Derived Δ vs opening / closing baseline | Pictures/s (measured) |
+|---|---:|---:|---:|
+| baseline-first / 708 | 31.616 ± 0.206 | +0.00% / -0.09% | 9.418 |
+| gprinline / 711 | 31.869 ± 0.199 | +0.80% / +0.71% | 9.494 |
+| zgpr / 714 | 30.974 ± 0.208 | -2.03% / -2.12% | 9.210 |
+| zgx / 717 | 31.076 ± 0.208 | -1.71% / -1.80% | 9.246 |
+| zxyz / 720 | 31.589 ± 0.199 | -0.09% / -0.17% | 9.410 |
+| baseline-last / 723 | 31.644 ± 0.208 | +0.09% / +0.00% | 9.426 |
+
+Heavy: rows from 50 real seconds; pictures/s from the existing `runs.py` windows.
+
+| Mode / job | Speed % (measured mean ± row SE) | Derived Δ vs opening / closing baseline | Pictures/s (measured) |
+|---|---:|---:|---:|
+| baseline-first / 709 | 22.637 ± 0.072 | +0.00% / -0.05% | 6.787 |
+| gprinline / 712 | 22.765 ± 0.074 | +0.57% / +0.52% | 6.826 |
+| zgpr / 715 | 22.197 ± 0.074 | -1.94% / -1.99% | 6.651 |
+| zgx / 718 | 22.168 ± 0.074 | -2.07% / -2.12% | 6.640 |
+| zxyz / 721 | 22.460 ± 0.073 | -0.78% / -0.83% | 6.730 |
+| baseline-last / 724 | 22.648 ± 0.072 | +0.05% / +0.00% | 6.792 |
+
+Title tp850: fixed windows 25-150 / 165-300 / 320-420 real seconds (`title_sections.py`); cell parentheses give derived change versus opening baseline. The later picture rate is measured.
+
+| Mode / job | Cutscene speed % ± row SE (Δ) | Later speed % ± row SE (Δ) | Movie speed % ± row SE (Δ) | Later pictures/s |
+|---|---:|---:|---:|---:|
+| baseline-first / 710 | 36.796 ± 0.217 (+0.00%) | 23.604 ± 0.704 (+0.00%) | 13.403 ± 0.169 (+0.00%) | 7.70 |
+| gprinline / 713 | 37.031 ± 0.220 (+0.64%) | 23.510 ± 0.712 (-0.40%) | 13.378 ± 0.174 (-0.19%) | 7.74 |
+| zgpr / 716 | 36.027 ± 0.223 (-2.09%) | 23.723 ± 0.688 (+0.50%) | 13.158 ± 0.169 (-1.83%) | 7.58 |
+| zgx / 719 | 36.329 ± 0.223 (-1.27%) | 23.579 ± 0.707 (-0.11%) | 13.168 ± 0.170 (-1.75%) | 7.62 |
+| zxyz / 722 | 36.636 ± 0.226 (-0.44%) | 23.504 ± 0.703 (-0.42%) | 13.365 ± 0.173 (-0.28%) | 7.67 |
+| baseline-last / 725 | 36.794 ± 0.221 (-0.00%) | 23.521 ± 0.717 (-0.35%) | 13.400 ± 0.175 (-0.02%) | 7.71 |
+
+Retained code in the heavy area (measured last reported window; full-buffer flush count, not icbi count):
+
+| Mode / job | Buffer % | Hot / exit / cold words per guest instruction | Full-buffer flushes | Reported native successes / refusals |
+|---|---:|---:|---:|---:|
+| baseline-first / 709 | 43 | 2.2 / 1.0 / 1.3 | 0 | n/a |
+| gprinline / 712 | 47 | 2.2 / 1.1 / 1.4 | 0 | n/a |
+| zgpr / 715 | 47 | 2.3 / 1.1 / 1.4 | 0 | 11,894,698 / 0 |
+| zgx / 718 | 46 | 2.2 / 1.1 / 1.4 | 0 | 6,719,546 / 0 |
+| zxyz / 721 | 44 | 2.2 / 1.0 / 1.3 | 0 | 3,248,823 / 0 |
+| baseline-last / 724 | 43 | 2.2 / 1.0 / 1.3 | 0 | n/a |
+
+Native counts sum the emitted 10-second reports after 50 real seconds, excluding startup and the unreported tail; near-budget fallbacks do not enter C and do not increment runtime refusal counts. Compiled-word ratios count copied callee instructions at each inline site; buffer occupancy also shows code growth. The companion JSON retains per-run sample counts, row errors, sparse PMU samples, option masks and frame-gap histograms.
+
+
+**Verdicts (derived from the measured whole runs above).** Word inlining is positive in both gameplay scenes
+(+0.80% / +0.57%, Ordon / heavy versus opening controls); the closing controls retain the same sign.
+The earlier +1.5-2.5% core-0 estimate was larger than the realised gameplay gain. Native GPR (C20) does not turn
+positive (-2.03% / -1.94%); native GX setters (C21) do not turn positive (-1.71% / -2.07%); cXyz does not turn
+positive (-0.09% / -0.78%, essentially even in Ordon and a loss in the heavy area). Closing-control comparisons
+are reported separately in the tables. None of the three tested native sets establishes a gameplay gain.
+
+X3's native-call hypothesis is disproved for these sets with the implemented generic argument-block ABI.
+Automatic replacement of small SDK functions stays closed; native replacement remains focused on large subtrees.
+The word-inline GPR path is a small positive result for leaf inlining. All four new switches remain off by default.
+Other calling conventions, automatic translation of additional functions and other games remain unmeasured.
+No X4 or additional optimisation was built.
+
+**Limits.** These are separate fixed-duration whole runs on TP, with two control runs per scene. Row standard
+errors describe within-run variation, not independent-run uncertainty. Gameplay uses SD-card states; all PC states
+are title scenes. The title's fixed real-time windows can sample different virtual progress: native GPR's later
+speed mean rises slightly while its picture rate falls, so that mean alone does not establish a gain.
+Gameplay retains the same observed gap kinds (mostly two VI fields per picture);
+the counts and actual pictures/s are retained in the evidence. Per-call diagnostic counters are included in
+the measured cost. Code-size and sparse PMU samples do not isolate argument packing, budget guards or fetch costs.
+The initial older-build baseline jobs 705-707 are retained in the JSON and excluded from final comparisons because
+the memory-guard review changed the binary. No game images, states or commercial instruction dumps are included.
+
+
+Reproduce software checks from the repository root (WSL Debian, disc read in place):
+
+```bash
+export GC3DS_ISO='/mnt/c/Users/tyler/TP3DS/game/Legend of Zelda, The - Twilight Princess (USA).nkit.iso'
+make -C core
+bash core/tests/cpu/run_tests.sh
+python3 core/tools/ps_fast.py --check
+# Must fail: python3 core/tools/ps_fast.py --check --plant
+X3_OUT=/root/x3/repeat-matrix bash core/tests/jit/run_x3_matrix.sh
+bash core/tools/arm_build.sh
+python3 core/tests/jit/x3_game.py --out /root/x3/repeat-game --jobs 3
+python3 core/tests/cpu/check_x3_hle.py --out /root/x3/repeat-hle
+bash core/host3ds/build.sh
+```
+
+The matrix directory must be new: its shared binary is compiled once, then reused for all four masks/seeds.
+The runner now refuses a pre-existing binary; a planted stale-binary sentinel was rejected with exit 2 before any
+check started. This wrapper guard was added after the final matrix, which had used a fresh directory; the test
+commands and tested JIT binary are unchanged.
+`x3_game.py` runs `GC3DS_OPT=0 GC3DS_JIT_NOTRACE=1 GC3DS_JIT_MB=16 GC3DS_X3=BITS` under
+`qemu-arm -L /usr/arm-linux-gnueabihf -cpu cortex-a7`, with `--jit --load-state /root/tp_arm_S.state
+--frames END --out DIR`: S:END = 950:970 and 850:854, BITS = 0,1,2,4,8 independently. It compares the
+`JIT: N instructions run` line and SHA-256 of `last.png`, then plants a different count and frame signature.
+`check_x3_hle.py` runs `HLE_FAST=7 HLE_CHECK=1 GC3DS_NODRAW=1` on PC states 4290:4490, 5000:5200,
+900:1100 and 6590:6790; it adds 5000:5020 with `HLE_STOP_EVERY=13` and 5000:5002 with
+`HLE_FAST_PLANT=1`. These are all title scenes. No PC gameplay check is claimed.
+
+Hardware reproduction: all four new options and `--psgx off --psxyz off` explicitly set; switch on only the
+named experimental option per treatment, keep the other three off. Queue with `bash core/tools/relay.sh queue
+--game Twilight --state sdmc:/gc3ds/states/STATE.state --seconds SECONDS OPTIONS`. STATE/SECONDS are
+tp_ordon/180, tp_area2/150, tp850/420. Ordon also uses the exact square walk in REMOTE_RUNS.md (40-159 up,
+160-279 right, 280-399 down, 400-519 left, each offset by 480 repeatedly through 2919). Fetch with
+`bash core/tools/relay.sh log JOB`; score gameplay with `python3 core/tools/runs.py core/out/relay_JOB.csv`
+and title with `python3 core/tools/title_sections.py core/out/relay_JOB.csv`. No within-run A/Bs or pooled A/B
+means decide these verdicts. Reported row standard errors describe within-run variation, not uncertainty across
+independent whole runs. Title sections are 25-150, 165-300 and 320-420 real seconds; gameplay drops the first 50 s.
+
+**Evidence and exact hardware replay:** [count-only results and job arguments](x3/2026-10-20.json) retain
+software signatures, each hardware job's exact options, and per-run statistics. No game bytes, states, images or
+commercial disassemblies are included. After building, this requeues the complete opening/control/treatment order:
+
+```bash
+python3 - <<'PY'
+import json, subprocess
+for run in json.load(open('docs/research/x3/2026-10-20.json'))['device_jobs']:
+    subprocess.run(['bash', 'core/tools/relay.sh', 'queue', *run['args']], check=True)
+PY
+```
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

@@ -222,6 +222,14 @@ inlining (HANDOFF.md) and a call path that keeps the register cache. Re-score th
 **Disproves** if they stay at or below zero: library replacement stays limited to large subtrees, and the SDK-level
 generality of 4.2 is mostly lost.
 
+- **Result (2026-10-20, jobs 708-725):** GPR word inlining **confirmed positive** in gameplay
+  (+0.80% / +0.57% Ordon / heavy, derived versus opening controls); the three native sets **disproved** the
+  turn-positive hypothesis: C20 -2.03% / -1.94%, C21 -1.71% / -2.07%, cXyz -0.09% / -0.78% (Ordon essentially even,
+  heavy a loss). Closing controls preserve these conclusions; all switches stay off. Required fuzzer/plants,
+  qemu count/frame gates and PC HLE_CHECK passed. [Full methods, numbers and limits](MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20).
+  Build item 1 is completed; automatic small-SDK replacement and item 6's small-call route remain gated.
+  Replacement stays focused on large subtrees; this result covers the implemented argument-block ABI.
+
 **X4. Hand-compiled region oracle (device bench, ~2-3 days).** Take the 2-3 hottest TP functions in Ordon (`--profile
 on`), write by hand the ARM code a region compiler would emit (regions, liveness allocation, CR in flags, no range
 checks), and run both versions against captured inputs in a jitbench ring. **Confirms** the region tier at >= ~1.5x on
@@ -238,13 +246,13 @@ section 5 is trustworthy for "as many games as possible" without it.
 
 Then builds, each behind a switch, off until measured, scored with separate whole runs, gated by the experiment named:
 
-1. GPR save / restore inlining and the zero-flush call (X3; already the first queued item).
+1. X3 completed: GPR word inlining is positive; the retained-register native sets are not. All new switches off; see the result above.
 2. Redundant state filtering at decode (X1b a: gross budget measured; incremental filter cost and device gain still gated).
 3. Fault mode's crash root cause (measured +4-9%; independent of the rest).
 4. The region tier, smallest first: function-scope regions without loops, then loops, then liveness allocation, then
    CR in flags (X4).
 5. G2 + G1 with cached or bounded lighting (X1b b, c: geometry key inconclusive, lighting scene dependent; X5).
-6. The GX SDK as a native unit with the command channel (X1 c, e; X3).
+6. The GX SDK as a native unit with the command channel (X1 c, e correctness option remains open; X3 did not clear the small-call cost gate).
 7. The GX pipeline split across cores (X2).
 8. JSystem subtree ports (the HUD pane walk, J3D drawing): still worth doing for TP and the other EAD games, and the
    test of the subtree Amdahl prediction, but under the general-purpose goal they rank below SDK-level work.
@@ -255,3 +263,5 @@ The current queue (GPR inlining, then the HUD pane walk, then GX measurements) w
 general-emulator goal this review proposes: **X1 (PC census) and X2 (L2 probe) first** (cheap, decisive, nothing to
 build), **then X3 with the GPR inlining as its first half, then X4**, with the pane walk moving behind the SDK-level
 items. The owner decides; HANDOFF.md's queue is unchanged until then.
+
+2026-10-20 update: X3 is now completed as recorded above; the remaining experiments stay queued.

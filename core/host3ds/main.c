@@ -488,6 +488,7 @@ typedef struct {
     bool abJ3dhook;  // --ab j3dhook: the J3D concat-view matrix port on and off (hle column bit 6)
     bool abFlushhook;  // --ab flushhook: the __GXSendFlushPrim port on and off (hle column bit 7)
     bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
+    bool gprinline, zgpr, zgx, zxyz; // X3, default off; separate whole-run experiments
     bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
@@ -600,6 +601,10 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psoff")) snprintf(o->psOff, sizeof o->psOff, "%s", v);
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
+        else if (!strcmp(a, "--gprinline")) o->gprinline = !strcmp(v, "on");
+        else if (!strcmp(a, "--zgpr")) o->zgpr = !strcmp(v, "on");
+        else if (!strcmp(a, "--zgx")) o->zgx = !strcmp(v, "on");
+        else if (!strcmp(a, "--zxyz")) o->zxyz = !strcmp(v, "on");
         else if (!strcmp(a, "--psxyz")) o->psxyz = !strcmp(v, "on");
         else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
         else if (!strcmp(a, "--ringbatch")) o->ringbatch = !strcmp(v, "on");
@@ -1099,6 +1104,8 @@ static const char* run(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
+                           (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) |
+                           (g_opt.zgx ? OPT_ZGX : 0) | (g_opt.zxyz ? OPT_ZXYZ : 0) |
                            (g_opt.pipeps && !g_opt.abPipeps ? OPT_PIPEPS : 0) |
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
                            (g_opt.abFlip && g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.abFlip && g_opt.abInlmem ? OPT_INLMEM : 0));  // or on with --ab-flip
@@ -1150,7 +1157,7 @@ static const char* run(const char* path) {
         if (g_pica) pica_set_tevenv(g_opt.tevenv && !g_opt.abTevenv);  // --ab tevenv starts off
         if (g_pica) pica_set_dblframe(g_opt.dblframe && !g_opt.abDblframe);  // --ab dblframe starts off
         if (g_pica) pica_set_smalltex(g_opt.abSmalltex ? 0 : g_opt.smalltex);  // --ab smalltex starts off
-        g_psgxOn = g_opt.psgx && !g_opt.abPsgx;  // off by default (job 375); --ab psgx starts off
+        g_psgxOn = g_opt.psgx && !g_opt.abPsgx;
         hle_ps_set_group(kPsGx, g_psgxOn);
         g_psflushOn = g_opt.psflush && !g_opt.abPsflush;  // --ab psflush starts off
         g_gpBulk = g_opt.gpbulk && !g_opt.abGpbulk;  // --ab gpbulk starts off
@@ -1824,6 +1831,20 @@ static const char* run(const char* path) {
                                 }
                                 for (u32 k = 0; k <= nd; k++) lastPs[k] = g_psCalls[k];
                                 lastPsRef = g_psRefused;
+                            }
+                        }
+                        { // X3: actual calls through the selective ABI, not just recognised compilation sites
+                            static u64 previous[3], refused[3];
+                            if (g_opt.zgpr || g_opt.zgx || g_opt.zxyz) {
+                                fprintf(g_perf, "# x3 calls/refused 10s GPR/GX/cXyz: %llu/%llu %llu/%llu %llu/%llu\n",
+                                    (unsigned long long)(g_psFastCalls[0]-previous[0]),
+                                    (unsigned long long)(g_psFastRefused[0]-refused[0]),
+                                    (unsigned long long)(g_psFastCalls[1]-previous[1]),
+                                    (unsigned long long)(g_psFastRefused[1]-refused[1]),
+                                    (unsigned long long)(g_psFastCalls[2]-previous[2]),
+                                    (unsigned long long)(g_psFastRefused[2]-refused[2]));
+                                memcpy(previous, g_psFastCalls, sizeof previous);
+                                memcpy(refused, g_psFastRefused, sizeof refused);
                             }
                         }
                         {  // relay.c: the sockets service restarted after failed requests (the 2DS's address then)

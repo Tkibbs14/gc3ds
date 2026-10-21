@@ -24,8 +24,7 @@
 > below stands until the owner decides.
 > **Queue for the next session (set 2026-10-20; one list reconciling DIRECTION_REVIEW.md section 6 and
 > EMULATOR_CEILING.md section 8, emulator first per the owner):**
-> 1. **Inline GPR save / restore in the JIT** (H5; design below, "Next JIT build"). Small build, +1.5-2.5% core 0
->    (estimate).
+> 1. **X3 completed (2026-10-20):** GPR word inlining is positive in gameplay; native GPR/GX/cXyz do not turn positive; all off. [Results](research/MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20).
 > 2. **The HUD: the J2D pane walk as one port** (W1; design in research/LIBRARY_PORTS.md "The pane walk's design").
 >    First its prerequisite: why ~2% of J2DPictureEx port calls give up (float edge cases), because a give-up inside a
 >    walked subtree would abort the whole subtree. Then the walk. ~+3-3.5% Ordon, ~2.5% heavy area (estimate), and it
@@ -52,7 +51,7 @@
 > offline model ran on 10-20 (`core/tools/hammock.py`, MEASUREMENTS.md "Hammock blocks and inlined leaves"): blocks
 > 1.5-1.85x longer, CR dead at exits only 7-14%, worth ~+3-8% core 0, below the +8-15% estimate; inlining small leaves
 > (H5: GPR save / restore is 17-22% of all calls) is the cheaper first build.
-> - **Next JIT build: inline the GPR save / restore helpers (H5, re-opens C20).** What: at a `bl` whose target is
+> - **Next JIT build: inline the GPR save / restore helpers (H5, re-opens C20; completed by X3, 2026-10-20).** What: at a `bl` whose target is
 >   `_savegpr_N` / `_restgpr_N` (TP: 0x803621A0-0x8036223C; recognise by the callee's words, not the address: a straight
 >   run of `stw rK,d(r11)` / `lwz rK,d(r11)` ending in an unconditional blr), compile the callee's stores / loads in
 >   place through the normal integer codegen and the register cache, write LR = bl's pc + 4, add the callee's count, and
