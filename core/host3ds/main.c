@@ -566,6 +566,7 @@ static void opts_default(RunOpts* o) {
     o->dblframe = true;  // overlapped GPU frames (pica.c, C30): heavy area +1.9% frames, Ordon even (jobs 548-560)
     o->fcache = true;    // float lanes (OPT_FCACHE, C11): heavy area +1.5%, Ordon +1.6%, title +0.6-2.4% (separate runs, jobs 567-576)
     o->ind2 = true;      // 2-way indirect-branch table (OPT_IND2): heavy area +0.85%, Ordon +0.9%, title +0.3-0.8% (jobs 565-576)
+    o->gprinline = true; // _savegpr_N / _restgpr_N inlined at the bl (X3): Ordon +0.80%, heavy area +0.57%, cutscene +0.64% (jobs 708-725)
     o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
     o->smalltex = 2;     // small texel formats, CMPR / RGB5A3 rounded to 16 bits: GPU 55.2 -> 43.5 ms, +6.2% (job 392)
     o->kstore = true;  // known-single stores: core 0 +1% (job 129, within noise), exact (fuzzer opt 3)

@@ -18,60 +18,33 @@
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
-> **Proposed, awaiting the owner (2026-10-20): research/GENERAL_ARCHITECTURE.md** re-ranks for the general-emulator goal:
-> X1 (a PC census of GX redundancy) and X2 (L2 lockdown by master on the L2C-310) first, then zero-flush native calls
-> with the GPR inlining (X3), then a hand-compiled region oracle (X4); the pane walk behind SDK-level work. The queue
-> below stands until the owner decides.
-> **Queue for the next session (set 2026-10-20; one list reconciling DIRECTION_REVIEW.md section 6 and
-> EMULATOR_CEILING.md section 8, emulator first per the owner):**
-> 1. **X3 completed (2026-10-20):** GPR word inlining is positive in gameplay; native GPR/GX/cXyz do not turn positive; all off. [Results](research/MEASUREMENTS.md#x3-gpr-helper-inlining-and-retained-register-native-calls-2026-10-20).
->    **X4 completed (2026-10-20):** Ordon body oracle 1.724x pane / 1.028x texture / 2.507x matrix; targeted region tier supported, compiler unbuilt; [evidence and limits](research/MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20).
->    **X2 completed (2026-10-20):** lockdown works (122.74 -> 32.97 cycles/load); vw2 still loses, steal neutral; switches off; [result](research/MEASUREMENTS.md#x2-l2-lockdown-by-master-on-the-new-2ds-xl-2026-10-20).
-> 2. **The HUD: the J2D pane walk as one port** (W1; design in research/LIBRARY_PORTS.md "The pane walk's design").
->    First its prerequisite: why ~2% of J2DPictureEx port calls give up (float edge cases), because a give-up inside a
->    walked subtree would abort the whole subtree. Then the walk. ~+3-3.5% Ordon, ~2.5% heavy area (estimate), and it
->    tests whether subsystem ports meet their Amdahl prediction.
-> 3. **Decide the GX side (offline, then one device run):** G2's (display list, incoming state) repeat share from a
->    decoder hash on the PC, and the GX-ceiling instrument (GX-thread and worker ticks on repeated lists). Needed
->    because core-0 gains show only up to ~+15-19% until the GX thread (~80-83% busy in gameplay) gets cheaper: 1 and 2
->    fit under that cap, later core-0 work does not.
->    X1 completed (2026-10-20): [GX census results](research/MEASUREMENTS.md#x1-gx-redundancy-census-pc-interpreter-title-scenes-2026-10-20); filtering supported, G2/lighting gated, SDK option open (title scenes only).
->    X1b complete (2026-10-20): primary CPU runner fixed; no-op decode budget >3%, G2 key inconclusive, retained lighting scene dependent; [results](research/MEASUREMENTS.md#x1b-decoder-cost-read-before-write-keys-and-retained-lighting-pc-2026-10-20) (title states only, no optimisation).
-> 4. **Cheap device measurements, one run each:** a PMU split on the float stubs in gameplay (H4: build single-precision
->    floats only above ~15% of core 0); fault counts per minute in steady gameplay (H3, fault mode's crash; only when
->    James can restart the 2DS).
-> 5. **Offline:** H2's dead register write-backs at block exits.
-> 6. **A second game to gameplay** (early SDK, then Wind Waker): whether the two walls and the library shares hold.
-> 7. **The large redesigns, only if 3 supports them:** G1 + G2 (translated command cache over GPU-resident geometry),
->    then hammock blocks (H1, ~+3-8% by the offline model). Parked by the owner: native mode (emulator first, 10-16); frame or render skipping (a steady 30 first).
+> **The general-emulator experiments, 2026-10-20 (research/GENERAL_ARCHITECTURE.md section 6; numbers in
+> MEASUREMENTS.md "X1" to "X4").** Every CPU-side lever measured about 1-2%, as the two walls predict:
+> - **X3:** `_savegpr` / `_restgpr` inlined at the bl (`--gprinline`): Ordon +0.80%, heavy area +0.57%, cutscene
+>   +0.64% (jobs 708-725); **on by default since 10-21**. Native calls that keep the register cache (`--zgpr`, `--zgx`,
+>   `--zxyz`) still lose 0.1-2.1%: small functions pay only as inlined guest code, not as native calls.
+> - **X4:** hand-written whole-function ARM against today's JIT (jobs 745-747): J2DPane::draw 1.72x, GXLoadPosMtxImm
+>   2.51x, GXLoadTexObjPreLoaded 1.03x. Those functions are ~5% of core 0 (~+1.9%); a region tier needs ~35-60%
+>   coverage to reach +15-30%. Supported as a targeted build, not built.
+> - **X2:** L2 lockdown by master works (core 0's streaming chase 122.7 -> 33.0 cycles, restored and verified, jobs
+>   748-763), but the split alone gives only +0.2% (heavy area) to ~+1% (title), and the second vertex worker still
+>   loses with it: the idle cores' loss is not L2 eviction. All `--l2lock` switches off.
+> - **X1 / X1b (PC, title states):** unchanged GX state writes 58-92% (the decoder already skips their state work;
+>   decode cost 18-28% of the PC front end, device gain unproven); display-list keys with read-before-write state
+>   repeat 42-61% (between the G2 thresholds); lighting reuse 16-89% by scene; no code outside the GX SDK touches
+>   __GXData (the SDK-as-a-unit option stays open). The CPU test runner works again (`core/tests/cpu/run_tests.sh`).
+> **Next (in order):** X5 (GX-thread and worker time on repeating draws, one device run) and **X6, a second game to
+> gameplay**: every conclusion above is from Twilight Princess alone. Then, by what those show: the HUD pane walk
+> (research/LIBRARY_PORTS.md, prerequisite: why ~2% of J2DPictureEx port calls give up), a targeted region tier, G1 + G2.
+> Still open: fault mode's crash (H3, measured +4-9%; only when James can restart the 2DS), a PMU split of the float
+> stubs (H4). Parked by the owner: native mode (emulator first, 10-16); frame or render skipping (a steady 30 first).
 > **Direction (2026-10-20): read research/DIRECTION_REVIEW.md first.** Gameplay has two walls of nearly equal height
 > (core 0 ~93-97% running, the GX thread ~80-83% working), so core-0 work alone shows only up to ~+15-19%; CPU vertex
 > gathering caps at ~300k vertices/s in both emulated and native mode (TP needs ~750k at 30 fps). Its ranked directions:
 > retained GPU-resident geometry (C1) with the GX pipeline split across cores, native mode for TP, subsystem ports, a
 > multi-game measurement program, measured accuracy trades. Its experiment order starts with a GX-ceiling instrument.
-> research/EMULATOR_CEILING.md is the emulator-only view (cost model, proposals H1-H5 / W1 / G1-G3, roadmap). Its H1
-> offline model ran on 10-20 (`core/tools/hammock.py`, MEASUREMENTS.md "Hammock blocks and inlined leaves"): blocks
-> 1.5-1.85x longer, CR dead at exits only 7-14%, worth ~+3-8% core 0, below the +8-15% estimate; inlining small leaves
-> (H5: GPR save / restore is 17-22% of all calls) is the cheaper first build.
-> - **Next JIT build: inline the GPR save / restore helpers (H5, re-opens C20; completed by X3, 2026-10-20).** What: at a `bl` whose target is
->   `_savegpr_N` / `_restgpr_N` (TP: 0x803621A0-0x8036223C; recognise by the callee's words, not the address: a straight
->   run of `stw rK,d(r11)` / `lwz rK,d(r11)` ending in an unconditional blr), compile the callee's stores / loads in
->   place through the normal integer codegen and the register cache, write LR = bl's pc + 4, add the callee's count, and
->   go on after the bl. No call, no flush, no block boundary. Where: next to the paired-single path in jit.c
->   (`emit_ps_call`, the `bl` check before `is_branch` in the block loop), behind a new switch, off by default.
-> - Why it should pay where C20 lost: C20 called C in place, so every dirty cached GPR was written back first and the
->   cache forgot them all after a restore (job 322 against 318: cutscene 28.98 -> 28.29%, later 16.35 -> 15.70%). Inlined, a save stores straight from
->   the cache and a restore loads into it. Offline (MEASUREMENTS.md "Hammock blocks and inlined leaves"): the helpers
->   take 22.3% (cutscene stretch) / 16.7% (later) of all calls, two block boundaries each: ~6-7% of all boundaries;
->   they were ~2.4-2.5% of core 0 (jobs 311, 630-631). Estimate +1.5-2.5% core 0.
-> - Exactness: a fault inside the run must look like the callee faulted (g->pc = that store's address, LR already set),
->   so compile each word with c->pc at its callee address; mark the callee's code page so an icbi there drops the
->   block. Risks: code growth at every prologue / epilogue (1-18 words each, OPT_CALLS's lesson: watch fetch stalls and
->   flushes) and register-cache pressure across 18 registers. Checks: the JIT fuzzer with new save / restore cases
->   (planted bug caught), the qemu whole-game check (same instruction count and last frame), then separate whole runs on
->   the 2DS (Ordon, heavy area, tp850). Next in line if it pays: other leaves under 16 instructions (39-43% of calls);
->   OSDisable / OSRestoreInterrupts (9.4% of calls in the later stretch) only once mtmsr's EE-only form is compiled in
->   place, since mtmsr ends a block today.
+> research/EMULATOR_CEILING.md is the emulator-only view (cost model, H1-H5 / W1 / G1-G3); its hammock model (`core/tools/hammock.py`)
+> put H1 at ~+3-8% core 0. The GPR inlining it proposed is X3 above.
 > Earlier next steps, by measured size: (0) **the J2D pane walk as one native port** (the HUD: J2DPane::draw is 25% of Ordon's core
 > 0 inclusive, ~6,600 cycles a pane in its own code; designed from the machine code in research/LIBRARY_PORTS.md "The pane
 > walk's design", with the five pane classes gameplay draws and every callee it needs; ~+3-3.5% in Ordon expected);
