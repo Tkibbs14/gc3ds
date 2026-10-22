@@ -1980,6 +1980,14 @@ static const char* run_body(const char* path) {
                                     din + dout > 0 ? 100.0 * din / (din + dout) : 0.0, (double)(d[6] - lastD[6]) / 10.0,
                                     smp > 0 ? 100.0 * (double)(d[4] - lastD[4]) / smp : 0.0, smp > 0 ? 100.0 * (double)(d[5] - lastD[5]) / smp : 0.0);
                             memcpy(lastD, d, sizeof d);
+                            extern u64 g_dlTicks[4];
+                            static u64 lastK[4];
+                            double k[4];
+                            for (int q = 0; q < 4; q++) { k[q] = (double)(g_dlTicks[q] - lastK[q]) * 1000.0 / SYSCLOCK_ARM11 / 10.0; lastK[q] = g_dlTicks[q]; }
+                            double sampled = k[1] + k[2], all = k[0] + k[1] + k[2] + k[3];
+                            fprintf(g_perf, "# dlist time 10s (GX thread ms/s inside list calls): all %.1f; new %.1f, repeat %.1f, changed %.1f, "
+                                    "unsampled %.1f; repeat share of sampled time %.1f%%\n", all, k[0], k[1], k[2], k[3],
+                                    sampled > 0 ? 100.0 * k[1] / sampled : 0.0);
                         }
                         {  // runs of draws inside display lists (fifo.c g_dlRun): what a converted list shape would merge
                             static u64 lastR[11];

@@ -262,6 +262,11 @@ its floor and core-0 gains must come from elimination only. This replaces the se
 **X5. GX ceiling instrument (device, one run).** GX-thread and worker ticks on draws whose X1 key repeats: turns X1's
 shares into time. Confirms 4.3.3 if repeating work holds over ~50% of the GX thread in gameplay.
 
+- **Result (2026-10-22, jobs 801-804; MEASUREMENTS.md "X5"):** repeating display-list work is **~19-33% of TP's GX
+  thread** (heavy area, Ordon): below the ~50% threshold. Mario Party 4 is 52-86%. Most of TP's GX-thread time lies
+  outside list calls (immediate commands, frame end, textures, presents), so G2 alone cannot be TP's GX fix; it
+  stays a candidate for list-heavy games such as Mario Party 4.
+
 **X6. A second game to gameplay (device, days to weeks).** An early-SDK game, then Wind Waker: speed, the joint states,
 the guest family profile, which recognised functions match. **Decides generality**: whether the two walls, the GX SDK
 share and the display-list repeat rate hold outside TP. It is ranked sixth only because X1-X4 are cheaper; nothing in

@@ -379,21 +379,27 @@ static u32 dl_hash(const u8* p, u32 n, u32 h) { for (u32 i = 0; i < n; i++) h = 
 // The decoder's measurement-only work (display-list hashes, the command-class profile): off unless profiling (main.c
 // --profile on): dl_note's hashes alone were 3.9% of the GX thread (2DS job 432).
 bool g_gxDiag;
-static void dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
+// X5 (GENERAL_ARCHITECTURE.md): ticks inside display-list calls by what dl_note found: [0] a new address or size, [1] a
+// sampled call whose bytes and array bases equal its last use (a translated-list cache could skip it), [2] a sampled
+// call that changed, [3] not sampled (3 calls in 4). With g_gxDiag (--profile on).
+u64 g_dlTicks[4];
+static int dl_note(const GXCore* gx, u32 addr, const u8* p, u32 size) {
     g_dlStats[0]++;
-    if (!g_gxDiag) return;
+    if (!g_gxDiag) return 3;
     u32 slot = (addr >> 5) & (DL_SLOTS - 1);
     if (g_dl[slot].addr != addr || g_dl[slot].size != size) {
         g_dl[slot].addr = addr; g_dl[slot].size = size; g_dl[slot].bytes = dl_hash(p, size, 2166136261u);
         g_dl[slot].arrays = dl_hash((const u8*)&gx->cp[CP_ARRAY_BASE], 32 * 4, 2166136261u);
         g_dlStats[6]++;
-        return;
+        return 0;
     }
-    if (g_dlStats[0] & 3) return;
+    if (g_dlStats[0] & 3) return 3;
     g_dlStats[3]++;
     u32 b = dl_hash(p, size, 2166136261u), a = dl_hash((const u8*)&gx->cp[CP_ARRAY_BASE], 32 * 4, 2166136261u);
-    if (b == g_dl[slot].bytes) { g_dlStats[4]++; if (a == g_dl[slot].arrays) g_dlStats[5]++; }
+    int cls = 2;
+    if (b == g_dl[slot].bytes) { g_dlStats[4]++; if (a == g_dl[slot].arrays) { g_dlStats[5]++; cls = 1; } }
     g_dl[slot].bytes = b; g_dl[slot].arrays = a;
+    return cls;
 }
 
 static void draw(System* s, GXCore* gx, u8 op, const u8* verts, u32 count, u32 vsize, bool inList) {
@@ -618,10 +624,12 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
         if (inList) emu_log(LOG_GX, "nested display list call ignored\n");
         else if (size <= PA_MEM1_END && addr <= PA_MEM1_END - size) {  // no wrap
             g_gxWhere = GW_DECNOTE;
-            dl_note(gx, addr, s->mem1 + addr, size);
+            int cls = dl_note(gx, addr, s->mem1 + addr, size);
             g_gxWhere = GW_FIFO;
             GXCENSUS(gxcensus_list(gx, s->mem1 + addr, size));
+            u64 t0 = g_gxDiag && g_profClock ? g_profClock() : 0;
             run_list(s, gx, s->mem1 + addr, size, true);
+            if (t0) g_dlTicks[cls] += g_profClock() - t0;
             GXCENSUS(gxcensus_list_end());
         }
         else emu_log(LOG_GX, "display list %08x+%x out of range\n", addr, size);

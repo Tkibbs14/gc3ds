@@ -2222,6 +2222,26 @@ done
   or zeldaret/tww `config/GZLE01` symbols. Stand-in inputs: the functions' bytes from a PC `MEMDUMP` at their symbol
   addresses, through devkitPPC's objdump (as LIBRARY_PORTS.md describes for TP).
 
+### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
+
+- **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws
+  issued later from the merge buffer are not), split by what fifo.c `dl_note` found: a new address or size, a sampled
+  call (1 in 4) whose bytes and array bases equal its last use ("repeat"), a sampled call that changed, unsampled.
+  Report line `# dlist time 10s`. GX-thread busy time = 1000 ms/s minus `# gx thread where`'s idle share.
+
+  | Scene (job) | GX thread busy, ms/s | Inside list calls | Repeat share of sampled list time (with new calls as not repeating) | Repeating list time as a share of the GX thread |
+  |---|---|---|---|---|
+  | TP heavy area (801) | ~925 | 292 ms/s, 32% | 81% (60%) | **~19-26%** |
+  | TP Ordon walk (802) | ~880 | ~300 ms/s, 34% | 96% (84%) | **~28-33%** |
+  | Wind Waker, Outset (803) | ~370 | 98 ms/s, 27% | 92% (46%) | ~12-24% (not its limit) |
+  | Mario Party 4, board (804) | ~815 | 705 ms/s, 86% | 99.6% (61%) | **~52-86%** |
+
+- **Verdict against X5's threshold (over ~50% of the GX thread on repeating work):** **not met for TP** (19-33%),
+  met for Mario Party 4. "Repeat" is an upper bound (no incoming-state key; X1b's dependency-aware key repeated 42-61%
+  on the PC). Most of TP's GX-thread time is outside display-list calls: immediate commands (the GX SDK's own writes),
+  frame end, textures, presents. A translated-list cache (G2) cannot be TP's GX fix alone. "New" is inflated by the
+  one-way address table's collisions (455-1,250 new addresses/s).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed
