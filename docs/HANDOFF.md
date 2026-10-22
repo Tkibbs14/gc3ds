@@ -45,10 +45,16 @@
 > - New PC mode `GXDEFER=1` reproduces the 3DS's asynchronous GX ordering.
 > - Per-SDK-generation PS stand-ins: Mario Party 4 board +15.2%, Wind Waker +2.0%, TP unchanged.
 > - Wind Waker spends 21% of core 0 in actor search (cTgIt_JudgeFilter, cNdIt_Judge, fpcSch_JudgeByID): the largest
->   single lever found for it.
+>   single lever found for it. REDESIGN_CANDIDATES C35 (a general form or an engine stand-in) waits on the owner.
+> - **X5 done:** repeating display-list work is only ~19-33% of TP's GX thread (Mario Party 4: 52-86%). G2 alone cannot
+>   fix TP's GX side.
+> - The PC stand-in check is exact with `HLE_FTZ=1`: 65.4 M calls, 0 differed.
+> - Exact estimate stand-ins (PSVECMag, PSVECNormalize, PSMTXInvXpose via the interpreter's soft float) were slower in
+>   every scene: measured, not kept.
+> - Mario Party 4 plays turns into a minigame (renders correctly; 11.7%, GX-bound).
 >
-> **Next (in order):** X5 (GX-thread and worker time on repeating draws, one device run); more games through the same
-> path (an AX game such as Melee or Super Monkey Ball); TP's speed work. Then, by what those show: the HUD pane walk
+> **Next (in order):** more games through the same path (an AX game such as Melee or Super Monkey Ball: the card has
+> 0.5 GB free); TP's speed work. Then, by what those show: the HUD pane walk
 > (research/LIBRARY_PORTS.md, prerequisite: why ~2% of J2DPictureEx port calls give up), a targeted region tier, G1 + G2.
 > Still open: fault mode's crash (H3, measured +4-9%; only when James can restart the 2DS), a PMU split of the float
 > stubs (H4). Parked by the owner: native mode (emulator first, 10-16); frame or render skipping (a steady 30 first).
