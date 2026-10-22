@@ -498,6 +498,7 @@ typedef struct {
     bool abFlushhook;  // --ab flushhook: the __GXSendFlushPrim port on and off (hle column bit 7)
     bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
     bool gprinline, zgpr, zgx, zxyz; // X3, default off; separate whole-run experiments
+    bool region;         // --region on|off: blocks continue past forward branches inside them (OPT_REGION, jit.c region_scan)
     bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
@@ -612,6 +613,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psgx")) o->psgx = !strcmp(v, "on");
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
         else if (!strcmp(a, "--gprinline")) o->gprinline = !strcmp(v, "on");
+        else if (!strcmp(a, "--region")) o->region = !strcmp(v, "on");
         else if (!strcmp(a, "--zgpr")) o->zgpr = !strcmp(v, "on");
         else if (!strcmp(a, "--zgx")) o->zgx = !strcmp(v, "on");
         else if (!strcmp(a, "--zxyz")) o->zxyz = !strcmp(v, "on");
@@ -1137,7 +1139,7 @@ static const char* run_body(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
-                           (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) |
+                           (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) | (g_opt.region ? OPT_REGION : 0) |
                            (g_opt.zgx ? OPT_ZGX : 0) | (g_opt.zxyz ? OPT_ZXYZ : 0) |
                            (g_opt.pipeps && !g_opt.abPipeps ? OPT_PIPEPS : 0) |
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |

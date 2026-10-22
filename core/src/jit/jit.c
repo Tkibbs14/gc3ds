@@ -41,7 +41,7 @@ typedef struct { u32 pc; void* fn; } FastEntry;
 // The shared stubs at the start of the code buffer (word offsets), kept across flushes.
 enum { ST_ENTER, ST_EXIT, ST_LINK, ST_DYN, ST_BUDGET, ST_INDIRECT, ST_INTERP, ST_LOADSLOW, ST_STORESLOW, ST_STOREPIPE, ST_DEOPT,
        ST_HOISTCHK, ST_HOISTCHK2, ST_HOISTCHK4, ST_MEMDIRTY, ST_INDLR, ST_INDCTR, ST_LMW, ST_STMW, ST_N, ST_WORDS = 11264 };  // (the BE float stubs)  // (the CR stubs took it past 8192)  // (the float-lane stubs took it past 4096)  // (the unchecked float stubs took it past 2048)
-enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT };
+enum { EXIT_DISPATCH, EXIT_LINK, EXIT_INDIRECT, EXIT_DEOPT, EXIT_LABEL };
 // Check hoisting (docs/OPT_JIT_PLAN.md, stage 1): the first D-form access through base register rA in a block checks its
 // address against this window inside MEM1 (ST_HOISTCHK); later accesses through the unchanged rA are unchecked. The
 // first displacement and every later one are within +-0x8000 and accesses at most 8 bytes, so with 0x10000 (+8) left
@@ -456,6 +456,8 @@ typedef struct {
     // to the stub is in the cold code.
     // kind: EXIT_DISPATCH (to the dispatcher, g->pc = pc when setPc), EXIT_LINK (a link site to guest address pc: a conditional
     // branch out of a trace), EXIT_INDIRECT (through the indirect table to the guest address in the Gekko word at offset pc: lr / ctr).
+    // EXIT_LABEL (OPT_REGION): not an exit: a conditional branch to instruction `pc` (an index) of this block, whose stub
+    // writes the snapshot back, gives back the instructions it skips and goes on at that instruction's label.
     struct { u32 at; u32 count; bool setPc, inCold; u32 pc; Rc snap; u8 kind; } exits[MAX_BLOCK_INSNS * 8];
     u32 nExits;
     // Cold code: slow paths are emitted into a second buffer (`alt` while hot code is current; the two Emit structs
@@ -491,6 +493,19 @@ typedef struct {
     u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
     u32 countExtra;  // guest instructions run inside the block beyond its own (OPT_SYSCALL: sc's handler)
+    // OPT_REGION (region_scan): forward branches to instructions inside the block stay inside it. Every path arrives at
+    // such a target (a label) with guest state in memory and nothing cached; a branch taken over instructions gives
+    // their count back to RDC (the block took all of them at its entry). rDead: the instructions here are reached only
+    // through a label further on (after an unconditional exit or jump), so nothing is compiled for them.
+    bool region, rDead;
+    u8 rLabel[MAX_BLOCK_INSNS], rTarget[MAX_BLOCK_INSNS];  // a label at i; the label an internal branch at i goes to
+    u32 rLastLabel;                                          // the highest label index (0: none)
+    u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
+    u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
+    struct { u32 at, label; } rJump[MAX_BLOCK_INSNS];        // hot forward jumps to labels, patched at the label
+    struct { u32 at, label, count; } rBack[MAX_BLOCK_INSNS]; // ADD RDC immediates: the instructions a jump skips
+                                                             // (label MAX_BLOCK_INSNS: an exit before the block's end)
+    u32 nRJump, nRBack;
 } Cg;
 
 #define NO_BRANCH 0xFFFFFFFFu
@@ -2114,14 +2129,16 @@ typedef struct {
 
 // Conditional branch whose taken side leaves the trace: bc (target), bclr / bcctr (indirect through the Gekko word at
 // offset indOff). The fall-through side continues in place. Not taken when the CTR / CR condition fails.
-static void emit_branch_side(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, u32 indOff) {
+// label (OPT_REGION): the taken side goes on at instruction `target` (an index) of this block instead (EXIT_LABEL).
+static void emit_branch_side(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, u32 indOff, bool label) {
     Emit* e = &c->e;
     bool hasCtr = !(bo & 4), hasCr = !(bo & 16);
     int takenCond = C_AL, cr = -1;
     u32 skip = NO_BRANCH;
     bool fused = false;
     if (hasCr) {
-        if (!hasCtr && (c->j->traceSide & TRACE_SIDE_FUSED) && c->flagsLive && (bi >> 2) == c->flagsFld && (bi & 3) != 3) {
+        if (!hasCtr && (c->region || (c->j->traceSide & TRACE_SIDE_FUSED)) && c->flagsLive && (bi >> 2) == c->flagsFld &&
+            (bi & 3) != 3) {
             // The previous instruction was the compare that set this CR field and left its ARM flags: branch on them.
             static const int kSigned[3] = { C_LT, C_GT, C_EQ }, kUnsigned[3] = { C_CC, C_HI, C_EQ };
             int cond = (c->flagsSigned ? kSigned : kUnsigned)[bi & 3];
@@ -2147,7 +2164,7 @@ static void emit_branch_side(Cg* c, u32 bo, u32 bi, bool indirect, u32 target, u
         dp_imm(e, TST, 1, 0, cr, enc);
         takenCond = (bo & 8) ? C_NE : C_EQ;  // wanted bit set: taken if it is set
     }
-    exit_kind_if(c, takenCond, indirect ? EXIT_INDIRECT : EXIT_LINK, indirect ? indOff : target);
+    exit_kind_if(c, takenCond, label ? EXIT_LABEL : indirect ? EXIT_INDIRECT : EXIT_LINK, indirect ? indOff : target);
     if (skip != NO_BRANCH) patch_branch(e, skip, e->n);
     c->j->stats.traceSideExits++;
 }
@@ -2193,7 +2210,7 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         if ((bo & 20) == 20) return false;  // branch always (no CTR, no CR test): ends the block like b
         if (!(j->traceSide & (bo & 4 ? TRACE_SIDE_CR : TRACE_SIDE_CTR))) return false;
         s32 bd = (s32)(s16)(inst & 0xFFFC);
-        emit_branch_side(c, bo, bi, false, (inst & 2) ? (u32)bd : c->pc + (u32)bd, 0);
+        emit_branch_side(c, bo, bi, false, (inst & 2) ? (u32)bd : c->pc + (u32)bd, 0, false);
         return true;
     }
     if (op == 19) {
@@ -2201,7 +2218,7 @@ static bool trace_branch(Cg* c, u32 inst, Trace* t) {
         if ((xo != 16 && xo != 528) || (bo & 20) == 20) return false;  // blr / bctr always: ends the block
         if (xo == 528 && !(bo & 4)) return false;                        // invalid form: the interpreter handles it
         if (!(j->traceSide & TRACE_SIDE_IND)) return false;
-        emit_branch_side(c, bo, bi, true, 0, xo == 16 ? OFF_LR : OFF_CTR);
+        emit_branch_side(c, bo, bi, true, 0, xo == 16 ? OFF_LR : OFF_CTR, false);
         return true;
     }
     return false;
@@ -2221,6 +2238,91 @@ static bool ends_block(u32 inst) {
     if (op == 31) return xo == 146 || xo == 210 || xo == 242 || xo == 467 || xo == 982 || xo == 4 || xo == 598;
     if (op == 3) return true;                                       // twi
     if (op == 63) return xo == 38 || xo == 70 || xo == 134 || xo == 711;  // mtfsb1 mtfsb0 mtfsfi mtfsf: rounding mode
+    return false;
+}
+
+// ---- regions (OPT_REGION) ----
+// A block's extent: the instructions compile_block may compile from pc on (up to maxInsns, inside the page, before the
+// next stand-in, and up to an instruction that changes state compiled code depends on). Forward b / bc (no LK, not
+// absolute) whose target lies inside the extent stay inside the block: they mark the target a label. Conditional
+// branches out of the block become side exits and the block goes on; after an unconditional exit the block goes on
+// only if a label lies ahead. No code is compiled twice (traces' tail duplication is what lost, C14).
+static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
+    Jit* j = c->j;
+    u32 n = 0;
+    for (; n < maxInsns; n++) {
+        u32 a = pc + 4 * n, p = pa + 4 * n;
+        if ((a >> 12) != (pc >> 12) || p + 4 > j->ramSize || (n > 0 && hle_is_hook(j->g, a))) break;
+        if (ends_block(ram_rd32(j->ram, p))) { n++; break; }
+    }
+    for (u32 i = 0; i < n; i++) {
+        u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
+        if (inst & 3) continue;  // LK or absolute
+        s32 off;
+        if (op == 18) off = ((s32)(inst << 6)) >> 6;
+        else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
+        else continue;
+        if (off <= 0 || i + (u32)off / 4 >= n) continue;  // backward, or past the extent
+        u32 t = i + (u32)off / 4;
+        c->rTarget[i] = (u8)t;
+        c->rLabel[t] = 1;
+        if (t > c->rLastLabel) c->rLastLabel = t;
+    }
+}
+
+// At a label: every path arrives with guest state in memory, so nothing compiled before it may be assumed after it.
+static void region_forget(Cg* c) {
+    for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = c->rc.swap[k] = false; }
+    for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
+    c->flagsAt = NO_BRANCH;
+    c->flagsLive = false;
+    c->single = 0;
+    c->chk = c->chkClear = 0;
+    c->kmask = 0;
+    c->kprev = 0x60000000u;  // nop: the instruction before the label is not what ran before it on every path
+}
+
+// ADD RDC, RDC, #(the instructions from here to label t not run): patched once the label's count is known. t =
+// MAX_BLOCK_INSNS: to the block's end, for an exit in its middle (links and indirect exits give nothing back themselves).
+static void region_back(Cg* c, u32 t) {
+    if (c->nRBack == MAX_BLOCK_INSNS) { c->e.overflow = true; return; }
+    c->rBack[c->nRBack].at = c->e.n;
+    c->rBack[c->nRBack].label = t;
+    c->rBack[c->nRBack].count = c->count;
+    c->nRBack++;
+    dp_imm(&c->e, ADD, 0, RDC, RDC, 0);
+}
+
+// A branch inside a region block; false when it is compiled as before (it then ends the block's current path).
+static bool region_branch(Cg* c, u32 inst, u32 i) {
+    u32 op = inst >> 26, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (c->rTarget[i]) {  // to a label further on
+        u32 t = c->rTarget[i];
+        if (op == 18 || (bo & 20) == 20) {  // always taken
+            rc_flush(c);
+            region_back(c, t);
+            if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
+            c->rJump[c->nRJump].at = branch_c(&c->e, C_AL, 0);
+            c->rJump[c->nRJump].label = t;
+            c->nRJump++;
+            c->rDead = true;
+            return true;
+        }
+        emit_branch_side(c, bo, bi, false, t, 0, true);
+        return true;
+    }
+    if (inst & 1) return false;  // LK: a call ends the path
+    if (op == 16 && (bo & 20) != 20) {  // conditional, out of the block: a side exit, the fall-through goes on here
+        s32 bd = (s32)(s16)(inst & 0xFFFC);
+        emit_branch_side(c, bo, bi, false, (inst & 2) ? (u32)bd : c->pc + (u32)bd, 0, false);
+        return true;
+    }
+    if (op == 19) {
+        u32 xo = (inst >> 1) & 0x3FF;
+        if ((xo != 16 && xo != 528) || (bo & 20) == 20 || (xo == 528 && !(bo & 4))) return false;
+        emit_branch_side(c, bo, bi, true, 0, xo == 16 ? OFF_LR : OFF_CTR, false);
+        return true;
+    }
     return false;
 }
 
@@ -4091,7 +4193,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (int k = 0; k < NFS; k++) c->rc.fid[k] = -1;
     c->j = j;
     c->noLink = noLink;
-    c->trace = j->traces && !noLink;
+    c->region = (j->opt & OPT_REGION) && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
+    c->trace = j->traces && !noLink && !c->region;
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
     c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM;  // (swapped RAM: a misaligned word would not fault)
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
@@ -4169,6 +4272,10 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     u32 prevInst = 0, prevHot = 0, prevCold = 0;
 #endif
     Trace t = { j, pc, startPa, pc >> 12, { pc }, 1, maxInsns, 0, false };
+    if (c->region) {
+        for (u32 k = 0; k < MAX_BLOCK_INSNS; k++) c->rLabelAt[k] = NO_BRANCH;
+        region_scan(c, pc, startPa, maxInsns);
+    }
     for (u32 i = 0; i < maxInsns && !ended; i++) {
         c->pc = t.nextPc;
         u32 ipa = t.nextPa;
@@ -4177,13 +4284,28 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         u32 inst = ram_rd32(j->ram, ipa);
         if (jit_skip_on)  // measurement only (--skipfn): this function returns at once
             for (u32 k = 0; k < 4; k++) if (jit_skip_fn[k] && c->pc == jit_skip_fn[k]) inst = 0x4E800020u;  // blr
+        t.nextPc = c->pc + 4;  // a followed branch changes these
+        t.nextPa = ipa + 4;
+        if (c->region) {  // (before count: a block that ends here has not run this instruction)
+            c->rCountAt[i] = i + c->countExtra;
+            if (c->rLabel[i]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
+                if (!c->rDead && jit_debug_plant != 21) rc_flush(c);  // plant 21: the fall-through loses its writes
+                region_forget(c);
+                c->rLabelAt[i] = e->n;
+                for (u32 k = 0; k < c->nRJump; k++) if (c->rJump[k].label == i) patch_branch(e, c->rJump[k].at, e->n);
+                c->rDead = false;
+            }
+            if (c->rDead) {
+                if (c->rLastLabel <= i) { ended = true; break; }  // nothing after here is reached
+                c->count = i + 1 + c->countExtra;  // reached only through a label further on: taken, and given back
+                continue;
+            }
+        }
         c->count = i + 1 + c->countExtra;
         c->gpc[i] = c->pc;
         c->gpa[i] = ipa;
         c->nGuest = i+1;
         if ((ipa >> 12) < sizeof j->codePages) j->codePages[ipa >> 12] = 1;
-        t.nextPc = c->pc + 4;  // a followed branch changes these
-        t.nextPa = ipa + 4;
 #ifndef __3DS__
         if (i > 0) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
         prevInst = inst; prevHot = e->n; prevCold = c->alt.n; g_ctrWords = 0;
@@ -4274,8 +4396,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             }
         }
         if (is_branch(inst)) {
+            if (c->region && region_branch(c, inst, i)) { j->stats.instrsNative++; continue; }
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
-            if (compile_branch(c, inst)) { j->stats.instrsNative++; ended = true; continue; }
+            u32 nBack = c->nRBack;
+            if (c->region && c->rLastLabel > i) region_back(c, MAX_BLOCK_INSNS);  // (ADD: keeps the flags a fused branch uses)
+            if (compile_branch(c, inst)) {
+                j->stats.instrsNative++;
+                if (c->region) c->rDead = true; else ended = true;  // (region: the block may go on at a label)
+                continue;
+            }
+            c->nRBack = nBack;  // (its ADD #0 stays, a no-op)
         } else if (compile_int(c, inst) || compile_float(c, inst)) {
             j->stats.instrsNative++;
             if (c->pendingStop) e->overflow = true;  // a slow path without stop_tail: never compile it
@@ -4288,13 +4418,13 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             // The interpreter ran it and went on to pc + 4 (other targets left through emit_fallback's exit). Never
             // linked: these instructions change state that compiled code depends on (MSR, HID2, FPSCR[RN], BATs).
             exit_pc_if(c, C_AL, c->pc + 4);
-            ended = true;
+            if (c->region) c->rDead = true; else ended = true;  // (its stub gives back the rest)
         }
     }
 #ifndef __3DS__
     if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
 #endif
-    if (!ended) {  // ran out of instructions (or a page end)
+    if (!ended && !c->rDead) {  // ran out of instructions (or a page end)
 #ifndef __3DS__
         if (g_regStat) { g_rxState = c->rc; g_rxHave = true; g_rwWhy = RW_CONST; }
 #endif
@@ -4307,6 +4437,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 #ifndef __3DS__
     if (g_regStat) { g_rsE[g_rsCur].written = g_rsWritten; g_rsE[g_rsCur].touched = g_rsSeen; g_rxHave = false; }
 #endif
+    for (u32 k = 0; k < c->nRBack; k++) {  // OPT_REGION: the instructions each internal jump skips
+        u32 lab = c->rBack[k].label, back = (lab == MAX_BLOCK_INSNS ? c->count + (jit_debug_plant == 22 ? 1 : 0) : c->rCountAt[lab]) - c->rBack[k].count;  // plant 22: a mid-block exit miscounts
+        if ((lab != MAX_BLOCK_INSNS && c->rLabelAt[lab] == NO_BRANCH) || back > 255) e->overflow = true;
+        else e->buf[c->rBack[k].at] |= back;
+    }
+    for (u32 k = 0; k < c->nRJump; k++) if (c->rLabelAt[c->rJump[k].label] == NO_BRANCH) e->overflow = true;
     u32 hotEnd = e->n;
 #ifndef __3DS__
     if (g_regStat && g_hotLen) g_hotLen[g_rsCur] = hotEnd;
@@ -4337,6 +4473,13 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (u32 k = 0; k < c->nExits; k++) {
         patch_to((c->exits[k].inCold ? coldBuf : hotBuf) + c->exits[k].at, e->buf + e->n);
         rc_emit_flush(c, &c->exits[k].snap);
+        if (c->exits[k].kind == EXIT_LABEL) {  // OPT_REGION: give back what the branch skips, go on at the label
+            u32 lab = c->exits[k].pc, skipped = c->rCountAt[lab] - c->exits[k].count + (jit_debug_plant == 20 ? 1 : 0);  // plant 20: miscounted
+            if (c->rLabelAt[lab] == NO_BRANCH || skipped > 255) { e->overflow = true; continue; }
+            if (skipped) dp_imm(e, ADD, 0, RDC, RDC, skipped);
+            add_fix(c, true, branch_c(e, C_AL, 0), false, c->rLabelAt[lab]);
+            continue;
+        }
         u32 back = total - c->exits[k].count + (c->exits[k].kind == EXIT_LINK && jit_debug_plant == 6 ? 1 : 0);  // plant 6: a side exit miscounts
         if (back) dp_imm(e, ADD, 0, RDC, RDC, back);
         if (c->exits[k].kind == EXIT_LINK) {  // a conditional branch out of a trace: a link site to the target block

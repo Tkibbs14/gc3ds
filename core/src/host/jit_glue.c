@@ -93,6 +93,7 @@ bool host_jit_enable(System* s) {
         hle_ps_set_group("GXSetTev,GXSetChanCtrl,GXSetArray,__GXSetMatrixIndex", false);
         hle_ps_set_group("__pl,__mi,__ml", false);
     }
+    if (getenv("GC3DS_REGION")) jit_set_opt(g_hostJit, jit_opt(g_hostJit) | OPT_REGION);  // forward branches inside blocks
     s->icbiCtx = g_hostJit;
     return true;
 }

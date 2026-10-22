@@ -31,5 +31,11 @@ JIT_FUZZ_NOTRACES=1 JIT_FUZZ_PLANT=8 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 400
 if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant8.txt"; then echo "SELF-TEST FAILED: planted bug 8 not detected (or the run crashed)"; exit 3; fi
 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_PLANT=11 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 32 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 4000 7 chain > "$out/plant11.txt"
 if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant11.txt"; then echo "SELF-TEST FAILED: planted bug 11 not detected (or the run crashed)"; exit 3; fi
-echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot and callee-saved cache retention)"
+# Region tier (OPT_REGION, off by default): a wrong give-back count at a label, a lost write-back before a label, and a
+# wrong give-back at an exit in the middle of a block.
+for plant in 20 21 22; do
+    JIT_FUZZ_PLANT=$plant JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
+    if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
+done
+echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot, callee-saved cache retention, region give-back counts and region label write-back)"
 exit $status
