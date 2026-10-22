@@ -607,7 +607,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C35. Wind Waker's actor search: devirtualised list walks (found 2026-10-22, not built)
 
-- **Status:** candidate, needs an owner decision on the form.
+- **Status:** owner decision 2026-10-22: **the general form** (a JIT redesign that benefits every game: C33's region tier
+  with speculative inlining of indirect-call targets), not an engine stand-in. Not built.
 - **What:** Wind Waker spends ~21% of core 0 on Outset Island searching process lists:
   - cTgIt_JudgeFilter 10.9%;
   - cNdIt_Judge 7.2%;

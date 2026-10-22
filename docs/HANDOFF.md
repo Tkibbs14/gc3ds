@@ -63,6 +63,9 @@
 >   every scene: measured, not kept.
 > - Mario Party 4 plays turns into a minigame (renders correctly; 11.7%, GX-bound).
 >
+> **Owner decision 10-22:** the CPU-side direction is a JIT redesign that benefits every game: C33's region tier (function
+> regions with loops, liveness allocation, CR in flags, inlined leaves) plus speculative inlining of indirect-call
+> targets (C35's general form). No per-engine stand-in for Wind Waker's actor search.
 > **Next (in order):** more games through the same path (an AX game such as Melee or Super Monkey Ball: the card has
 > 0.5 GB free); TP's speed work. Then, by what those show: the HUD pane walk
 > (research/LIBRARY_PORTS.md, prerequisite: why ~2% of J2DPictureEx port calls give up), a targeted region tier, G1 + G2.
