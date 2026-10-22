@@ -23,8 +23,9 @@
 > after five 2DS rounds -0.6% / -1.6% / +0.3% / -0.1% (heavy, Ordon, Wind Waker, Mario Party 4; jobs 866-873):
 > ~1.5% fewer ARM instructions, spent on instruction fetch (micro-TLB misses +34-65%). Regions in an area of their own
 > lose (jobs 874-881: micro-TLB misses x2.6). Float lanes across labels (0e4fff4, jobs 882-893): -0.3% / -1.1% /
-> +0.6% / +0.1%. Ordon's rest is compile time (0.84 -> 1.21% of core 0). Next: more work out per region (CR flags
-> across labels, extents past 64 instructions, leaf and devirtualised calls inlined).
+> +0.6% / +0.1%. Ordon's rest is compile time (0.84 -> 1.21% of core 0). Straight-line leaves inlined at bl (jobs
+> 894-901): no measurable change (-0.4 / -1.1 / +0.6 / -0.05%; few leaves qualify). What is left in this tier:
+> leaves with branches, devirtualised bctrl, CR flags across labels, extents past 64 instructions.
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.

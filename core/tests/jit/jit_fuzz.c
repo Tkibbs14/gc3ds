@@ -916,6 +916,20 @@ int main(int argc, char** argv) {
                 if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
                 seq[i] = next;
             }
+            if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && jit_debug_region_cover && rnd() % 3 == 0) {
+                // A bl to a leaf just past the program (a few straight-line instructions and blr): regions compile it in
+                // place. The path after the program falls through nops into the leaf too.
+                u32 at = 1 + rnd() % (len - 2), m = rnd() % 5, leaf = len + rnd() % 3;
+                for (u32 k = len; k < leaf; k++) seq[k] = 0x60000000u;
+                for (u32 k = 0; k < m; k++) {
+                    u32 w = gen(&st);
+                    while (is_branch_op(w) || ((w >> 26) == 31 && ((w >> 1) & 0x3FF) == 146)) w = gen(&st);  // no mtmsr
+                    seq[leaf + k] = w;
+                }
+                seq[leaf + m] = 0x4E800020u;  // blr
+                seq[at] = (18u << 26) | (((leaf - at) * 4u) & 0x03FFFFFCu) | 1u;  // bl
+                len = leaf + m + 1;
+            }
         } else if (isFloat && rnd() % 3 == 0) {
             // Paired-single chains through one base (OPT_FCACHE's float lanes): psq_l / lfs into three FPRs, one or two
             // paired-single or single-precision operations on them, psq_st / stfs of the result (and sometimes of a
@@ -1089,7 +1103,7 @@ int main(int argc, char** argv) {
             fill_floats_at(&A, MEM1_SIZE - TOP_SIZE, TOP_SIZE);
             memcpy(B.mem1 + MEM1_SIZE - TOP_SIZE, A.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
         }
-        for (u32 i = 0; i < 16; i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
+        for (u32 i = 0; i < (len > 16 ? len : 16); i++) { mem1_write32(&A, CODE_PA + 4 * i, seq[i]); mem1_write32(&B, CODE_PA + 4 * i, seq[i]); }
         memcpy(g_in, st.fpr, sizeof g_in);
         System* sys[2] = { &A, &B };
         for (int m = 0; m < 2; m++) {
@@ -1120,6 +1134,7 @@ int main(int argc, char** argv) {
                     gekko_disasm(CODE_EA + 4 * i, seq[i], dis, sizeof dis);
                     printf("  %08x %08x %s\n", CODE_EA + 4 * i, seq[i], dis);
                 }
+                fflush(stdout);
             }
         }
         if (getenv("JIT_FUZZ_TRACE")) { printf("case %u: %08x %08x %08x %08x\n", k, seq[0], seq[1], seq[2], seq[3]); fflush(stdout); }
@@ -1127,6 +1142,7 @@ int main(int argc, char** argv) {
         u32 stJ = g_jitStamps.now, stI = g_memStamps.now;
         g_unkA = A.unknownMmioCount; g_unkB = B.unknownMmioCount;
         int n = (int)jit_run_one_block(jit);
+        if (getenv("JIT_FUZZ_CASE") && (u32)atol(getenv("JIT_FUZZ_CASE")) == k) { printf("  jit ran %d to %08x", n, A.cpu.pc); putchar(10); fflush(stdout); }
         u32 stI1 = g_memStamps.now;
         if (plant == 1 && k == cases / 2) A.cpu.gpr[3] ^= 1;
         // The interpreter runs the sequence while each instruction goes on to the next one, except that compiled code

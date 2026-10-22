@@ -516,6 +516,9 @@ typedef struct {
     u32 rLastLabel;                                          // the highest label index (0: none)
     u32 rEnd;                                                // the extent: the block ends there (a link to it)
     bool rProfiled;                                          // OPT_TIER: only code the block tier ran (rCover)
+    u32 inlLeft, inlPc, inlPa, inlTotal;                     // a leaf inlined at a bl: its instructions still to come
+                                                             // (compiled as loop iterations not in the extent)
+    bool inlDone;                                            // ... its blr still to count
     u8 rCover[MAX_BLOCK_INSNS];                              // instruction i ran (else the block leaves there)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
@@ -2272,6 +2275,24 @@ static bool ends_block(u32 inst) {
 // inside it: the return site and the loop head are blocks of their own, and an extent running past them compiled the
 // rest of the function a second time (2DS, jobs 818-825: the buffer filled, I-cache misses +10%, every scene slower).
 // No code is compiled twice (traces' tail duplication is what lost, C14).
+// A leaf a region compiles in place of a bl (OPT_TIER regions): straight-line code that returns with blr, calls
+// nothing, leaves LR alone and holds nothing that ends a block; *n: its instructions before the blr.
+#define LEAF_MAX 24
+static bool region_leaf(Cg* c, u32 target, u32* tpa, u32* n) {
+    Jit* j = c->j;
+    u32 pa;
+    // (tier regions; and the fuzzer's directly compiled regions with a pseudo-random coverage map)
+    if (!(c->rProfiled || jit_debug_region_cover) || hle_is_hook(j->g, target) || !gk_translate(j->g, target, false, false, &pa, false)) return false;
+    for (u32 k = 0; k <= LEAF_MAX; k++) {
+        u32 q = pa + 4 * k;
+        if (q + 4 > j->ramSize || (k && !(q & 0xFFF)) || (k && hle_is_hook(j->g, target + 4 * k))) return false;
+        u32 w = ram_rd32(j->ram, q);
+        if (w == 0x4E800020u) { if (tpa) *tpa = pa; if (n) *n = k; return true; }  // blr
+        if (is_branch(w) || ends_block(w) || w == INST_SC) return false;
+        if ((w >> 26) == 31 && ((w >> 1) & 0x3FF) == 467 && (((w >> 16) & 31) | ((w >> 6) & 0x3E0)) == 8) return false;  // mtlr
+    }
+    return false;
+}
 static bool region_call_stays(Cg* c, u32 inst, u32 pc) {  // compile_block's inline forms of bl (approximately: a miss
     Jit* j = c->j;                                         // costs only code size)
     if ((inst >> 26) != 18) return false;  // bcl / bclrl / bcctrl leave
@@ -2282,6 +2303,7 @@ static bool region_call_stays(Cg* c, u32 inst, u32 pc) {  // compile_block's inl
     bool gprs;
     if (!gk_translate(j->g, target, false, false, &tpa, false)) return false;
     if ((j->opt & OPT_GPRINLINE) && gpr_helper_match(j->ram, j->ramSize, tpa, &gh)) return true;
+    if (!(inst & 2) && region_leaf(c, target, NULL, NULL)) return true;  // compiled in place
     u32 groups = ((j->opt & OPT_ZGPR) ? HLE_FAST_GPR : 0) | ((j->opt & OPT_ZGX) ? HLE_FAST_GX : 0) | ((j->opt & OPT_ZXYZ) ? HLE_FAST_XYZ : 0);
     if (groups && c->fastmem && hle_ps_fast_info(target, groups, &fast)) return true;
     return hle_ps_inline(target, &gprs, &size) >= 0;
@@ -4479,21 +4501,43 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
     }
     for (u32 i = 0; i < maxInsns && !ended; i++) {
-        c->pc = t.nextPc;
-        u32 ipa = t.nextPa;
-        if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
-        if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
-        if (c->region && i == c->rEnd) break;  // a loop head: its own block
+        // An inlined leaf's instructions are iterations of their own (counted, recorded and compiled as any other) that
+        // are not in the extent: ri, the extent index, does not move for them.
+        bool inl = c->inlLeft > 0;
+        if (c->inlDone && !inl) {  // the leaf's blr ran (plant 25, the fuzzer's self-test: it is not counted)
+            u32 blr = jit_debug_plant == 25 ? 0u : 1u;
+            c->countExtra += blr;
+            c->count += blr;
+            c->inlDone = false;
+        }
+        u32 ipa;
+        if (inl) {
+            c->pc = c->inlPc;
+            ipa = c->inlPa;
+            c->inlPc += 4;
+            c->inlPa += 4;
+            c->inlTotal++;
+            if (!--c->inlLeft) c->inlDone = true;
+        } else {
+            c->pc = t.nextPc;
+            ipa = t.nextPa;
+        }
+        u32 ri = i - c->inlTotal;
+        if (!inl && i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
+        if (!inl && ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize)) break;  // one 4 KB page per straight run, inside RAM
+        if (!inl && c->region && ri == c->rEnd) break;  // a loop head: its own block
         u32 inst = ram_rd32(j->ram, ipa);
         if (jit_skip_on)  // measurement only (--skipfn): this function returns at once
             for (u32 k = 0; k < 4; k++) if (jit_skip_fn[k] && c->pc == jit_skip_fn[k]) inst = 0x4E800020u;  // blr
-        t.nextPc = c->pc + 4;  // a followed branch changes these
-        t.nextPa = ipa + 4;
-        if (c->region) {  // (before count: a block that ends here has not run this instruction)
-            c->rCountAt[i] = i + c->countExtra;
-            if (c->rLabel[i]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
+        if (!inl) {
+            t.nextPc = c->pc + 4;  // a followed branch changes these
+            t.nextPa = ipa + 4;
+        }
+        if (c->region && !inl) {  // (before count: a block that ends here has not run this instruction)
+            c->rCountAt[ri] = i + c->countExtra;
+            if (c->rLabel[ri]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
                 Rc lt = c->rc;
-                bool have = region_first_in(c, i, &lt);
+                bool have = region_first_in(c, ri, &lt);
                 if (c->rDead && !have) {  // reached by no path compiled: nothing is known
                     for (int k = 0; k < NSLOT; k++) { lt.id[k] = -1; lt.dirty[k] = lt.swap[k] = false; }
                     for (int k = 0; k < NFS; k++) { lt.fid[k] = -1; lt.fdirty[k] = false; }
@@ -4502,52 +4546,52 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 // knows only them as singles. (A stub exit into the label records no single bits: only its lanes.)
                 u64 sgl = c->rDead ? ~0ull : c->single | rc_lanes(&c->rc);
                 for (u32 k = 0; k < c->nRJump; k++)
-                    if (c->rJump[k].label == i) sgl &= c->rJump[k].single | rc_lanes(&c->rJump[k].snap);
+                    if (c->rJump[k].label == ri) sgl &= c->rJump[k].single | rc_lanes(&c->rJump[k].snap);
                 for (u32 k = 0; k < c->nExits; k++)
-                    if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == i) sgl &= rc_lanes(&c->exits[k].snap);
+                    if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == ri) sgl &= rc_lanes(&c->exits[k].snap);
                 if (c->rDead && !have) sgl = 0;
                 for (int k = 0; k < NFS; k++)
                     if (lt.fid[k] >= 0 && !((sgl >> lt.fid[k]) & 1)) { lt.fid[k] = -1; lt.fdirty[k] = false; }
                 if (!c->rDead) region_reconcile(c, &c->rc, &lt);  // the fall-through, inline
 #ifndef __3DS__
-                if (getenv("JIT_REGIONLOG")) { fprintf(stderr, "label %u dead %d single %016llx sgl %016llx", i, c->rDead, (unsigned long long)c->single, (unsigned long long)sgl); for (u32 k = 0; k < c->nRJump; k++) if (c->rJump[k].label == i) fprintf(stderr, " j%u:%016llx", k, (unsigned long long)c->rJump[k].single); fputc(10, stderr); }
+                if (getenv("JIT_REGIONLOG")) { fprintf(stderr, "label %u dead %d single %016llx sgl %016llx", ri, c->rDead, (unsigned long long)c->single, (unsigned long long)sgl); for (u32 k = 0; k < c->nRJump; k++) if (c->rJump[k].label == ri) fprintf(stderr, " j%u:%016llx", k, (unsigned long long)c->rJump[k].single); fputc(10, stderr); }
 #endif
                 u32 chk = c->rDead ? 0xFFFFFFFFu : c->chk;  // hoisted checks every path into the label made
                 u8 chkAl[32];
                 memcpy(chkAl, c->chkAl, 32);
                 if (c->rDead) memset(chkAl, 4, 32);
                 for (u32 k = 0; k < c->nRJump; k++) {
-                    if (c->rJump[k].label != i) continue;
+                    if (c->rJump[k].label != ri) continue;
                     chk &= c->rJump[k].chk;
                     for (int r = 0; r < 32; r++) if (c->rJump[k].chkAl[r] < chkAl[r]) chkAl[r] = c->rJump[k].chkAl[r];
                 }
-                for (u32 k = 0; k < c->nExits; k++) if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == i) chk = 0;
+                for (u32 k = 0; k < c->nExits; k++) if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == ri) chk = 0;
                 if (c->rDead && !have) chk = 0;
                 region_forget(c);
                 c->chk = chk;
                 memcpy(c->chkAl, chkAl, 32);
                 c->rc = lt;
                 c->single = sgl;
-                c->rLabelT[i] = c->rc;
-                c->rLabelAt[i] = e->n;
+                c->rLabelT[ri] = c->rc;
+                c->rLabelAt[ri] = e->n;
                 for (u32 k = 0; k < c->nRJump; k++) {
-                    if (c->rJump[k].label != i) continue;
-                    if (rc_same(&c->rJump[k].snap, &c->rLabelT[i])) { patch_branch(e, c->rJump[k].at, e->n); continue; }
+                    if (c->rJump[k].label != ri) continue;
+                    if (rc_same(&c->rJump[k].snap, &c->rLabelT[ri])) { patch_branch(e, c->rJump[k].at, e->n); continue; }
                     cold_begin(c);  // the jump goes through a fix-up in cold code
                     fix_to_cold(c, c->rJump[k].at);
-                    region_reconcile(c, &c->rJump[k].snap, &c->rLabelT[i]);
-                    cold_end(c, c->rLabelAt[i]);
+                    region_reconcile(c, &c->rJump[k].snap, &c->rLabelT[ri]);
+                    cold_end(c, c->rLabelAt[ri]);
                 }
                 c->rDead = false;
             }
-            if (!c->rDead && !c->rCover[i]) {  // the block tier never ran this: leave for its own block
+            if (!c->rDead && !c->rCover[ri]) {  // the block tier never ran this: leave for its own block
                 rc_flush(c);
-                if (c->rLastLabel > i) region_back(c, MAX_BLOCK_INSNS);
+                if (c->rLastLabel > ri) region_back(c, MAX_BLOCK_INSNS);
                 exit_const(c, c->pc);
                 c->rDead = true;
             }
             if (c->rDead) {
-                if (c->rLastLabel <= i) { ended = true; break; }  // nothing after here is reached
+                if (c->rLastLabel <= ri) { ended = true; break; }  // nothing after here is reached
                 c->count = i + 1 + c->countExtra;  // reached only through a label further on: taken, and given back
                 continue;
             }
@@ -4646,11 +4690,30 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 continue;
             }
         }
+        if (c->region && !inl && (inst >> 26) == 18 && (inst & 3) == 1) {  // bl to a leaf: its code here (OPT_TIER regions)
+            s32 li = ((s32)(inst << 6)) >> 6 & ~3;
+            u32 target = c->pc + (u32)li, tpa, n;
+            if (region_leaf(c, target, &tpa, &n) && i + n < maxInsns && c->count + n + 1 < 200) {
+                load_const(e, R1, c->pc + 4);  // LR = the return address, as the bl leaves it
+                str_imm(e, R1, RG, OFF_LR);
+                if ((tpa >> 12) < sizeof j->codePages) j->codePages[tpa >> 12] = 1;  // an icbi there drops this block
+                c->inlPc = target;
+                c->inlPa = tpa;
+                c->inlLeft = n;
+                c->inlDone = !n;
+                j->stats.tierInlines++;
+#ifndef __3DS__
+                if (getenv("JIT_TIERLOG")) { fprintf(stderr, "inline %08x leaf %08x n %u", c->pc, target, n); fputc(10, stderr); }
+#endif
+                j->stats.instrsNative++;
+                continue;
+            }
+        }
         if (is_branch(inst)) {
-            if (c->region && region_branch(c, inst, i)) { j->stats.instrsNative++; continue; }
+            if (c->region && region_branch(c, inst, ri)) { j->stats.instrsNative++; continue; }
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
             u32 nBack = c->nRBack;
-            if (c->region && c->rLastLabel > i) region_back(c, MAX_BLOCK_INSNS);  // (ADD: keeps the flags a fused branch uses)
+            if (c->region && c->rLastLabel > ri) region_back(c, MAX_BLOCK_INSNS);  // (ADD: keeps the flags a fused branch uses)
             if (compile_branch(c, inst)) {
                 j->stats.instrsNative++;
                 if (c->region) c->rDead = true; else ended = true;  // (region: the block may go on at a label)
@@ -4675,6 +4738,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 #ifndef __3DS__
     if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
 #endif
+    if (c->inlDone) {  // the loop ended right after an inlined leaf: its blr ran
+        u32 blr = jit_debug_plant == 25 ? 0u : 1u;
+        c->countExtra += blr;
+        c->count += blr;
+        c->inlDone = false;
+    }
     if (!ended && !c->rDead) {  // ran out of instructions (or a page end)
 #ifndef __3DS__
         if (g_regStat) { g_rxState = c->rc; g_rxHave = true; g_rwWhy = RW_CONST; }

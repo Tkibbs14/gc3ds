@@ -2283,11 +2283,15 @@ done
   | ... and regions in their own hot area, the top third of it (874-881, not kept) | -1.0% | -2.2% | +0.4% | -0.1% |
   | float lanes and known singles across labels, float lanes gated over the extent (882-889, commit 0e4fff4) | -0.3% | -1.3% | +0.6% | +0.1% |
   | ... and a tier compile with no forward branch stops before the page scan (890-893) | -0.3% | -1.1% | | |
+  | ... and straight-line leaves inlined at bl inside regions (894-901) | -0.4% | -1.1% | +0.6% | -0.05% |
 
 - **Where it stands (866-873):** regions run 1.2-1.6% fewer ARM instructions (heavy 281.7 -> 278.4 M/s, Ordon 272.5
   -> 268.1). The loss is instruction fetch: stall_inst 201 -> 205 M cycles/s (heavy) and 219 -> 230 (Ordon),
   instruction micro-TLB misses +34% / +65%, I-cache misses +0.5% / +3.4%. Code buffer 47 -> 56% (heavy).
   Regions are compiled after the blocks around them, so hot code spreads over more pages and lines.
+- **Leaves inlined (894-901):** 292 / 334 / 166 / 38 leaves (heavy, Ordon, Wind Waker, Mario Party 4), qemu TP 125;
+  the body lengths spread from 0 to 10 instructions. Most leaves branch inside and are not taken, so it moves nothing
+  measurable. 3-13 tier compiles failed (code overflow) in those runs; the block tier's block stays.
 - **Ordon's remaining loss is compile time:** JIT compile 0.84 -> 1.21% of core 0 (890/891), the regions' own
   compiles in a scene that keeps reaching new code; stopping the rejected attempts early barely moved it.
 - **I-cache simulator, TP fields 900-950 after 850-900 (qemu, core/tools/qemu-plugins/icache.c, 16 KB 4-way):** JIT

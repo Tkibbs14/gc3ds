@@ -4,6 +4,8 @@
 #include "../../src/cpu/gekko_internal.h"
 static u32 x3_cases(int plant) {
     u32 saved_opt = jit_opt(jit), saved_max = jit_debug_max_insns, saved_plant = jit_debug_plant;
+    u32 saved_cover = jit_debug_region_cover;
+    jit_debug_region_cover = 0;  // (it lets regions inline leaves: these cases count calls that must stay calls)
     bool saved_trace = jit_traces(jit);
     u32 cases = 0, fails = 0;
     if (!alias_unchecked(0x7fffd800u) || alias_unchecked(0x80001000u) || alias_unchecked(0xc0001000u)) {
@@ -128,7 +130,7 @@ static u32 x3_cases(int plant) {
         }
         cases++;
     }
-    jit_debug_plant = saved_plant; jit_debug_max_insns = saved_max;
+    jit_debug_plant = saved_plant; jit_debug_max_insns = saved_max; jit_debug_region_cover = saved_cover;
     jit_set_opt(jit, saved_opt); jit_set_traces(jit, saved_trace); jit_invalidate_all(jit);
     printf("X3 directed cases=%u fails=%u (inline/native; all suffixes, mirror, locked cache, DSI, cross-page, rejection, icbi)\n", cases, fails);
     return fails;

@@ -33,6 +33,7 @@ typedef struct {
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
     u64 tierUps, tierNoGain, tierNotHead, tierMember, tierFails;  // OPT_TIER: regions compiled; counters stopped without one
+    u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;

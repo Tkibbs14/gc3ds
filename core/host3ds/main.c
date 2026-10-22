@@ -2164,9 +2164,9 @@ static const char* run_body(const char* path) {
                         for (int k = 0; k < 8 && js->keyCount[k]; k++) fprintf(g_perf, " %08lx=%lu", (unsigned long)js->keySeen[k], (unsigned long)js->keyCount[k]);
                         fprintf(g_perf, "\n");
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
-                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu\n",
+                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu\n",
                                 (unsigned long long)js->tierUps, (unsigned long long)js->tierNoGain, (unsigned long long)js->tierNotHead,
-                                (unsigned long long)js->tierMember, (unsigned long long)js->tierFails);
+                                (unsigned long long)js->tierMember, (unsigned long long)js->tierFails, (unsigned long long)js->tierInlines);
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu, calls followed %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],
