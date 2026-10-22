@@ -37,5 +37,11 @@ for plant in 20 21 22; do
     JIT_FUZZ_PLANT=$plant JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
     if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
 done
-echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot, callee-saved cache retention, region give-back counts and region label write-back)"
+# Region tier with a pseudo-random coverage map (OPT_TIER's never-run sides), and OPT_TIER through the dispatcher with
+# regions compiled after two runs (with the pseudo-random coverage map: the fuzzer's short programs rarely cover a join).
+JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) JIT_FUZZ_RCOVER=12345 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" > "$out/rcover.txt"
+grep -qE "^JIT FUZZ .*fails=0" "$out/rcover.txt" || { echo "REGION COVERAGE FUZZ RUN FAILED"; exit 4; }
+JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain > "$out/tier.txt"
+grep -qE "^JIT FUZZ .*fails=0" "$out/tier.txt" || { echo "TIER CHAIN FUZZ RUN FAILED"; exit 4; }
+echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot, callee-saved cache retention, region give-back counts, region label write-back)"
 exit $status

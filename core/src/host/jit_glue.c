@@ -94,6 +94,10 @@ bool host_jit_enable(System* s) {
         hle_ps_set_group("__pl,__mi,__ml", false);
     }
     if (getenv("GC3DS_REGION")) jit_set_opt(g_hostJit, jit_opt(g_hostJit) | OPT_REGION);  // forward branches inside blocks
+    if (getenv("GC3DS_TIER")) {  // regions of what ran, for blocks that run often (GC3DS_TIER=runs, 1 = the default 64)
+        jit_set_opt(g_hostJit, jit_opt(g_hostJit) | OPT_TIER);
+        if (atoi(getenv("GC3DS_TIER")) > 1) jit_tier_threshold = (u32)atoi(getenv("GC3DS_TIER"));
+    }
     s->icbiCtx = g_hostJit;
     return true;
 }

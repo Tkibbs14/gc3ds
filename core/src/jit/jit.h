@@ -32,6 +32,7 @@ typedef struct {
     u64 missPoll, missFirst, missTaken, missEmpty, missKey;
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
+    u64 tierUps, tierNoGain, tierNotHead, tierMember, tierFails;  // OPT_TIER: regions compiled; counters stopped without one
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
     u64 icbis, icbiFlushes, dispatchMisses, pollSkips;
@@ -151,7 +152,7 @@ enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
        OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_PIPEPS = 131072,
        OPT_GPRINLINE = 262144, OPT_ZGPR = 524288, OPT_ZGX = 1048576, OPT_ZXYZ = 2097152, OPT_ALL = 4194303,
-       OPT_REGION = 4194304 };  // OPT_REGION: blocks continue past forward branches inside them (jit.c region_scan), not in OPT_ALL
+       OPT_REGION = 4194304, OPT_TIER = 8388608 };  // OPT_TIER: blocks that run often are recompiled as regions of what ran (jit.c tier_block)  // OPT_REGION: blocks continue past forward branches inside them (jit.c region_scan), not in OPT_ALL
 // X3: word-recognised GPR save/restore inlining, and selective native-call ABI for GPR/GX/cXyz sets. All default off.
 // OPT_PIPEPS: the shared psq_st stubs (plain float and known singles) append to the write-gather pipe's buffer themselves
 // when the address is the pipe's and the burst has room (GXLoadPosMtxImm and its kin), instead of failing to the site's
@@ -193,6 +194,8 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
+extern u32 jit_tier_threshold;      // OPT_TIER: block runs before its region (default 64)
+extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed
 extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off
 u32 jit_run_one_block(Jit* j);
 

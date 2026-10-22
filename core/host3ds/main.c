@@ -499,6 +499,8 @@ typedef struct {
     bool abLighthook;  // --ab lighthook: the J3D diffLightObj port on and off (hle column bit 8)
     bool gprinline, zgpr, zgx, zxyz; // X3, default off; separate whole-run experiments
     bool region;         // --region on|off: blocks continue past forward branches inside them (OPT_REGION, jit.c region_scan)
+    bool tier;           // --tier on|off: blocks that run often become regions of the code that ran (OPT_TIER, jit.c tier_block)
+    unsigned tierRuns;   // --tier-runs N: runs of a block before its region (default 64)
     bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
@@ -614,6 +616,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--psflush")) o->psflush = !strcmp(v, "on");
         else if (!strcmp(a, "--gprinline")) o->gprinline = !strcmp(v, "on");
         else if (!strcmp(a, "--region")) o->region = !strcmp(v, "on");
+        else if (!strcmp(a, "--tier")) o->tier = !strcmp(v, "on");
+        else if (!strcmp(a, "--tier-runs")) o->tierRuns = (unsigned)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--zgpr")) o->zgpr = !strcmp(v, "on");
         else if (!strcmp(a, "--zgx")) o->zgx = !strcmp(v, "on");
         else if (!strcmp(a, "--zxyz")) o->zxyz = !strcmp(v, "on");
@@ -1125,6 +1129,7 @@ static const char* run_body(const char* path) {
         jit_set_mem_stubs(g_jit, true);
         jit_set_fault_mem(g_jit, g_opt.faultMem || g_opt.abFault);
         jit_set_sched(g_jit, g_opt.sched || g_opt.abSched ? SCHED_ALL : 0);  // on unless --sched off (relay 91-92)
+        if (g_opt.tierRuns) jit_tier_threshold = g_opt.tierRuns;
         jit_set_opt(g_jit, (g_opt.opt && !g_opt.abOpt ? OPT_HOIST : 0) | (g_opt.kstore && !g_opt.abKstore ? OPT_KSTORE : 0) |
                            (g_opt.fcache && !g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.calls && !g_opt.abCalls ? OPT_CALLS : 0) |
                            (g_opt.retstub && !g_opt.abRetstub && !g_opt.abStack ? OPT_RETSTUB : 0) |
@@ -1139,7 +1144,7 @@ static const char* run_body(const char* path) {
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
-                           (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) | (g_opt.region ? OPT_REGION : 0) |
+                           (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) | (g_opt.region ? OPT_REGION : 0) | (g_opt.tier ? OPT_TIER : 0) |
                            (g_opt.zgx ? OPT_ZGX : 0) | (g_opt.zxyz ? OPT_ZXYZ : 0) |
                            (g_opt.pipeps && !g_opt.abPipeps ? OPT_PIPEPS : 0) |
                            (g_opt.abFlip && g_opt.abFcache ? OPT_FCACHE : 0) | (g_opt.abFlip && g_opt.abIcbi ? OPT_ICBI : 0) |
@@ -2159,6 +2164,9 @@ static const char* run_body(const char* path) {
                         for (int k = 0; k < 8 && js->keyCount[k]; k++) fprintf(g_perf, " %08lx=%lu", (unsigned long)js->keySeen[k], (unsigned long)js->keyCount[k]);
                         fprintf(g_perf, "\n");
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
+                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu\n",
+                                (unsigned long long)js->tierUps, (unsigned long long)js->tierNoGain, (unsigned long long)js->tierNotHead,
+                                (unsigned long long)js->tierMember, (unsigned long long)js->tierFails);
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu, calls followed %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],

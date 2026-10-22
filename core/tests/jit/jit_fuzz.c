@@ -810,6 +810,8 @@ int main(int argc, char** argv) {
     g_faultMode = jit_fault_mem(jit);
     jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);
     if (getenv("JIT_FUZZ_OPT")) jit_set_opt(jit, (u32)strtoul(getenv("JIT_FUZZ_OPT"), NULL, 0));  // optimizing-JIT stages
+    if (getenv("JIT_FUZZ_RCOVER")) jit_debug_region_cover = (u32)strtoul(getenv("JIT_FUZZ_RCOVER"), NULL, 0);  // regions: pseudo-random coverage
+    if (getenv("JIT_FUZZ_TIER")) jit_tier_threshold = (u32)strtoul(getenv("JIT_FUZZ_TIER"), NULL, 0);  // OPT_TIER: runs before a region
     if (plant != 9) jit_set_mem_stamps(jit, &g_jitStamps);  // plant 9: compiled dcbf / dcbst / dcbz stamp nothing
     if (plant == 2) jit_debug_plant = 1;
     if (plant >= 3 && plant != 9) jit_debug_plant = (u32)plant;

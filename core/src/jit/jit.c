@@ -82,7 +82,20 @@ typedef u32 (*BlockFn)(Gekko* g);
 // bucket (a direct-mapped table evicted and recompiled colliding blocks, e.g. a real-mode exception handler at
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
 // poll: polling-loop length or 0; count: the guest instructions the block's entry takes off the budget
-typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro; u32 next; } Entry;  // pro: prologue words
+typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro; u32 next;
+                 u32 end; u16 runs; bool pending, member; } Entry;  // pro: prologue words
+// OPT_TIER (tier_block): blocks start in the block tier, whose blocks end at every branch, so a block at a PC means that
+// basic block ran since the last flush (end: the address after its last instruction). pending: its tier is not decided
+// yet, so nothing links to it and the dispatcher counts its runs; at jit_tier_threshold its region (compiled from what
+// the block tier covers) replaces it, or it stays. Deciding in the dispatcher leaves block code as it was: a counter in
+// the block (2DS jobs 834-841) kept a branch in every block, and links into a replaced block went through it.
+// member: the block lies inside a region compiled since, so it never gets one of its own.
+static bool g_tierCompile, g_tierNoGain;  // compile_block: a region for tier_block; it found no label (no gain)
+static u32 g_tierKey, g_tierHeadEnd, g_tierN;
+static u8 g_tierCov[MAX_BLOCK_INSNS];
+u32 jit_tier_threshold = 64;
+u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
+static Entry* entry_find(Jit* j, u32 pc, u32 msrBits);
 #define JIT_PROLOGUE 2  // words of a block's budget check (compile_block; 1 without the branch, OPT_LATCH): the dispatcher enters after them
 #define MAX_ENTRIES (1u << 16)
 #define NO_ENTRY 0xFFFFFFFFu
@@ -501,9 +514,12 @@ typedef struct {
     u8 rLabel[MAX_BLOCK_INSNS], rTarget[MAX_BLOCK_INSNS];  // a label at i; the label an internal branch at i goes to
     u32 rLastLabel;                                          // the highest label index (0: none)
     u32 rEnd;                                                // the extent: the block ends there (a link to it)
+    bool rProfiled;                                          // OPT_TIER: only code the block tier ran (rCover)
+    u8 rCover[MAX_BLOCK_INSNS];                              // instruction i ran (else the block leaves there)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
-    struct { u32 at, label; } rJump[MAX_BLOCK_INSNS];        // hot forward jumps to labels, patched at the label
+    struct { u32 at, label; Rc snap; } rJump[MAX_BLOCK_INSNS]; // hot forward jumps to labels (and the cache there)
+    Rc rLabelT[MAX_BLOCK_INSNS];                             // the GPR cache a label's code starts with
     struct { u32 at, label, count; } rBack[MAX_BLOCK_INSNS]; // ADD RDC immediates: the instructions a jump skips
                                                              // (label MAX_BLOCK_INSNS: an exit before the block's end)
     u32 nRJump, nRBack;
@@ -1100,6 +1116,14 @@ static int slot_of(const Rc* rc, u32 r) {
     return -1;
 }
 
+// Writes back the dirty float lanes of `rc` (does not change it).
+static void rc_emit_flush_fl(Cg* c, const Rc* rc) {
+    for (int k = 0; k < NFS; k++) {  // float lanes, as doubles (d7: free between instructions and at exits)
+        if (rc->fid[k] < 0 || !rc->fdirty[k]) continue;
+        vcvt_f64_f32(&c->e, 7, 16 + k);
+        vstr_d(&c->e, 7, RG, OFF_FPR((u32)rc->fid[k] >> 1) + 8u * ((u32)rc->fid[k] & 1));
+    }
+}
 // Writes back the dirty slots of `rc` (does not change it).
 static void rc_emit_flush(Cg* c, const Rc* rc) {
     bool skipped = false;
@@ -1111,11 +1135,7 @@ static void rc_emit_flush(Cg* c, const Rc* rc) {
         str_imm(&c->e, kSlot[k], RG, rc_off((u32)rc->id[k]));
         if (!c->inCold && rc == &c->rc) rs_store((u32)rc->id[k]);  // hot flushes only: exit stubs would count once per stub, not per run
     }
-    for (int k = 0; k < NFS; k++) {  // float lanes, as doubles (d7: free between instructions and at exits)
-        if (rc->fid[k] < 0 || !rc->fdirty[k]) continue;
-        vcvt_f64_f32(&c->e, 7, 16 + k);
-        vstr_d(&c->e, 7, RG, OFF_FPR((u32)rc->fid[k] >> 1) + 8u * ((u32)rc->fid[k] & 1));
-    }
+    rc_emit_flush_fl(c, rc);
 }
 // A copy of the cache with nothing dirty (what an exit after a flush writes back).
 static Rc rc_clean(const Rc* rc) {
@@ -2289,6 +2309,21 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
         }
     }
     c->rEnd = n;
+    for (u32 i = 0; i < n; i++) c->rCover[i] = !c->rProfiled;
+    if (c->rProfiled && !jit_debug_region_cover) {  // what the block tier ran: the head block's range, and the blocks starting inside the extent
+        for (u32 s0 = 0; s0 < n; s0++) {
+            u32 end = g_tierHeadEnd;
+            if (s0) {
+                const Entry* en = entry_find(j, pc + 4 * s0, g_tierKey);
+                if (!en) continue;
+                end = en->end;
+            }
+            for (u32 k = s0; k < n && pc + 4 * k < end; k++) c->rCover[k] = 1;
+        }
+    } else if (jit_debug_region_cover) {
+        for (u32 k = 1; k < n; k++) c->rCover[k] = (((pc + 4 * k) * 2654435761u) ^ jit_debug_region_cover) >> 29 != 0;
+    }
+    c->rCover[0] = 1;
     for (u32 i = 0; i < n; i++) {
         u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
         if (inst & 3) continue;  // LK or absolute
@@ -2298,15 +2333,16 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
         else continue;
         if (off <= 0 || i + (u32)off / 4 >= n) continue;  // backward, or past the extent
         u32 t = i + (u32)off / 4;
+        if (!c->rCover[i] || !c->rCover[t]) continue;  // a side that never ran: a side exit
         c->rTarget[i] = (u8)t;
         c->rLabel[t] = 1;
         if (t > c->rLastLabel) c->rLastLabel = t;
     }
 }
 
-// At a label: every path arrives with guest state in memory, so nothing compiled before it may be assumed after it.
+// At a label: the GPR slots are the label's (rLabelT, every path into it reconciles to them); nothing else compiled
+// before it may be assumed after it (float lanes are written back on every path, flags and known values forgotten).
 static void region_forget(Cg* c) {
-    for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = -1; c->rc.dirty[k] = c->rc.swap[k] = false; }
     for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
     c->flagsAt = NO_BRANCH;
     c->flagsLive = false;
@@ -2327,19 +2363,91 @@ static void region_back(Cg* c, u32 t) {
     dp_imm(&c->e, ADD, 0, RDC, RDC, 0);
 }
 
+// A path into a label arrives with GPR slots `s`; the label's code assumes `t`. Stores what t does not keep dirty in
+// the same slot, then loads what t holds and s does not hold there (guest state is current by then), and byte-reverses
+// slots whose representation differs.
+static void region_reconcile(Cg* c, const Rc* s, const Rc* t) {
+    bool sw[NSLOT], lost = false;
+    for (int k = 0; k < NSLOT; k++) {
+        sw[k] = s->swap[k];
+        if (s->id[k] < 0 || !s->dirty[k]) continue;
+        if (t->id[k] == s->id[k] && t->dirty[k]) continue;  // stays dirty in place
+        if (jit_debug_plant == 21 && !lost) { lost = true; continue; }  // plant 21: a path into a label loses a write
+        if (sw[k]) { rev(&c->e, kSlot[k], kSlot[k]); sw[k] = false; }
+        str_imm(&c->e, kSlot[k], RG, rc_off((u32)s->id[k]));
+    }
+    for (int k = 0; k < NSLOT; k++) {
+        if (t->id[k] < 0) continue;
+        if (s->id[k] != t->id[k]) { ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)t->id[k])); sw[k] = false; }
+        if (sw[k] != t->swap[k]) rev(&c->e, kSlot[k], kSlot[k]);
+    }
+}
+static bool rc_same_gprs(const Rc* a, const Rc* b) {
+    for (int k = 0; k < NSLOT; k++) {
+        if (a->id[k] != b->id[k]) return false;
+        if (a->id[k] >= 0 && (a->dirty[k] != b->dirty[k] || a->swap[k] != b->swap[k])) return false;
+    }
+    return true;
+}
+// The state a label starts with: the first path into it (in the hot code's order), which then needs no fix-up and
+// can jump there inline; later paths and the fall-through reconcile to it.
+static bool region_first_in(const Cg* c, u32 label, Rc* t) {
+    u32 best = NO_BRANCH;
+    for (u32 k = 0; k < c->nRJump; k++)
+        if (c->rJump[k].label == label && c->rJump[k].at < best) { best = c->rJump[k].at; *t = c->rJump[k].snap; }
+    for (u32 k = 0; k < c->nExits; k++)
+        if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == label && !c->exits[k].inCold && c->exits[k].at < best) {
+            best = c->exits[k].at;
+            *t = c->exits[k].snap;
+        }
+    return best != NO_BRANCH;
+}
+
+// The ARM condition under which bc (BO without the CTR decrement) is taken: the flags the compare before it left, or
+// a test of the CR bit.
+static int region_cond(Cg* c, u32 bo, u32 bi) {
+    if (c->flagsLive && (bi >> 2) == c->flagsFld && (bi & 3) != 3) {
+        static const int kSigned[3] = { C_LT, C_GT, C_EQ }, kUnsigned[3] = { C_CC, C_HI, C_EQ };
+        int cond = (c->flagsSigned ? kSigned : kUnsigned)[bi & 3];
+        if (jit_debug_plant == 3) cond ^= 1;  // the fuzzer's self-test: a wrong fused branch must be caught
+        c->j->stats.fusedBranches++;
+        return (bo & 8) ? cond : cond ^ 1;
+    }
+    int cr = src(c, ID_CR, R0);
+    u32 bit = 1u << (31 - bi), enc;
+    if (!arm_imm(bit, &enc)) enc = 0;
+    dp_imm(&c->e, TST, 1, 0, cr, enc);
+    return (bo & 8) ? C_NE : C_EQ;
+}
+
 // A branch inside a region block; false when it is compiled as before (it then ends the block's current path).
 static bool region_branch(Cg* c, u32 inst, u32 i) {
     u32 op = inst >> 26, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
     if (c->rTarget[i]) {  // to a label further on
         u32 t = c->rTarget[i];
         if (op == 18 || (bo & 20) == 20) {  // always taken
-            rc_flush(c);
+            rc_emit_flush_fl(c, &c->rc);  // float lanes are not carried into a label
+            for (int k = 0; k < NFS; k++) c->rc.fdirty[k] = false;
             region_back(c, t);
             if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
+            c->rJump[c->nRJump].snap = c->rc;
             c->rJump[c->nRJump].at = branch_c(&c->e, C_AL, 0);
             c->rJump[c->nRJump].label = t;
             c->nRJump++;
             c->rDead = true;
+            return true;
+        }
+        if (bo & 4) {  // one condition: the give-back and the branch inline (a stub cost a cold jump on every taken branch)
+            rc_emit_flush_fl(c, &c->rc);  // float lanes are not carried into a label (written back on both paths)
+            for (int k = 0; k < NFS; k++) c->rc.fdirty[k] = false;
+            int cond = region_cond(c, bo, bi);
+            if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
+            region_back(c, t);
+            c->e.buf[c->e.n - 1] = (c->e.buf[c->e.n - 1] & 0x0FFFFFFFu) | cc(cond);  // ADD<cond> RDC (no flags)
+            c->rJump[c->nRJump].snap = c->rc;
+            c->rJump[c->nRJump].at = branch_c(&c->e, cond, 0);
+            c->rJump[c->nRJump].label = t;
+            c->nRJump++;
             return true;
         }
         emit_branch_side(c, bo, bi, false, t, 0, true);
@@ -4126,6 +4234,8 @@ static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] +=
 
 static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
 static u32 g_lastPro;    // ... and its prologue words (Entry.pro)
+static u32 g_lastEnd;    // ... and the address after its last guest instruction (Entry.end)
+static bool g_lastPending;  // ... and whether its tier is still to be decided (Entry.pending)
 
 // OPT_LATCH: whether the block at pc may branch to pc or below, so that a loop of linked blocks could close through it
 // (it keeps its budget check). The scan may run past where the block ends, which only keeps more checks; blr / bctr
@@ -4227,8 +4337,9 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (int k = 0; k < NFS; k++) c->rc.fid[k] = -1;
     c->j = j;
     c->noLink = noLink;
-    c->region = (j->opt & OPT_REGION) && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
-    c->trace = j->traces && !noLink && !c->region;
+    c->region = ((j->opt & OPT_REGION) || g_tierCompile) && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
+    c->rProfiled = c->region && g_tierCompile;
+    c->trace = j->traces && !noLink && !c->region && !(j->opt & OPT_TIER);  // (OPT_TIER: blocks end at branches, the profile)
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
     c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM;  // (swapped RAM: a misaligned word would not fault)
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
@@ -4253,6 +4364,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (!check) j->stats.blocksNoCheck++;
     // The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
+    g_lastPending = (j->opt & OPT_TIER) && !c->region && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
 #ifndef __3DS__
     if (g_regStat) {  // this block's execution counter (register-cache statistics)
         g_rsCur = j->nEntries;
@@ -4309,6 +4421,12 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (c->region) {
         for (u32 k = 0; k < MAX_BLOCK_INSNS; k++) c->rLabelAt[k] = NO_BRANCH;
         region_scan(c, pc, startPa, maxInsns);
+        if (c->rProfiled && !c->rLastLabel) {  // nothing joins: the block tier's block is as good
+#ifndef __3DS__
+            if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiercov %08x n %u ", pc, c->rEnd); for (u32 k = 0; k < c->rEnd; k++) fputc(c->rCover[k] ? 49 : 48, stderr); fputc(10, stderr); }
+#endif
+            g_tierNoGain = true; return NULL;
+        }
     }
     for (u32 i = 0; i < maxInsns && !ended; i++) {
         c->pc = t.nextPc;
@@ -4324,11 +4442,34 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (c->region) {  // (before count: a block that ends here has not run this instruction)
             c->rCountAt[i] = i + c->countExtra;
             if (c->rLabel[i]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
-                if (!c->rDead && jit_debug_plant != 21) rc_flush(c);  // plant 21: the fall-through loses its writes
+                Rc lt = c->rc;
+                bool have = region_first_in(c, i, &lt);
+                if (!c->rDead) {  // the fall-through reconciles to the label's state; its float lanes are written back
+                    rc_emit_flush_fl(c, &c->rc);
+                    if (have) region_reconcile(c, &c->rc, &lt);
+                    else lt = c->rc;
+                } else if (!have) {
+                    for (int k = 0; k < NSLOT; k++) { lt.id[k] = -1; lt.dirty[k] = lt.swap[k] = false; }
+                }
                 region_forget(c);
+                for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = lt.id[k]; c->rc.dirty[k] = lt.dirty[k]; c->rc.swap[k] = lt.swap[k]; }
+                c->rLabelT[i] = c->rc;
                 c->rLabelAt[i] = e->n;
-                for (u32 k = 0; k < c->nRJump; k++) if (c->rJump[k].label == i) patch_branch(e, c->rJump[k].at, e->n);
+                for (u32 k = 0; k < c->nRJump; k++) {
+                    if (c->rJump[k].label != i) continue;
+                    if (rc_same_gprs(&c->rJump[k].snap, &c->rLabelT[i])) { patch_branch(e, c->rJump[k].at, e->n); continue; }
+                    cold_begin(c);  // the jump goes through a fix-up in cold code
+                    fix_to_cold(c, c->rJump[k].at);
+                    region_reconcile(c, &c->rJump[k].snap, &c->rLabelT[i]);
+                    cold_end(c, c->rLabelAt[i]);
+                }
                 c->rDead = false;
+            }
+            if (!c->rDead && !c->rCover[i]) {  // the block tier never ran this: leave for its own block
+                rc_flush(c);
+                if (c->rLastLabel > i) region_back(c, MAX_BLOCK_INSNS);
+                exit_const(c, c->pc);
+                c->rDead = true;
             }
             if (c->rDead) {
                 if (c->rLastLabel <= i) { ended = true; break; }  // nothing after here is reached
@@ -4473,7 +4614,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (g_regStat) { g_rsE[g_rsCur].written = g_rsWritten; g_rsE[g_rsCur].touched = g_rsSeen; g_rxHave = false; }
 #endif
     for (u32 k = 0; k < c->nRBack; k++) {  // OPT_REGION: the instructions each internal jump skips
-        u32 lab = c->rBack[k].label, back = (lab == MAX_BLOCK_INSNS ? c->count + (jit_debug_plant == 22 ? 1 : 0) : c->rCountAt[lab]) - c->rBack[k].count;  // plant 22: a mid-block exit miscounts
+        u32 lab = c->rBack[k].label, back = (lab == MAX_BLOCK_INSNS ? c->count + (jit_debug_plant == 22 ? 1 : 0) : c->rCountAt[lab] + (jit_debug_plant == 20 ? 1 : 0)) - c->rBack[k].count;  // plants 22 and 20: a mid-block exit, a jump miscounts
         if ((lab != MAX_BLOCK_INSNS && c->rLabelAt[lab] == NO_BRANCH) || back > 255) e->overflow = true;
         else e->buf[c->rBack[k].at] |= back;
     }
@@ -4507,14 +4648,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     // Exit stubs: give back to RDC the instructions the block did not run, and leave.
     for (u32 k = 0; k < c->nExits; k++) {
         patch_to((c->exits[k].inCold ? coldBuf : hotBuf) + c->exits[k].at, e->buf + e->n);
-        rc_emit_flush(c, &c->exits[k].snap);
-        if (c->exits[k].kind == EXIT_LABEL) {  // OPT_REGION: give back what the branch skips, go on at the label
+        if (c->exits[k].kind == EXIT_LABEL) {  // OPT_REGION: the label's cache, give back what the branch skips, go on there
             u32 lab = c->exits[k].pc, skipped = c->rCountAt[lab] - c->exits[k].count + (jit_debug_plant == 20 ? 1 : 0);  // plant 20: miscounted
             if (c->rLabelAt[lab] == NO_BRANCH || skipped > 255) { e->overflow = true; continue; }
+            rc_emit_flush_fl(c, &c->exits[k].snap);
+            region_reconcile(c, &c->exits[k].snap, &c->rLabelT[lab]);
             if (skipped) dp_imm(e, ADD, 0, RDC, RDC, skipped);
             add_fix(c, true, branch_c(e, C_AL, 0), false, c->rLabelAt[lab]);
             continue;
         }
+        rc_emit_flush(c, &c->exits[k].snap);
         u32 back = total - c->exits[k].count + (c->exits[k].kind == EXIT_LINK && jit_debug_plant == 6 ? 1 : 0);  // plant 6: a side exit miscounts
         if (back) dp_imm(e, ADD, 0, RDC, RDC, back);
         if (c->exits[k].kind == EXIT_LINK) {  // a conditional branch out of a trace: a link site to the target block
@@ -4605,6 +4748,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     j->stats.wordsCold += c->alt.n;
     j->stats.insnsKept += c->count;
     g_lastCount = total;
+    g_lastEnd = c->nGuest ? c->gpc[c->nGuest - 1] + 4 : pc;
+    if (c->rProfiled) { g_tierN = c->rEnd; memcpy(g_tierCov, c->rCover, c->rEnd); }
     return (BlockFn)fn;
 }
 
@@ -5656,6 +5801,10 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->poll = (u8)poll;
     en->count = (u8)g_lastCount;
     en->pro = (u8)g_lastPro;
+    en->end = g_lastEnd;
+    en->runs = 0;
+    en->pending = g_lastPending;
+    en->member = false;
     en->next = *head;
     *head = idx;
     return en;
@@ -5683,6 +5832,81 @@ static void deopt_block(Jit* j, u32 pc, u32 key) {
     s32 off = (s32)((const u32*)(void*)en->fn - (oldFn + 2));
     *oldFn = 0xEA000000u | ((u32)off & 0xFFFFFF);  // B new block
     jit_host_sync_icache(oldFn, 4);
+}
+
+static Entry* entry_find(Jit* j, u32 pc, u32 msrBits) {  // a compiled block, without compiling
+    for (u32 i = j->buckets[bucket_of(pc, msrBits)]; i != NO_ENTRY; i = j->table[i].next)
+        if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
+    return NULL;
+}
+
+// OPT_TIER: where a region starts. A return site (after a call), a loop head (a backward branch later in the page
+// targets it) or a function entry (after an unconditional branch, unless a forward branch just before jumps here: the
+// far side of an if). A fall-through is inside the region of the code before it.
+static bool region_head(Jit* j, u32 pc) {
+    u32 pa;
+    if (!gk_translate(j->g, pc, false, false, &pa, false) || pa + 4 > j->ramSize) return false;
+    u32 off = pa & 0xFFF;
+    for (u32 k = 1; k <= MAX_BLOCK_INSNS && off + 4 * k < 0x1000 && pa + 4 * k + 4 <= j->ramSize; k++) {
+        u32 inst = ram_rd32(j->ram, pa + 4 * k), op = inst >> 26;
+        if (inst & 2) continue;
+        if (op == 18 && pc + 4 * k + (u32)(((s32)(inst << 6)) >> 6 & ~3) == pc) return true;
+        if (op == 16 && pc + 4 * k + (u32)(s32)(s16)(inst & 0xFFFC) == pc) return true;
+    }
+    if (off == 0) return true;
+    u32 prev = ram_rd32(j->ram, pa - 4), op = prev >> 26, xo = (prev >> 1) & 0x3FF, bo = (prev >> 21) & 31;
+    if (is_branch(prev) && (prev & 1)) return true;  // a return site
+    bool uncond = (op == 18) || (op == 19 && (xo == 16 || xo == 528) && (bo & 20) == 20) || (op == 19 && xo == 50);
+    if (!uncond) return false;
+    for (u32 k = 2; k <= MAX_BLOCK_INSNS && 4 * k <= off; k++) {
+        u32 inst = ram_rd32(j->ram, pa - 4 * k), bop = inst >> 26;
+        if (inst & 2) continue;
+        if (bop == 18 && pc - 4 * k + (u32)(((s32)(inst << 6)) >> 6 & ~3) == pc) return false;
+        if (bop == 16 && pc - 4 * k + (u32)(s32)(s16)(inst & 0xFFFC) == pc) return false;
+    }
+    return true;
+}
+
+// OPT_TIER: a pending block ran jit_tier_threshold times. Its region replaces it (as deopt_block replaces a block) when the block
+// starts one and the region joins paths; the blocks the region covers never ask for one of their own.
+static void tier_block(Jit* j, u32 pc, u32 key) {
+    Entry* old = entry_find(j, pc, key);
+    if (!old) return;
+    old->pending = false;
+#ifndef __3DS__
+    if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tierask %08x member %d head %d", pc, old->member, region_head(j, pc)); fputc(10, stderr); }
+#endif
+    if (old->member) { j->stats.tierMember++; return; }
+    if (!region_head(j, pc)) { j->stats.tierNotHead++; return; }
+    u32* oldFn = (u32*)(void*)old->fn;
+    u32 gen = j->gen;
+    g_tierCompile = true; g_tierNoGain = false; g_tierKey = key; g_tierHeadEnd = old->end; g_tierN = 0;
+    old->pc = 1;  // never a guest PC: lookup compiles the region
+    Entry* en = lookup(j, pc, key);
+    g_tierCompile = false;
+    if (j->gen != gen) return;  // the cache was flushed: everything starts again in the block tier
+    if (!en) {
+#ifndef __3DS__
+        if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiernot %08x nogain %d gen %d", pc, g_tierNoGain, j->gen != gen); fputc(10, stderr); }
+#endif
+        old->pc = pc; if (g_tierNoGain) j->stats.tierNoGain++; else j->stats.tierFails++; return;
+    }
+    j->stats.tierUps++;
+#ifndef __3DS__
+    if (getenv("JIT_TIERLOG")) {
+        fprintf(stderr, "tier %08x region count %u cover ", pc, en->count);
+        for (u32 k = 0; k < g_tierN; k++) fputc(g_tierCov[k] ? '1' : '0', stderr);
+        fputc(10, stderr);
+    }
+#endif
+    s32 off = (s32)((const u32*)(void*)en->fn - (oldFn + 2));
+    *oldFn = 0xEA000000u | ((u32)off & 0xFFFFFF);  // B region: link sites and indirect-table slots follow
+    jit_host_sync_icache(oldFn, 4);
+    for (u32 k = 1; k < g_tierN; k++) {
+        if (!g_tierCov[k]) continue;
+        Entry* m = entry_find(j, pc + 4 * k, key);
+        if (m) { m->member = true; m->pending = false; }
+    }
 }
 
 // The indirect table's slot for a guest address, as ST_INDIRECT computes it. Folding in the address bits from 4 KB up did
@@ -5827,7 +6051,13 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         }
         lastMiss = false;
         if (!en) break;
-        bool plain = !en->idle && !en->poll;  // idle and polling-loop blocks are only ever entered from here
+        if (en->pending && ++en->runs >= (jit_tier_threshold ? jit_tier_threshold : 1)) {  // OPT_TIER: decide its tier
+            tier_block(j, pc, key);
+            en = lookup(j, pc, key);
+            if (!en) break;
+        }
+        // Idle and polling-loop blocks are only ever entered from here; so are pending ones (OPT_TIER), until decided.
+        bool plain = !en->idle && !en->poll && !en->pending;
         if (site) {
             if (!plain) j->stats.linkNotPlain++;
             else if (siteGen != j->gen) j->stats.linkGen++;
