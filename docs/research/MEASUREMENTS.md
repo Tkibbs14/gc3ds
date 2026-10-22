@@ -2281,11 +2281,20 @@ done
   | single-entry extents (858-865) | -0.6% | -1.7% | +0.0% | -0.4% |
   | run-weighted coverage (1/8 of the head), checks across labels (866-873) | -0.6% | -1.6% | +0.3% | -0.1% |
   | ... and regions in their own hot area, the top third of it (874-881, not kept) | -1.0% | -2.2% | +0.4% | -0.1% |
+  | float lanes and known singles across labels, float lanes gated over the extent (882-889, commit 0e4fff4) | -0.3% | -1.3% | +0.6% | +0.1% |
+  | ... and a tier compile with no forward branch stops before the page scan (890-893) | -0.3% | -1.1% | | |
 
 - **Where it stands (866-873):** regions run 1.2-1.6% fewer ARM instructions (heavy 281.7 -> 278.4 M/s, Ordon 272.5
   -> 268.1). The loss is instruction fetch: stall_inst 201 -> 205 M cycles/s (heavy) and 219 -> 230 (Ordon),
   instruction micro-TLB misses +34% / +65%, I-cache misses +0.5% / +3.4%. Code buffer 47 -> 56% (heavy).
   Regions are compiled after the blocks around them, so hot code spreads over more pages and lines.
+- **Ordon's remaining loss is compile time:** JIT compile 0.84 -> 1.21% of core 0 (890/891), the regions' own
+  compiles in a scene that keeps reaching new code; stopping the rejected attempts early barely moved it.
+- **I-cache simulator, TP fields 900-950 after 850-900 (qemu, core/tools/qemu-plugins/icache.c, 16 KB 4-way):** JIT
+  hot-region misses 14.35 M (block tier) -> 13.01 M (tiers), -9%, with 9% more accesses. The simulated L1 does not
+  show the 2DS's fetch loss. What it leaves out is the micro-TLB and the L2 behind the L1 (regions add ~20% code: more
+  instruction fetches go past L2). The off run's window also held a burst of compiles, so its C-code share is not
+  comparable.
 - **Regions apart from the block tier's code lose (874-881):** instruction micro-TLB misses 45 -> 129 k/s (heavy),
   67 -> 172 k/s (Ordon). A region keeps calling and linking into block-tier code (callees, its exits), so it is better
   next to the code compiled around the same time than next to other regions.
