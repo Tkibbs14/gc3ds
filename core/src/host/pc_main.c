@@ -196,6 +196,42 @@ static void prof_print(System* s) {
     }
 }
 
+// GXDEFER=1: the 3DS's asynchronous GX ordering on the PC (host3ds/gxthread.c), deterministic and debuggable. Bursts
+// are queued instead of executed; the queue runs and its PE signals are applied only between run slices (poll), in a
+// sync, and in the idle hook, as the CPU thread sees them on the console when the GX thread keeps up.
+static u8* g_defBuf;
+static u32 g_defLen, g_defCap, g_defEvN, g_defEvK[1024], g_defEvV[1024];
+static void def_feed(System* s, const u8* data, u32 len) {
+    (void)s;
+    if (g_defLen + len > g_defCap) { g_defCap = (g_defLen + len) * 2; g_defBuf = realloc(g_defBuf, g_defCap); }
+    memcpy(g_defBuf + g_defLen, data, len);
+    g_defLen += len;
+}
+static void def_event(System* s, u32 kind, u32 value) {
+    (void)s;
+    if (g_defEvN < 1024) { g_defEvK[g_defEvN] = kind; g_defEvV[g_defEvN] = value; g_defEvN++; }
+}
+static u32 def_drain(System* s) {
+    while (g_defLen) {  // (the decoder may queue no more bytes: only PE signals)
+        u32 n = g_defLen;
+        u8* b = malloc(n);
+        memcpy(b, g_defBuf, n);
+        g_defLen = 0;
+        gxcore_feed(s, &s->gx.core, b, n);
+        free(b);
+    }
+    u32 n = 0;
+    while (n < g_defEvN && !gx_pe_event_must_wait(s)) { gx_pe_signal(s, g_defEvK[n], g_defEvV[n]); n++; }
+    memmove(g_defEvK, g_defEvK + n, (g_defEvN - n) * sizeof g_defEvK[0]);
+    memmove(g_defEvV, g_defEvV + n, (g_defEvN - n) * sizeof g_defEvV[0]);
+    g_defEvN -= n;
+    return n;
+}
+static void def_poll(System* s) { def_drain(s); }
+static bool def_sync(System* s) { return def_drain(s) != 0; }
+static bool def_idle(void* ctx) { return def_drain(ctx) != 0; }
+static const GXAsync kDefer = { def_feed, def_event, def_poll, def_sync };
+
 static bool has_ext(const char* path, const char* ext) {
     size_t n = strlen(path), e = strlen(ext);
     if (n < e) return false;
@@ -300,6 +336,7 @@ int main(int argc, char** argv) {
     }
 
     if (getenv("GC3DS_NOHLE")) hle_set_enabled(false);
+    if (getenv("GXDEFER")) { sys.gxAsync = &kDefer; gekko_set_idle_hook(&sys.cpu, def_idle, &sys); }
     // AOT=1: ahead-of-time translated code (aot.h) where it was generated; AOT_CHECK=1 also compares every call with the interpreter.
     if (getenv("AOT")) {
         aot_set_enabled(true);

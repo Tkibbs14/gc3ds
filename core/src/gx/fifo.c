@@ -101,9 +101,16 @@ static void xf_write(System* s, GXCore* gx, u32 addr, u32 v) {
     gx->xf[addr] = v;
 }
 
+u64 g_peFinishPosted, g_peFinishApplied, g_peFinishRaised;  // (reports)
+u64 g_gxUnknownOps;     // commands the decoder did not recognise (reports)
+u32 g_peFinishPc, g_peFinishMsr;  // the guest PC and MSR when the last finish was applied (reports)
+u32 g_gxFirstUnknown;   // 0x100 | the first one's opcode
 void gx_pe_signal(System* s, u32 kind, u32 value) {
     u16* ctrl = &s->gx.peRegs[0x0A / 2];
     if (kind == GXEV_FINISH) {
+        g_peFinishApplied++;
+        g_peFinishPc = s->cpu.pc; g_peFinishMsr = s->cpu.msr;
+        if (*ctrl & 0x02) g_peFinishRaised++;
         *ctrl |= 0x08;
         if (*ctrl & 0x02) pi_raise(s, PI_INT_PE_FINISH);
         return;
@@ -114,13 +121,23 @@ void gx_pe_signal(System* s, u32 kind, u32 value) {
     if (*ctrl & 0x01) pi_raise(s, PI_INT_PE_TOKEN);
 }
 
+// With asynchronous GX the CPU thread applies posted PE signals in batches. One must wait while an enabled PE interrupt
+// is still pending: the SDK's handlers acknowledge by writing back the control register they read, and its status bits
+// are write-one-to-clear, so the token handler also clears a finish that arrived with it (and a later token would
+// change the value the handler reads). On the hardware the GP reaches a finish long after the token's interrupt was
+// taken. Mario Party 4 (a token, then GXDrawDone's finish, applied together) slept in GXDrawDone forever.
+bool gx_pe_event_must_wait(System* s) {
+    u16 ctrl = s->gx.peRegs[0x0A / 2];
+    return ((ctrl & 0x05) == 0x05) || ((ctrl & 0x0A) == 0x0A);
+}
+
 // PE signals touch PI and PE state, which belong to the CPU thread: with asynchronous GX they are posted to it.
 static void pe_signal(System* s, u32 kind, u32 value) {
     if (s->gxAsync) s->gxAsync->event(s, kind, value);
     else gx_pe_signal(s, kind, value);
 }
 
-static void pe_finish(System* s) { pe_signal(s, GXEV_FINISH, 0); }
+static void pe_finish(System* s) { g_peFinishPosted++; pe_signal(s, GXEV_FINISH, 0); }
 static void pe_token(System* s, u32 token, bool irq) { pe_signal(s, irq ? GXEV_TOKEN_IRQ : GXEV_TOKEN, token); }
 
 static u8 clamp8(int v) { return (u8)(v < 0 ? 0 : v > 255 ? 255 : v); }
@@ -634,6 +651,8 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
 #endif
     }
     static u32 reported;
+    g_gxUnknownOps++;
+    if (!g_gxFirstUnknown) g_gxFirstUnknown = 0x100u | op;
     if (reported++ < 20) emu_log(LOG_GX, "unknown GX opcode %02x (pc=%08x)\n", op, s->cpu.pc);
     return 1;
 }

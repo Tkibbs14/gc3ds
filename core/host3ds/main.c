@@ -428,6 +428,7 @@ typedef struct {
     bool l2lockHalf;     // --l2lock half: X2 conditional whole-run scoring only, never a default
     bool probeL2Lock;    // --probe-l2lock only: X2, restore before returning; never boots the guest
     bool probeMirror;    // --probe-mirror on: Luma's physical-memory mirror and the L2C-310's registers (read only)
+    u32 peek;            // --peek ADDR: 16 bytes of guest memory at ADDR in every 10 s report (debugging)
     unsigned regionBench; // X4: 1 pane, 2 texture, 3 position matrix; captured real call, then exit
     bool jitBench;       // --jit-bench only: JIT microbenchmarks (jitbench.c) after boot, instead of the run
     int timingProbe;     // --timing-probe on: micro-benchmarks of the hardware (timingprobe.c) before the machine boots; only: and nothing else
@@ -684,6 +685,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         }
         else if (!strcmp(a, "--probe-l2lock")) o->probeL2Lock = !strcmp(v, "only");
         else if (!strcmp(a, "--probe-mirror")) o->probeMirror = !strcmp(v, "on");
+        else if (!strcmp(a, "--peek")) o->peek = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--region-bench")) o->regionBench = (unsigned)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--jit-bench")) o->jitBench = !strcmp(v, "only");
         else if (!strcmp(a, "--timing-probe")) o->timingProbe = !strcmp(v, "on") ? 1 : !strcmp(v, "only") ? 2 : 0;
@@ -1722,6 +1724,34 @@ static const char* run_body(const char* path) {
                     for (int q = 0; q < 8; q++) { e[q] = (double)(g_endWhy[q] - lastE[q]) / 10.0; lastE[q] = g_endWhy[q]; }
                     fprintf(g_perf, "# frames ended early 10s (/s): queue %.1f, arena %.1f, cmdbuf %.1f, indices %.1f, grave %.1f, "
                             "staging %.1f, shape grave %.1f, shape cmds %.1f\n", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+                    {
+                        extern u64 g_gpWrites, g_gpWriteBytes;
+                        fprintf(g_perf, "# gp pipe (all time): writes %llu, bytes %llu, open burst %u bytes\n", (unsigned long long)g_gpWrites, (unsigned long long)g_gpWriteBytes, (unsigned)g_sys.gx.wgpLen);
+                        extern u64 g_gpUnlinked, g_gpLinked, g_peFinishPosted, g_peFinishApplied, g_peFinishRaised;
+                        fprintf(g_perf, "# pe finish (all time): posted %llu, applied %llu, raised %llu; PE control %04x; PI intsr %08lx intmr %08lx\n", (unsigned long long)g_peFinishPosted, (unsigned long long)g_peFinishApplied, (unsigned long long)g_peFinishRaised, (unsigned)g_sys.gx.peRegs[5], (unsigned long)g_sys.pi.intsr, (unsigned long)g_sys.pi.intmr);
+                        static u64 lastU, lastL;
+                        fprintf(g_perf, "# gp link 10s: bursts to the GP %llu, held in RAM (CP control bit 4 clear) %llu; CP control %04x\n",
+                                (unsigned long long)(g_gpLinked - lastL), (unsigned long long)(g_gpUnlinked - lastU),
+                                (unsigned)g_sys.gx.cpRegs[1]);
+                        lastU = g_gpUnlinked; lastL = g_gpLinked;
+                        {  // a command the decoder is still waiting to complete (GXCore.pending: console byte order)
+                            const GXCore* c = &g_sys.gx.core;
+                            { extern u32 g_peFinishPc, g_peFinishMsr; fprintf(g_perf, "# pe finish applied at pc %08lx msr %08lx\n", (unsigned long)g_peFinishPc, (unsigned long)g_peFinishMsr); }
+                            extern u64 g_gxUnknownOps;
+                            extern u32 g_gxFirstUnknown;
+                            fprintf(g_perf, "# gx unknown opcodes (all time): %llu, first %02x\n", (unsigned long long)g_gxUnknownOps,
+                                    (unsigned)(g_gxFirstUnknown & 0xFF));
+                            if (g_opt.peek >= 0x80000000u && g_opt.peek < 0x817FFFF0u) {
+                                fprintf(g_perf, "# peek %08lx:", (unsigned long)g_opt.peek);
+                                for (u32 q = 0; q < 16; q++) fprintf(g_perf, " %02x", (unsigned)ram_rd8(g_sys.mem1, g_opt.peek - 0x80000000u + q));
+                                fputc(10, g_perf);
+                            }
+                            fprintf(g_perf, "# gp open burst:"); for (u32 q = 0; q < g_sys.gx.wgpLen; q++) fprintf(g_perf, " %02x", (unsigned)g_sys.gx.wgp[q]); fputc(10, g_perf);
+                            fprintf(g_perf, "# gx pending: %u bytes:", (unsigned)c->pendingLen);
+                            for (u32 q = 0; q < c->pendingLen && q < 16; q++) fprintf(g_perf, " %02x", (unsigned)ramp_rd8(c->pending + q));
+                            fputc('\n', g_perf);
+                        }
+                    }
                     extern u64 g_dblStats[5];
                     static u64 lastD[5];
                     double d[5];

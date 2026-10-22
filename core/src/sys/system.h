@@ -184,6 +184,7 @@ typedef struct GXAsync {
 } GXAsync;
 // Applies a PE signal on the CPU thread (the inline path calls it directly).
 void gx_pe_signal(System* s, u32 kind, u32 value);
+bool gx_pe_event_must_wait(System* s);  // an enabled PE interrupt is pending: posted signals wait (fifo.c)
 
 bool sys_init(System* s);
 void sys_free(System* s);

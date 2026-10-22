@@ -58,6 +58,7 @@ void pe_write16(System* s, u32 off, u16 v) {
 // GP executes it. g_gpBulk (--gpbulk, --ab gpbulk): a burst that neither leaves MEM1 nor wraps the FIFO before its
 // last byte is mirrored with one copy, and gp_fifo_write moves whole runs of bytes (the same bytes as the loops).
 bool g_gpBulk = true;  // on: heavy area +3.2%, Ordon +4.5% (jobs 477-478); PC state hash unchanged over 400 fields
+u64 g_gpLinked, g_gpUnlinked;  // bursts fed to the GP, and held in RAM while the GP is not linked (reports)
 static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
     u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29);
@@ -78,7 +79,8 @@ static void gp_burst(System* s, const u8* data) {
     // GXBeginDisplayList does while a list is recorded through the pipe (Mario Party 4's models): the bytes then only
     // go to RAM, and the GP sees them when the list is called. A control register never written (0) counts as linked.
     u16 cr = s->gx.cpRegs[0x02 / 2];
-    if (cr && !(cr & 0x10)) return;
+    if (cr && !(cr & 0x10)) { g_gpUnlinked++; return; }
+    g_gpLinked++;
     if (s->gxAsync) s->gxAsync->feed(s, data, 32);
     else gxcore_feed(s, &s->gx.core, data, 32);
 }
@@ -88,7 +90,9 @@ static void gp_burst(System* s, const u8* data) {
 // parse attempt and two clock reads each, tens of thousands per field in Twilight Princess.)
 // gp_capture: when set (HLE_CHECK on the PC, hle_ps.c), the CPU's pipe bytes go there instead of to the GP.
 void (*gp_capture)(const u8* data, u32 len);
+u64 g_gpWrites, g_gpWriteBytes;  // CPU stores into the pipe (reports)
 void gp_fifo_write(System* s, const u8* data, u32 len) {
+    g_gpWrites++; g_gpWriteBytes += len;
     if (gp_capture) { gp_capture(data, len); return; }
     GXState* gx = &s->gx;
     if (g_gpBulk) {

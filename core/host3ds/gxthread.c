@@ -165,12 +165,14 @@ static void feed(System* s, const u8* data, u32 len) {
     ring_commit(bytes);
 }
 
-// Applies the PE signals the GX thread posted; returns how many.
+// Applies the PE signals the GX thread posted, in order, each only once the interrupt before it was taken
+// (gx_pe_event_must_wait); returns how many.
 static u32 apply_events(System* s) {
     u32 n = 0;
     while (g_evTail != g_evHead) {
         dmb();
         u32 i = g_evTail % EV_N;
+        if (gx_pe_event_must_wait(s)) break;
         gx_pe_signal(s, g_evKind[i], g_evVal[i]);
         g_evTail = g_evTail + 1;
         n++;

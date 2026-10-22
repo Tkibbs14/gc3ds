@@ -258,6 +258,24 @@ void jitsample_report(FILE* f, const Jit* j) {
         fprintf(f, "\n");
         memset(g_thrCount, 0, sizeof g_thrCount);
         g_thrOther = 0;
+        // Every guest OS thread on the active queue (OS global 0x800000DC; OSThread link at 0x2FC), with its state
+        // (1 ready, 2 running, 4 waiting), saved PC, LR and up to six return addresses from its back chain: where a
+        // thread that never runs is waiting (sampling only sees running ones).
+        fprintf(f, "# guest os threads:");
+        u32 t = ram_rd32(g_mem1, 0xDC);
+        for (u32 k = 0; k < 16 && t >= 0x80000000u && t < 0x81800000u; k++) {
+            u32 a = t - 0x80000000u, sp = ram_rd32(g_mem1, a + 4);
+            fprintf(f, " [%08lx st %u pc %08lx lr %08lx", (unsigned long)t, (unsigned)(ram_rd32(g_mem1, a + 0x2C8) >> 16),
+                    (unsigned long)ram_rd32(g_mem1, a + 0x198), (unsigned long)ram_rd32(g_mem1, a + 0x84));
+            for (u32 d = 0; d < 6 && sp >= 0x80000000u && sp < 0x81800000u; d++) {
+                sp = ram_rd32(g_mem1, sp - 0x80000000u);
+                if (sp < 0x80000000u || sp >= 0x81800000u) break;
+                fprintf(f, " %08lx", (unsigned long)ram_rd32(g_mem1, sp + 4 - 0x80000000u));
+            }
+            fprintf(f, "]");
+            t = ram_rd32(g_mem1, a + 0x2FC);
+        }
+        fprintf(f, "\n");
     }
     g_n = 0;
     g_outside = 0;
