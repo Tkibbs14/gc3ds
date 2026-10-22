@@ -618,7 +618,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Re-evaluate when:** a partitioned whole workload shows a repeatable gain with verified restoration and correct
   pacing, rather than assuming the isolated chase speedup applies to the emulator.
 
-## C35. Wind Waker's actor search: devirtualised list walks (found 2026-10-22, not built)
+## C35. Wind Waker's actor search: devirtualised list walks (found 2026-10-22; built as region plans, b7eb9ac: +7.2%)
 
 - **Status:** owner decision 2026-10-22: **the general form** (a JIT redesign that benefits every game: C33's region tier
   with speculative inlining of indirect-call targets), not an engine stand-in. Not built.
