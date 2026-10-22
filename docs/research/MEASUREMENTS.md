@@ -2284,6 +2284,9 @@ done
   | float lanes and known singles across labels, float lanes gated over the extent (882-889, commit 0e4fff4) | -0.3% | -1.3% | +0.6% | +0.1% |
   | ... and a tier compile with no forward branch stops before the page scan (890-893) | -0.3% | -1.1% | | |
   | ... and straight-line leaves inlined at bl inside regions (894-901) | -0.4% | -1.1% | +0.6% | -0.05% |
+  | loops inside regions (back edges with a budget check; 902-909, commit aeb01d2) | -0.5% | -1.1% | +1.0% | -0.1% |
+  | region plans: calls inlined (bl, guarded bctrl), three deep, everywhere (910-917) | -1.0% | -2.0% | -0.6% | -0.3% |
+  | ... only in regions whose head function loops; profiles kept by call address; plans past mtlr / mtctr (936-947, b7eb9ac) | **-0.9%** | **+0.2%** | **+7.2%** | **+0.2%** |
 
 - **Where it stands (866-873):** regions run 1.2-1.6% fewer ARM instructions (heavy 281.7 -> 278.4 M/s, Ordon 272.5
   -> 268.1). The loss is instruction fetch: stall_inst 201 -> 205 M cycles/s (heavy) and 219 -> 230 (Ordon),
@@ -2292,6 +2295,13 @@ done
 - **Leaves inlined (894-901):** 292 / 334 / 166 / 38 leaves (heavy, Ordon, Wind Waker, Mario Party 4), qemu TP 125;
   the body lengths spread from 0 to 10 instructions. Most leaves branch inside and are not taken, so it moves nothing
   measurable. 3-13 tier compiles failed (code overflow) in those runs; the block tier's block stays.
+- **Wind Waker's actor search (C35) through the region tier (jobs 936-947):** speed 18.73 / 18.74 -> 20.10 / 20.09%
+  (+7.2%), frames a second 5.61 / 5.62 -> 6.01 / 6.02, two fields a picture throughout. cNdIt_Judge's loop region
+  holds cTgIt_JudgeFilter (behind a CTR check) and fpcSch_JudgeByID inside it (its beqlr a join); the three
+  functions' share of core 0 went 21.7% -> 15.0% (now all sampled as cNdIt_Judge's region). What had kept it out:
+  ends_block stops at every mtspr, so the plan stopped at the bctrl's mtctr and every callee at its epilogue's mtlr
+  (found with --tier-watch, jobs 934-935); a callee whose own block had become a region lost its bctrl profile.
+  The heavy area's -0.9% repeats (946/947).
 - **Ordon's remaining loss is compile time:** JIT compile 0.84 -> 1.21% of core 0 (890/891), the regions' own
   compiles in a scene that keeps reaching new code; stopping the rejected attempts early barely moved it.
 - **I-cache simulator, TP fields 900-950 after 850-900 (qemu, core/tools/qemu-plugins/icache.c, 16 KB 4-way):** JIT

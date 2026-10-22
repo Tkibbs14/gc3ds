@@ -594,7 +594,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   moved it from -1.3..-4.0% to **-0.6% / -1.6% / +0.3% / -0.1%** (heavy, Ordon, Wind Waker, Mario Party 4; jobs
   866-873). Regions run ~1.5% fewer ARM instructions; instruction-fetch stalls take it back
   ([results](MEASUREMENTS.md#region-tier-stage-2-tiered-regions-of-executed-code-registers-across-labels---tier-on-opt_tier-jobs-834-873-2026-10-22)).
-  Float lanes across labels then (0e4fff4, jobs 882-893): -0.3% / -1.1% / +0.6% / +0.1%.
+  Float lanes across labels then (0e4fff4, jobs 882-893): -0.3% / -1.1% / +0.6% / +0.1%. Region plans with loops and
+  inlined calls (b7eb9ac, jobs 936-947): **Wind Waker +7.2%** (C35's actor search in one region), heavy -0.9%, Ordon
+  +0.2%, Mario Party 4 +0.2%.
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.

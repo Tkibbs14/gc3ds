@@ -26,6 +26,10 @@
 > +0.6% / +0.1%. Ordon's rest is compile time (0.84 -> 1.21% of core 0). Straight-line leaves inlined at bl (jobs
 > 894-901): no measurable change (-0.4 / -1.1 / +0.6 / -0.05%; few leaves qualify). What is left in this tier:
 > leaves with branches, devirtualised bctrl, CR flags across labels, extents past 64 instructions.
+> **Region plans (aeb01d2, b7eb9ac; jobs 902-947):** loops inside regions, calls inlined (bl, bctrl behind a CTR check,
+> three deep) in regions whose head function loops. **Wind Waker +7.2%** (the actor search, C35, in one region: 21.7
+> -> 15.0% of core 0); TP heavy area -0.9%, Ordon +0.2%, Mario Party 4 +0.2%. Still off by default (owner decision:
+> on for all, given the heavy area's -0.9%?). `--tier-watch ADDR` shows the plans for heads near ADDR on the device.
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
