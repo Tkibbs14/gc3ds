@@ -604,3 +604,26 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   evidence. The tested partition, vw2 and stealing remain off. No additional optimisation is started.
 - **Re-evaluate when:** a partitioned whole workload shows a repeatable gain with verified restoration and correct
   pacing, rather than assuming the isolated chase speedup applies to the emulator.
+
+## C35. Wind Waker's actor search: devirtualised list walks (found 2026-10-22, not built)
+
+- **Status:** candidate, needs an owner decision on the form.
+- **What:** Wind Waker spends ~21% of core 0 on Outset Island searching process lists:
+  - cTgIt_JudgeFilter 10.9%;
+  - cNdIt_Judge 7.2%;
+  - fpcSch_JudgeByID 3.1% (job 792, `hot_funcs.py` with zeldaret/tww symbols).
+
+  cNdIt_Judge walks a linked list and calls cTgIt_JudgeFilter through a function pointer for each node. That calls the
+  filter's judge (fpcSch_JudgeByID: one ID compare) through a second pointer. So each node costs two indirect calls,
+  two returns and a stack frame, ~30 guest instructions for one compare, repeated for many searches each frame. TP's
+  profiles do not show it, though TP has the same f_pc framework.
+- **Two forms:**
+  1. **General:** a region tier (C33) that inlines an indirect-call target speculatively, guarded by a compare,
+     turning the walk into a tight loop. It would help any game whose engine iterates with callbacks.
+  2. **Engine-family stand-in:** at cNdIt_Judge's entry (recognised by bytes), when the judge is the recognised
+     cTgIt_JudgeFilter and the filter's judge the recognised fpcSch_JudgeByID, walk the list natively; otherwise run
+     the guest code. Like the ShdwDraw stand-in it replaces a whole loop, so the entry cost is paid once per search,
+     not per node. But it is game-engine code (Wind Waker and TP's framework), the per-title kind of work the owner
+     does not want the architecture to depend on.
+- **Expected:** up to ~+15-20% core 0 in that Wind Waker scene (estimate); unmeasured elsewhere.
+- **Re-evaluate when:** the owner picks a form, or the region tier (C33) is built.
