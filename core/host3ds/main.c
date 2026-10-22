@@ -618,6 +618,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--region")) o->region = !strcmp(v, "on");
         else if (!strcmp(a, "--tier")) o->tier = !strcmp(v, "on");
         else if (!strcmp(a, "--tier-runs")) o->tierRuns = (unsigned)strtoul(v, NULL, 10);
+        else if (!strcmp(a, "--tier-watch")) { jit_tier_watch_lo = (u32)strtoul(v, NULL, 16); jit_tier_watch_hi = jit_tier_watch_lo + 0x200; }
         else if (!strcmp(a, "--zgpr")) o->zgpr = !strcmp(v, "on");
         else if (!strcmp(a, "--zgx")) o->zgx = !strcmp(v, "on");
         else if (!strcmp(a, "--zxyz")) o->zxyz = !strcmp(v, "on");
@@ -2164,6 +2165,7 @@ static const char* run_body(const char* path) {
                         for (int k = 0; k < 8 && js->keyCount[k]; k++) fprintf(g_perf, " %08lx=%lu", (unsigned long)js->keySeen[k], (unsigned long)js->keyCount[k]);
                         fprintf(g_perf, "\n");
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
+                        if (jit_tier_watch_hi) { static char tw[16 * 220]; if (jit_tier_watch_report(tw, sizeof tw)) fputs(tw, g_perf); }
                         fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu\n",
                                 (unsigned long long)js->tierUps, (unsigned long long)js->tierNoGain, (unsigned long long)js->tierNotHead,
                                 (unsigned long long)js->tierMember, (unsigned long long)js->tierFails, (unsigned long long)js->tierInlines);

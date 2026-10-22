@@ -195,6 +195,8 @@ extern u32 jit_debug_max_insns;
 extern const u32* jit_debug_last_code;
 extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
+extern u32 jit_tier_watch_lo, jit_tier_watch_hi;  // --tier-watch: heads whose tier decisions and plans are reported
+int jit_tier_watch_report(char* out, int cap);
 extern u32 jit_tier_threshold;      // OPT_TIER: block runs before its region (default 64)
 extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed
 extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off

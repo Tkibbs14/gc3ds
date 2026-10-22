@@ -932,7 +932,7 @@ int main(int argc, char** argv) {
                 // the guard mostly holds); calling a second function. The path after the program falls through nops
                 // into the function too.
                 u32 at = 1 + rnd() % (len - 2), m = rnd() % 5, leaf = len + rnd() % 3, form = rnd() % 5, k = leaf;
-                if (form == 3 && loopCtr) form = 0;
+                (void)loopCtr;  // (a bctrl in a bdnz loop: CTR counts down past the function, the check fails: bounded by the budget)
                 for (u32 q = len; q < leaf; q++) seq[q] = 0x60000000u;
                 if (form == 2) seq[k++] = 0x7C0802A6u;  // mflr r0
                 u32 cret = form == 1 ? rnd() % (m + 1) : 99, call2 = form == 4 ? rnd() % (m + 1) : 99, call2At = 0;
