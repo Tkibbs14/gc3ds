@@ -148,12 +148,14 @@ void jitsample_report(FILE* f, const Jit* j) {
     if (!g_thread || !f) return;
     u32 n = g_n, outside = g_outside;
     {  // how much compiled code core 0's time is spread over (before the samples are mapped to guest PCs)
-        u32 fp[5][2];
+        u32 fp[5][3];
         jit_footprint(j, g_samples, n, fp);
         fprintf(f, "# code footprint 10s (blocks, host KB covering this share of time in compiled code): 50%% %u %.1f, "
                 "80%% %u %.1f, 90%% %u %.1f, 99%% %u %.1f, all sampled %u %.1f\n", (unsigned)fp[0][0], fp[0][1] / 1024.0,
                 (unsigned)fp[1][0], fp[1][1] / 1024.0, (unsigned)fp[2][0], fp[2][1] / 1024.0, (unsigned)fp[3][0],
                 fp[3][1] / 1024.0, (unsigned)fp[4][0], fp[4][1] / 1024.0);
+        fprintf(f, "# code pages 10s (4 KB host pages those blocks span): 50%% %u, 80%% %u, 90%% %u, 99%% %u, all sampled %u\n",
+                (unsigned)fp[0][2], (unsigned)fp[1][2], (unsigned)fp[2][2], (unsigned)fp[3][2], (unsigned)fp[4][2]);
     }
     if (!jit_map_hosts(j, g_samples, n)) {
         fprintf(f, "# hot guest code 10s: not mapped (no memory for the work arrays)\n");

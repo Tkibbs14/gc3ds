@@ -33,6 +33,7 @@ typedef struct {
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
     u64 tierUps, tierNoGain, tierNotHead, tierMember, tierFails;  // OPT_TIER: regions compiled; counters stopped without one
+    u64 tierWordsRegion, tierWordsReplaced;  // OPT_TIER: host words (hot + cold) of the regions, and of the head and member blocks they replaced
     u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
@@ -197,7 +198,9 @@ extern u32 jit_debug_last_words;
 extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with every block compiled (tests)
 extern u32 jit_tier_watch_lo, jit_tier_watch_hi;  // --tier-watch: heads whose tier decisions and plans are reported
 int jit_tier_watch_report(char* out, int cap);
-extern u32 jit_tier_threshold;      // OPT_TIER: block runs before its region (default 64)
+extern u32 jit_tier_threshold;
+extern bool jit_region_zone;  // --region-zone on: regions packed into the top quarter of the hot area
+extern bool jit_tier_loops_only;  // --tier-loops on: regions only for heads whose function loops      // OPT_TIER: block runs before its region (default 64)
 extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed
 extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off
 u32 jit_run_one_block(Jit* j);
@@ -233,4 +236,4 @@ u32 jit_precompile(Jit* j, const u32* pcs, u32 n);  // how many were compiled (s
 bool jit_sample_prepare(void);
 bool jit_map_hosts(const Jit* j, u32* addrs, u32 n);  // false: no memory for its work arrays (addrs unchanged)
 // The sampled code footprint (see jit.c): out[k] = {blocks, host bytes} covering 50, 80, 90, 99, 100% of the samples.
-void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]);
+void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][3]);

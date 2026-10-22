@@ -83,7 +83,7 @@ typedef u32 (*BlockFn)(Gekko* g);
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
 // poll: polling-loop length or 0; count: the guest instructions the block's entry takes off the budget
 typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro; u32 next;
-                 u32 end; u16 runs; bool pending, member; u32 lastCtr; } Entry;  // pro: prologue words; lastCtr: (pending) a bctrl's last target
+                 u32 end; u16 runs; bool pending, member; u32 lastCtr; u32 words; } Entry;  // pro: prologue words; lastCtr: (pending) a bctrl's last target
 // OPT_TIER (tier_block): blocks start in the block tier, whose blocks end at every branch, so a block at a PC means that
 // basic block ran since the last flush (end: the address after its last instruction). pending: its tier is not decided
 // yet, so nothing links to it and the dispatcher counts its runs; at jit_tier_threshold its region (compiled from what
@@ -94,6 +94,12 @@ static bool g_tierCompile, g_tierNoGain;  // compile_block: a region for tier_bl
 static u32 g_tierKey, g_tierHeadEnd, g_tierHeadRuns, g_tierHeadCtr, g_tierN;
 static u8 g_tierCov[MAX_BLOCK_INSNS];
 u32 jit_tier_threshold = 64;
+bool jit_tier_loops_only;  // --tier-loops on: regions only where the head's function loops (no plain joins)
+// --region-zone on: regions are compiled into the top quarter of the hot area (their own bump pointer, Jit.zoneUsed)
+// instead of after the newest block, so the hottest code packs into its own pages rather than sitting between blocks
+// still being compiled and the blocks the regions replaced (OPT_TIER grew TP's hot footprint 15-20%, jobs 946-947).
+bool jit_region_zone;
+static u32 zone_start(const Jit* j);
 u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
 static Entry* entry_find(Jit* j, u32 pc, u32 msrBits);
 static void stub_check(Jit* j, const char* what, u32 pc);
@@ -130,6 +136,7 @@ struct Jit {
     u32 codeWords, codeUsed;    // the hot region: stubs, then each block's hot path and exit stubs, up to coldStart
     u32 coldStart, coldUsed;    // the cold region (to codeWords): each block's slow paths, kept apart so that hot code
                                 // packs into fewer cache lines and pages
+    u32 zoneUsed;               // --region-zone: the regions' bump pointer in [zone_start, coldStart) (0: empty)
     Entry* table;          // pool of MAX_ENTRIES
     u32* buckets;          // DISPATCH_SIZE chain heads
     u32 nEntries;
@@ -4555,6 +4562,7 @@ static void op_words(u32 key, u32 hot, u32 cold) { g_opN[key]++; g_opHot[key] +=
 static u32 g_lastCount;  // the instruction count of the block compile_block made last (Entry.count)
 static u32 g_lastPro;    // ... and its prologue words (Entry.pro)
 static u32 g_lastEnd;    // ... and the address after its last guest instruction (Entry.end)
+static u32 g_lastWords;  // ... and its host words, hot (with exit stubs) and cold (Entry.words)
 static bool g_lastPending;  // ... and whether its tier is still to be decided (Entry.pending)
 
 // OPT_LATCH: whether the block at pc may branch to pc or below, so that a loop of linked blocks could close through it
@@ -4643,7 +4651,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
     if (!gk_translate(g, pc, false, false, &pa, false) || pa >= j->ramSize) return NULL;
-    if (j->coldStart - j->codeUsed < BLOCK_MAX_WORDS || j->codeWords - j->coldUsed < BLOCK_MAX_WORDS) {
+    u32 hotLimit = jit_region_zone && j->codeUsed < zone_start(j) ? zone_start(j) : j->coldStart;  // blocks stop below the zone
+    if (hotLimit - j->codeUsed < BLOCK_MAX_WORDS || j->codeWords - j->coldUsed < BLOCK_MAX_WORDS) {
         jit_invalidate_all(j);
         j->stats.flushes++;
     }
@@ -4742,7 +4751,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (c->region) {
         for (u32 k = 0; k < MAX_BLOCK_INSNS; k++) c->rLabelAt[k] = NO_BRANCH;
         region_plan(c, pc, startPa, maxInsns);
-        if (c->rProfiled && !c->rLastLabel && !c->nInlined) {  // nothing joins or inlines: the block tier's block is as good
+        if (c->rProfiled && ((!c->rLastLabel && !c->nInlined) || (jit_tier_loops_only && !c->rLoops))) {  // nothing joins or inlines (or, --tier-loops, no loop): the block tier's block is as good
 #ifndef __3DS__
             if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiercov %08x n %u ", pc, c->rEnd); for (u32 k = 0; k < c->rEnd; k++) fputc(c->rCover[k] ? 49 : 48, stderr); fputc(10, stderr); }
 #endif
@@ -5093,6 +5102,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (c->alt.n) jit_host_sync_icache(cold, c->alt.n * 4);
     j->codeUsed += e->n;
     j->coldUsed += c->alt.n;
+    g_lastWords = e->n + c->alt.n;
     for (u32 a = startPa >> 12; a <= (startPa + 4 * MAX_BLOCK_INSNS) >> 12 && a < sizeof j->codePages; a++) j->codePages[a] = 1;
     j->stats.blocksCompiled++;
     j->insnsSinceFlush += c->count;
@@ -5111,9 +5121,16 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     return (BlockFn)fn;
 }
 
+static u32 zone_start(const Jit* j) { return j->coldStart - j->coldStart / 4; }
+
 static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     u64 t0 = prof_begin();
+    u32 blocksUsed = j->codeUsed, gen = j->gen;
+    if (j->zoneUsed < zone_start(j)) j->zoneUsed = zone_start(j);
+    bool zone = jit_region_zone && g_tierCompile && j->coldStart - j->zoneUsed >= BLOCK_MAX_WORDS;  // full: with the blocks
+    if (zone) j->codeUsed = j->zoneUsed;  // compile_block emits at codeUsed: point it into the zone for this one
     BlockFn fn = compile_block(j, pc, noLink);
+    if (zone && j->gen == gen) { j->zoneUsed = j->codeUsed; j->codeUsed = blocksUsed; }
     prof_end(PROF_JITC, t0);
     return fn;
 }
@@ -6161,6 +6178,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->count = (u8)g_lastCount;
     en->pro = (u8)g_lastPro;
     en->end = g_lastEnd;
+    en->words = g_lastWords;
     en->runs = 0;
     en->lastCtr = 0;
     en->pending = g_lastPending;
@@ -6276,6 +6294,8 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
         old->pc = pc; if (g_tierNoGain) j->stats.tierNoGain++; else j->stats.tierFails++; return;
     }
     j->stats.tierUps++;
+    j->stats.tierWordsRegion += en->words;
+    j->stats.tierWordsReplaced += old->words;
 #ifndef __3DS__
     if (getenv("JIT_TIERLOG")) {
         fprintf(stderr, "tier %08x region count %u cover ", pc, en->count);
@@ -6289,7 +6309,7 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
     for (u32 k = 1; k < g_tierN; k++) {
         if (!g_tierCov[k]) continue;
         Entry* m = entry_find(j, pc + 4 * k, key);
-        if (m) { m->member = true; m->pending = false; }
+        if (m) { m->member = true; m->pending = false; j->stats.tierWordsReplaced += m->words; }
     }
 }
 
@@ -6817,6 +6837,7 @@ void jit_invalidate_all(Jit* j) {
     memset(j->codePages, 0, sizeof j->codePages);
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;
+    j->zoneUsed = 0;
     j->insnsSinceFlush = 0;
     if (j->faultKey) { memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32)); j->faultN = 0; }
     j->faultPendN = 0;  // the code is gone (the next blocks are synced as they are compiled)
@@ -6915,14 +6936,15 @@ u32 jit_hot_blocks(const Jit* j, const u32* addrs, u32 n, u32* pcs, u32 max) {
 
 // The sampled code footprint: blocks by samples, most first, and the fewest that cover each share of the samples in
 // compiled code, with their host bytes (a block runs to the next block's start, its exit stubs included; capped at
-// BLOCK_MAX_WORDS). out[k] = {blocks, bytes} for 50, 80, 90, 99 and 100%.
+// BLOCK_MAX_WORDS). out[k] = {blocks, bytes, 4 KB pages} for 50, 80, 90, 99 and 100%: the pages those blocks span, which
+// counts the dead and cold code between them (what the instruction micro-TLB sees; bytes alone do not).
 static const u32* g_fpCount;
 static int by_fp(const void* a, const void* b) {
     u32 x = g_fpCount[*(const u32*)a], y = g_fpCount[*(const u32*)b];
     return x < y ? 1 : x > y ? -1 : 0;
 }
-void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]) {
-    memset(out, 0, 5 * 2 * sizeof(u32));
+void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][3]) {
+    memset(out, 0, 5 * 3 * sizeof(u32));
     if (!sample_bufs() || !n) return;
     u32 *order = g_sOrder, *count = g_sCount, *hit = g_sHot;
     u32 m = j->nEntries, in = 0, nh = 0;
@@ -6942,7 +6964,10 @@ void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]) {
     g_fpCount = count;
     qsort(hit, nh, sizeof *hit, by_fp);
     static const u32 kPct[5] = { 50, 80, 90, 99, 100 };
-    u32 acc = 0, bytes = 0, k = 0;
+    static u32 pageBits[(64u << 20) / 4096 / 32];  // up to a 64 MB code buffer
+    memset(pageBits, 0, sizeof pageBits);
+    u32 base = (u32)(uintptr_t)j->code, lastPage = (u32)sizeof pageBits * 8 - 1;
+    u32 acc = 0, bytes = 0, pages = 0, k = 0;
     for (u32 i = 0; i < nh && k < 5; i++) {
         u32 p = hit[i], start = (u32)(uintptr_t)j->table[order[p]].fn, size = BLOCK_MAX_WORDS * 4;
         if (p + 1 < m) {
@@ -6951,7 +6976,9 @@ void jit_footprint(const Jit* j, const u32* hostAddrs, u32 n, u32 out[5][2]) {
         }
         acc += count[p];
         bytes += size;
-        while (k < 5 && (u64)acc * 100 >= (u64)in * kPct[k]) { out[k][0] = i + 1; out[k][1] = bytes; k++; }
+        for (u32 pg = (start - base) >> 12; pg <= (start - base + size - 1) >> 12 && pg <= lastPage; pg++)
+            if (!(pageBits[pg >> 5] & (1u << (pg & 31)))) { pageBits[pg >> 5] |= 1u << (pg & 31); pages++; }
+        while (k < 5 && (u64)acc * 100 >= (u64)in * kPct[k]) { out[k][0] = i + 1; out[k][1] = bytes; out[k][2] = pages; k++; }
     }
 }
 
@@ -6973,7 +7000,9 @@ float jit_code_used(const Jit* j) {
     float hot = (float)j->codeUsed / (float)j->coldStart, cold = (float)(j->coldUsed - j->coldStart) / (float)(j->codeWords - j->coldStart);
     return hot > cold ? hot : cold;
 }
-static u32 code_words_used(const Jit* j) { return j->codeUsed - j->stubWords + j->coldUsed - j->coldStart; }
+static u32 code_words_used(const Jit* j) {
+    return j->codeUsed - j->stubWords + j->coldUsed - j->coldStart + (j->zoneUsed > zone_start(j) ? j->zoneUsed - zone_start(j) : 0);
+}
 
 float jit_words_per_insn(const Jit* j) {
     return j->insnsSinceFlush ? (float)code_words_used(j) / (float)j->insnsSinceFlush : 0.0f;
