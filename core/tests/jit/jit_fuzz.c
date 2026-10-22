@@ -14,6 +14,9 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
+#ifndef __3DS__
+#include <sys/mman.h>
+#endif
 #include "../../src/jit/jit.h"
 #include "../../src/sys/system.h"
 #include "../../src/cpu/hle.h"
@@ -309,6 +312,11 @@ static u64 fval_st(void) {
     }
 }
 
+// A moderate normal single as a double (exponents -7..8, the paired-single chains' slots): chained divides stay normal.
+static u64 fval_mod(void) {
+    return (u64)(rnd() & 1) << 63 | (u64)(120u + rnd() % 16 + 896u) << 52 | (u64)(rnd() & 0x7FFFFF) << 29;
+}
+
 static u32 gqr_rand(void) {
     u32 q = rnd() << 16 | rnd();
     if (rnd() & 1) q &= ~0x3F070000u;  // load direction: plain float
@@ -454,10 +462,11 @@ static u32 g_aliasSkips;
 static u32 g_smcSkips;  // chain cases not compared: the program stored into itself
 static u32 g_overBudget;  // chain runs that went past their budget (OPT_LATCH: only blocks that may loop check it)
 static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
+static u32 g_upperGuard;  // bytes past MEM1's own upper guard main() reserved inaccessible (0: none)
 static bool alias_unchecked(u32 ea) {
     // Fault accesses clear bit 30 before adding RRAM. 0x7ffffxxx aliases 0x3ffffxxx, not MEM1's lower guard.
     u32 mapped = jit_debug_plant == 17 ? ea : ea & ~JIT_FAULT_BIC;
-    if (mapped - 0x7FFF0000u < 0x01820000u || ea < 0x01800000u) return false; // MEM1 and its real guards
+    if (mapped - 0x7FFF0000u < 0x01820000u + g_upperGuard || ea < 0x01800000u) return false; // MEM1 and its real guards
     if (ea - 0xC8000000u < 0x00400000u || ea - 0xCC000000u < 0x00010000u || ea - 0xE0000000u < 0x00010000u) return false;
     return true;
 }
@@ -574,6 +583,16 @@ static void fill_floats_at(System* s, u32 pa, u32 size) {
     }
 }
 static void fill_floats(System* s) { fill_floats_at(s, WIN_PA, WIN_SIZE); }
+// The locked cache: normal singles, as fill_floats_at (lfs / psq_l of tiny values differ by design). Filled at the start
+// and again for float sequences: earlier cases' stores leave denormal singles there (seed 1 case 3657 under OPT_REGION,
+// an lfs of one, 2026-10-22: the fast float model's flush to zero, a known limit).
+static void fill_locked_cache(void) {
+    for (u32 i = 0; i < LOCKED_CACHE_SIZE; i += 4) {
+        u32 ex = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254, v = (rnd() & 1) << 31 | ex << 23 | (rnd() & 0x7FFFFF);
+        ram_wr32(A.lockedCache, i, v);  // (guest memory's layout, ramlayout.h)
+    }
+    memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);  // (chain mode copies nothing per case)
+}
 
 // ---- gekko_regs (src/cpu/gekko_regs.c) against the interpreter ----
 // The JIT's analysis of guest code trusts gekko_regs: an instruction may read only the registers in `reads` and write
@@ -785,6 +804,22 @@ int main(int argc, char** argv) {
     // Fuzz cases never touch ARAM: on the 3DS its 2 x 16 MB is what keeps the JIT from fitting beside two machines.
     free(A.dsp.aram); A.dsp.aram = NULL;
     free(B.dsp.aram); B.dsp.aram = NULL;
+#ifndef __3DS__
+    {   // Past MEM1's 64 KB upper guard the host maps whatever comes next. A fault-mode store just beyond it (a stwux
+        // walking up from MEM1's top, chain seed 5 case 1538, 2026-10-22) overwrote a shared stub of the JIT's code
+        // buffer, mapped there. 16 MB more, reserved before the buffer exists (and after ARAM, which lay there, is freed), fault as the guard does.
+        u8* at = A.mem1 + MEM1_SIZE + 0x10000u;
+        u32 len = 16u << 20;
+        // (Placed by the kernel, never MAP_FIXED: mappings go to the lowest free address, which is where the code buffer
+        // went; kept only if it lands there.)
+        void* p = mmap(at, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (p == (void*)at) g_upperGuard = len;
+        else {
+            if (p != MAP_FAILED) munmap(p, len);
+            printf("note: could not reserve past MEM1's guard%c", 10);
+        }
+    }
+#endif
     boot_like(&A);
     boot_like(&B);
 #ifndef __3DS__
@@ -798,11 +833,7 @@ int main(int argc, char** argv) {
     // The pipe's buffer, as the 3DS frontend sets it (compiled code appends to it; OPT_PIPEK needs it).
     if (!getenv("JIT_FUZZ_NOPIPEBUF")) jit_set_gather_buffer(jit, A.gx.wgp, &A.gx.wgpLen);
     if (!getenv("JIT_FUZZ_NOLC")) jit_set_locked_cache(jit, A.lockedCache);
-    for (u32 i = 0; i < LOCKED_CACHE_SIZE; i += 4) {  // normal singles, as fill_floats_at (lfs / psq_l of tiny values differ by design)
-        u32 ex = (rnd() % 4) ? 100 + rnd() % 50 : 1 + rnd() % 254, v = (rnd() & 1) << 31 | ex << 23 | (rnd() & 0x7FFFFF);
-        ram_wr32(A.lockedCache, i, v);  // (guest memory's layout, ramlayout.h)
-    }
-    memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);  // (chain mode copies nothing per case)
+    fill_locked_cache();
     if (getenv("JIT_FUZZ_TRACE")) jit_debug_on_compile = dump_block;
     if (getenv("JIT_FUZZ_NOTRACES")) jit_set_traces(jit, false);
     if (getenv("JIT_FUZZ_SIDE")) jit_set_trace_parts(jit, true, (u32)strtoul(getenv("JIT_FUZZ_SIDE"), NULL, 0), 0);  // 0: traces only follow b / bl / blr
@@ -918,6 +949,23 @@ int main(int argc, char** argv) {
             if (rnd() & 1) seq[len++] = (52u << 26) | (f[rnd() % 3] << 21) | (rb << 16) | 32u;
             psChain = true;
             floatSeq = true;
+            if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && rnd() % 2) {  // joins inside the chain: regions carry its lanes
+                // A skipped load leaves the register's old value for the operations and stores after it: moderate
+                // normal floats too (a denormal result meets the fast float model's flush to zero, a known limit).
+                for (u32 i = 0; i < 3; i++) { st.fpr[f[i]][0] = fval_mod(); st.fpr[f[i]][1] = fval_mod(); }
+                st.fpr[fdst][0] = fval_mod();
+                st.fpr[fdst][1] = fval_mod();
+                u32 nb = 1 + rnd() % 2;
+                for (u32 b = 0; b < nb && len < 46; b++) {
+                    u32 p = 1 + rnd() % (len - 1);
+                    for (u32 q = len; q > p; q--) seq[q] = seq[q - 1];
+                    len++;
+                    u32 t = p + 2 + rnd() % 2;
+                    if (t > len) t = len;
+                    seq[p] = (16u << 26) | ((rnd() & 1 ? 4u : 12u) << 21) | (rbits(5) << 16) | (((t - p) * 4) & 0xFFFCu);
+                }
+                traceCase = true;
+            }
         } else if (isFloat && rnd() % 2 == 0 && (((seq[0] >> 26) >= 48 && (seq[0] >> 26) <= 57) || (seq[0] >> 26) == 60 || (seq[0] >> 26) == 61)) {
             // Float cases of 2-4 instructions whose D-form loads and stores share one base register: check hoisting's
             // unchecked float accesses (the first one checks the base, the later ones do not).
@@ -1037,6 +1085,7 @@ int main(int argc, char** argv) {
             memcpy(B.mem1 + kEdgePa[k], A.mem1 + kEdgePa[k], EDGE_SIZE);
         }
         if (floatSeq) {
+            fill_locked_cache();
             fill_floats_at(&A, MEM1_SIZE - TOP_SIZE, TOP_SIZE);
             memcpy(B.mem1 + MEM1_SIZE - TOP_SIZE, A.mem1 + MEM1_SIZE - TOP_SIZE, TOP_SIZE);
         }

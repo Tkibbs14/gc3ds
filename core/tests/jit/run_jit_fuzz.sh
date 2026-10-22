@@ -37,6 +37,9 @@ for plant in 20 21 22; do
     JIT_FUZZ_PLANT=$plant JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
     if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
 done
+# Plant 24: a path into a label loses a float lane's write-back (float lanes need OPT_FCACHE).
+JIT_FUZZ_PLANT=24 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 | 4 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant24.txt"
+if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant24.txt"; then echo "SELF-TEST FAILED: planted bug 24 not detected (or the run crashed)"; exit 3; fi
 # Region tier with a pseudo-random coverage map (OPT_TIER's never-run sides), and OPT_TIER through the dispatcher with
 # regions compiled after two runs (with the pseudo-random coverage map: the fuzzer's short programs rarely cover a join).
 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) JIT_FUZZ_RCOVER=12345 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" > "$out/rcover.txt"

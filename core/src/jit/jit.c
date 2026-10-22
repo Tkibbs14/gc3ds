@@ -96,6 +96,7 @@ static u8 g_tierCov[MAX_BLOCK_INSNS];
 u32 jit_tier_threshold = 64;
 u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
 static Entry* entry_find(Jit* j, u32 pc, u32 msrBits);
+static void stub_check(Jit* j, const char* what, u32 pc);
 #define JIT_PROLOGUE 2  // words of a block's budget check (compile_block; 1 without the branch, OPT_LATCH): the dispatcher enters after them
 #define MAX_ENTRIES (1u << 16)
 #define NO_ENTRY 0xFFFFFFFFu
@@ -518,7 +519,7 @@ typedef struct {
     u8 rCover[MAX_BLOCK_INSNS];                              // instruction i ran (else the block leaves there)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
-    struct { u32 at, label, chk; Rc snap; u8 chkAl[32]; } rJump[MAX_BLOCK_INSNS]; // hot forward jumps to labels (cache, checks)
+    struct { u32 at, label, chk; u64 single; Rc snap; u8 chkAl[32]; } rJump[MAX_BLOCK_INSNS]; // forward jumps to labels: cache, singles, checks
     Rc rLabelT[MAX_BLOCK_INSNS];                             // the GPR cache a label's code starts with
     struct { u32 at, label, count; } rBack[MAX_BLOCK_INSNS]; // ADD RDC immediates: the instructions a jump skips
                                                              // (label MAX_BLOCK_INSNS: an exit before the block's end)
@@ -2308,6 +2309,16 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
             if (t > 0 && t < n) { n = t; shrunk = true; break; }
         }
     }
+    if (c->rProfiled) {  // no forward branch inside: no label can come of the cuts and the coverage below (tier_block's
+        bool any = false;  // most common outcome, so it skips the page scan)
+        for (u32 i = 0; i + 1 < n && !any; i++) {
+            u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
+            if (inst & 3) continue;
+            s32 off = op == 18 ? ((s32)(inst << 6)) >> 6 : op == 16 ? (s32)(s16)(inst & 0xFFFC) : 0;
+            any = off > 0 && i + (u32)off / 4 < n;
+        }
+        if (!any) { c->rEnd = n; return; }
+    }
     {   // One way in: a branch from elsewhere in the page into the extent ends it before the target, which is then a
         // block of its own; compiled inside too, its code ran in two copies (2DS jobs 850-857: I-cache misses +2-7%).
         u32 page = pa & ~0xFFFu;
@@ -2355,13 +2366,11 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
     }
 }
 
-// At a label: the GPR slots are the label's (rLabelT, every path into it reconciles to them); nothing else compiled
-// before it may be assumed after it (float lanes are written back on every path, flags and known values forgotten).
+// At a label: the GPR slots and float lanes are the label's (rLabelT, every path into it reconciles to them), and so
+// are the known singles; flags and known values compiled before it are forgotten.
 static void region_forget(Cg* c) {
-    for (int k = 0; k < NFS; k++) { c->rc.fid[k] = -1; c->rc.fdirty[k] = false; }
     c->flagsAt = NO_BRANCH;
     c->flagsLive = false;
-    c->single = 0;
     c->chk = 0;  // (the caller sets what every path checked; chkClear still applies the last instruction's writes)
     c->kmask = 0;
     c->kprev = 0x60000000u;  // nop: the instruction before the label is not what ran before it on every path
@@ -2396,11 +2405,35 @@ static void region_reconcile(Cg* c, const Rc* s, const Rc* t) {
         if (s->id[k] != t->id[k]) { ldr_imm(&c->e, kSlot[k], RG, rc_off((u32)t->id[k])); sw[k] = false; }
         if (sw[k] != t->swap[k]) rev(&c->e, kSlot[k], kSlot[k]);
     }
+    // Float lanes (d7 is free between instructions): the same, written back as doubles and loaded back as singles.
+    // Every lane t holds is an exact single on every path (region_label_state), so the load is exact.
+    bool flost = false;
+    for (int k = 0; k < NFS; k++) {
+        if (s->fid[k] < 0 || !s->fdirty[k]) continue;
+        if (t->fid[k] == s->fid[k] && t->fdirty[k]) continue;
+        if (jit_debug_plant == 24 && !flost) { flost = true; continue; }  // plant 24: a path into a label loses a lane
+        vcvt_f64_f32(&c->e, 7, 16 + k);
+        vstr_d(&c->e, 7, RG, OFF_FPR((u32)s->fid[k] >> 1) + 8u * ((u32)s->fid[k] & 1));
+    }
+    for (int k = 0; k < NFS; k++) {
+        if (t->fid[k] < 0 || s->fid[k] == t->fid[k]) continue;
+        vldr_d(&c->e, 7, RG, OFF_FPR((u32)t->fid[k] >> 1) + 8u * ((u32)t->fid[k] & 1));
+        vcvt_f32_f64(&c->e, 16 + k, 7);
+    }
 }
-static bool rc_same_gprs(const Rc* a, const Rc* b) {
+static u64 rc_lanes(const Rc* r) {  // the lanes a cache holds (Cg.single layout): exact singles
+    u64 b = 0;
+    for (int k = 0; k < NFS; k++) if (r->fid[k] >= 0) b |= 1ull << r->fid[k];
+    return b;
+}
+static bool rc_same(const Rc* a, const Rc* b) {
     for (int k = 0; k < NSLOT; k++) {
         if (a->id[k] != b->id[k]) return false;
         if (a->id[k] >= 0 && (a->dirty[k] != b->dirty[k] || a->swap[k] != b->swap[k])) return false;
+    }
+    for (int k = 0; k < NFS; k++) {
+        if (a->fid[k] != b->fid[k]) return false;
+        if (a->fid[k] >= 0 && a->fdirty[k] != b->fdirty[k]) return false;
     }
     return true;
 }
@@ -2441,11 +2474,10 @@ static bool region_branch(Cg* c, u32 inst, u32 i) {
     if (c->rTarget[i]) {  // to a label further on
         u32 t = c->rTarget[i];
         if (op == 18 || (bo & 20) == 20) {  // always taken
-            rc_emit_flush_fl(c, &c->rc);  // float lanes are not carried into a label
-            for (int k = 0; k < NFS; k++) c->rc.fdirty[k] = false;
             region_back(c, t);
             if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
             c->rJump[c->nRJump].snap = c->rc;
+            c->rJump[c->nRJump].single = c->single;
             c->rJump[c->nRJump].chk = c->chk;
             memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
             c->rJump[c->nRJump].at = branch_c(&c->e, C_AL, 0);
@@ -2455,13 +2487,12 @@ static bool region_branch(Cg* c, u32 inst, u32 i) {
             return true;
         }
         if (bo & 4) {  // one condition: the give-back and the branch inline (a stub cost a cold jump on every taken branch)
-            rc_emit_flush_fl(c, &c->rc);  // float lanes are not carried into a label (written back on both paths)
-            for (int k = 0; k < NFS; k++) c->rc.fdirty[k] = false;
             int cond = region_cond(c, bo, bi);
             if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
             region_back(c, t);
             c->e.buf[c->e.n - 1] = (c->e.buf[c->e.n - 1] & 0x0FFFFFFFu) | cc(cond);  // ADD<cond> RDC (no flags)
             c->rJump[c->nRJump].snap = c->rc;
+            c->rJump[c->nRJump].single = c->single;
             c->rJump[c->nRJump].chk = c->chk;
             memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
             c->rJump[c->nRJump].at = branch_c(&c->e, cond, 0);
@@ -4077,13 +4108,13 @@ static int fc_compile(Cg* c, u32 inst) {
 // add (-3.5% in the later stretch): a block takes them only when its straight run up to the first branch has at least
 // jit_fc_min float loads, stores and arithmetic instructions.
 int jit_fc_min = 8;
-static bool fc_gate(Jit* j, u32 pa) {
+static bool fc_gate(Jit* j, u32 pa, bool region) {  // region: the extent goes on past branches, and so does the count
     u32 n = 0;
     for (u32 i = 0; i < 64; i++, pa += 4) {
         if (pa + 4 > j->ramSize || (i && !(pa & 0xFFF))) break;
         u32 inst = ram_rd32(j->ram, pa);
         u32 op = inst >> 26, xo = (inst >> 1) & 0x3FF;
-        if (op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528)) || op == 17) break;
+        if (op == 17 || ((op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528))) && (!region || (inst & 1)))) break;
         if ((op >= 48 && op <= 61 && op != 58) || op == 4 || op == 63) n++;
         else if (op == 31 && xo >= 535 && xo <= 759 && !((xo - 535) % 32)) n++;
     }
@@ -4362,7 +4393,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
     c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM;  // (swapped RAM: a misaligned word would not fault)
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
-    c->fcOn = c->fp && (j->opt & OPT_FCACHE) && fc_gate(j, pa);
+    c->fcOn = c->fp && (j->opt & OPT_FCACHE) && fc_gate(j, pa, c->region);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
     c->lsq = (g->spr[SPR_HID2] & HID2_LSQE) != 0;
     c->pr = (g->msr & MSR_PR) != 0;
@@ -4463,13 +4494,24 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
             if (c->rLabel[i]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
                 Rc lt = c->rc;
                 bool have = region_first_in(c, i, &lt);
-                if (!c->rDead) {  // the fall-through reconciles to the label's state; its float lanes are written back
-                    rc_emit_flush_fl(c, &c->rc);
-                    if (have) region_reconcile(c, &c->rc, &lt);
-                    else lt = c->rc;
-                } else if (!have) {
+                if (c->rDead && !have) {  // reached by no path compiled: nothing is known
                     for (int k = 0; k < NSLOT; k++) { lt.id[k] = -1; lt.dirty[k] = lt.swap[k] = false; }
+                    for (int k = 0; k < NFS; k++) { lt.fid[k] = -1; lt.fdirty[k] = false; }
                 }
+                // Lanes exact singles on every path in (held, or Cg.single): the label keeps only lanes among them, and
+                // knows only them as singles. (A stub exit into the label records no single bits: only its lanes.)
+                u64 sgl = c->rDead ? ~0ull : c->single | rc_lanes(&c->rc);
+                for (u32 k = 0; k < c->nRJump; k++)
+                    if (c->rJump[k].label == i) sgl &= c->rJump[k].single | rc_lanes(&c->rJump[k].snap);
+                for (u32 k = 0; k < c->nExits; k++)
+                    if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == i) sgl &= rc_lanes(&c->exits[k].snap);
+                if (c->rDead && !have) sgl = 0;
+                for (int k = 0; k < NFS; k++)
+                    if (lt.fid[k] >= 0 && !((sgl >> lt.fid[k]) & 1)) { lt.fid[k] = -1; lt.fdirty[k] = false; }
+                if (!c->rDead) region_reconcile(c, &c->rc, &lt);  // the fall-through, inline
+#ifndef __3DS__
+                if (getenv("JIT_REGIONLOG")) { fprintf(stderr, "label %u dead %d single %016llx sgl %016llx", i, c->rDead, (unsigned long long)c->single, (unsigned long long)sgl); for (u32 k = 0; k < c->nRJump; k++) if (c->rJump[k].label == i) fprintf(stderr, " j%u:%016llx", k, (unsigned long long)c->rJump[k].single); fputc(10, stderr); }
+#endif
                 u32 chk = c->rDead ? 0xFFFFFFFFu : c->chk;  // hoisted checks every path into the label made
                 u8 chkAl[32];
                 memcpy(chkAl, c->chkAl, 32);
@@ -4484,12 +4526,13 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 region_forget(c);
                 c->chk = chk;
                 memcpy(c->chkAl, chkAl, 32);
-                for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = lt.id[k]; c->rc.dirty[k] = lt.dirty[k]; c->rc.swap[k] = lt.swap[k]; }
+                c->rc = lt;
+                c->single = sgl;
                 c->rLabelT[i] = c->rc;
                 c->rLabelAt[i] = e->n;
                 for (u32 k = 0; k < c->nRJump; k++) {
                     if (c->rJump[k].label != i) continue;
-                    if (rc_same_gprs(&c->rJump[k].snap, &c->rLabelT[i])) { patch_branch(e, c->rJump[k].at, e->n); continue; }
+                    if (rc_same(&c->rJump[k].snap, &c->rLabelT[i])) { patch_branch(e, c->rJump[k].at, e->n); continue; }
                     cold_begin(c);  // the jump goes through a fix-up in cold code
                     fix_to_cold(c, c->rJump[k].at);
                     region_reconcile(c, &c->rJump[k].snap, &c->rLabelT[i]);
@@ -4683,7 +4726,6 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (c->exits[k].kind == EXIT_LABEL) {  // OPT_REGION: the label's cache, give back what the branch skips, go on there
             u32 lab = c->exits[k].pc, skipped = c->rCountAt[lab] - c->exits[k].count + (jit_debug_plant == 20 ? 1 : 0);  // plant 20: miscounted
             if (c->rLabelAt[lab] == NO_BRANCH || skipped > 255) { e->overflow = true; continue; }
-            rc_emit_flush_fl(c, &c->exits[k].snap);
             region_reconcile(c, &c->exits[k].snap, &c->rLabelT[lab]);
             if (skipped) dp_imm(e, ADD, 0, RDC, RDC, skipped);
             add_fix(c, true, branch_c(e, C_AL, 0), false, c->rLabelAt[lab]);
@@ -5821,6 +5863,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     unsigned char wasWhere = g_where;
     g_where = WH_COMPILE;
     BlockFn fn = compile(j, pc, poll != 0);
+    stub_check(j, "compile", pc);
     g_where = wasWhere;
     if (!fn) return NULL;
     // compile() may have flushed the whole cache (code space full), which also emptied the chains.
@@ -5866,6 +5909,25 @@ static void deopt_block(Jit* j, u32 pc, u32 key) {
     jit_host_sync_icache(oldFn, 4);
 }
 
+#ifndef __3DS__
+// JIT_STUBCHECK=1 (debugging): the shared stubs never change after jit_create; abort naming the step that changed them.
+static void stub_check(Jit* j, const char* what, u32 pc) {
+    static int on = -1;
+    static u32 sum;
+    if (on < 0) on = getenv("JIT_STUBCHECK") != NULL;
+    if (!on) return;
+    u32 x = 0;
+    for (u32 k = 0; k < j->stubWords; k++) x = x * 31u + j->code[k];
+    if (!sum) { sum = x; return; }
+    if (x == sum) return;
+    for (u32 k = 0; k < j->stubWords; k++) fprintf(stderr, "%s", "");
+    fprintf(stderr, "STUBS CHANGED after %s at pc %08x", what, pc);
+    fputc(10, stderr);
+    abort();
+}
+#else
+static void stub_check(Jit* j, const char* what, u32 pc) { (void)j; (void)what; (void)pc; }
+#endif
 static Entry* entry_find(Jit* j, u32 pc, u32 msrBits) {  // a compiled block, without compiling
     for (u32 i = j->buckets[bucket_of(pc, msrBits)]; i != NO_ENTRY; i = j->table[i].next)
         if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
@@ -6085,6 +6147,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (!en) break;
         if (en->pending && ++en->runs >= (jit_tier_threshold ? jit_tier_threshold : 1)) {  // OPT_TIER: decide its tier
             tier_block(j, pc, key);
+            stub_check(j, "tier_block", pc);
             en = lookup(j, pc, key);
             if (!en) break;
         }
@@ -6097,6 +6160,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
             else {
                 u64 before = j->stats.links;
                 link_site(j, site, en->fn);
+                stub_check(j, "link_site", pc);
                 if (j->stats.links == before) j->stats.linkAlready++;
             }
             site = NULL;
@@ -6124,6 +6188,7 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         u32 n = run(j, (BlockFn)(void*)((u32*)(void*)en->fn + en->pro), room > 0x3FFFFFFF ? 0x3FFFFFFF : (s32)room,
                     g->cycles + total, &s, en->count - (jit_debug_plant == 8 && en->count > 1 ? 1u : 0u));  // plant 8: a wrong count
         jit_in_run = 0;
+        stub_check(j, "run", pc);
         g_where = WH_DISPATCH;
         j->stats.blocksRun++;
         if (!n) break;  // cannot happen for a well-formed block; never spin
