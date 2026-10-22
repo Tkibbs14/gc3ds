@@ -190,6 +190,41 @@ static inline float QLD(const u8* h, u32 q) {
     return (float)v * p2;
 }
 static inline double BITSD(u64 w) { double d; memcpy(&d, &w, 8); return d; }
+// frsqrte / fres in direct mode: the interpreter's estimates (Gekko's tables, gekko_softfp.c) for inputs the translator
+// lets through (positive finite / normal range); the FPSCR is not kept, as the JIT.
+static inline u64 RSQRTE(const Gekko* g, double x) {
+    SfEnv e = { g->fpscr & FPSCR_RN, (g->fpscr & FPSCR_NI) != 0, 0 };
+    return sf_rsqrt_estimate(&e, DBITS(x));
+}
+static inline float RES(const Gekko* g, double x) {
+    SfEnv e = { g->fpscr & FPSCR_RN, (g->fpscr & FPSCR_NI) != 0, 0 };
+    return (float)BITSD(sf_recip_estimate(&e, DBITS(x)));
+}
+// Single-precision arithmetic with an operand held as a double (frsqrte's estimate, lfd's): through the interpreter's
+// soft float, so the result is its bits exactly. Multiplies round frC to 25 bits first, as Gekko (gekko_fpu.c mulc);
+// C doubles would not (a single operand is unaffected by that rounding, so the float paths stay exact).
+static inline u64 MULC(const Gekko* g, u64 c) { return (GKP(g)->compat & GK_COMPAT_EXACT_SINGLE_MUL) ? c : sf_round25(c); }
+static inline float SOP(const Gekko* g, int op, double a, double b) {  // 0 add, 1 sub, 2 mul (b is frC), 3 div
+    SfEnv e = { g->fpscr & FPSCR_RN, (g->fpscr & FPSCR_NI) != 0, 0 };
+    u64 x = DBITS(a), y = DBITS(b);
+    u64 r = op == 0 ? sf_add(&e, x, y, true) : op == 1 ? sf_sub(&e, x, y, true) : op == 2 ? sf_mul(&e, x, MULC(g, y), true)
+                                                                                     : sf_div(&e, x, y, true);
+    return (float)BITSD(r);
+}
+static inline float SMADD(const Gekko* g, double a, double c, double b, bool sub, bool neg) {  // as gekko_fpu.c madd_kind
+    SfEnv e = { g->fpscr & FPSCR_RN, (g->fpscr & FPSCR_NI) != 0, 0 };
+    u64 x = DBITS(a), y = MULC(g, DBITS(c)), z = DBITS(b);
+    if (sub && !sf_isnan(z)) z ^= SF_SIGN;
+    if (neg && (GKP(g)->compat & GK_COMPAT_NEG_THEN_ROUND) && e.rn >= 2) {
+        SfEnv m = e;
+        m.rn ^= 1;
+        u64 r = sf_madd(&m, x, y, z, true);
+        if (!sf_iszero(r) || (m.fl & FPSCR_FI)) return (float)BITSD(sf_isnan(r) ? r : r ^ SF_SIGN);
+    }
+    u64 r = sf_madd(&e, x, y, z, true);
+    if (neg && !sf_isnan(r)) r ^= SF_SIGN;
+    return (float)BITSD(r);
+}
 
 // A direct-mode stand-in's call (bl, bctrl, blrl): the stand-in at the target, run in place on guest state; 0 when there
 // is none or it refuses (the caller then stops at the call, for guest code to make it).
@@ -565,7 +600,18 @@ static u32 ps_checked(Gekko* g) {
     Gekko g0 = *g;
     g_nscap = 0; g_scapFull = false; g_scapOn = true;
     g_psCalled = false;
+#if defined(__x86_64__) || defined(__SSE2__)
+    // HLE_FTZ=1: the native code runs as on the 2DS, whose VFP flushes denormal inputs and results to zero (FPSCR
+    // FZ); the x86 host keeps them, which makes lanes that hold denormals differ from the interpreter (FPSCR[NI]).
+    static int ftz = -1;
+    if (ftz < 0) ftz = getenv("HLE_FTZ") != NULL;
+    unsigned csr = __builtin_ia32_stmxcsr();
+    if (ftz) __builtin_ia32_ldmxcsr(csr | 0x8040u);  // FTZ (bit 15), DAZ (bit 6)
     u32 n = ps_native(g);
+    if (ftz) __builtin_ia32_ldmxcsr(csr);
+#else
+    u32 n = ps_native(g);
+#endif
     g_scapOn = false;
     if (!n) { gp_capture = NULL; return 0; }
     const bool mid = g_psMid;

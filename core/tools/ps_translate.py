@@ -801,6 +801,10 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             e = f'{"PADD" if op == "ps_add" else "PSUB"}({frd(a[1])}, {frd(a[2])})'
             fwr(a[0])
             return f'{a[0]} = {e};'
+        if direct and op == 'ps_muls0' and a[2] in frest and a[1] not in frest:  # by a double (frsqrte's): in double, then single
+            x, c_ = frd(a[1]), fval(a[2])
+            fwr(a[0])
+            return f'{a[0]} = (P){{ SOP(g, 2, (double){x}.p0, {c_}), SOP(g, 2, (double){x}.p1, {c_}) }};'
         if op in ('ps_mul', 'ps_muls0', 'ps_muls1'):
             e = f'P{op[3:].upper()}({frd(a[1])}, {frd(a[2])})'
             fwr(a[0])
@@ -819,8 +823,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             return f'{a[0]} = {e};'
         if direct and op in ('fadds', 'fsubs', 'fmuls', 'fdivs'):  # single result in both lanes (FPSCR not kept, as the JIT)
             o = {'fadds': '+', 'fsubs': '-', 'fmuls': '*', 'fdivs': '/'}[op]
-            if a[1] in frest or a[2] in frest:  # a double operand: in double, then to single
-                e = f'PS((float)({fval(a[1])} {o} {fval(a[2])}))'
+            if a[1] in frest or a[2] in frest:  # a double operand: the interpreter's soft float (frC rounded to 25 bits)
+                e = f'PS(SOP(g, {"+-*/".index(o)}, {fval(a[1])}, {fval(a[2])}))'
             else:
                 x, y = frd(a[1]), frd(a[2])
                 e = f'PS({x}.p0 {o} {y}.p0)'
@@ -829,8 +833,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         if direct and op in ('fmadds', 'fmsubs', 'fnmadds', 'fnmsubs'):  # a*c +- b in double, then single (as PMADD)
             neg = '-' if op.startswith('fn') else ''
             sg = '+' if op in ('fmadds', 'fnmadds') else '-'
-            if any(x in frest for x in a[1:4]):
-                e = f'PS({neg}(float)({fval(a[1])} * {fval(a[2])} {sg} {fval(a[3])}))'
+            if any(x in frest for x in a[1:4]):  # the interpreter's soft float (frC rounded to 25 bits, rounded once)
+                e = f'PS(SMADD(g, {fval(a[1])}, {fval(a[2])}, {fval(a[3])}, {"true" if sg == "-" else "false"}, {"true" if neg else "false"}))'
             else:
                 x, c_, y = frd(a[1]), frd(a[2]), frd(a[3])
                 fn = 'madd1' if sg == '+' else 'msub1'
@@ -842,6 +846,24 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             k = a[0][1:]
             fdbl(a[0])
             return f'd{k} = DBITS({v}); frs |= 1u << {k};'
+        if direct and op == 'fsel' and not a[0].startswith('.'):  # ps0 = frA >= 0 (NaN: no) ? frC : frB, its bits (a double)
+            va, vc, vb = fval(a[1]), fval(a[2]), fval(a[3])
+            k = a[0][1:]
+            fdbl(a[0])
+            return f'd{k} = DBITS(({va} >= 0.0) ? {vc} : {vb}); frs |= 1u << {k};'
+        if direct and op == 'frsqrte':  # the interpreter's estimate (a double in ps0, ps1 as it was); positive finite only
+            v = fval(a[1])
+            k = a[0][1:]
+            flags['stops'] = True
+            fdbl(a[0])
+            return (f'if (!({v} > 0.0) || __builtin_isinf({v})) {{ spc = {cur[0]:#010x}u; goto stop; }} '
+                    f'd{k} = RSQRTE(g, {v}); frs |= 1u << {k};')
+        if direct and op == 'fres':  # the interpreter's estimate, a single in both lanes; normal-range inputs only
+            v = fval(a[1])
+            flags['stops'] = True
+            fwr(a[0])
+            return (f'if (!(__builtin_fabs({v}) >= 0x1p-125 && __builtin_fabs({v}) <= 0x1p125)) {{ spc = {cur[0]:#010x}u; goto stop; }} '
+                    f'{a[0]} = PS(RES(g, {v}));')
         if direct and op == 'fctiwz':  # the integer in ps0's low word (the interpreter's upper word), as a double's bits
             v = fval(a[1])
             k = a[0][1:]
@@ -1005,7 +1027,7 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
         fw_last.clear()
         fpins = op.startswith('ps') or op.startswith('lf') or op.startswith('stf') or op in (
             'frsp', 'fadds', 'fsubs', 'fmuls', 'fdivs', 'fmadds', 'fmsubs', 'fnmadds', 'fnmsubs', 'fneg', 'fabs', 'fmr', 'fcmpo',
-            'fcmpu', 'fctiwz')
+            'fcmpu', 'fctiwz', 'frsqrte', 'fres', 'fsel')
         if direct and fpins and not st.fpck:
             # The FP state, at the first FP instruction on this path (not at entry: a path without FP code runs whatever
             # it is; the OS turns the FPU on lazily). Off: stop before it, and guest code takes the exception.
@@ -1014,7 +1036,8 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             st.fpck = True
         try:
             if op.startswith('ps') or op in ('lfs', 'lfsu', 'lfsx', 'lfsux', 'stfsx', 'stfsux', 'stfs', 'frsp', 'stfd', 'lfd', 'fadds', 'fsubs', 'fmuls', 'fdivs', 'fmadds',
-                                             'fmsubs', 'fnmadds', 'fnmsubs', 'fneg', 'fabs', 'fmr', 'fcmpo', 'fcmpu', 'fctiwz'):
+                                             'fmsubs', 'fnmadds', 'fnmsubs', 'fneg', 'fabs', 'fmr', 'fcmpo', 'fcmpu', 'fctiwz', 'frsqrte',
+                                             'fres', 'fsel'):
                 flags['fpu'] = True
                 s = fp(off, word, op, a)
             else:
@@ -1034,6 +1057,7 @@ def translate(path, logged=False, direct=False, backin=None, backout=None):
             raise SystemExit(f'{path}: unsupported at {off:x}: {op} {a}')
         if direct:  # the FPRs it wrote, for the write-back (only those go back: the others stay as the guest has them)
             s += ''.join(f' FWB({f[1:]});' for f in fw_last)
+            s += ''.join(f' frs &= ~(1u << {f[1:]});' for f in fw_last if f in frest)  # a single written over a double
         body.append(f'    n++; {s}')
     if rend is not None:  # the region's end: everything back in guest state, the PC there
         if rend in targets:

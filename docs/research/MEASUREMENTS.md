@@ -2215,7 +2215,18 @@ done
     stored +0.0.
 
   Both fit the PC host not flushing denormals, while the interpreter (FPSCR[NI]) and the 2DS's VFP (flush-to-zero)
-  do. Not yet confirmed: re-run the check with flush-to-zero on the PC's native path before calling it exact.
+  do. **Resolved:** with `HLE_FTZ=1` (hle_ps.c: x86 FTZ and DAZ while native code runs, as the 2DS's VFP), the same
+  scripted run to the board gives **65,389,934 calls, 0 differed** (231 stopped inside, handed to the guest). The
+  7,599 differences of the run without it were all the PC host's denormals. Use `HLE_FTZ=1` with `HLE_CHECK=1`.
+- **The estimate functions as stand-ins, measured and not kept (2026-10-22):** frsqrte / fres / fsel in the translator's
+  direct mode (the interpreter's estimate and soft-float routines, frC rounded to 25 bits) made PSVECMag,
+  PSVECNormalize (TP, Mario Party 4, Wind Waker) and PSMTXInvXpose (Mario Party 4) exact: PC HLE_FTZ + HLE_CHECK, TP
+  tp_pc_900 -> 2100 8,572,382 calls, Wind Waker 20,927,253, Mario Party 4 73,973, 0 differed. (Before the soft-float
+  arithmetic, C doubles differed in 1,858 / 3,005 calls: Gekko rounds a multiply's frC to 25 bits.) **But every scene
+  was slower** (jobs 806-809 against 795, 799, 797, 798): Mario Party 4 13.92 -> 13.17%, Wind Waker 18.87 -> 18.75%, TP
+  heavy area 22.80 -> 22.53%, Ordon 32.02 -> 31.83%. The soft-float calls on the ARM11 cost more than the JIT's code
+  for these short functions. Removed from the table (49 stand-ins as committed in fc59ef8); the translator support
+  stays.
 - **Reproduce:** `--game Party --state sdmc:/gc3ds/states/mp4_board.state --seconds 180` (or `--game Wind --state
   sdmc:/gc3ds/states/ww_outset.state`), `python3 core/tools/runs.py core/out/relay_JOB.csv`, `python3
   core/tools/hot_funcs.py core/out/relay_JOB.csv SYMBOLS --families` with mariopartyrd/marioparty4 `config/GMPE01_01`

@@ -122,8 +122,18 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   (mariopartyrd/marioparty4 GMPE01_01, zeldaret/tww GZLE01) into `/root/psfns_mp4` and `/root/psfns_ww`: Mario Party 4's
   `PSMTXROMultVecArray!` `PSMTXConcat` `PSMTXMultVecArray!` `PSMTXRotTrig` `PSMTXIdentity` `PSMTXTrans` `PSMTXScale`
   `PSMTXReorder`, then Wind Waker's `PSMTXConcat` `PSMTXIdentity` `PSMTXRotTrig` `PSMTXScale` `PSMTXTrans` (a repeated
-  name gets `_2`, `_3`; recognition is by the bytes' hash). Functions identical to TP's were left out; PSVECMag,
-  PSVECNormalize, PSMTXInverse / InvXpose (frsqrte, fres) and PSMTXRotRad (a call) do not translate usefully.
+  name gets `_2`, `_3`; recognition is by the bytes' hash). **Not in the table (measured slower, below):** the estimate
+  functions, all in direct mode (`!`): TP's
+  `PSVECMag` `PSVECNormalize` (`/root/psfns`), Mario Party 4's `PSVECMag` `PSVECNormalize` `PSMTXInvXpose`, Wind
+  Waker's `PSVECMag` `PSVECNormalize`. The translator handles frsqrte and fres in direct mode through the interpreter's
+  estimate routines (stopping before zero, negative, infinite or out-of-range inputs), fsel, and ps_muls0 by such a
+  double. Single arithmetic with a double operand goes through the interpreter's soft float (SOP / SMADD in hle_ps.c),
+  whose multiplies round frC to 25 bits as Gekko does. Functions identical to TP's were left out; PSMTXInverse
+  (ps_nmadd) and PSMTXRotRad (a call) do not translate usefully. Check with `HLE_FTZ=1 HLE_CHECK=1`.
+  The estimate functions were exact (TP 8.6 M, Wind Waker 20.9 M, Mario Party 4 74k calls, 0 differed) but slower:
+  the soft-float calls cost more than the JIT's code for these short functions (2DS, jobs 806-809 against 795-799:
+  Mario Party 4 13.92 -> 13.17%, Wind Waker 18.87 -> 18.75%, TP heavy area 22.80 -> 22.53%, Ordon 32.02 -> 31.83%).
+  The translator keeps the support for an exact path that is also fast.
 - **Tools:** core/tools/porthash.py makes the code-hash table from main.dol and the symbol map; `--port-parts on` times
   each part of a call; `--pmu-split port` / `portcommit` count cycles and events around each half.
 
