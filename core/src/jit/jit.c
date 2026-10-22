@@ -91,7 +91,7 @@ typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro
 // the block (2DS jobs 834-841) kept a branch in every block, and links into a replaced block went through it.
 // member: the block lies inside a region compiled since, so it never gets one of its own.
 static bool g_tierCompile, g_tierNoGain;  // compile_block: a region for tier_block; it found no label (no gain)
-static u32 g_tierKey, g_tierHeadEnd, g_tierN;
+static u32 g_tierKey, g_tierHeadEnd, g_tierHeadRuns, g_tierN;
 static u8 g_tierCov[MAX_BLOCK_INSNS];
 u32 jit_tier_threshold = 64;
 u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
@@ -518,7 +518,7 @@ typedef struct {
     u8 rCover[MAX_BLOCK_INSNS];                              // instruction i ran (else the block leaves there)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
-    struct { u32 at, label; Rc snap; } rJump[MAX_BLOCK_INSNS]; // hot forward jumps to labels (and the cache there)
+    struct { u32 at, label, chk; Rc snap; u8 chkAl[32]; } rJump[MAX_BLOCK_INSNS]; // hot forward jumps to labels (cache, checks)
     Rc rLabelT[MAX_BLOCK_INSNS];                             // the GPR cache a label's code starts with
     struct { u32 at, label, count; } rBack[MAX_BLOCK_INSNS]; // ADD RDC immediates: the instructions a jump skips
                                                              // (label MAX_BLOCK_INSNS: an exit before the block's end)
@@ -2308,6 +2308,21 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
             if (t > 0 && t < n) { n = t; shrunk = true; break; }
         }
     }
+    {   // One way in: a branch from elsewhere in the page into the extent ends it before the target, which is then a
+        // block of its own; compiled inside too, its code ran in two copies (2DS jobs 850-857: I-cache misses +2-7%).
+        u32 page = pa & ~0xFFFu;
+        for (u32 q = page; q < page + 0x1000 && q + 4 <= j->ramSize && n > 1; q += 4) {
+            if (q >= pa && q < pa + 4 * n) continue;
+            u32 inst = ram_rd32(j->ram, q), op = inst >> 26;
+            if (inst & 2) continue;  // absolute
+            s32 off;
+            if (op == 18) off = ((s32)(inst << 6)) >> 6 & ~3;
+            else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
+            else continue;
+            u32 tq = q + (u32)off;
+            if (tq > pa && tq < pa + 4 * n) n = (tq - pa) / 4;
+        }
+    }
     c->rEnd = n;
     for (u32 i = 0; i < n; i++) c->rCover[i] = !c->rProfiled;
     if (c->rProfiled && !jit_debug_region_cover) {  // what the block tier ran: the head block's range, and the blocks starting inside the extent
@@ -2315,7 +2330,7 @@ static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
             u32 end = g_tierHeadEnd;
             if (s0) {
                 const Entry* en = entry_find(j, pc + 4 * s0, g_tierKey);
-                if (!en) continue;
+                if (!en || en->runs * 8u < g_tierHeadRuns) continue;  // ran under 1/8 as often as the head: cold, not inline
                 end = en->end;
             }
             for (u32 k = s0; k < n && pc + 4 * k < end; k++) c->rCover[k] = 1;
@@ -2347,7 +2362,7 @@ static void region_forget(Cg* c) {
     c->flagsAt = NO_BRANCH;
     c->flagsLive = false;
     c->single = 0;
-    c->chk = c->chkClear = 0;
+    c->chk = 0;  // (the caller sets what every path checked; chkClear still applies the last instruction's writes)
     c->kmask = 0;
     c->kprev = 0x60000000u;  // nop: the instruction before the label is not what ran before it on every path
 }
@@ -2431,6 +2446,8 @@ static bool region_branch(Cg* c, u32 inst, u32 i) {
             region_back(c, t);
             if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
             c->rJump[c->nRJump].snap = c->rc;
+            c->rJump[c->nRJump].chk = c->chk;
+            memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
             c->rJump[c->nRJump].at = branch_c(&c->e, C_AL, 0);
             c->rJump[c->nRJump].label = t;
             c->nRJump++;
@@ -2445,6 +2462,8 @@ static bool region_branch(Cg* c, u32 inst, u32 i) {
             region_back(c, t);
             c->e.buf[c->e.n - 1] = (c->e.buf[c->e.n - 1] & 0x0FFFFFFFu) | cc(cond);  // ADD<cond> RDC (no flags)
             c->rJump[c->nRJump].snap = c->rc;
+            c->rJump[c->nRJump].chk = c->chk;
+            memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
             c->rJump[c->nRJump].at = branch_c(&c->e, cond, 0);
             c->rJump[c->nRJump].label = t;
             c->nRJump++;
@@ -4451,7 +4470,20 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 } else if (!have) {
                     for (int k = 0; k < NSLOT; k++) { lt.id[k] = -1; lt.dirty[k] = lt.swap[k] = false; }
                 }
+                u32 chk = c->rDead ? 0xFFFFFFFFu : c->chk;  // hoisted checks every path into the label made
+                u8 chkAl[32];
+                memcpy(chkAl, c->chkAl, 32);
+                if (c->rDead) memset(chkAl, 4, 32);
+                for (u32 k = 0; k < c->nRJump; k++) {
+                    if (c->rJump[k].label != i) continue;
+                    chk &= c->rJump[k].chk;
+                    for (int r = 0; r < 32; r++) if (c->rJump[k].chkAl[r] < chkAl[r]) chkAl[r] = c->rJump[k].chkAl[r];
+                }
+                for (u32 k = 0; k < c->nExits; k++) if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == i) chk = 0;
+                if (c->rDead && !have) chk = 0;
                 region_forget(c);
+                c->chk = chk;
+                memcpy(c->chkAl, chkAl, 32);
                 for (int k = 0; k < NSLOT; k++) { c->rc.id[k] = lt.id[k]; c->rc.dirty[k] = lt.dirty[k]; c->rc.swap[k] = lt.swap[k]; }
                 c->rLabelT[i] = c->rc;
                 c->rLabelAt[i] = e->n;
@@ -5880,7 +5912,7 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
     if (!region_head(j, pc)) { j->stats.tierNotHead++; return; }
     u32* oldFn = (u32*)(void*)old->fn;
     u32 gen = j->gen;
-    g_tierCompile = true; g_tierNoGain = false; g_tierKey = key; g_tierHeadEnd = old->end; g_tierN = 0;
+    g_tierCompile = true; g_tierNoGain = false; g_tierKey = key; g_tierHeadEnd = old->end; g_tierHeadRuns = old->runs; g_tierN = 0;
     old->pc = 1;  // never a guest PC: lookup compiles the region
     Entry* en = lookup(j, pc, key);
     g_tierCompile = false;
