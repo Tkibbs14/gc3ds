@@ -35,6 +35,16 @@
 >   __GXData (the SDK-as-a-unit option stays open). The CPU test runner works again (`core/tests/cpu/run_tests.sh`).
 > **Library atlas (10-21): research/LIBRARY_ATLAS.md** maps SDK / middleware / microcode families and the features that
 > gate other games (EFB to RAM, CPU EFB reads, bounding box, MMU, FPRF); its section 9 proposes X6's game set.
+> **Baseline at the end of 10-21's night (build a45608e, jobs 813-817, separate whole runs):**
+>
+> | Scene | Speed | Frames / s |
+> |---|---|---|
+> | TP heavy area | 22.74% | 6.82 |
+> | TP Ordon walk | 31.84% | 9.49 |
+> | TP title: cutscene / later stretch / movie | 37.10 / 23.46 / 13.41% | |
+> | Wind Waker, Outset (`ww_outset.state`) | 19.20% | 5.76 |
+> | Mario Party 4, board (`mp4_board.state`) | 14.11% | 8.43 |
+>
 > **Night of 10-21 (MEASUREMENTS.md "Second games on the 2DS"):**
 > - Mario Party 4 and Wind Waker run on the 2DS, with gameplay states `sdmc:/gc3ds/states/mp4_board.state` and
 >   `ww_outset.state`. The card holds TP, Mario Party 4 and Wind Waker; Galaxy 2 was removed.
