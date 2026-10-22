@@ -17,6 +17,8 @@
 #define TASK_TO_CPU 0xDCD10000u
 #define DSP_INIT (TASK_TO_CPU | 0)
 #define DSP_RESUME (TASK_TO_CPU | 1)
+#define DSP_YIELD (TASK_TO_CPU | 2)
+#define DSP_DONE (TASK_TO_CPU | 3)
 #define DSP_SYNC (TASK_TO_CPU | 4)
 #define DSP_FRAME_END (TASK_TO_CPU | 5)
 #define MAIL_RESUME 0xCDD10000u
@@ -32,6 +34,14 @@ static const KnownUcode kUcodes[] = {
     { 0x86840740, DSP_UC_ZELDA, "Zelda (Wind Waker)" },
     { 0x56D36052, DSP_UC_ZELDA, "Zelda (Super Mario Sunshine)" },
     { 0x42F64AC4, DSP_UC_ZELDA, "Zelda (Luigi's Mansion)" },
+    // AX, the SDK's standard audio microcode (Dolphin's table: Mario Party 4 and 5, Melee, TTYD, F-Zero GX, Monkey
+    // Ball, Star Fox, Crazy Taxi, Ikaruga, Ocarina of Time GC, Billy Hatcher, ... and MusyX games built on it).
+    { 0x4E8A8B21, DSP_UC_AX, "AX" },
+    { 0x07F88145, DSP_UC_AX, "AX" },
+    { 0xE2136399, DSP_UC_AX, "AX" },
+    { 0x3AD3B7AC, DSP_UC_AX, "AX" },
+    { 0x3DAF59B9, DSP_UC_AX, "AX" },
+    { 0x65D6CC6F, DSP_UC_CARD, "CARD (memory card unlock)" },
 };
 
 static u32 ector_hash(const u8* p, u32 len) {
@@ -90,6 +100,7 @@ void dsphle_reset(System* s) {
 }
 
 static void zelda_init(System* s);
+static void ax_init(System* s);
 
 static void select_ucode(System* s, u32 ram, u32 len, u32 pc) {
     DSPHle* h = &s->dsp.hle;
@@ -102,6 +113,8 @@ static void select_ucode(System* s, u32 ram, u32 len, u32 pc) {
     emu_log(LOG_DSP, "microcode %08x+%x start %04x hash %08x: %s\n", ram, len, pc, h->ucodeHash, k ? k->name : "unknown");
     h->ucode = k ? k->ucode : DSP_UC_UNKNOWN;
     if (h->ucode == DSP_UC_ZELDA) zelda_init(s);
+    else if (h->ucode == DSP_UC_AX) ax_init(s);
+    else if (h->ucode == DSP_UC_CARD) push_mail(s, DSP_INIT, true);
 }
 
 static void rom_mail(System* s, u32 mail) {
@@ -325,6 +338,50 @@ static void zelda_mail(System* s, u32 mail) {
     }
 }
 
+// ---- AX family ----
+// Protocol as Dolphin's DSPHLE/UCodes/AX.cpp describes it (read for reference, not copied): DSP_INIT on start; then
+// 0xBABE0000 | size, the command list's address, and the microcode mixes one frame and answers DSP_YIELD; then a
+// task mail (resume, new microcode, reset, continue). No mixing yet, as for Zelda: the list is acknowledged unread.
+// The mail state reuses the Zelda fields (zState, zExpect), so save states keep their layout.
+enum { AX_WAIT_SIZE, AX_WAIT_ADDR, AX_WAIT_TASK };
+
+static void ax_init(System* s) {
+    s->dsp.hle.zState = AX_WAIT_SIZE;
+    push_mail(s, DSP_INIT, true);
+}
+
+static void ax_mail(System* s, u32 mail) {
+    DSPHle* h = &s->dsp.hle;
+    switch (h->zState) {
+    case AX_WAIT_SIZE:
+        if ((mail & 0xFFFF0000u) == 0xBABE0000u) { h->zExpect = mail & 0xFFFF; h->zState = AX_WAIT_ADDR; }
+        else emu_log(LOG_DSP, "AX: expected a command list, got %08x\n", mail);
+        break;
+    case AX_WAIT_ADDR:
+        // Dolphin delays this answer by ~2,500 cycles (The Clone Wars hangs on an immediate one); here it is immediate.
+        push_mail(s, DSP_YIELD, true);
+        h->zState = AX_WAIT_TASK;
+        break;
+    default:
+        switch (0xCDD10000u | (mail & 0xFFFF)) {  // the microcode does not check the CDD1 prefix
+        case MAIL_RESUME: push_mail(s, DSP_RESUME, true); h->zState = AX_WAIT_SIZE; break;
+        case MAIL_NEW_UCODE: h->uploading = true; h->uploadStep = 0; h->zState = AX_WAIT_SIZE; break;
+        case MAIL_RESET: dsphle_reset(s); break;
+        case MAIL_CONTINUE: h->zState = AX_WAIT_SIZE; break;
+        default: emu_log(LOG_DSP, "AX: unknown task mail %08x\n", mail); break;
+        }
+        break;
+    }
+}
+
+// CARD: the memory-card unlock microcode answers any request with DSP_DONE and hands the DSP back to the ROM.
+static void card_mail(System* s, u32 mail) {
+    if (mail != 0xFF000000u) emu_log(LOG_DSP, "CARD: unknown request %08x\n", mail);
+    push_mail(s, DSP_DONE, true);
+    s->dsp.hle.ucode = DSP_UC_ROM;
+    push_mail(s, 0x8071FEED, false);
+}
+
 // MAIL_NEW_UCODE is followed by ten words: RAM->DMEM save (address, size, DSP address), the IRAM image (RAM address,
 // size, IRAM address, start PC), and the DMEM image (RAM address, size, DSP address).
 static void upload_mail(System* s, u32 mail) {
@@ -344,6 +401,8 @@ void dsphle_cpu_mail(System* s, u32 mail) {
     switch (h->ucode) {
     case DSP_UC_ROM: rom_mail(s, mail); break;
     case DSP_UC_ZELDA: zelda_mail(s, mail); break;
+    case DSP_UC_AX: ax_mail(s, mail); break;
+    case DSP_UC_CARD: card_mail(s, mail); break;
     default: break;  // no microcode, or one without an HLE: mails are accepted and dropped
     }
 }

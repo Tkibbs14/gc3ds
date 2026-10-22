@@ -229,7 +229,7 @@ void ai_reset(System* s); void di_reset(System* s); void gx_reset(System* s);
 void di_reset_drive(System* s);  // PI reset-code DI bit pulsed
 
 // DSP microcode HLE (dsp_hle.c), driven by dsp.c.
-enum { DSP_UC_NONE, DSP_UC_ROM, DSP_UC_ZELDA, DSP_UC_UNKNOWN };
+enum { DSP_UC_NONE, DSP_UC_ROM, DSP_UC_ZELDA, DSP_UC_UNKNOWN, DSP_UC_AX, DSP_UC_CARD };  // appended: states keep their values
 void dsphle_reset(System* s);                  // DSP reset: the boot ROM runs and greets the CPU
 void dsphle_cpu_mail(System* s, u32 mail);     // a complete CPU -> DSP mail
 bool dsphle_mail_pending(System* s);

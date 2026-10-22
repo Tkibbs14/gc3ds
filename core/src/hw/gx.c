@@ -74,6 +74,11 @@ static void gp_burst(System* s, const u8* data) {
     }
     pi->fifoWrite = wp | wrap;
     s->gx.bytesReceived += 32;
+    // CP control bit 4 links the GP to the CPU's FIFO. GXSetCPUFifo clears it when the CPU FIFO is not the GP's, as
+    // GXBeginDisplayList does while a list is recorded through the pipe (Mario Party 4's models): the bytes then only
+    // go to RAM, and the GP sees them when the list is called. A control register never written (0) counts as linked.
+    u16 cr = s->gx.cpRegs[0x02 / 2];
+    if (cr && !(cr & 0x10)) return;
     if (s->gxAsync) s->gxAsync->feed(s, data, 32);
     else gxcore_feed(s, &s->gx.core, data, 32);
 }
