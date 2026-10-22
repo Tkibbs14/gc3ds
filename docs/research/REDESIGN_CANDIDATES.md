@@ -584,6 +584,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   Pipe writes use a conservative callback lowering. Current JIT dumps and captured Ordon inputs stay on the SD.
 - **Build decision:** supports a targeted tier as architecture section 6 item 4, behind a switch, then scored with
   separate whole gameplay runs. No default change follows from this microbenchmark.
+- **Stage 1 built and measured, 2026-10-22 (`--region on`, off by default):** forward branches inside a block,
+  registers forgotten at labels, no profile. Exact (fuzz, plants 20-22, qemu TP), and **slower in every scene: -2.3% to
+  -4.4%** with I-cache misses +9-13% ([results](MEASUREMENTS.md#region-tier-stage-1-forward-branches-inside-a-block---region-on-opt_region-jobs-818-833-2026-10-22)):
+  it compiles never-run branch sides inline in hot code. The next stage needs an edge profile from the block tier
+  (compile only executed edges, cold sides out of line) and registers carried across labels; both, not either.
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.

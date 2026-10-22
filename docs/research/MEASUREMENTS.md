@@ -2233,6 +2233,35 @@ done
   or zeldaret/tww `config/GZLE01` symbols. Stand-in inputs: the functions' bytes from a PC `MEMDUMP` at their symbol
   addresses, through devkitPPC's objdump (as LIBRARY_PORTS.md describes for TP).
 
+### Region tier stage 1: forward branches inside a block (`--region on`, OPT_REGION, jobs 818-833, 2026-10-22)
+
+- **What (C33 stage 1, commits 20e9cb0 and the extent trim):** forward b / bc whose target lies inside the block's
+  extent become labels; outward conditional branches are side exits; the register cache is written back and forgotten
+  at each label. No registers cross a label yet, no loops, no profile.
+- **Correctness:** region fuzz matrix (opt R, R|7, R|262144|7; main, nofault, chain; 20,000 cases each) 0 fails;
+  plants 20-22 caught; standard suite 0 fails; qemu TP 900 fields from tp_arm_850: last frame identical,
+  78,626,767 (off) against 78,626,757 / 78,626,775 (on) instructions (block-length timing drift).
+- **First form (jobs 818-825):** an extent ran past calls and loop heads, so the return site and the loop head
+  compiled the rest of the function again. Code buffer 58 -> 91% (Ordon; one full flush at ~110 s, compiles 25 ->
+  103/s, JIT compile 0.8 -> 3.8% of core 0). Heavy area 21.31 -> 20.82% (-2.3%), Ordon 30.50 -> 27.89% (-8.6%),
+  Wind Waker 18.78 -> 18.15% (-3.4%), Mario Party 4 13.87 -> 13.33% (-3.9%).
+- **Trimmed form (jobs 826-833, separate whole runs, runs.py):** the extent ends at a call that leaves the block and
+  before a backward branch's target inside it. Compile churn gone (Ordon 22.5 -> 19.1 compiles/s, no flush).
+
+  | Scene | off | on | change | I-cache misses (k/s) off -> on | code buffer off -> on |
+  |---|---|---|---|---|---|
+  | TP heavy area (826/827) | 21.408 | 20.910 | **-2.3%** | 8,038 -> 8,787 (+9%) | 47 -> 62% |
+  | TP Ordon walk (828/829) | 30.598 | 29.264 | **-4.4%** | 8,332 -> 9,110 (+9%) | 58 -> 74% |
+  | Wind Waker, Outset (830/831) | 18.779 | 17.976 | **-4.3%** | 7,336 -> 8,289 (+13%) | 35 -> 45% |
+  | Mario Party 4, board (832/833) | 13.874 | 13.513 | **-2.6%** | 8,429 -> 9,416 (+12%) | 15 -> 20% |
+
+- **Why it loses:** a region compiles both sides of every internal branch, including paths that never run, and lays
+  them inline in the hot code; lazy per-block compilation never compiled them. That shows up as I-cache misses in
+  every scene. What stage 1 saves (a budget check and a linked jump per merged block) is small, because a label
+  forgets the register cache. Branch mispredicts fell slightly (heavy 864 -> 847 k/s, Ordon 925 -> 872).
+- **Verdict:** stays off. A region tier must be **profile-guided** (only executed edges, never-run sides moved to
+  the cold region) and must **carry registers across labels** before its saving can exceed its layout cost.
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws

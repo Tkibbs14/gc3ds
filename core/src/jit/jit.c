@@ -500,6 +500,7 @@ typedef struct {
     bool region, rDead;
     u8 rLabel[MAX_BLOCK_INSNS], rTarget[MAX_BLOCK_INSNS];  // a label at i; the label an internal branch at i goes to
     u32 rLastLabel;                                          // the highest label index (0: none)
+    u32 rEnd;                                                // the extent: the block ends there (a link to it)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
     struct { u32 at, label; } rJump[MAX_BLOCK_INSNS];        // hot forward jumps to labels, patched at the label
@@ -2246,15 +2247,48 @@ static bool ends_block(u32 inst) {
 // next stand-in, and up to an instruction that changes state compiled code depends on). Forward b / bc (no LK, not
 // absolute) whose target lies inside the extent stay inside the block: they mark the target a label. Conditional
 // branches out of the block become side exits and the block goes on; after an unconditional exit the block goes on
-// only if a label lies ahead. No code is compiled twice (traces' tail duplication is what lost, C14).
+// only if a label lies ahead. The extent also ends at a call that leaves the block and before a backward branch's target
+// inside it: the return site and the loop head are blocks of their own, and an extent running past them compiled the
+// rest of the function a second time (2DS, jobs 818-825: the buffer filled, I-cache misses +10%, every scene slower).
+// No code is compiled twice (traces' tail duplication is what lost, C14).
+static bool region_call_stays(Cg* c, u32 inst, u32 pc) {  // compile_block's inline forms of bl (approximately: a miss
+    Jit* j = c->j;                                         // costs only code size)
+    if ((inst >> 26) != 18) return false;  // bcl / bclrl / bcctrl leave
+    s32 li = ((s32)(inst << 6)) >> 6 & ~3;
+    u32 target = (inst & 2) ? (u32)li : pc + (u32)li, tpa, size;
+    GprHelper gh;
+    HleFastInfo fast;
+    bool gprs;
+    if (!gk_translate(j->g, target, false, false, &tpa, false)) return false;
+    if ((j->opt & OPT_GPRINLINE) && gpr_helper_match(j->ram, j->ramSize, tpa, &gh)) return true;
+    u32 groups = ((j->opt & OPT_ZGPR) ? HLE_FAST_GPR : 0) | ((j->opt & OPT_ZGX) ? HLE_FAST_GX : 0) | ((j->opt & OPT_ZXYZ) ? HLE_FAST_XYZ : 0);
+    if (groups && c->fastmem && hle_ps_fast_info(target, groups, &fast)) return true;
+    return hle_ps_inline(target, &gprs, &size) >= 0;
+}
 static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
     Jit* j = c->j;
     u32 n = 0;
     for (; n < maxInsns; n++) {
         u32 a = pc + 4 * n, p = pa + 4 * n;
         if ((a >> 12) != (pc >> 12) || p + 4 > j->ramSize || (n > 0 && hle_is_hook(j->g, a))) break;
-        if (ends_block(ram_rd32(j->ram, p))) { n++; break; }
+        u32 inst = ram_rd32(j->ram, p);
+        if (ends_block(inst) || (is_branch(inst) && (inst & 1) && !region_call_stays(c, inst, a))) { n++; break; }
     }
+    for (bool shrunk = true; shrunk;) {  // a loop head inside the extent: the extent ends before it
+        shrunk = false;
+        for (u32 i = 1; i < n; i++) {
+            u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
+            if (inst & 2) continue;  // absolute
+            s32 off;
+            if (op == 18) off = ((s32)(inst << 6)) >> 6;
+            else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
+            else continue;
+            if (off >= 0 || (u32)(-off) / 4 > i) continue;  // forward or to itself (b .: nothing compiled twice), or before the block
+            u32 t = i - (u32)(-off) / 4;
+            if (t > 0 && t < n) { n = t; shrunk = true; break; }
+        }
+    }
+    c->rEnd = n;
     for (u32 i = 0; i < n; i++) {
         u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
         if (inst & 3) continue;  // LK or absolute
@@ -4281,6 +4315,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         u32 ipa = t.nextPa;
         if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
         if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
+        if (c->region && i == c->rEnd) break;  // a loop head: its own block
         u32 inst = ram_rd32(j->ram, ipa);
         if (jit_skip_on)  // measurement only (--skipfn): this function returns at once
             for (u32 k = 0; k < 4; k++) if (jit_skip_fn[k] && c->pc == jit_skip_fn[k]) inst = 0x4E800020u;  // blr

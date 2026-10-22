@@ -15,6 +15,10 @@
 > ports, crstub / befloat / calls / fastfloat / relayout (losses), pipeps (even); the rest of the old ruled-out list
 > re-measured with separate runs on 10-20 (traces, vw2, steal, sched off, dlcache, vwmem 256 lose; icbi, qbig,
 > feeddirect, cmdpld even).
+> **JIT region tier, stage 1 (2026-10-22, `--region on`, off):** exact, but -2.3% to -4.4% on all four scenes
+> (jobs 826-833): compiling both sides of internal branches inline costs +9-13% I-cache misses, and labels forget the
+> register cache. Next stage: edge-profiled regions (executed edges only, cold sides out of line) carrying registers
+> across labels. Results in MEASUREMENTS.md "Region tier stage 1", C33.
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.
