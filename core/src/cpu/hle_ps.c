@@ -51,7 +51,8 @@ static inline bool fexact(const Gekko* g, int k) {
 #define ROTL(v, n) ((n) ? ((v) << (n)) | ((v) >> (32 - (n))) : (v))
 #define CLZ(v) ((v) ? (u32)__builtin_clz(v) : 32u)
 #define CMPS(a, b) ((s32)(a) < (s32)(b) ? 8u : (s32)(a) > (s32)(b) ? 4u : 2u)
-#define CMPU(a, b) ((u32)(a) < (u32)(b) ? 8u : (u32)(a) > (u32)(b) ? 4u : 2u)
+static inline u32 cmpu_(u32 a, u32 b) { return a < b ? 8u : a > b ? 4u : 2u; }  // (a function: cmplwi rX,0 warns as a macro)
+#define CMPU(a, b) cmpu_((u32)(a), (u32)(b))
 // Guest memory (and the private frame, 4-byte aligned like it) in its layout (ramlayout.h); HBE32 / HSBE32: a host
 // buffer of big-endian bytes (the gather pipe's, before it goes to the GP).
 static inline u32 BE32(const u8* p) { return ramp_rd32(p); }

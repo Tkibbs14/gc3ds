@@ -118,6 +118,12 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   GXSetTevOrder GXSetTevSwapMode GXSetTevKColorSel GXSetTevKAlphaSel GXSetTevIndirect GXSetChanCtrl GXSetArray
   __GXSetMatrixIndex GXSetTevColor `__GXSendFlushPrim!`, then (10-20) `__pl__4cXyzCFRC3Vec!` `__mi__4cXyzCFRC3Vec!`
   `__ml__4cXyzCFf!` (each NAME.dis; `!` = direct mode). The cXyz operators are the `--psxyz` group: off, heavy area -0.9% (jobs 660-663).
+  Then (2026-10-22) other SDK generations' copies, from a PC `MEMDUMP` of each game cut at its symbol addresses
+  (mariopartyrd/marioparty4 GMPE01_01, zeldaret/tww GZLE01) into `/root/psfns_mp4` and `/root/psfns_ww`: Mario Party 4's
+  `PSMTXROMultVecArray!` `PSMTXConcat` `PSMTXMultVecArray!` `PSMTXRotTrig` `PSMTXIdentity` `PSMTXTrans` `PSMTXScale`
+  `PSMTXReorder`, then Wind Waker's `PSMTXConcat` `PSMTXIdentity` `PSMTXRotTrig` `PSMTXScale` `PSMTXTrans` (a repeated
+  name gets `_2`, `_3`; recognition is by the bytes' hash). Functions identical to TP's were left out; PSVECMag,
+  PSVECNormalize, PSMTXInverse / InvXpose (frsqrte, fres) and PSMTXRotRad (a call) do not translate usefully.
 - **Tools:** core/tools/porthash.py makes the code-hash table from main.dol and the symbol map; `--port-parts on` times
   each part of a call; `--pmu-split port` / `portcommit` count cycles and events around each half.
 

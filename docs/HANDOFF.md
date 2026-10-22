@@ -35,8 +35,20 @@
 >   __GXData (the SDK-as-a-unit option stays open). The CPU test runner works again (`core/tests/cpu/run_tests.sh`).
 > **Library atlas (10-21): research/LIBRARY_ATLAS.md** maps SDK / middleware / microcode families and the features that
 > gate other games (EFB to RAM, CPU EFB reads, bounding box, MMU, FPRF); its section 9 proposes X6's game set.
-> **Next (in order):** X5 (GX-thread and worker time on repeating draws, one device run) and **X6, a second game to
-> gameplay**: every conclusion above is from Twilight Princess alone. Then, by what those show: the HUD pane walk
+> **Night of 10-21 (MEASUREMENTS.md "Second games on the 2DS"):**
+> - Mario Party 4 and Wind Waker run on the 2DS, with gameplay states `sdmc:/gc3ds/states/mp4_board.state` and
+>   `ww_outset.state`. The card holds TP, Mario Party 4 and Wind Waker; Galaxy 2 was removed.
+> - Mario Party 4's three general fixes:
+>   1. AX / CARD microcode;
+>   2. the GP link bit;
+>   3. PE signals one interrupt at a time.
+> - New PC mode `GXDEFER=1` reproduces the 3DS's asynchronous GX ordering.
+> - Per-SDK-generation PS stand-ins: Mario Party 4 board +15.2%, Wind Waker +2.0%, TP unchanged.
+> - Wind Waker spends 21% of core 0 in actor search (cTgIt_JudgeFilter, cNdIt_Judge, fpcSch_JudgeByID): the largest
+>   single lever found for it.
+>
+> **Next (in order):** X5 (GX-thread and worker time on repeating draws, one device run); more games through the same
+> path (an AX game such as Melee or Super Monkey Ball); TP's speed work. Then, by what those show: the HUD pane walk
 > (research/LIBRARY_PORTS.md, prerequisite: why ~2% of J2DPictureEx port calls give up), a targeted region tier, G1 + G2.
 > Still open: fault mode's crash (H3, measured +4-9%; only when James can restart the 2DS), a PMU split of the float
 > stubs (H4). Parked by the owner: native mode (emulator first, 10-16); frame or render skipping (a steady 30 first).

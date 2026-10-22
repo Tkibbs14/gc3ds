@@ -2168,6 +2168,60 @@ for job in 754 755 756 757; do
 done
 ```
 
+### Second games on the 2DS: Mario Party 4 and Wind Waker (X6, jobs 764-798, 2026-10-21/22)
+
+- **What it took for Mario Party 4 (Hudson, early SDK, MusyX on AX) to run.** Three emulator defects, none specific to the
+  game (commits 02bbb87, 8f0b992):
+  1. **AX and CARD microcode:** an AX microcode (hash 4e8a8b21) got no DSP_INIT, so MusyX's salInitDsp waited forever.
+     AX now answers DSP_INIT, acknowledges each command list with DSP_YIELD and takes the task mails (no mixing, as
+     for Zelda); CARD answers DSP_DONE. The hashes cover Dolphin's AX list (Melee, TTYD, F-Zero GX, Monkey Ball,
+     Star Fox, Mario Party 4 / 5, ...).
+  2. **The GP link bit:** GXBeginDisplayList records a list through the pipe with CP control bit 4 cleared; gc3ds fed
+     those bytes to the GP, which drew them with the wrong vertex format and desynced the stream. Bursts now reach the
+     GP only while it is linked.
+  3. **PE signals one interrupt at a time:** with the GX thread, a token and GXDrawDone's finish were applied together;
+     the SDK's token handler writes back the control register it read (write-one-to-clear status bits) and cleared the
+     finish too, so the game slept in GXDrawDone. Signals now wait while an enabled PE interrupt is pending
+     (`gx_pe_event_must_wait`). Found with GXDEFER=1, a PC mode with the 3DS's asynchronous ordering (pc_main.c),
+     which reproduced it exactly.
+- **Wind Waker (JSystem 2002, Zelda microcode)** ran on the 2DS without changes: title, file select, the intro scroll,
+  Outset Island and gameplay render; Link's cel shading looks off in close-ups (not investigated). Neither game sees a
+  memory card; both continue without saving.
+- **Gameplay states** (made on the 2DS with relay presses): `sdmc:/gc3ds/states/ww_outset.state` (Outset lookout, HUD
+  up) and `sdmc:/gc3ds/states/mp4_board.state` (Toad's Midway Madness, four players).
+- **Measured, all defaults, separate whole runs (runs.py):**
+
+  | Scene (job) | Speed | Game frames / s | Core 0 running | GX thread working | Largest families (hot_funcs.py --families) |
+  |---|---|---|---|---|---|
+  | Wind Waker, Outset (792) | 18.55% | 5.56 (30 fps game) | 94.5% | ~37% | game 48% (actor search 21%: cTgIt_JudgeFilter 10.9, cNdIt_Judge 7.2, fpcSch_JudgeByID 3.1), J3D 12.8, GX SDK 11.9, vector / matrix 6.6, collision 3.7 |
+  | Mario Party 4, board (794) | 12.08% | 7.24 (60 fps game) | 86.5% (+10% waiting on GX) | ~76% | game 43, **vector / matrix 27.9** (PSMTXROMultVecArray 10.2, PSMTXConcat 9.7), GX SDK 11.8 |
+  | Wind Waker, title and intro (772) | 29.6% | 8.9 | | | |
+
+  Wind Waker has one wall (core 0), Mario Party 4 two (as TP). TP's actor search does not show in its profiles.
+- **Automatic library replacement for a second SDK generation:** Mario Party 4's PSMTX functions differ in their bytes
+  from TP's, so TP's stand-ins did not match. The same generator (ps_translate.py) run on Mario Party 4's copies adds
+  PSMTXROMultVecArray (direct mode: a loop), PSMTXConcat, PSMTXMultVecArray, PSMTXRotTrig, PSMTXIdentity, PSMTXTrans,
+  PSMTXScale and PSMTXReorder; TP's 36 come out byte-identical. PC HLE_CHECK (Mario Party 4 from boot, 2,400 fields):
+  56,806 calls, 0 differed. **2DS, board: 12.08 -> 13.92% speed (+15.2%), 7.24 -> 8.32 frames a second (job 795 against
+  794); vector / matrix 27.9 -> 6.6% of core 0.** TP unchanged (heavy area 22.80%, Ordon 32.02%, jobs 797-798) and
+  Wind Waker unchanged (18.46%, job 796: its PSMTXConcat is a third version). Wind Waker's own copies (PSMTXConcat,
+  Identity, RotTrig, Scale, Trans) added next: PC HLE_CHECK from boot, 2,400 fields: 19,533,871 calls, 0 differed;
+  **2DS, Outset: 18.50% (mean of 792, 796) -> 18.87% (+2.0%, job 799); vector / matrix 6.6 -> 3.5%.**
+- **Open (exactness):** the PC HLE_CHECK of Mario Party 4 scripted to its board (`--press`, every recognised function
+  exercised) reported, part way through:
+  - 16 PSMTXROMultVecArray calls whose memory matched but whose FPR lanes differed (f13, a scratch register, and f17's
+    ps1): a denormal natively against zero in the interpreter;
+  - 4 PSVECCrossProduct calls (TP's stand-in, the same bytes in both games) that stored -0.0 where the interpreter
+    stored +0.0.
+
+  Both fit the PC host not flushing denormals, while the interpreter (FPSCR[NI]) and the 2DS's VFP (flush-to-zero)
+  do. Not yet confirmed: re-run the check with flush-to-zero on the PC's native path before calling it exact.
+- **Reproduce:** `--game Party --state sdmc:/gc3ds/states/mp4_board.state --seconds 180` (or `--game Wind --state
+  sdmc:/gc3ds/states/ww_outset.state`), `python3 core/tools/runs.py core/out/relay_JOB.csv`, `python3
+  core/tools/hot_funcs.py core/out/relay_JOB.csv SYMBOLS --families` with mariopartyrd/marioparty4 `config/GMPE01_01`
+  or zeldaret/tww `config/GZLE01` symbols. Stand-in inputs: the functions' bytes from a PC `MEMDUMP` at their symbol
+  addresses, through devkitPPC's objdump (as LIBRARY_PORTS.md describes for TP).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

@@ -267,6 +267,18 @@ the guest family profile, which recognised functions match. **Decides generality
 share and the display-list repeat rate hold outside TP. It is ranked sixth only because X1-X4 are cheaper; nothing in
 section 5 is trustworthy for "as many games as possible" without it.
 
+- **Result (2026-10-22, jobs 764-799; [MEASUREMENTS.md "Second games on the 2DS"](MEASUREMENTS.md)):**
+  - **Both games reach gameplay on the 2DS.** Mario Party 4 needed three general fixes: AX / CARD microcode
+    handshakes, the GP link bit, and PE signals applied one interrupt at a time. Wind Waker needed none.
+  - **The walls are not universal.** Wind Waker is core-0 bound (94.5% running, GX thread ~37% busy). Mario Party 4
+    has TP's two walls (GX thread ~76% busy).
+  - **The GX SDK share holds:** 11.8-11.9% of core 0 in both, against TP's ~23% inclusive in gameplay.
+  - **The game's own code is about half of core 0 in both** (43% and 48%).
+  - **Automatic SDK replacement generalises when regenerated per SDK generation.** Mario Party 4's PSMTX library was
+    27.9% of core 0. Its own copies, through the same generator, gave **+15.2% speed** (0 differences in 56,806 PC
+    checks). Wind Waker's copies gave +2.0% (19.5 M checked calls, 0 differed).
+  - **Not measured:** the display-list repeat rate outside TP (X1 / X5).
+
 Then builds, each behind a switch, off until measured, scored with separate whole runs, gated by the experiment named:
 
 1. X3 completed: GPR word inlining is positive; the retained-register native sets are not. All new switches off; see the result above.
