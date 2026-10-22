@@ -83,7 +83,7 @@ typedef u32 (*BlockFn)(Gekko* g);
 // 0x00000500 and code at 0x80000500, hundreds of times per second).
 // poll: polling-loop length or 0; count: the guest instructions the block's entry takes off the budget
 typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro; u32 next;
-                 u32 end; u16 runs; bool pending, member; } Entry;  // pro: prologue words
+                 u32 end; u16 runs; bool pending, member; u32 lastCtr; } Entry;  // pro: prologue words; lastCtr: (pending) a bctrl's last target
 // OPT_TIER (tier_block): blocks start in the block tier, whose blocks end at every branch, so a block at a PC means that
 // basic block ran since the last flush (end: the address after its last instruction). pending: its tier is not decided
 // yet, so nothing links to it and the dispatcher counts its runs; at jit_tier_threshold its region (compiled from what
@@ -507,18 +507,25 @@ typedef struct {
     u32 fpinned;  // float lanes (Rc.fid slots) the instruction being compiled uses
     u32 blockPc;
     u32 countExtra;  // guest instructions run inside the block beyond its own (OPT_SYSCALL: sc's handler)
-    // OPT_REGION (region_scan): forward branches to instructions inside the block stay inside it. Every path arrives at
+    // OPT_REGION (region_plan): forward branches to instructions inside the block stay inside it. Every path arrives at
     // such a target (a label) with guest state in memory and nothing cached; a branch taken over instructions gives
     // their count back to RDC (the block took all of them at its entry). rDead: the instructions here are reached only
     // through a label further on (after an unconditional exit or jump), so nothing is compiled for them.
     bool region, rDead;
     u8 rLabel[MAX_BLOCK_INSNS], rTarget[MAX_BLOCK_INSNS];  // a label at i; the label an internal branch at i goes to
+    u8 rBackT[MAX_BLOCK_INSNS];                              // a back edge at i: its loop head + 1 (0: none)
+    u8 rLabelBack[MAX_BLOCK_INSNS];                          // the label at i is a loop head (a back edge goes there)
     u32 rLastLabel;                                          // the highest label index (0: none)
     u32 rEnd;                                                // the extent: the block ends there (a link to it)
     bool rProfiled;                                          // OPT_TIER: only code the block tier ran (rCover)
-    u32 inlLeft, inlPc, inlPa, inlTotal;                     // a leaf inlined at a bl: its instructions still to come
-                                                             // (compiled as loop iterations not in the extent)
-    bool inlDone;                                            // ... its blr still to count
+    // The plan (region_plan): the instructions a region compiles, in order: the head's function and the callees inlined
+    // into it (each callee instance's instructions in a row). Labels, coverage and back edges are by plan index.
+    u32 rPc[MAX_BLOCK_INSNS], rPa[MAX_BLOCK_INSNS], rAux[MAX_BLOCK_INSNS];  // rAux: RK_ICALL's target, a return's address
+    u8 rKind[MAX_BLOCK_INSNS], rFn[MAX_BLOCK_INSNS];                         // RK_*; the function instance
+    u32 nFn, nInlined;
+    bool profCtr;                                            // OPT_TIER, a pending block: bctrl records CTR (Entry.lastCtr)
+    u8 fnLr[8];                                              // a function instance writes LR (mtlr, a call): its returns check it
+    u32 fnCont[8];                                           // the plan index its caller goes on at
     u8 rCover[MAX_BLOCK_INSNS];                              // instruction i ran (else the block leaves there)
     u32 rLabelAt[MAX_BLOCK_INSNS];                           // a label's hot word index (NO_BRANCH until compiled)
     u32 rCountAt[MAX_BLOCK_INSNS];                           // `count` before instruction i
@@ -2113,6 +2120,11 @@ static bool compile_branch(Cg* c, u32 inst) {
         u32 xo = (inst >> 1) & 0x3FF, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
         if (xo == 16 || xo == 528) {  // bclr / bcctr
             if (xo == 528 && !(bo & 4)) return false;  // invalid form: let the interpreter handle it
+            if (xo == 528 && lk && c->profCtr) {  // the profile for a region's inlined bctrl (plan_ctr_guess)
+                ldr_imm(e, R0, RG, OFF_CTR);
+                load_const(e, R12, (u32)(uintptr_t)&c->j->table[c->j->nEntries].lastCtr);  // (lookup's next entry is this block's)
+                str_imm(e, R0, R12, 0);
+            }
             if ((c->j->opt & OPT_RETSTUB) && !c->noLink && !(xo == 16 && lk)) {
                 // The stub reads LR / CTR when the branch is taken: bcctrl may write LR first, bclrl may not (old path).
                 u32 lit = lk ? lr_set(c) : 0;
@@ -2275,27 +2287,13 @@ static bool ends_block(u32 inst) {
 // inside it: the return site and the loop head are blocks of their own, and an extent running past them compiled the
 // rest of the function a second time (2DS, jobs 818-825: the buffer filled, I-cache misses +10%, every scene slower).
 // No code is compiled twice (traces' tail duplication is what lost, C14).
-// A leaf a region compiles in place of a bl (OPT_TIER regions): straight-line code that returns with blr, calls
-// nothing, leaves LR alone and holds nothing that ends a block; *n: its instructions before the blr.
-#define LEAF_MAX 24
-static bool region_leaf(Cg* c, u32 target, u32* tpa, u32* n) {
+// ---- the region plan ----
+enum { RK_PLAIN, RK_CALL, RK_ICALL, RK_RET, RK_CRET };
+#define INLINE_DEPTH 3
+#define INLINE_MAX 32  // instructions of one inlined callee
+// bl forms compile_block compiles in place already (stand-ins, the GPR save / restore helpers).
+static bool plan_standin(Cg* c, u32 inst, u32 pc) {
     Jit* j = c->j;
-    u32 pa;
-    // (tier regions; and the fuzzer's directly compiled regions with a pseudo-random coverage map)
-    if (!(c->rProfiled || jit_debug_region_cover) || hle_is_hook(j->g, target) || !gk_translate(j->g, target, false, false, &pa, false)) return false;
-    for (u32 k = 0; k <= LEAF_MAX; k++) {
-        u32 q = pa + 4 * k;
-        if (q + 4 > j->ramSize || (k && !(q & 0xFFF)) || (k && hle_is_hook(j->g, target + 4 * k))) return false;
-        u32 w = ram_rd32(j->ram, q);
-        if (w == 0x4E800020u) { if (tpa) *tpa = pa; if (n) *n = k; return true; }  // blr
-        if (is_branch(w) || ends_block(w) || w == INST_SC) return false;
-        if ((w >> 26) == 31 && ((w >> 1) & 0x3FF) == 467 && (((w >> 16) & 31) | ((w >> 6) & 0x3E0)) == 8) return false;  // mtlr
-    }
-    return false;
-}
-static bool region_call_stays(Cg* c, u32 inst, u32 pc) {  // compile_block's inline forms of bl (approximately: a miss
-    Jit* j = c->j;                                         // costs only code size)
-    if ((inst >> 26) != 18) return false;  // bcl / bclrl / bcctrl leave
     s32 li = ((s32)(inst << 6)) >> 6 & ~3;
     u32 target = (inst & 2) ? (u32)li : pc + (u32)li, tpa, size;
     GprHelper gh;
@@ -2303,85 +2301,181 @@ static bool region_call_stays(Cg* c, u32 inst, u32 pc) {  // compile_block's inl
     bool gprs;
     if (!gk_translate(j->g, target, false, false, &tpa, false)) return false;
     if ((j->opt & OPT_GPRINLINE) && gpr_helper_match(j->ram, j->ramSize, tpa, &gh)) return true;
-    if (!(inst & 2) && region_leaf(c, target, NULL, NULL)) return true;  // compiled in place
     u32 groups = ((j->opt & OPT_ZGPR) ? HLE_FAST_GPR : 0) | ((j->opt & OPT_ZGX) ? HLE_FAST_GX : 0) | ((j->opt & OPT_ZXYZ) ? HLE_FAST_XYZ : 0);
     if (groups && c->fastmem && hle_ps_fast_info(target, groups, &fast)) return true;
     return hle_ps_inline(target, &gprs, &size) >= 0;
 }
-static void region_scan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
+// The target a bctrl at pc is compiled for: the one the block tier's block ending there saw last (Entry.lastCtr), or for
+// the fuzzer's directly compiled regions CTR as it is now. 0: none.
+static u32 plan_ctr_guess(Cg* c, u32 pc) {
     Jit* j = c->j;
-    u32 n = 0;
-    for (; n < maxInsns; n++) {
-        u32 a = pc + 4 * n, p = pa + 4 * n;
-        if ((a >> 12) != (pc >> 12) || p + 4 > j->ramSize || (n > 0 && hle_is_hook(j->g, a))) break;
-        u32 inst = ram_rd32(j->ram, p);
-        if (ends_block(inst) || (is_branch(inst) && (inst & 1) && !region_call_stays(c, inst, a))) { n++; break; }
+    if (c->rProfiled)
+        for (u32 q = pc, k = 0; k < MAX_BLOCK_INSNS; k++, q -= 4) {
+            const Entry* en = entry_find(j, q, g_tierKey);
+            if (en && en->end == pc + 4) return en->lastCtr & ~3u;
+        }
+    return jit_debug_region_cover ? j->g->ctr & ~3u : 0;
+}
+static bool plan_inlines(const Cg* c) { return c->rProfiled || jit_debug_region_cover; }
+// Appends function instance fn from pc on. The head's function (depth 0) stops where an extent stops (true); a callee
+// goes to the blr past its last forward branch target, and false means it cannot be inlined whole (the caller's call
+// is compiled as a call again).
+static bool plan_fn(Cg* c, u32 pc, u32 pa, u32 depth, u32 maxInsns, u32 ret) {
+    Jit* j = c->j;
+    bool root = depth == 0;
+    if (c->nFn == sizeof c->fnLr) return root;
+    u32 fn = c->nFn++;
+    c->fnLr[fn] = 0;
+    c->fnCont[fn] = NO_BRANCH;
+    s32 far = -1;  // the furthest forward branch target, as an index into this function from pc
+    for (u32 k = 0;; k++) {
+        u32 a = pc + 4 * k, p = pa + 4 * k, n = c->rEnd;
+        if (n >= maxInsns || (a >> 12) != (pc >> 12) || p + 4 > j->ramSize || (k && hle_is_hook(j->g, a))) return root;
+        if (!root && k >= INLINE_MAX) return false;
+        u32 w = ram_rd32(j->ram, p), op = w >> 26, xo = (w >> 1) & 0x3FF, bo = (w >> 21) & 31;
+        c->rPc[n] = a; c->rPa[n] = p; c->rKind[n] = RK_PLAIN; c->rFn[n] = (u8)fn; c->rAux[n] = 0;
+        c->rEnd = n + 1;
+        if (ends_block(w) || (!root && w == INST_SC)) return root;
+        if (op == 31 && xo == 467 && (((w >> 16) & 31) | ((w >> 6) & 0x3E0)) == 8) c->fnLr[fn] = 1;  // mtlr
+        if ((op == 18 || op == 16) && !(w & 3)) {
+            s32 off = op == 18 ? ((s32)(w << 6)) >> 6 : (s32)(s16)(w & 0xFFFC);
+            if ((s32)k + off / 4 > far) far = (s32)k + off / 4;
+        }
+        u32 target = 0;
+        int kind = -1;
+        if (is_branch(w) && (w & 1)) c->fnLr[fn] = 1;  // any call writes LR (its returns are checked then)
+        if (op == 18 && (w & 3) == 1) {  // bl
+            if (plan_standin(c, w, a)) continue;
+            target = a + (u32)(((s32)(w << 6)) >> 6 & ~3);
+            kind = RK_CALL;
+        } else if (op == 19 && xo == 528 && (w & 1) && (bo & 20) == 20) {  // bctrl
+            target = plan_ctr_guess(c, a);
+            kind = RK_ICALL;
+        }
+        if (kind >= 0) {
+            u32 tpa, saveFn = c->nFn;
+            if (target && depth < INLINE_DEPTH && plan_inlines(c) && !hle_is_hook(j->g, target) &&
+                gk_translate(j->g, target, false, false, &tpa, false)) {
+                c->rKind[n] = (u8)kind;
+                c->rAux[n] = target;
+                if (plan_fn(c, target, tpa, depth + 1, maxInsns, a + 4)) { c->nInlined++; continue; }
+                c->rEnd = n + 1;
+                c->nFn = saveFn;
+                c->rKind[n] = RK_PLAIN;
+                c->rAux[n] = 0;
+            }
+            return root;  // a call that leaves: the head's function stops at it, a callee is not inlined
+        }
+        if (is_branch(w) && (w & 1)) return root;  // other calls leave
+        if (!root && op == 19 && xo == 16) {  // a return
+            if ((bo & 20) == 20) {
+                c->rKind[n] = RK_RET;
+                c->rAux[n] = ret;
+                if ((s32)k >= far) { c->fnCont[fn] = c->rEnd; return true; }  // the function's end
+                continue;  // an early return: a jump to where the caller goes on
+            }
+            if ((bo & 4) && !(bo & 16) && !c->fnLr[fn]) { c->rKind[n] = RK_CRET; c->rAux[n] = ret; continue; }
+            return false;
+        }
+        if (!root && op == 19 && xo == 528) return false;  // bctr in a callee (a switch or a tail call)
     }
-    for (bool shrunk = true; shrunk;) {  // a loop head inside the extent: the extent ends before it
+}
+// The index of fn's instruction at pc (NO_BRANCH: not in the plan).
+static u32 plan_find(const Cg* c, u32 fn, u32 pc) {
+    for (u32 t = 0; t < c->rEnd; t++) if (c->rFn[t] == fn && c->rPc[t] == pc) return t;
+    return NO_BRANCH;
+}
+static void region_plan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
+    Jit* j = c->j;
+    c->rEnd = c->nFn = c->nInlined = 0;
+    plan_fn(c, pc, pa, 0, maxInsns, 0);
+    u32 n = c->rEnd;
+    // Loops: a back edge (b, bc on one condition, bdnz / bdz) goes to its loop head (region_back_edge). In the head's
+    // function, other backward branches into the plan, and any branch from elsewhere in the page into it, end the plan
+    // before their target: that code is a block of its own (compiled inside too, it ran in two copies: 2DS jobs 850-857).
+    for (bool shrunk = true; shrunk;) {
         shrunk = false;
         for (u32 i = 1; i < n; i++) {
-            u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
-            if (inst & 2) continue;  // absolute
-            s32 off;
-            if (op == 18) off = ((s32)(inst << 6)) >> 6;
-            else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
-            else continue;
-            if (off >= 0 || (u32)(-off) / 4 > i) continue;  // forward or to itself (b .: nothing compiled twice), or before the block
-            u32 t = i - (u32)(-off) / 4;
-            if (t > 0 && t < n) { n = t; shrunk = true; break; }
+            if (c->rFn[i]) continue;
+            u32 w = ram_rd32(j->ram, c->rPa[i]), op = w >> 26, bo = (w >> 21) & 31;
+            if (w & 2) continue;
+            s32 off = op == 18 ? ((s32)(w << 6)) >> 6 : op == 16 ? (s32)(s16)(w & 0xFFFC) : 0;
+            if (off >= 0) continue;
+            u32 t = plan_find(c, 0, c->rPc[i] + (u32)off);
+            bool edge = !(w & 1) && (op == 18 || (bo & 20) == 20 || (bo & 4) || (bo & 16));
+            if (!edge && t != NO_BRANCH && t > 0 && t < n) { n = t; shrunk = true; break; }
         }
     }
-    if (c->rProfiled) {  // no forward branch inside: no label can come of the cuts and the coverage below (tier_block's
-        bool any = false;  // most common outcome, so it skips the page scan)
-        for (u32 i = 0; i + 1 < n && !any; i++) {
-            u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
-            if (inst & 3) continue;
-            s32 off = op == 18 ? ((s32)(inst << 6)) >> 6 : op == 16 ? (s32)(s16)(inst & 0xFFFC) : 0;
-            any = off > 0 && i + (u32)off / 4 < n;
-        }
-        if (!any) { c->rEnd = n; return; }
-    }
-    {   // One way in: a branch from elsewhere in the page into the extent ends it before the target, which is then a
-        // block of its own; compiled inside too, its code ran in two copies (2DS jobs 850-857: I-cache misses +2-7%).
-        u32 page = pa & ~0xFFFu;
+    {
+        u32 page = pa & ~0xFFFu, rootLen = 0;
+        for (u32 i = 0; i < n; i++) if (!c->rFn[i]) rootLen = (c->rPc[i] - pc) / 4 + 1;
         for (u32 q = page; q < page + 0x1000 && q + 4 <= j->ramSize && n > 1; q += 4) {
-            if (q >= pa && q < pa + 4 * n) continue;
-            u32 inst = ram_rd32(j->ram, q), op = inst >> 26;
-            if (inst & 2) continue;  // absolute
-            s32 off;
-            if (op == 18) off = ((s32)(inst << 6)) >> 6 & ~3;
-            else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
-            else continue;
+            if (q >= pa && q < pa + 4 * rootLen) continue;
+            u32 w = ram_rd32(j->ram, q), op = w >> 26;
+            if (w & 2) continue;
+            s32 off = op == 18 ? ((s32)(w << 6)) >> 6 & ~3 : op == 16 ? (s32)(s16)(w & 0xFFFC) : 0;
+            if (!off) continue;
             u32 tq = q + (u32)off;
-            if (tq > pa && tq < pa + 4 * n) n = (tq - pa) / 4;
+            if (tq <= pa || tq >= pa + 4 * rootLen) continue;
+            u32 t = plan_find(c, 0, pc + (tq - pa));
+            if (t != NO_BRANCH && t < n) n = t;
         }
     }
     c->rEnd = n;
+    // Coverage: what the block tier ran (the head block's range and the blocks starting at plan instructions, over the
+    // instructions that follow them in their function); with the fuzzer's map, pseudo-random.
     for (u32 i = 0; i < n; i++) c->rCover[i] = !c->rProfiled;
-    if (c->rProfiled && !jit_debug_region_cover) {  // what the block tier ran: the head block's range, and the blocks starting inside the extent
+    if (c->rProfiled && !jit_debug_region_cover) {
         for (u32 s0 = 0; s0 < n; s0++) {
             u32 end = g_tierHeadEnd;
             if (s0) {
-                const Entry* en = entry_find(j, pc + 4 * s0, g_tierKey);
+                const Entry* en = entry_find(j, c->rPc[s0], g_tierKey);
                 if (!en || en->runs * 8u < g_tierHeadRuns) continue;  // ran under 1/8 as often as the head: cold, not inline
                 end = en->end;
             }
-            for (u32 k = s0; k < n && pc + 4 * k < end; k++) c->rCover[k] = 1;
+            // (a block-tier block ends at its first branch, so its range is a run of plan instructions)
+            for (u32 k = s0; k < n && c->rFn[k] == c->rFn[s0] && c->rPc[k] == c->rPc[s0] + 4 * (k - s0) && c->rPc[k] < end; k++)
+                c->rCover[k] = 1;
         }
     } else if (jit_debug_region_cover) {
-        for (u32 k = 1; k < n; k++) c->rCover[k] = (((pc + 4 * k) * 2654435761u) ^ jit_debug_region_cover) >> 29 != 0;
+        for (u32 k = 1; k < n; k++) c->rCover[k] = ((c->rPc[k] * 2654435761u) ^ jit_debug_region_cover) >> 29 != 0;
     }
     c->rCover[0] = 1;
+#ifndef __3DS__
+    if (getenv("JIT_REGIONLOG")) {
+        fprintf(stderr, "plan %08x n %u fns %u inlined %u:", pc, n, c->nFn, c->nInlined);
+        for (u32 i = 0; i < n; i++) fprintf(stderr, " %x/%u/%u%s", c->rPc[i] & 0xFFF, c->rKind[i], c->rFn[i], c->rCover[i] ? "" : "u");
+        fputc(10, stderr);
+    }
+#endif
+    // Labels.
     for (u32 i = 0; i < n; i++) {
-        u32 inst = ram_rd32(j->ram, pa + 4 * i), op = inst >> 26;
-        if (inst & 3) continue;  // LK or absolute
+        u32 w = ram_rd32(j->ram, c->rPa[i]), op = w >> 26, fn = c->rFn[i];
+        if (c->rKind[i] == RK_RET || c->rKind[i] == RK_CRET) {  // to where the caller goes on (none: the call's own end)
+            u32 t = c->fnCont[fn];
+            if (t == i + 1 && c->rKind[i] == RK_RET) continue;  // the function's end: the caller's next instruction follows
+            if (t == NO_BRANCH || t >= n || !c->rCover[i] || !c->rCover[t]) { c->rKind[i] = RK_PLAIN; continue; }
+            c->rTarget[i] = (u8)t;
+            c->rLabel[t] = 1;
+            if (t > c->rLastLabel) c->rLastLabel = t;
+            continue;
+        }
+        if (w & 3) continue;  // LK or absolute
         s32 off;
-        if (op == 18) off = ((s32)(inst << 6)) >> 6;
-        else if (op == 16) off = (s32)(s16)(inst & 0xFFFC);
+        if (op == 18) off = ((s32)(w << 6)) >> 6;
+        else if (op == 16) off = (s32)(s16)(w & 0xFFFC);
         else continue;
-        if (off <= 0 || i + (u32)off / 4 >= n) continue;  // backward, or past the extent
-        u32 t = i + (u32)off / 4;
-        if (!c->rCover[i] || !c->rCover[t]) continue;  // a side that never ran: a side exit
+        u32 t = plan_find(c, fn, c->rPc[i] + (u32)off);
+        if (t == NO_BRANCH || t >= n || !c->rCover[i] || !c->rCover[t]) continue;  // out of the plan, or never ran: an exit
+        if (t <= i) {  // a back edge (not to itself)
+            u32 bo = (w >> 21) & 31;
+            if (t == i || !(op == 18 || (bo & 20) == 20 || (bo & 4) || (bo & 16))) continue;
+            c->rBackT[i] = (u8)(t + 1);
+            c->rLabel[t] = 1;
+            c->rLabelBack[t] = 1;
+            if (t > c->rLastLabel) c->rLastLabel = t;
+            continue;
+        }
         c->rTarget[i] = (u8)t;
         c->rLabel[t] = 1;
         if (t > c->rLastLabel) c->rLastLabel = t;
@@ -2490,9 +2584,104 @@ static int region_cond(Cg* c, u32 bo, u32 bi) {
     return (bo & 8) ? C_NE : C_EQ;
 }
 
+// A back edge to loop head L (compiled already): the iteration's instructions are taken off the budget again; with none
+// left the block leaves at L (with what it has not run given back), else the cache becomes L's and it jumps there.
+// cond: the condition it is taken on (C_AL: always), its test already emitted. In cold code unless always taken.
+static void region_back_edge(Cg* c, u32 L, int cond) {
+    u32 extra = c->count - c->rCountAt[L];
+    if (extra == 0 || extra > 255 || c->rLabelAt[L] == NO_BRANCH || c->nExits == sizeof c->exits / sizeof c->exits[0]) {
+        c->e.overflow = true;
+        return;
+    }
+    Rc s = c->rc;
+    bool cold = cond != C_AL;
+    if (cold) {
+        u32 at = branch_c(&c->e, cond, 0);
+        cold_begin(c);
+        fix_to_cold(c, at);
+    }
+    dp_imm(&c->e, SUB, 1, RDC, RDC, extra - (jit_debug_plant == 26 ? 1u : 0u));  // plant 26: an iteration miscounts
+    u32 save = c->count;
+    c->count = c->rCountAt[L];  // (leaving at L: what follows it is given back)
+    exit_snap(c, C_LE, true, c->rPc[L], &s);
+    c->count = save;
+    region_reconcile(c, &s, &c->rLabelT[L]);
+    if (cold) cold_end(c, c->rLabelAt[L]);
+    else add_fix(c, false, branch_c(&c->e, C_AL, 0), false, c->rLabelAt[L]);
+}
+
+// A forward jump to label t (an unconditional internal branch): the skipped instructions given back, the cache as the
+// label will have it reconciled there.
+static void region_jump(Cg* c, u32 t) {
+    region_back(c, t);
+    if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return; }
+    c->rJump[c->nRJump].snap = c->rc;
+    c->rJump[c->nRJump].single = c->single;
+    c->rJump[c->nRJump].chk = c->chk;
+    memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
+    c->rJump[c->nRJump].at = branch_c(&c->e, C_AL, 0);
+    c->rJump[c->nRJump].label = t;
+    c->nRJump++;
+    c->rDead = true;
+}
+// Leaves through the indirect table to the address in the Gekko word at off (LR, CTR) unless it is `want`.
+static void region_guard(Cg* c, u32 off, u32 want) {
+    ldr_imm(&c->e, R0, RG, off);
+    dp_imm(&c->e, BIC, 0, R0, R0, 3);
+    load_const(&c->e, R12, want);
+    dp_reg(&c->e, CMP, 1, 0, R0, R12);
+    exit_kind_if(c, C_NE, EXIT_INDIRECT, off);
+}
+// The plan's calls and returns (region_plan): a call inlined writes LR and goes on with the callee's instructions (bctrl
+// once CTR is checked against the target it was compiled for); an inlined callee's return goes on where its caller does
+// (checked against LR when the callee wrote LR).
+static bool region_call(Cg* c, u32 inst, u32 i) {
+    u32 k = c->rKind[i];
+    if (k == RK_CALL || k == RK_ICALL) {
+        load_const(&c->e, R1, c->pc + (jit_debug_plant == 25 ? 0u : 4u));  // LR (plant 25: the wrong return address)
+        str_imm(&c->e, R1, RG, OFF_LR);
+        if (k == RK_ICALL && jit_debug_plant != 27) region_guard(c, OFF_CTR, c->rAux[i]);  // plant 27: no check
+        c->j->stats.tierInlines++;
+        return true;
+    }
+    if (k == RK_RET) {
+        if (c->fnLr[c->rFn[i]] && jit_debug_plant != 28) region_guard(c, OFF_LR, c->rAux[i]);  // plant 28: no check
+        if (c->rTarget[i]) region_jump(c, c->rTarget[i]);
+        return true;
+    }
+    if (k == RK_CRET) {  // (its function never writes LR before it: LR is the return address)
+        u32 bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+        int cond = region_cond(c, bo, bi);
+        if (c->nRJump == MAX_BLOCK_INSNS) { c->e.overflow = true; return true; }
+        u32 t = c->rTarget[i];
+        region_back(c, t);
+        c->e.buf[c->e.n - 1] = (c->e.buf[c->e.n - 1] & 0x0FFFFFFFu) | cc(cond);
+        c->rJump[c->nRJump].snap = c->rc;
+        c->rJump[c->nRJump].single = c->single;
+        c->rJump[c->nRJump].chk = c->chk;
+        memcpy(c->rJump[c->nRJump].chkAl, c->chkAl, 32);
+        c->rJump[c->nRJump].at = branch_c(&c->e, cond, 0);
+        c->rJump[c->nRJump].label = t;
+        c->nRJump++;
+        return true;
+    }
+    return false;
+}
+
 // A branch inside a region block; false when it is compiled as before (it then ends the block's current path).
 static bool region_branch(Cg* c, u32 inst, u32 i) {
     u32 op = inst >> 26, bo = (inst >> 21) & 31, bi = (inst >> 16) & 31;
+    if (c->rBackT[i]) {  // a back edge
+        u32 L = c->rBackT[i] - 1u;
+        if (op == 18 || (bo & 20) == 20) { region_back_edge(c, L, C_AL); c->rDead = true; return true; }
+        if (bo & 4) { region_back_edge(c, L, region_cond(c, bo, bi)); return true; }
+        // bdnz / bdz: CTR - 1, taken while it is not zero / when it is
+        ldr_imm(&c->e, R3, RG, OFF_CTR);
+        dp_imm(&c->e, SUB, 1, R3, R3, 1);
+        str_imm(&c->e, R3, RG, OFF_CTR);
+        region_back_edge(c, L, (bo & 2) ? C_EQ : C_NE);
+        return true;
+    }
     if (c->rTarget[i]) {  // to a label further on
         u32 t = c->rTarget[i];
         if (op == 18 || (bo & 20) == 20) {  // always taken
@@ -4437,6 +4626,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     // The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
     g_lastPending = (j->opt & OPT_TIER) && !c->region && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
+    c->profCtr = g_lastPending;
 #ifndef __3DS__
     if (g_regStat) {  // this block's execution counter (register-cache statistics)
         g_rsCur = j->nEntries;
@@ -4492,8 +4682,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Trace t = { j, pc, startPa, pc >> 12, { pc }, 1, maxInsns, 0, false };
     if (c->region) {
         for (u32 k = 0; k < MAX_BLOCK_INSNS; k++) c->rLabelAt[k] = NO_BRANCH;
-        region_scan(c, pc, startPa, maxInsns);
-        if (c->rProfiled && !c->rLastLabel) {  // nothing joins: the block tier's block is as good
+        region_plan(c, pc, startPa, maxInsns);
+        if (c->rProfiled && !c->rLastLabel && !c->nInlined) {  // nothing joins or inlines: the block tier's block is as good
 #ifndef __3DS__
             if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiercov %08x n %u ", pc, c->rEnd); for (u32 k = 0; k < c->rEnd; k++) fputc(c->rCover[k] ? 49 : 48, stderr); fputc(10, stderr); }
 #endif
@@ -4501,39 +4691,24 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         }
     }
     for (u32 i = 0; i < maxInsns && !ended; i++) {
-        // An inlined leaf's instructions are iterations of their own (counted, recorded and compiled as any other) that
-        // are not in the extent: ri, the extent index, does not move for them.
-        bool inl = c->inlLeft > 0;
-        if (c->inlDone && !inl) {  // the leaf's blr ran (plant 25, the fuzzer's self-test: it is not counted)
-            u32 blr = jit_debug_plant == 25 ? 0u : 1u;
-            c->countExtra += blr;
-            c->count += blr;
-            c->inlDone = false;
-        }
-        u32 ipa;
-        if (inl) {
-            c->pc = c->inlPc;
-            ipa = c->inlPa;
-            c->inlPc += 4;
-            c->inlPa += 4;
-            c->inlTotal++;
-            if (!--c->inlLeft) c->inlDone = true;
+        u32 ipa, ri = i;
+        if (c->region) {  // the plan's instructions in its order (region_plan checked pages, hooks and RAM)
+            if (i == c->rEnd) break;
+            c->pc = c->rPc[i];
+            ipa = c->rPa[i];
         } else {
             c->pc = t.nextPc;
             ipa = t.nextPa;
+            if (i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
+            if ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize) break;  // one 4 KB page per straight run, inside RAM
         }
-        u32 ri = i - c->inlTotal;
-        if (!inl && i > 0 && hle_is_hook(g, c->pc)) break;  // a stand-in starts there: it gets a block of its own
-        if (!inl && ((c->pc >> 12) != t.segPage || ipa + 4 > j->ramSize)) break;  // one 4 KB page per straight run, inside RAM
-        if (!inl && c->region && ri == c->rEnd) break;  // a loop head: its own block
         u32 inst = ram_rd32(j->ram, ipa);
         if (jit_skip_on)  // measurement only (--skipfn): this function returns at once
             for (u32 k = 0; k < 4; k++) if (jit_skip_fn[k] && c->pc == jit_skip_fn[k]) inst = 0x4E800020u;  // blr
-        if (!inl) {
-            t.nextPc = c->pc + 4;  // a followed branch changes these
-            t.nextPa = ipa + 4;
-        }
-        if (c->region && !inl) {  // (before count: a block that ends here has not run this instruction)
+        t.nextPc = c->pc + 4;  // a followed branch changes these
+        t.nextPa = ipa + 4;
+        if (c->region && c->rKind[i] == RK_RET) t.nextPc = c->rAux[i];  // after an inlined return: where its caller goes on
+        if (c->region) {  // (before count: a block that ends here has not run this instruction)
             c->rCountAt[ri] = i + c->countExtra;
             if (c->rLabel[ri]) {  // a label: the paths that branch here wrote guest state back; so does the fall-through
                 Rc lt = c->rc;
@@ -4550,6 +4725,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 for (u32 k = 0; k < c->nExits; k++)
                     if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == ri) sgl &= rc_lanes(&c->exits[k].snap);
                 if (c->rDead && !have) sgl = 0;
+                if (c->rLabelBack[ri]) sgl = 0;  // a loop head: its back edges are compiled later, so only GPR slots carry
                 for (int k = 0; k < NFS; k++)
                     if (lt.fid[k] >= 0 && !((sgl >> lt.fid[k]) & 1)) { lt.fid[k] = -1; lt.fdirty[k] = false; }
                 if (!c->rDead) region_reconcile(c, &c->rc, &lt);  // the fall-through, inline
@@ -4566,7 +4742,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                     for (int r = 0; r < 32; r++) if (c->rJump[k].chkAl[r] < chkAl[r]) chkAl[r] = c->rJump[k].chkAl[r];
                 }
                 for (u32 k = 0; k < c->nExits; k++) if (c->exits[k].kind == EXIT_LABEL && c->exits[k].pc == ri) chk = 0;
-                if (c->rDead && !have) chk = 0;
+                if ((c->rDead && !have) || c->rLabelBack[ri]) chk = 0;
                 region_forget(c);
                 c->chk = chk;
                 memcpy(c->chkAl, chkAl, 32);
@@ -4690,25 +4866,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
                 continue;
             }
         }
-        if (c->region && !inl && (inst >> 26) == 18 && (inst & 3) == 1) {  // bl to a leaf: its code here (OPT_TIER regions)
-            s32 li = ((s32)(inst << 6)) >> 6 & ~3;
-            u32 target = c->pc + (u32)li, tpa, n;
-            if (region_leaf(c, target, &tpa, &n) && i + n < maxInsns && c->count + n + 1 < 200) {
-                load_const(e, R1, c->pc + 4);  // LR = the return address, as the bl leaves it
-                str_imm(e, R1, RG, OFF_LR);
-                if ((tpa >> 12) < sizeof j->codePages) j->codePages[tpa >> 12] = 1;  // an icbi there drops this block
-                c->inlPc = target;
-                c->inlPa = tpa;
-                c->inlLeft = n;
-                c->inlDone = !n;
-                j->stats.tierInlines++;
-#ifndef __3DS__
-                if (getenv("JIT_TIERLOG")) { fprintf(stderr, "inline %08x leaf %08x n %u", c->pc, target, n); fputc(10, stderr); }
-#endif
-                j->stats.instrsNative++;
-                continue;
-            }
-        }
+        if (c->region && c->rKind[ri] != RK_PLAIN && region_call(c, inst, ri)) { j->stats.instrsNative++; continue; }
         if (is_branch(inst)) {
             if (c->region && region_branch(c, inst, ri)) { j->stats.instrsNative++; continue; }
             if (trace_branch(c, inst, &t)) { j->stats.instrsNative++; continue; }
@@ -4738,12 +4896,6 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 #ifndef __3DS__
     if (c->count) { op_words(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords, c->alt.n - prevCold); dop_add(gekko_op_key(prevInst), e->n - prevHot - g_ctrWords); }
 #endif
-    if (c->inlDone) {  // the loop ended right after an inlined leaf: its blr ran
-        u32 blr = jit_debug_plant == 25 ? 0u : 1u;
-        c->countExtra += blr;
-        c->count += blr;
-        c->inlDone = false;
-    }
     if (!ended && !c->rDead) {  // ran out of instructions (or a page end)
 #ifndef __3DS__
         if (g_regStat) { g_rxState = c->rc; g_rxHave = true; g_rwWhy = RW_CONST; }
@@ -5947,6 +6099,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->pro = (u8)g_lastPro;
     en->end = g_lastEnd;
     en->runs = 0;
+    en->lastCtr = 0;
     en->pending = g_lastPending;
     en->member = false;
     en->next = *head;
@@ -6555,6 +6708,7 @@ void jit_set_gather_buffer(Jit* j, u8* buf, u32* len) {
     jit_invalidate_all(j);
 }
 
+u32 jit_debug_one_budget = 0x3FFFFFFF;
 u32 jit_run_one_block(Jit* j) {
     Gekko* g = j->g;
     GKP(g)->brk = false;
@@ -6565,7 +6719,7 @@ u32 jit_run_one_block(Jit* j) {
     if (!en) return 0;
     fast_select(j, msrBits);
     u32* site;
-    u32 n = run(j, en->fn, 0x3FFFFFFF, g->cycles, &site, 0);
+    u32 n = run(j, en->fn, (s32)jit_debug_one_budget, g->cycles, &site, 0);
     // A failed window check (check hoisting) left before instruction n: the block is recompiled with checks, and the
     // rest of it runs as a block of the instructions that remain (the tests' blocks are jit_debug_max_insns long).
     u32 total = jit_debug_max_insns, before = 0;  // 0: unlimited; before: instructions run ahead of the block that left
@@ -6577,7 +6731,7 @@ u32 jit_run_one_block(Jit* j) {
         Entry* rest = lookup(j, g->pc, msrBits);
         if (!rest) break;
         before = n;
-        n += run(j, rest->fn, 0x3FFFFFFF, g->cycles + n, &site, 0);
+        n += run(j, rest->fn, (s32)jit_debug_one_budget, g->cycles + n, &site, 0);
     }
     jit_debug_max_insns = total;
     return n;

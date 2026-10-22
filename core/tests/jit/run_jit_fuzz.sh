@@ -40,9 +40,15 @@ done
 # Plant 24: a path into a label loses a float lane's write-back (float lanes need OPT_FCACHE).
 JIT_FUZZ_PLANT=24 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 | 4 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant24.txt"
 if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant24.txt"; then echo "SELF-TEST FAILED: planted bug 24 not detected (or the run crashed)"; exit 3; fi
-# Plant 25: an inlined leaf's blr goes uncounted (regions inline leaves with the pseudo-random coverage map on).
-JIT_FUZZ_PLANT=25 JIT_FUZZ_RCOVER=12345 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant25.txt"
-if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant25.txt"; then echo "SELF-TEST FAILED: planted bug 25 not detected (or the run crashed)"; exit 3; fi
+# Plant 26: a loop's back edge takes one instruction too few off the budget per iteration.
+JIT_FUZZ_PLANT=26 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant26.txt"
+if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant26.txt"; then echo "SELF-TEST FAILED: planted bug 26 not detected (or the run crashed)"; exit 3; fi
+# Plants 25, 27, 28: an inlined call writes the wrong return address, its bctrl skips the CTR check, a return the LR check
+# (regions inline calls with the pseudo-random coverage map on).
+for plant in 25 27 28; do
+    JIT_FUZZ_PLANT=$plant JIT_FUZZ_RCOVER=12345 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
+    if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
+done
 # Region tier with a pseudo-random coverage map (OPT_TIER's never-run sides), and OPT_TIER through the dispatcher with
 # regions compiled after two runs (with the pseudo-random coverage map: the fuzzer's short programs rarely cover a join).
 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) JIT_FUZZ_RCOVER=12345 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" > "$out/rcover.txt"

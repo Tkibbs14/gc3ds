@@ -199,6 +199,7 @@ extern u32 jit_tier_threshold;      // OPT_TIER: block runs before its region (d
 extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed
 extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off
 u32 jit_run_one_block(Jit* j);
+extern u32 jit_debug_one_budget;  // jit_run_one_block's budget (the fuzzer bounds its loops' runs with it)
 
 // Compiled float code assumes the host FPSCR is 0x03000000: round to nearest (the 3DS kernel starts threads with
 // round toward zero), flush-to-zero and default NaN (denormals and NaN payloads are not reproduced; flush-to-zero also

@@ -462,6 +462,7 @@ static u32 g_aliasSkips;
 static u32 g_smcSkips;  // chain cases not compared: the program stored into itself
 static u32 g_overBudget;  // chain runs that went past their budget (OPT_LATCH: only blocks that may loop check it)
 static u32 g_unkA, g_unkB;  // unknownMmioCount of each system before the case (unmapped accesses)
+static int g_ctrLeaf = -1;  // a case's bctrl calls its function at this index (CTR is set once the code's address is)
 static u32 g_upperGuard;  // bytes past MEM1's own upper guard main() reserved inaccessible (0: none)
 static bool alias_unchecked(u32 ea) {
     // Fault accesses clear bit 30 before adding RRAM. 0x7ffffxxx aliases 0x3ffffxxx, not MEM1's lower guard.
@@ -849,6 +850,7 @@ int main(int argc, char** argv) {
     u32 fails = 0, floats = 0;
 #ifndef __3DS__
     if (!plant || plant == 13 || plant == 14 || plant == 17 || plant == 18 || plant == 19) fails += x3_cases(plant);
+    jit_debug_one_budget = 4096;  // (after X3, whose counts use the whole budget): loops in regions leave through their budget exit
 #endif
     for (u32 k = 0; k < cases && fails < 10; k++) {
         g_case = k;
@@ -916,19 +918,47 @@ int main(int argc, char** argv) {
                 if (d >= 0 && (rnd() % 3)) next = read_gpr(next, (u32)d);
                 seq[i] = next;
             }
-            if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && jit_debug_region_cover && rnd() % 3 == 0) {
-                // A bl to a leaf just past the program (a few straight-line instructions and blr): regions compile it in
-                // place. The path after the program falls through nops into the leaf too.
-                u32 at = 1 + rnd() % (len - 2), m = rnd() % 5, leaf = len + rnd() % 3;
-                for (u32 k = len; k < leaf; k++) seq[k] = 0x60000000u;
-                for (u32 k = 0; k < m; k++) {
+            bool loopCtr = false;
+            if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && rnd() % 3 == 0 && len >= 4) {
+                // A loop: bdnz back to an earlier instruction, CTR a few iterations (regions compile it whole).
+                u32 at = 2 + rnd() % (len - 2), to = rnd() % at;
+                seq[at] = (16u << 26) | (16u << 21) | ((((to - at) * 4u)) & 0xFFFCu);  // bdnz
+                st.ctr = 1 + rnd() % 4;
+                loopCtr = true;
+            }
+            if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && jit_debug_region_cover && len + 16 <= 48 && rnd() % 3 == 0) {
+                // A call to a function just past the program: regions compile it in place (region_plan). Forms: plain;
+                // a beqlr inside; LR saved and restored through r0 (its blr is checked); called with bctrl (CTR set to it:
+                // the guard mostly holds); calling a second function. The path after the program falls through nops
+                // into the function too.
+                u32 at = 1 + rnd() % (len - 2), m = rnd() % 5, leaf = len + rnd() % 3, form = rnd() % 5, k = leaf;
+                if (form == 3 && loopCtr) form = 0;
+                for (u32 q = len; q < leaf; q++) seq[q] = 0x60000000u;
+                if (form == 2) seq[k++] = 0x7C0802A6u;  // mflr r0
+                u32 cret = form == 1 ? rnd() % (m + 1) : 99, call2 = form == 4 ? rnd() % (m + 1) : 99, call2At = 0;
+                for (u32 q = 0; q <= m; q++) {
+                    if (q == cret) seq[k++] = 0x4D820020u;  // beqlr
+                    if (q == call2) { call2At = k; seq[k++] = 0; }  // (the bl, below)
+                    if (q == m) break;
                     u32 w = gen(&st);
                     while (is_branch_op(w) || ((w >> 26) == 31 && ((w >> 1) & 0x3FF) == 146)) w = gen(&st);  // no mtmsr
-                    seq[leaf + k] = w;
+                    seq[k++] = w;
                 }
-                seq[leaf + m] = 0x4E800020u;  // blr
-                seq[at] = (18u << 26) | (((leaf - at) * 4u) & 0x03FFFFFCu) | 1u;  // bl
-                len = leaf + m + 1;
+                if (form == 2) seq[k++] = 0x7C0803A6u;  // mtlr r0
+                seq[k++] = 0x4E800020u;  // blr
+                if (form == 4) {  // the second function: two instructions and blr
+                    u32 l2 = k;
+                    for (u32 q = 0; q < 2; q++) {
+                        u32 w = gen(&st);
+                        while (is_branch_op(w) || ((w >> 26) == 31 && ((w >> 1) & 0x3FF) == 146)) w = gen(&st);
+                        seq[k++] = w;
+                    }
+                    seq[k++] = 0x4E800020u;
+                    seq[call2At] = (18u << 26) | (((l2 - call2At) * 4u) & 0x03FFFFFCu) | 1u;  // bl
+                }
+                if (form == 3) { seq[at] = 0x4E800421u; g_ctrLeaf = (int)leaf; }  // bctrl
+                else seq[at] = (18u << 26) | (((leaf - at) * 4u) & 0x03FFFFFCu) | 1u;  // bl
+                len = k;
             }
         } else if (isFloat && rnd() % 3 == 0) {
             // Paired-single chains through one base (OPT_FCACHE's float lanes): psq_l / lfs into three FPRs, one or two
@@ -1081,7 +1111,11 @@ int main(int argc, char** argv) {
         u32 inst = seq[0], inst2 = seq[1];
         floats += isFloat;
         for (u32 i = 0; i < len; i++) if (!check_regs(seq[i], &st, plant)) fails++;
+        // Regions go on past branches (loops included): a case with one is followed along the interpreter's path.
+        if ((jit_opt(jit) & (OPT_REGION | OPT_TIER)) && !traceCase)
+            for (u32 q = 0; q < len; q++) if (is_branch_op(seq[q])) traceCase = true;
         CODE_PA = 0x3000u + 4 * (rnd() % (1024 - len + 1));
+        if (g_ctrLeaf >= 0) { st.ctr = CODE_EA + 4u * (u32)g_ctrLeaf; g_ctrLeaf = -1; }  // (the bctrl case above)
         for (u32 i = 0; i < WIN_SIZE; i++) A.mem1[WIN_PA + i] = B.mem1[WIN_PA + i] = (u8)rnd();
         for (u32 i = 0; i < TOP_SIZE; i++) A.mem1[MEM1_SIZE - TOP_SIZE + i] = B.mem1[MEM1_SIZE - TOP_SIZE + i] = (u8)rnd();
         memcpy(B.lockedCache, A.lockedCache, LOCKED_CACHE_SIZE);
