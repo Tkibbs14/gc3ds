@@ -110,6 +110,7 @@ typedef struct {
 // Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
 // 6 texgens, 7 indirect stages; 0 the set-up.
 static inline void give_up(Pc* c, u32 why) { if (!c->fail) c->fail = why; }
+u64 g_portFloatSite[5];  // which float check gave up (reports): NaN/inf, psq GQR, denormal or NaN, drawSelf f7, FPU off
 static inline bool in_mem1(u32 a, u32 len) { return a >= 0x80000000u && a - 0x80000000u + len <= g_psz; }
 static inline u32* gxw(Pc* c, u32 i) {
     if (!c->have[i]) {
@@ -275,13 +276,13 @@ static bool psq_float_ok(Pc* c) { return c->g->spr[SPR_GQR0] == 0 && (c->g->msr 
 static u32 psq_copy(Pc* c, u32 bits) {
     u32 e = (bits >> 23) & 0xFF;
     if (e == 0) return bits & 0x80000000u;
-    if (e == 0xFF) give_up(c, 2);  // (NaN / infinity: not taken here)
+    if (e == 0xFF) { if (!c->fail) g_portFloatSite[0]++; give_up(c, 2); }  // (NaN / infinity: not taken here)
     return bits;
 }
 static void gx_load_tex_mtx_imm(Pc* c, u32 mtx, u32 id, u32 type) {  // 0x80360320
     u32 addr = id >= 64 ? (id - 64) * 4 + 1280 : id * 4;
     u32 count = type == 1 ? 8 : 12;
-    if (!psq_float_ok(c)) { give_up(c, 2); return; }
+    if (!psq_float_ok(c)) { if (!c->fail) g_portFloatSite[1]++; give_up(c, 2); return; }
     p8(c, 0x10);
     p32(c, addr | ((count - 1) << 16));
     u32 words = type == 0 ? 12 : 8;
@@ -781,7 +782,7 @@ static inline u32 bitsf(float f) { u32 v; memcpy(&v, &f, 4); return v; }
 // A single the VFP and the Gekko treat alike: zero or normal (denormals, infinities and NaNs are not taken).
 static inline bool plain(Pc* c, u32 v) {
     u32 e = (v >> 23) & 0xFF;
-    if ((e == 0 && (v & 0x7FFFFF)) || e == 0xFF) { give_up(c, 2); return false; }
+    if ((e == 0 && (v & 0x7FFFFF)) || e == 0xFF) { if (!c->fail) g_portFloatSite[2]++; give_up(c, 2); return false; }
     return true;
 }
 // PSMTXConcat 0x803464E4: ab = a * b (3x4), as its paired-single code computes it (multiply-adds rounded once).
@@ -921,7 +922,7 @@ static bool j3d_inverse_transpose(Pc* c, const u32* s, u32* d) {
     f1 = PSUB(f1, f1);
     f7 = PMADD(f2, f12, f7);
     f7 = PMADD(f4, f11, f7);
-    if (!plain(c, bitsf(f7.p0)) || f7.p0 == f1.p0) { give_up(c, 2); return false; }
+    if (!plain(c, bitsf(f7.p0)) || f7.p0 == f1.p0) { if (!c->fail) g_portFloatSite[3]++; give_up(c, 2); return false; }
     f0 = PS(1.0f / f7.p0);  // fres: the correctly rounded single reciprocal (gekko_softfp.c sf_recip_estimate)
     f6 = PADD(f0, f0); f5 = PMUL(f0, f0); f0 = PNMSUB(f7, f5, f6);
     f6 = PADD(f0, f0); f5 = PMUL(f0, f0); f0 = PNMSUB(f7, f5, f6);
@@ -1013,7 +1014,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     tmark(0);
     // (Floating point off: the FPRs are another thread's until the OS takes the FP-unavailable exception, which the
     // guest code raises at its first float instruction: the float ports are not taken then.)
-    if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { give_up(c, 2); return false; }
+    if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { if (!c->fail) g_portFloatSite[4]++; give_up(c, 2); return false; }
     if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);

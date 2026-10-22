@@ -78,6 +78,15 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   walk's ~3% plus the hook exits; text (J2DTextBoxEx: J2DPrint, JUTResFont) would be the next piece. Not started:
   the per-pane port give-up rate (~2% of J2DPictureEx calls, float edge cases) would abort large subtrees, so the
   give-ups' cause comes first.
+- **The give-ups' cause (2026-10-22, job 812, Ordon walk, `# port float give-ups`):**
+  - 2,108 of 2,134 float give-ups are `plain()` refusing a **denormal (or NaN) input**: matrix elements or quad
+    coordinates of PSMTXConcat and the quad. The other 26 are the FPU off (the OS's lazy switch).
+  - The refusal is right. With FPSCR[NI] the interpreter flushes denormal *results* but uses denormal *inputs*
+    (gekko_softfp.c round_pack), while the 2DS's VFP (flush-to-zero) zeroes the inputs too. A denormal times a large
+    factor is normal on Gekko and zero on the VFP.
+  - **For the pane walk:** a pane with such an input should be computed exactly through the interpreter's soft float
+    (as hle_ps.c's SOP / SMADD do), for that pane only, rather than aborting the subtree. It is ~2% of panes, so the
+    slow path's cost is small.
 - **The pane walk's design, read from the machine code (2026-10-20; J2DPane::draw 0x802F67E0, 334 instructions):**
   - Per pane: visible = param && 176(p); the graf context's getGrafType (vtable +32: J2DOrthoGraph 0x802E9C88 `li r3,1;
     blr`, J2DGrafContext 0x802E9664 `li r3,0`); parent = 12(236(p)) when 236(p); bounds valid when 40 >= 32 and 44 >= 36

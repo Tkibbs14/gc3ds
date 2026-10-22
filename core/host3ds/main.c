@@ -1746,6 +1746,7 @@ static const char* run_body(const char* path) {
                                 for (u32 q = 0; q < 16; q++) fprintf(g_perf, " %02x", (unsigned)ram_rd8(g_sys.mem1, g_opt.peek - 0x80000000u + q));
                                 fputc(10, g_perf);
                             }
+                            { extern u64 g_portFloatSite[5]; fprintf(g_perf, "# port float give-ups (all time): nan/inf %llu, psq %llu, denormal/nan %llu, drawSelf f7 %llu, fpu off %llu", (unsigned long long)g_portFloatSite[0], (unsigned long long)g_portFloatSite[1], (unsigned long long)g_portFloatSite[2], (unsigned long long)g_portFloatSite[3], (unsigned long long)g_portFloatSite[4]); fputc(10, g_perf); }
                             fprintf(g_perf, "# gp open burst:"); for (u32 q = 0; q < g_sys.gx.wgpLen; q++) fprintf(g_perf, " %02x", (unsigned)g_sys.gx.wgp[q]); fputc(10, g_perf);
                             fprintf(g_perf, "# gx pending: %u bytes:", (unsigned)c->pendingLen);
                             for (u32 q = 0; q < c->pendingLen && q < 16; q++) fprintf(g_perf, " %02x", (unsigned)ramp_rd8(c->pending + q));
