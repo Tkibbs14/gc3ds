@@ -589,6 +589,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   -4.4%** with I-cache misses +9-13% ([results](MEASUREMENTS.md#region-tier-stage-1-forward-branches-inside-a-block---region-on-opt_region-jobs-818-833-2026-10-22)):
   it compiles never-run branch sides inline in hot code. The next stage needs an edge profile from the block tier
   (compile only executed edges, cold sides out of line) and registers carried across labels; both, not either.
+- **Stage 2 built and measured, 2026-10-22 (`--tier on`, off by default):** tiered regions over the code that ran,
+  GPR slots carried across labels, inline joins, single entry, run-weighted coverage. Exact. Five rounds on the 2DS
+  moved it from -1.3..-4.0% to **-0.6% / -1.6% / +0.3% / -0.1%** (heavy, Ordon, Wind Waker, Mario Party 4; jobs
+  866-873). Regions run ~1.5% fewer ARM instructions; instruction-fetch stalls take it back
+  ([results](MEASUREMENTS.md#region-tier-stage-2-tiered-regions-of-executed-code-registers-across-labels---tier-on-opt_tier-jobs-834-873-2026-10-22)).
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.

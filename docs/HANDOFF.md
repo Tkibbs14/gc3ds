@@ -19,6 +19,11 @@
 > (jobs 826-833): compiling both sides of internal branches inline costs +9-13% I-cache misses, and labels forget the
 > register cache. Next stage: edge-profiled regions (executed edges only, cold sides out of line) carrying registers
 > across labels. Results in MEASUREMENTS.md "Region tier stage 1", C33.
+> **Stage 2 (2026-10-22, `--tier on`, off):** tiered regions of executed code with GPR slots across labels. Exact, and
+> after five 2DS rounds -0.6% / -1.6% / +0.3% / -0.1% (heavy, Ordon, Wind Waker, Mario Party 4; jobs 866-873):
+> ~1.5% fewer ARM instructions, spent on instruction fetch (micro-TLB misses +34-65%). Regions in an area of their own
+> lose (jobs 874-881: micro-TLB misses x2.6). Next: take more work out per region (float lanes and CR flags across
+> labels, extents past 64 instructions, leaf and devirtualised calls inlined).
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.

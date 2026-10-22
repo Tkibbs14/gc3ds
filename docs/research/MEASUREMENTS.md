@@ -2262,6 +2262,40 @@ done
 - **Verdict:** stays off. A region tier must be **profile-guided** (only executed edges, never-run sides moved to
   the cold region) and must **carry registers across labels** before its saving can exceed its layout cost.
 
+### Region tier stage 2: tiered regions of executed code, registers across labels (`--tier on`, OPT_TIER, jobs 834-873, 2026-10-22)
+
+- **What (commits 3b0ce88, 8a0e090):** blocks start in the block tier, whose blocks end at every branch, so the blocks
+  that exist are the profile. After 64 runs a block that starts a region (return site, loop head, function entry)
+  is replaced by its region over the code that ran. Labels keep the GPR slots of the first path in, and the other
+  paths reconcile to them. Float lanes, flags and known constants are still dropped at labels.
+- **Correctness every round:** region and tier fuzz (main, nofault, chain, pseudo-random coverage) 0 fails; plants
+  20-22 caught; standard suite 0 fails; qemu TP fields 850-900: last frame identical, instruction count equal or 4 off
+  (timing drift).
+- **Separate whole runs, tier off -> on (runs.py), one pair per scene per round:**
+
+  | Round (jobs) | Heavy area | Ordon walk | Wind Waker | Mario Party 4 |
+  |---|---|---|---|---|
+  | counter in each block, labels flush (834-841) | -1.3% | -3.9% | -4.0% | -2.4% |
+  | dispatcher counts, registers across labels (842-849) | -1.1% | -2.8% | +0.0% | -1.0% |
+  | one-condition joins inline: ADD<cond> + B<cond>, no cold stub (850-857) | -0.6% | -2.0% | +0.9% | -0.4% |
+  | single-entry extents (858-865) | -0.6% | -1.7% | +0.0% | -0.4% |
+  | run-weighted coverage (1/8 of the head), checks across labels (866-873) | -0.6% | -1.6% | +0.3% | -0.1% |
+  | ... and regions in their own hot area, the top third of it (874-881, not kept) | -1.0% | -2.2% | +0.4% | -0.1% |
+
+- **Where it stands (866-873):** regions run 1.2-1.6% fewer ARM instructions (heavy 281.7 -> 278.4 M/s, Ordon 272.5
+  -> 268.1). The loss is instruction fetch: stall_inst 201 -> 205 M cycles/s (heavy) and 219 -> 230 (Ordon),
+  instruction micro-TLB misses +34% / +65%, I-cache misses +0.5% / +3.4%. Code buffer 47 -> 56% (heavy).
+  Regions are compiled after the blocks around them, so hot code spreads over more pages and lines.
+- **Regions apart from the block tier's code lose (874-881):** instruction micro-TLB misses 45 -> 129 k/s (heavy),
+  67 -> 172 k/s (Ordon). A region keeps calling and linking into block-tier code (callees, its exits), so it is better
+  next to the code compiled around the same time than next to other regions.
+- **What did not pay:** a run counter inside each block (a branch in every block, and links into a replaced block went
+  through its patched first word). Cold stubs for taken joins (two taken branches and a cold line per taken branch).
+- **Verdict:** stays off. The saving the tier has without float lanes, flags, longer extents or inlining (about
+  1.5% of ARM instructions) is spent on code layout. Next levers in the same tier: hot regions placed together, and
+  more work removed per region (float lanes and CR flags across labels, extents past 64 instructions, leaf and
+  devirtualised calls inlined). Grouping regions apart was measured and loses (row above).
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws
