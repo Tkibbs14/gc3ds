@@ -1988,6 +1988,18 @@ static const char* run_body(const char* path) {
                                 (unsigned long long)(m[4] - lastM[4]), (unsigned long long)(m[5] - lastM[5]),
                                 (unsigned long long)(m[6] - lastM[6]));
                         memcpy(lastM, m, sizeof m);
+                        {
+                            extern u64 g_picaMergeWhy[9];
+                            static u64 lastW[9];
+                            fprintf(g_perf, "# merge why 10s (could not join): format %llu, vertex cap %llu, byte cap %llu, segment cap %llu, not mergeable %llu\n",
+                                    (unsigned long long)(g_picaMergeWhy[0] - lastW[0]), (unsigned long long)(g_picaMergeWhy[1] - lastW[1]),
+                                    (unsigned long long)(g_picaMergeWhy[2] - lastW[2]), (unsigned long long)(g_picaMergeWhy[3] - lastW[3]),
+                                    (unsigned long long)(g_picaMergeWhy[4] - lastW[4]));
+                            fprintf(g_perf, "# merge unmergeable 10s: lines/points %llu, over the vertex cap %llu, over the byte cap %llu, other %llu\n",
+                                    (unsigned long long)(g_picaMergeWhy[5] - lastW[5]), (unsigned long long)(g_picaMergeWhy[6] - lastW[6]),
+                                    (unsigned long long)(g_picaMergeWhy[7] - lastW[7]), (unsigned long long)(g_picaMergeWhy[8] - lastW[8]));
+                            memcpy(lastW, g_picaMergeWhy, sizeof lastW);
+                        }
                         {  // display lists (fifo.c dl_note): could their gathered vertices be cached across frames?
                             static u64 lastD[7];
                             u64 d[7];

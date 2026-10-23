@@ -2793,6 +2793,8 @@ static struct {
 } g_mg;
 static volatile bool g_mergeWant = true;  // pica_set_merge (the GX thread reads it at each draw)
 u64 g_picaMerge[7];
+u64 g_picaMergeWhy[9];  // an open draw issued for the next one: another format, the vertex cap, the byte cap, the segment cap,
+                        // not mergeable; [5..8]: draws not mergeable (open or not): lines or points, over MERGE_VERTS, over MERGE_BYTES, other
 
 static void merge_issue(System* s) {
     u32 n = g_mg.nSeg;
@@ -2839,7 +2841,10 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
     u32 bytes = count * vsize;
     // A draw inside a display list streams straight from guest RAM: its address keys the vertex cache.
     u32 pa = raw >= s->mem1 && raw + bytes <= s->mem1 + PA_MEM1_END ? (u32)(raw - s->mem1) : VC_NO_PA;
+    // (Lines and points stay out: TP's heavy area sends ~5,800 a second, but nearly each follows a state change, so
+    // joining them only opened and issued more jobs: 8,583 -> 11,619 a second, speed even, jobs 1121-1122.)
     bool can = g_mergeWant && g_indexed && s->gxAsync && prim < PRIM_LINES && count <= MERGE_VERTS && bytes <= MERGE_BYTES;
+    if (!can) g_picaMergeWhy[prim >= PRIM_LINES ? 5 : count > MERGE_VERTS ? 6 : bytes > MERGE_BYTES ? 7 : 8]++;
     if (g_gxMergeOpen) {
         if (can && vat == g_mg.vat && vsize == g_mg.vsize && g_mg.count + count <= MERGE_VERTS &&
             g_mg.bytes + bytes <= MERGE_BYTES && g_mg.nSeg < MERGE_SEGS) {
@@ -2852,6 +2857,8 @@ static void pica_draw(void* ctx, System* s, u32 prim, u32 vat, const u8* raw, u3
             return;
         }
         g_picaMerge[4]++;
+        g_picaMergeWhy[!can ? 4 : vat != g_mg.vat || vsize != g_mg.vsize ? 0 : g_mg.count + count > MERGE_VERTS ? 1 :
+                       g_mg.bytes + bytes > MERGE_BYTES ? 2 : 3]++;
         merge_issue(s);
     }
     if (!can) { draw_job(s, prim, vat, raw, count, vsize, NULL, 0, &pa, NULL, 0); return; }
