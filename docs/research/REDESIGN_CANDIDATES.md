@@ -647,3 +647,23 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
      does not want the architecture to depend on.
 - **Expected:** up to ~+15-20% core 0 in that Wind Waker scene (estimate); unmeasured elsewhere.
 - **Re-evaluate when:** the owner picks a form, or the region tier (C33) is built.
+
+## C36. Translated display lists (G2): lists decoded once and replayed per state variant (2026-10-23)
+
+- **Status:** **G2a built** (`--g2 on|check|plant`, off; core/src/gx/g2.c, fifo.c `g2_replay`); G2b-G2e designed, not
+  built (docs/research/G2_PLAN.md). Device measurement of G2a: MEASUREMENTS.md "G2a".
+- **What:** EMULATOR_CEILING.md G2. Each display list called from the FIFO is decoded once into ops and replayed while
+  its bytes (page stamps, sampled hashes) and the state its decoding depends on hold; later stages keep the backend's
+  per-run batch decisions with each state variant (G2b), compile TEV programs by structure with colours as parameters
+  (G2c) and keep their raw state words (G2d).
+- **For (G2-0 census, jobs 1142-1145):** every draw-carrying list repeats its structural read-before-write state from
+  one picture to the next (99.9-100% of draws in TP heavy, Ordon, Mario Party 4, Wind Waker), with ~11-38 structural
+  words to check a call. PC exactness of G2a: state hash and last frame equal to the decoder on three title spans,
+  `G2=check` 0 differences in 12,099 compared replays, `G2=plant` differs.
+- **Against / cost:** one entry per list does not work (last-use repeats only 51-98%: variants are needed); a
+  whole-state signature does not either (0% in Mario Party 4); the projection, TEV colours, lights and matrices change
+  every picture and must be applied live; list calls are only ~32-34% of TP's GX thread (X5), and TP's heavy area is
+  core-0-bound today (core 0 waits on the GX thread ~0.5%, job 1124), so the GX saving reads as GX busy time before
+  speed.
+- **Re-evaluate when:** after G2a's device runs (whether decoding is worth replaying at all), and whenever the GX
+  thread becomes the limit again (core 0 gains, Mario Party 4's minigame, the title cutscene).

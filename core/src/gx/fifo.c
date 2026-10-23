@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include "../sys/system.h"
 #include "gx.h"
+#include "dlkey.h"
+#include "g2.h"
 
 // Commands are read in guest memory's layout (ramlayout.h): display lists in RAM, and the gather pipe's bytes, which
 // feed() stores in the same layout so that one parser reads both. (Native mode's Aurora commands assume the
@@ -51,9 +53,11 @@ void gxcore_free(GXCore* gx) {
 static u32 comp_size(u32 fmt) { return fmt <= 1 ? 1 : fmt <= 3 ? 2 : 4; }
 static u32 color_size(u32 fmt) { static const u8 s[8] = { 2, 3, 4, 2, 3, 4, 4, 4 }; return s[fmt & 7]; }
 
-u32 gx_vertex_size(const GXCore* gx, u32 vat) {
-    u32 lo = gx->cp[CP_VCD_LO], hi = gx->cp[CP_VCD_HI];
-    u32 a = gx->cp[CP_VAT_A + vat], b = gx->cp[CP_VAT_B + vat], c = gx->cp[CP_VAT_C + vat];
+u32 gx_vertex_size(const GXCore* gx, u32 vat) { return gx_vertex_size_cp(gx->cp, vat); }
+
+u32 gx_vertex_size_cp(const u32* cp, u32 vat) {
+    u32 lo = cp[CP_VCD_LO], hi = cp[CP_VCD_HI];
+    u32 a = cp[CP_VAT_A + vat], b = cp[CP_VAT_B + vat], c = cp[CP_VAT_C + vat];
     u32 size = 0;
     size += lo & 1;                                   // position/normal matrix index
     for (int i = 0; i < 8; i++) size += (lo >> (1 + i)) & 1;  // texture matrix indices
@@ -342,6 +346,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     case BP_PE_TOKEN: pe_token(s, val & 0xFFFF, false); break;
     case BP_PE_TOKEN_INT: pe_token(s, val & 0xFFFF, true); break;
     case BP_COPY_EXEC:
+        if (g_dlKey && (val & (1u << 14))) dlkey_picture();
         GXCENSUS_WORK({
         if (s->on_efb_copy) s->on_efb_copy(s, s->user, val);
         efb_copy(s, gx, val);
@@ -367,7 +372,20 @@ static void load_indexed(System* s, GXCore* gx, u32 which, u32 v) {
     }
 }
 
+// Matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned.
+static void cp_write(System* s, GXCore* gx, u32 r, u32 v) {
+    GXCENSUS(gxcensus_reg(1, r, gx->cp[r], v));
+    if (gx->cp[r] != v) {
+        merge_break(s, gx, (r & 0xF0) == 0x30 || (r & 0xF0) == 0x40 ? MB_CPIDX : r >= 0xA0 && r <= 0xBF ? MB_CPARRAY : MB_CPOTHER);
+        if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
+    }
+    gx->cp[r] = v;
+}
+
 static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList);
+#ifndef GC3DS_NATIVE
+static bool g2_call(System* s, GXCore* gx, u32 addr, u32 size);
+#endif
 
 // Display-list statistics (docs/research/PERF_LEVERS.md D1: could the vertices a list gathers be cached across frames?).
 // Per list address the last size, a hash of its bytes and of the array bases / strides it ran with; one call in four
@@ -596,15 +614,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
     case 0x08:
         if (avail < 6) return 0;
         g_gxWhere = GW_DECCP;
-        {  // matrix indices (0x30, 0x40) and array bases / strides (0xA0-0xBF) change with nearly every draw: not versioned
-            u32 v = rd32(p + 2), r = rd8(p + 1);
-            GXCENSUS(gxcensus_reg(1, r, gx->cp[r], v));
-            if (gx->cp[r] != v) {
-                merge_break(s, gx, (r & 0xF0) == 0x30 || (r & 0xF0) == 0x40 ? MB_CPIDX : r >= 0xA0 && r <= 0xBF ? MB_CPARRAY : MB_CPOTHER);
-                if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
-            }
-            gx->cp[r] = v;
-        }
+        cp_write(s, gx, rd8(p + 1), rd32(p + 2));
         g_gxWhere = GW_FIFO;
         return 6;
     case 0x10: {
@@ -632,7 +642,17 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
             g_gxWhere = GW_FIFO;
             GXCENSUS(gxcensus_list(gx, s->mem1 + addr, size));
             u64 t0 = g_gxDiag && g_profClock ? g_profClock() : 0;
-            run_list(s, gx, s->mem1 + addr, size, true);
+            if (g_dlKey) {  // G2-0 census (dlkey.c): the call timed whole, the census's own work included
+                u64 tk = g_profClock ? g_profClock() : 0;
+                dlkey_begin(s, gx, addr, s->mem1 + addr, size);
+                run_list(s, gx, s->mem1 + addr, size, true);
+                dlkey_end(tk ? g_profClock() - tk : 0);
+            }
+#ifndef GC3DS_NATIVE
+            else if (g_g2 && g2_call(s, gx, addr, size)) {}
+#endif
+            else
+                run_list(s, gx, s->mem1 + addr, size, true);
             if (t0) g_dlTicks[cls] += g_profClock() - t0;
             GXCENSUS(gxcensus_list_end());
         }
@@ -711,6 +731,7 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
                 for (u32 q = off; q < end;) {  // the statistics draw() keeps
                     if (rd8(p + q) == 0x00) { q++; continue; }
                     u32 n = rd16(p + q + 1);
+                    if (g_dlKeyActive) dlkey_cmd(s, gx, p + q, len - q);  // (draws write no state: order is free)
                     gx->draws++; g_dlStats[1]++; gx->vertices += n; gx->primCount[(rd8(p + q) >> 3) & 7]++;
                     q += 3 + n * vsize;
                 }
@@ -721,12 +742,126 @@ static void run_list(System* s, GXCore* gx, const u8* p, u32 len, bool inList) {
             stop = end;
         }
         g_gxWhere = GW_DECRUN;
+        if (g_dlKeyActive) dlkey_cmd(s, gx, p + off, len - off);
         u32 n = exec_one(s, gx, p + off, len - off, inList);
         if (!n) { emu_log(LOG_GX, "display list ends mid-command\n"); return; }
         gx->commands++;
         off += n;
     }
 }
+
+#ifndef GC3DS_NATIVE
+// G2 stage a (g2.h): a decoded list replayed. Each op does what exec_one / run_list do for its command, statistics
+// included, through the same state functions; what goes is the parse (opcodes, lengths, vertex sizes, run scans).
+static void g2_replay(System* s, GXCore* gx, const u8* p, const G2Op* o, u32 n, int plant) {
+    for (u32 i = 0; i < n; i++, o++) {
+        switch (o->kind) {
+        case G2_BP:
+            g_gxOpCount[1]++;
+            if (plant-- != 1) { g_gxWhere = GW_DECBP; bp_write(s, gx, o->a, o->v); }
+            gx->commands++;
+            break;
+        case G2_CP:
+            g_gxOpCount[3]++;
+            if (plant-- != 1) { g_gxWhere = GW_DECCP; cp_write(s, gx, o->a, o->v); }
+            gx->commands++;
+            break;
+        case G2_XF:
+            g_gxOpCount[2]++;
+            g_gxWhere = GW_DECXF;
+            for (u32 k = 0; k < o->n; k++) xf_write(s, gx, o->v + k, rd32(p + o->w + 4 * k));
+            gx->commands++;
+            break;
+        case G2_IDX:
+            g_gxOpCount[5]++;
+            g_gxWhere = GW_DECIDX;
+            load_indexed(s, gx, o->a, o->v);
+            gx->commands++;
+            break;
+        case G2_NOP:
+            g_gxOpCount[5] += o->n;
+            gx->commands += o->n;
+            break;
+        case G2_DRAW:
+            g_gxOpCount[0]++;
+            g_gxWhere = GW_DECDRAW;
+            draw(s, gx, o->a, p + o->v, o->w, o->vsize, true);
+            gx->commands++;
+            break;
+        case G2_RUN: {
+            g_gxWhere = GW_DECLIST;
+            u32 draws = o->n, end = o->v + o->w;
+            g_dlRun[0] += draws; g_dlRun[1]++; g_dlRun[3] += o->x;
+            if (draws >= 2) { g_dlRun[2]++; g_dlRun[4] += o->x; }
+            if (o->flags & 1) g_dlRun[5]++;
+            if (o->flags >> 4) g_dlRun[o->flags >> 4]++;
+            static u32 nl;
+            u64 tl = draws && g_gxDiag && g_profClock && !(++nl & 15) ? g_profClock() : 0;
+            bool listed = draws && !(o->flags & 1) && gx->backend && gx->backend->draw_list &&
+                          gx->backend->draw_list(gx->backendCtx, s, o->a, p + o->v, o->w);
+            g_gxWhere = GW_FIFO;
+            if (listed) {
+                g_gxOpCount[6]++; g_gxOpCount[7] += draws;
+                if (tl) g_gxOpTicks[6] += (g_profClock() - tl) * 16;
+                gx->draws += draws; g_dlStats[1] += draws; gx->vertices += o->x;
+                for (int k = 0; k < 8; k++) gx->primCount[k] += o->pc[k];
+                gx->commands += o->m;
+                break;
+            }
+            for (u32 q = o->v; q < end;) {  // draw by draw, as run_list then does through exec_one
+                u8 c = (u8)rd8(p + q);
+                if (c == 0x00) { g_gxOpCount[5]++; gx->commands++; q++; continue; }
+                u32 count = rd16(p + q + 1);
+                g_gxOpCount[0]++;
+                g_gxWhere = GW_DECDRAW;
+                draw(s, gx, c, p + q + 3, count, o->vsize, true);
+                gx->commands++;
+                q += 3 + count * o->vsize;
+            }
+            break;
+        }
+        }
+    }
+    g_gxWhere = GW_FIFO;
+}
+
+// --g2 check: the decoder runs the same list on a copy of the GX state (no backend: it draws nothing), the replay runs
+// on the real one, and the two must come out equal. A difference is counted, the decoder's result kept, and G2 turned
+// off. Lists with side effects (PE signals, copies, palette loads) are not checked: the copy would repeat them.
+static GXCore g_g2Shadow;
+static bool g2_call(System* s, GXCore* gx, u32 addr, u32 size) {
+    g_g2Stats[0]++;
+    G2Entry* e = g2_lookup(addr, size);
+    const u8* p = s->mem1 + addr;
+    if (!e || !g2_prepare(e, gx, p)) return false;
+    static u32 nreplay;
+    nreplay++;
+    bool check = g_g2Check && !e->side && !(nreplay & 7);
+    if (check || !(nreplay & 63)) {  // the stamps checked: the bytes must hash as they did when decoded
+        g_g2Stats[11]++;
+        if (g2_hash(p, size) != e->hash) { g_g2Stats[12]++; e->state = G2E_SEEN; return false; }
+    }
+    if (check) {
+        g_g2Shadow = *gx;
+        g_g2Shadow.backend = NULL;
+        run_list(s, &g_g2Shadow, p, size, true);
+        g_g2Shadow.backend = gx->backend;
+    }
+    g_gxWhere = GW_G2;
+    g2_replay(s, gx, p, g2_ops(e), e->nops, check && g_g2Check == 2 ? 1 : 0);
+    g_g2Stats[1]++;
+    g_g2Stats[13] += e->nops;
+    if (check) {
+        g_g2Stats[9]++;
+        if (memcmp(&g_g2Shadow, gx, sizeof *gx)) {
+            g_g2Stats[10]++;
+            *gx = g_g2Shadow;
+            if (g_g2Check == 1) g_g2 = false;
+        }
+    }
+    return true;
+}
+#endif
 
 // g_feedDirect (--feeddirect, --ab feeddirect): commands are parsed straight from the bytes fed (the GX thread's ring
 // record) instead of from a copy of them, and only a command split across two feeds goes through the pending buffer,

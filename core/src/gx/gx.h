@@ -10,7 +10,8 @@
 enum { GW_RING, GW_DRAW, GW_DRAWCALL, GW_VWWAIT, GW_VWALLOC, GW_SPLITWAIT, GW_FRAMEBEGIN, GW_FRAMEEND, GW_SPLIT,
        GW_TEX, GW_COPY, GW_SHAPES, GW_FIFO, GW_MERGE, GW_FLUSH, GW_TEVUPD, GW_BATCHKEY, GW_VPREP, GW_VQUEUE, GW_STATE2,
        GW_DRAWTAIL, GW_DLIST, GW_DECBP, GW_DECXF, GW_DECCP, GW_DECIDX, GW_DECLIST, GW_DECFEED, GW_DECNOTE, GW_DECDRAW, GW_DECRUN, GW_DECOP,
-       GW_PALASSIGN, GW_CPUALONE, GW_VWQUEUE, GW_VWDO, GW_N };  // the last four: parts of GW_DRAWTAIL
+       GW_PALASSIGN, GW_CPUALONE, GW_VWQUEUE, GW_VWDO,  // these four: parts of GW_DRAWTAIL
+       GW_G2, GW_N };  // GW_G2: a translated list's replay between its ops (g2.h)
 extern volatile u8 g_gxWhere;
 extern bool g_gxDiag;  // the decoder's measurement-only statistics (fifo.c; on with --profile on)
 
@@ -156,3 +157,4 @@ void gxcore_free(GXCore* gx);
 void gxcore_feed(System* s, GXCore* gx, const u8* data, u32 len);
 // Size in bytes of one vertex for the given vertex attribute table, from the current VCD/VAT.
 u32 gx_vertex_size(const GXCore* gx, u32 vat);
+u32 gx_vertex_size_cp(const u32* cp, u32 vat);  // the same from a copy of the CP registers (g2.c's decoding)

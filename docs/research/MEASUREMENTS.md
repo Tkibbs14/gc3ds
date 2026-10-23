@@ -2482,6 +2482,56 @@ done
   frame end, textures, presents. A translated-list cache (G2) cannot be TP's GX fix alone. "New" is inflated by the
   one-way address table's collisions (455-1,250 new addresses/s).
 
+### G2-0: display-list keys on the 2DS (jobs 1127-1146, 2026-10-23, `--dlkey on`)
+
+- **What:** per display list called from the FIFO, whether its key repeats, by how much incoming state the key holds
+  (`core/src/gx/dlkey.c`, `# dlkey 10s` / `# dlkey more 10s` / `# dlkey misses 10s`). A word enters the key when the
+  reference decoder or renderer reads it before the list writes it: X1b's dependency rules (`gxcensus_x1b.inc`),
+  ported to run inside the 3DS build on gameplay states. Keys, each the one before plus more: **bytes + array bases**;
+  **+ structural** (BP, CP, CP arrays, XF registers); **+ parametric** (TEV colour registers and konsts with their BP
+  registers 0xE0-0xE7, fog 0xEE-0xF2, ambient / material colours XF 0x100A-0x100D, viewport and projection XF
+  0x101A-0x1026: values a replay can apply as they are); **+ lights**; **+ matrices** (and words indexed loads bring
+  from RAM). Compared with the same address's last use and with every key of the previous picture (EFB -> XFB copy).
+  Also a superset key over every register a draw could read, read or not (what a signature kept on register writes
+  would see), and, for misses on the same path (same bytes, same words read in the same order), which words differed.
+- **Checks:** on the PC its full key reproduces X1b exactly on three title spans (5000 -> 5200: 37,464 calls, last-use
+  repeat 48.08%, 7,515 read-set changes; 900 -> 1100: 42.03%; 6590 -> 6790: 53.41%: X1b's numbers), the state hash is
+  the same with the census off, on and planted, and `--dlkey plant` / `DLKEY=plant` (every key made unique) reads 0% on
+  every key, on the PC and the 2DS (job 1146). The census is heavy (the heavy area falls to ~3 pictures a second): its
+  time columns include its own work, so the shares below are by calls and by draws.
+- **Results (round 3, jobs 1142-1145; last use / last picture):**
+
+  | Scene | Calls/s | Draws/s | Bytes + arrays | + structural | + parametric | + matrices | Structural, by draws (last picture) |
+  |---|---|---|---|---|---|---|---|
+  | TP heavy area | 2,709 | 51,144 | 69.7 / 85.4% | 54.3 / 85.4% | 48.0 / 84.5% | 35.9 / 50.4% | **100.0%** |
+  | TP Ordon walk | 2,629 | 44,799 | 89.7 / 93.0% | 68.5 / 93.0% | 61.2 / 73.3% (by draws 14.9%) | 59.7 / 63.0% | **99.9%** |
+  | Mario Party 4 board | 4,986 | 4,986 | 98.2 / 100.0% | 97.5 / 100.0% | 94.9 / 97.4% | 41.7 / 48.9% | **100.0%** |
+  | Wind Waker, Outset | 2,416 | 41,781 | 84.4 / 83.4% | 50.5 / 83.1% | 50.5 / 82.5% | 43.8 / 41.5% | **99.9%** |
+
+- **Reading:**
+  1. **Every draw-carrying list repeats its structural state from one picture to the next** (99.9-100% of draws in all
+     four scenes). The calls that miss carry almost no draws: lists of state alone whose bytes change every frame.
+  2. **Against the last use it is much lower** (TP heavy 54%, Wind Waker 51%): the same list is drawn under several
+     states in one picture (the differing words are bp00, bp40, bp41, bpc0 / bpc1: other passes or materials). A cache
+     needs a few variants per list, keyed by state, not one entry per list.
+  3. **The parametric words must be applied, not checked:** in Ordon the key with them repeats on 14.9% of draws, without
+     them on 99.9%; the words that differ are the projection (XF 0x1020 / 0x1022, every picture while walking) and TEV
+     colour register 1 (an animated colour). Matrices change for ~50% of calls in every scene.
+  4. **A whole-state signature does not work:** the superset key repeats as often as the read-before-write key in TP
+     (85.4%, 92.9%), but 0.0% in Mario Party 4 and 21.1% in Wind Waker (registers no list reads change every picture).
+     The guard must be the list's own read set: **~15-40 structural words a call** (TP heavy 16.6, Ordon 11.4, Mario
+     Party 4 37.5, Wind Waker 19.4) plus ~10-32 parametric words applied live.
+  5. Lists with side effects (PE signals, copies, palette loads): 0.0-0.4% of calls in TP and Mario Party 4, 4.5% in Wind
+     Waker. Lists that load matrices or lights themselves: 0-20%. Distinct structural keys a picture: 253-650.
+- **Two findings outside the census:** (a) Mario Party 4's converted shapes are made again after page stamps ~6,100
+  times per 10 s (job 1129: ~161 ms/s of the GX thread converting) and ~17,500 draws per 10 s go to the old path as
+  "changing", while the sampled hash checks find no change; (b) display lists recorded through the write-gather pipe
+  (GXBeginDisplayList, the GP unlinked) reached RAM without a page stamp, and a save state's RAM without any: G1's
+  shapes (and G2) could replay a list re-recorded at the same address. Both are now stamped (hw/gx.c gp_burst,
+  savestate.c).
+- **X5 still bounds G2 in TP:** list calls are 32-34% of TP's GX thread (19-33% repeating); G2 alone moves
+  TP's GX wall by at most that share. The design that follows from these numbers is in docs/research/G2_PLAN.md.
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

@@ -15,6 +15,8 @@
 #endif
 #include "../boot/boot.h"
 #include "../disc/disc.h"
+#include "../gx/dlkey.h"
+#include "../gx/g2.h"
 #include "jit_glue.h"
 #include "png.h"
 
@@ -357,6 +359,11 @@ int main(int argc, char** argv) {
     // MEMDUMP=file: MEM1 at exit as big-endian words (the guest code the counts refer to).
     const char* edgeHistPath = getenv("EDGEHIST");
     if (edgeHistPath) g_gekkoEdges = calloc(GK_EDGE_N, sizeof(GkEdge));
+    // DLKEY=1: the G2-0 display-list key census (gx/dlkey.c), summed at exit; DLKEY=plant: its self-test (every
+    // repeat must read 0).
+    if (getenv("DLKEY")) { g_dlKey = true; g_dlKeyPlant = !strcmp(getenv("DLKEY"), "plant"); }
+    // G2=1 | check | plant: translated display lists (gx/g2.c; check: every 8th replay compared with the decoder).
+    if (getenv("G2")) { g_g2 = true; g_g2Check = !strcmp(getenv("G2"), "check") ? 1 : !strcmp(getenv("G2"), "plant") ? 2 : 0; }
 #ifdef GX_CENSUS_PC
     if (getenv("GXCENSUS")) gxcensus_start(&sys, getenv("GXCENSUS"));
 #endif
@@ -391,6 +398,49 @@ int main(int argc, char** argv) {
         for (u32 i = 0; i < 32; i++) { h ^= sys.cpu.gpr[i]; h *= 0x100000001B3ull; }
         h ^= sys.cpu.pc; h *= 0x100000001B3ull;
         fprintf(stderr, "state hash %016llx at cycle %llu\n", (unsigned long long)h, (unsigned long long)sys.cpu.cycles);
+    }
+    if (g_dlKey) {
+        const u64* k = g_dlKeyStats;
+        double c = k[DS_CALLS] ? (double)k[DS_CALLS] : 1, dr = k[DS_DRAWS] ? (double)k[DS_DRAWS] : 1;
+        static const char* const kKey[DKK_N] = { "bytes+arrays", "+structural", "+parametric", "+lights", "+matrices" };
+        fprintf(stderr, "dlkey: %llu calls, %llu new, %llu pictures, %llu draws; keys (last use / last picture, by calls; by draws):",
+                (unsigned long long)k[DS_CALLS], (unsigned long long)k[DS_NEW], (unsigned long long)k[DS_PICTURES],
+                (unsigned long long)k[DS_DRAWS]);
+        for (int q = 0; q < DKK_N; q++)
+            fprintf(stderr, " %s %.2f / %.2f%% (%.2f / %.2f%%)", kKey[q], 100 * k[DS_LAST + q] / c, 100 * k[DS_PIC + q] / c,
+                    100 * k[DS_DRAWLAST + q] / dr, 100 * k[DS_DRAWPIC + q] / dr);
+        fprintf(stderr, "; superset structural %.2f / %.2f%% (%.2f%%), with parametric %.2f / %.2f%% (%.2f%%)\n",
+                100 * k[DS_ZS_LAST] / c, 100 * k[DS_ZS_PIC] / c, 100 * k[DS_ZS_DRAWPIC] / dr,
+                100 * k[DS_ZP_LAST] / c, 100 * k[DS_ZP_PIC] / c, 100 * k[DS_ZP_DRAWPIC] / dr);
+        fprintf(stderr, "dlkey: words a call: bp %.2f cp %.2f arrays %.2f xfregs %.2f parametric %.2f lights %.2f matrices %.2f "
+                "ram %.2f; read sets changed %llu; structural keys a picture %.1f; side effects %.2f%%, loading matrices or "
+                "lights %.2f%%; misses on the same path %.2f%%, %.2f words each (%llu cut); keys not kept %llu; differing:",
+                k[DS_WORDS + DK_BP] / c, k[DS_WORDS + DK_CP] / c, k[DS_WORDS + DK_ARR] / c, k[DS_WORDS + DK_XFR] / c,
+                k[DS_WORDS + DK_PAR] / c, k[DS_WORDS + DK_LIT] / c, k[DS_WORDS + DK_MTX] / c, k[DS_WORDS + DK_RAM] / c,
+                (unsigned long long)k[DS_SETCHG], k[DS_PICTURES] ? (double)k[DS_DISTINCT] / k[DS_PICTURES] : 0.0,
+                100 * k[DS_SIDE] / c, 100 * k[DS_XFLOAD] / c, 100 * k[DS_MISS] / c,
+                k[DS_MISS] ? (double)k[DS_MISSWORDS] / k[DS_MISS] : 0.0, (unsigned long long)k[DS_CUT],
+                (unsigned long long)k[DS_NOTKEPT]);
+        for (int q = 0; q < 12; q++) {
+            u32 best = 0;
+            for (u32 id = 1; id < DLK_IDS; id++) if (g_dlKeyMiss[id] > g_dlKeyMiss[best]) best = id;
+            if (!g_dlKeyMiss[best]) break;
+            char nm[16];
+            dlkey_name(best, nm, sizeof nm);
+            fprintf(stderr, " %s %u", nm, g_dlKeyMiss[best]);
+            g_dlKeyMiss[best] = 0;
+        }
+        fprintf(stderr, "\n");
+    }
+    if (g_g2 || g_g2Stats[0]) {
+        const u64* g = g_g2Stats;
+        fprintf(stderr, "g2: %s; list calls %llu, replayed %llu, ops %llu; decoded %llu, again after a stamp %llu, after a "
+                "vertex format changed %llu; not decodable %llu, given up %llu; pool flushes %llu, table full %llu; checked "
+                "%llu, differed %llu; byte hashes %llu, changed %llu\n", g_g2 ? "on" : "off (turned off by a difference)",
+                (unsigned long long)g[0], (unsigned long long)g[1], (unsigned long long)g[13], (unsigned long long)g[2],
+                (unsigned long long)g[3], (unsigned long long)g[4], (unsigned long long)g[5], (unsigned long long)g[6],
+                (unsigned long long)g[7], (unsigned long long)g[8], (unsigned long long)g[9], (unsigned long long)g[10],
+                (unsigned long long)g[11], (unsigned long long)g[12]);
     }
     GXCENSUS(gxcensus_finish());
     host_jit_report();

@@ -16,6 +16,8 @@
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
 #include "../src/gx/gx.h"
+#include "../src/gx/dlkey.h"
+#include "../src/gx/g2.h"
 #include "../src/gx/pica/pica.h"
 #include "../src/gx/vfast.h"
 #include "../src/cpu/memo.h"
@@ -126,6 +128,7 @@ static void present(System* s) {
 }
 
 static u64 prof_clock(void) { return svcGetSystemTick(); }
+static void* dlkey_linear(u32 bytes) { void* p = linearAlloc(bytes); if (p) memset(p, 0, bytes); return p; }
 
 // The New 3DS L2C-310's Prefetch Control Register (PA 0x17E10F60), reached through Luma3DS's physical-memory mirror
 // (VA = PA | 0x80000000, user read/write: job 443 read and wrote it). The kernel leaves 0x74000001: instruction and data
@@ -645,6 +648,16 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
+        else if (!strcmp(a, "--g2")) {  // translated display lists (gx/g2.c); on, check (every 8th replay compared), plant
+            g_g2 = !strcmp(v, "on") || !strcmp(v, "check") || !strcmp(v, "plant");
+            g_g2Check = !strcmp(v, "check") ? 1 : !strcmp(v, "plant") ? 2 : 0;
+            g_g2Alloc = dlkey_linear;  // (the heap has ~0.2 MB free in TP)
+        }
+        else if (!strcmp(a, "--dlkey")) {  // G2-0 (gx/dlkey.c); its tables in linear memory (the heap has ~0.2 MB free in TP)
+            g_dlKey = !strcmp(v, "on") || !strcmp(v, "plant");
+            g_dlKeyPlant = !strcmp(v, "plant");
+            g_dlKeyAlloc = dlkey_linear;
+        }
         else if (!strcmp(a, "--vwbig")) pica_set_vw_big(!strcmp(v, "on"));
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
@@ -1062,6 +1075,7 @@ static const char* run_body(const char* path) {
             return "failed";
         }
         if (g_jit) jit_invalidate_all(g_jit);
+        g2_reset();
         printf("loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     }
     printf("running %s\nSELECT: back to menu\n\n", strrchr(path, '/') + 1);
@@ -2027,6 +2041,73 @@ static const char* run_body(const char* path) {
                             fprintf(g_perf, "# dlist time 10s (GX thread ms/s inside list calls): all %.1f; new %.1f, repeat %.1f, changed %.1f, "
                                     "unsampled %.1f; repeat share of sampled time %.1f%%\n", all, k[0], k[1], k[2], k[3],
                                     sampled > 0 ? 100.0 * k[1] / sampled : 0.0);
+                        }
+                        if (g_dlKey) {  // G2-0 (gx/dlkey.c): which list calls a translated-list cache could replay
+                            static u64 lastY[DKS_N];
+                            u64 y[DKS_N];
+                            memcpy(y, g_dlKeyStats, sizeof y);
+                            double d[DKS_N];
+                            for (int q = 0; q < DKS_N; q++) { d[q] = (double)(y[q] - lastY[q]); lastY[q] = y[q]; }
+                            double c = d[DS_CALLS] > 0 ? d[DS_CALLS] : 1, t = d[DS_TICKS] > 0 ? d[DS_TICKS] : 1;
+                            double dr = d[DS_DRAWS] > 0 ? d[DS_DRAWS] : 1;
+                            static const char* const kKey[DKK_N] = { "bytes+arrays", "+structural", "+parametric", "+lights", "+matrices" };
+                            fprintf(g_perf, "# dlkey 10s: %.0f list calls/s, %.0f draws/s, %.1f pictures/s, new %.1f%%; keys (last use / last "
+                                    "picture, by calls; the same by draws):", d[DS_CALLS] / 10.0, d[DS_DRAWS] / 10.0,
+                                    d[DS_PICTURES] / 10.0, 100 * d[DS_NEW] / c);
+                            for (int q = 0; q < DKK_N; q++)
+                                fprintf(g_perf, " %s %.1f / %.1f%% (%.1f / %.1f%%)", kKey[q], 100 * d[DS_LAST + q] / c, 100 * d[DS_PIC + q] / c,
+                                        100 * d[DS_DRAWLAST + q] / dr, 100 * d[DS_DRAWPIC + q] / dr);
+                            fprintf(g_perf, "; superset structural %.1f / %.1f%% (by draws, last picture %.1f%%), with parametric %.1f / %.1f%% (%.1f%%)\n",
+                                    100 * d[DS_ZS_LAST] / c, 100 * d[DS_ZS_PIC] / c, 100 * d[DS_ZS_DRAWPIC] / dr,
+                                    100 * d[DS_ZP_LAST] / c, 100 * d[DS_ZP_PIC] / c, 100 * d[DS_ZP_DRAWPIC] / dr);
+                            fprintf(g_perf, "# dlkey more 10s: words a call: bp %.1f cp %.1f arrays %.1f xfregs %.1f parametric %.1f lights %.1f "
+                                    "matrices %.1f ram %.1f; read sets changed %.1f%%; structural keys a picture %.0f; calls with side "
+                                    "effects %.1f%%, loading matrices or lights %.1f%%; list time %.1f ms/s (census included), repeating "
+                                    "its last use by key %.1f / %.1f / %.1f / %.1f / %.1f%%; misses on the same path %.1f%% of calls, "
+                                    "%.1f words differing each (%.0f cut); keys not kept %.0f\n",
+                                    d[DS_WORDS + DK_BP] / c, d[DS_WORDS + DK_CP] / c, d[DS_WORDS + DK_ARR] / c, d[DS_WORDS + DK_XFR] / c,
+                                    d[DS_WORDS + DK_PAR] / c, d[DS_WORDS + DK_LIT] / c, d[DS_WORDS + DK_MTX] / c, d[DS_WORDS + DK_RAM] / c,
+                                    100 * d[DS_SETCHG] / c, d[DS_PICTURES] > 0 ? d[DS_DISTINCT] / d[DS_PICTURES] : 0.0,
+                                    100 * d[DS_SIDE] / c, 100 * d[DS_XFLOAD] / c, d[DS_TICKS] * 1000.0 / SYSCLOCK_ARM11 / 10.0,
+                                    100 * d[DS_TICKREP] / t, 100 * d[DS_TICKREP + 1] / t, 100 * d[DS_TICKREP + 2] / t,
+                                    100 * d[DS_TICKREP + 3] / t, 100 * d[DS_TICKREP + 4] / t, 100 * d[DS_MISS] / c,
+                                    d[DS_MISS] > 0 ? d[DS_MISSWORDS] / d[DS_MISS] : 0.0, d[DS_CUT], d[DS_NOTKEPT]);
+                            // The state words those misses differed in, most first (what a cache would patch, not check).
+                            static u32 lastM[DLK_IDS];
+                            u32 top[10] = { 0 }, topN[10] = { 0 };
+                            for (u32 id = 0; id < DLK_IDS; id++) {
+                                u32 n = g_dlKeyMiss[id] - lastM[id];
+                                lastM[id] = g_dlKeyMiss[id];
+                                for (int q = 0; q < 10; q++)
+                                    if (n > topN[q]) {
+                                        for (int r = 9; r > q; r--) { top[r] = top[r - 1]; topN[r] = topN[r - 1]; }
+                                        top[q] = id; topN[q] = n;
+                                        break;
+                                    }
+                            }
+                            fprintf(g_perf, "# dlkey misses 10s (state words differing on the same path):");
+                            for (int q = 0; q < 10 && topN[q]; q++) {
+                                char nm[16];
+                                dlkey_name(top[q], nm, sizeof nm);
+                                fprintf(g_perf, " %s %lu", nm, (unsigned long)topN[q]);
+                            }
+                            fprintf(g_perf, "\n");
+                        }
+                        if (g_g2 || g_g2Stats[0]) {  // translated display lists (gx/g2.c)
+                            static u64 lastG[14];
+                            u64 gs[14];
+                            memcpy(gs, g_g2Stats, sizeof gs);
+                            u64 d[14];
+                            for (int q = 0; q < 14; q++) { d[q] = gs[q] - lastG[q]; lastG[q] = gs[q]; }
+                            fprintf(g_perf, "# g2 10s: %s; list calls %llu, replayed %llu (%.1f%%, %.1f ops each); decoded %llu, again after "
+                                    "a stamp %llu, after a vertex format changed %llu; not decodable %llu, given up %llu; pool flushes "
+                                    "%llu, table full %llu; checked %llu, differed %llu; byte hashes %llu, changed %llu\n",
+                                    g_g2 ? (g_g2Check == 1 ? "check" : g_g2Check == 2 ? "plant" : "on") : "off",
+                                    (unsigned long long)d[0], (unsigned long long)d[1], d[0] ? 100.0 * (double)d[1] / (double)d[0] : 0.0,
+                                    d[1] ? (double)d[13] / (double)d[1] : 0.0, (unsigned long long)d[2], (unsigned long long)d[3],
+                                    (unsigned long long)d[4], (unsigned long long)d[5], (unsigned long long)d[6], (unsigned long long)d[7],
+                                    (unsigned long long)d[8], (unsigned long long)d[9], (unsigned long long)d[10], (unsigned long long)d[11],
+                                    (unsigned long long)d[12]);
                         }
                         {  // runs of draws inside display lists (fifo.c g_dlRun): what a converted list shape would merge
                             static u64 lastR[11];

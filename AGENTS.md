@@ -82,6 +82,7 @@ on the console.
 | Display-list cache | `VCACHE_CHECK=1` on the PC build (every hit gathered again, 0 differences) and `VCACHE_PLANT=1` (must report differences) |
 | TEV / combiners | `bash core/tests/tev/run_tev_tests.sh` |
 | Draw merging | `MERGE_CHECK=1` on the PC build |
+| Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings |
 
 Every check that compares has a planted-bug self-test; a check whose self-test cannot fail proves nothing (the first
