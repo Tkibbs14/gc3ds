@@ -123,7 +123,12 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
     before it matched. The buffer is 128 KB in linear memory now (allocated at the first check); its re-check (jobs
     1080-1081) did not run: the 2DS stopped polling during job 1079 (at 38.6 s of 60, cause unknown; no Luma check
     possible remotely).
-  - **Next:** re-check 1080-1081 after a restart, then separate speed runs (Ordon, heavy area) with `--port-hooks 39`.
+  - **Re-check (jobs 1080-1081, full runs):** 0 differed (Ordon ~780 walks / 10 s, heavy ~550).
+  - **Speed (jobs 1082-1089, two pairs each, same session):** Ordon 31.03 / 30.99 -> 31.72 / 31.69% (**+2.2%**,
+    frames 9.26 -> 9.46 a second), heavy area 22.39 / 22.40 -> 22.49 / 22.49% (+0.4%: the GX thread is its limit).
+    ~3,070 walks per 10 s in Ordon at ~189 us each. **On by default** (James, 2026-10-23); `--port-hooks 7` without.
+  - **Next in J2D:** J2DTextBoxEx (J2DPrint, JUTResFont) so subtrees with text are walked too (~1,800 walks a 10 s
+    in Ordon are refused, most for a text box or a root).
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
   would take (MSR.FP off: the OS's lazy FP switch).

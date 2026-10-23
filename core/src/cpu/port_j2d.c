@@ -1281,7 +1281,8 @@ static inline int hook_of(u32 pc) {
 // __GXSendFlushPrim (the dummy strip GXBegin and GXCallDisplayList send after BP writes, one guest store a word): off
 // until measured (--ab flushhook). diffLightObj (3.6% of the heavy area's core 0 inclusive, job 512): off until
 // measured (--ab lighthook).
-u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP;
+// The pane walk (bit 5): Ordon +2.2%, heavy area +0.4%, exact in check mode (jobs 1080-1089; James 2026-10-23: on).
+u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP | 1u << PORT_PANEWALK;
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
     return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);
