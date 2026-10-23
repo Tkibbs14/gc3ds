@@ -57,7 +57,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C4. Shrink VIn (the worker's per-vertex record)
 
-- **Status:** parked (2026-10-13).
+- **Status:** built and on by default (`--vin`, jobs 588-602: heavy +0.7%, Ordon +0.9%); re-confirmed 2026-10-23 (jobs
+  1100-1111: heavy +0.9%, Ordon +1.3%, Mario Party 4 +1.2%, Wind Waker +0.2%); the ring reservation is compact too
+  since fffee2c (even within noise; the GX thread's wait for the worker 7.6 -> 6.4%).
 - **What:** VIn is 108 bytes (8 texture-coordinate slots, 64 bytes, though TP uses one or two). Pack only the used
   coordinates, and keep the per-draw fields out of it (already done for the matrix indices: VIx, 9ecfeeb).
 - **For:** splitting the matrix indices out of VIn alone moved cache-off speed from 20.0-20.8% (jobs 113, 115) to
