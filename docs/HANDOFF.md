@@ -36,7 +36,12 @@
 > thread). **Next:** the J2D pane walk (LIBRARY_PORTS.md, prerequisite done: the give-ups are denormal inputs, to be
 > computed through the interpreter's soft float per pane).
 > **J2D pane walk (2026-10-23, research/LIBRARY_PORTS.md): on by default.** Exact in full check runs (1080-1081);
-> Ordon +2.2%, heavy area +0.4% (1082-1089). Next in J2D: text boxes (J2DTextBoxEx).
+> Ordon +2.2%, heavy area +0.4% (1082-1089). Text boxes (J2DTextBoxEx) would add at most ~1.5% in Ordon (text is
+> ~1.9% of its core 0): not next.
+> **Where both walls stand (2026-10-23, jobs 1116-1126):** TP heavy is flat on both: core 0 (J3D 19%, GX SDK 9%,
+> collision 5%, nothing above 4%) and the GX thread (nothing above 9.5%). No cheap merging headroom (MEASUREMENTS.md
+> "What keeps draws from merging"). **Next: G1 + G2** (EMULATOR_CEILING.md): per-segment matrices and array bases,
+> translated display lists; a multi-session redesign.
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%).
