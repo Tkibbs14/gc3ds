@@ -81,3 +81,15 @@
     { 0x8030D65C, 0x110, 0x1DD0778310AE57C5ull },  // J3DGDSetLightColor__F10_GXLightID8_GXColor
     { 0x8030D76C, 0x1CC, 0x0FA8D55F1572CE38ull },  // J3DGDSetLightPos__F10_GXLightIDfff
     { 0x8030D938, 0x1CC, 0xE1A849DD6887E9B1ull },  // J3DGDSetLightDir__F10_GXLightIDfff
+    { 0x802F67E0, 0x538, 0x420F437813593E13ull },  // draw__7J2DPaneFffPC14J2DGrafContextbb
+    { 0x802E987C, 0x11C, 0xA65DFD437CF57B97ull },  // scissorBounds__13J2DOrthoGraphFPQ29JGeometry8TBox2<f>PCQ29JGeometry8TBox2<f>
+    { 0x802E90C0, 0x24, 0xEA7C92B7698DC80Full },  // scissor__14J2DGrafContextFRCQ29JGeometry8TBox2<f>
+    { 0x802E8E20, 0x2A0, 0x02802FB030E249FDull },  // setScissor__14J2DGrafContextFv
+    { 0x803604D0, 0x78, 0xE7114A5289AC57B7ull },  // GXSetScissor
+    { 0x803620AC, 0x5C, 0x92B88B15F3644346ull },  // __cvt_fp2unsigned
+    { 0x8036BEBC, 0x144, 0x337948117E793B07ull },  // ceil
+    { 0x80306A0C, 0x18, 0xFA4B40BD91D0801Eull },  // rewriteAlpha__12J2DPictureExFv
+    { 0x802F83CC, 0x4, 0x2F639DC45181817Full },  // rewriteAlpha__7J2DPaneFv
+    { 0x802F83C8, 0x4, 0x2F639DC45181817Full },  // drawSelf__7J2DPaneFffPA3_A4_f
+    { 0x802E9664, 0x8, 0x483349B35D8BA64Dull },  // getGrafType__14J2DGrafContextCFv
+    { 0x802E9C88, 0x8, 0x482FA3B35D885664ull },  // getGrafType__13J2DOrthoGraphCFv

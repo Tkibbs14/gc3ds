@@ -109,6 +109,21 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
     entries, and a pre-scan that takes a subtree only when every pane is a J2DPane or J2DPictureEx and the hooked pane
     has a parent. Expected: the walk's ~6,600 cycles a pane (Ordon: ~3,760 panes a second, 3.1% self) plus its GX calls,
     ~+3-3.5% in Ordon, ~2.5% in the heavy area.
+- **The pane walk, built (2026-10-23; PORT_PANEWALK, `--port-hooks 39`, off by default):** J2DPane::draw hooked;
+  a pane with a parent whose whole subtree draws as J2DPane / J2DPictureEx (drawSelf and rewriteAlpha either class's,
+  pre-scanned) is walked natively: bounds, global bounds and the parent's offset, PSMTXConcat, clip against the
+  parent's, alpha, J2DOrthoGraph::scissorBounds, J2DGrafContext::setScissor (its ceil and __cvt_fp2unsigned) and
+  GXSetScissor, GXSetCullMode, J2DPictureEx's existing drawSelf port, then the children. Pane stores are written
+  through with an undo list (children read their parent's fields; a walk that gives up restores memory); the walk's
+  pipe bytes and undo list live in linear memory (64 KB, 96 KB). Comparisons follow fcmpo on the singles' bits (the
+  VFP flushes denormal inputs). 12 more guest functions in the hash table.
+  - **Check mode (jobs 1078-1079, Ordon / heavy area):** ~770 / 580 walks checked per 10 s, ~13,400 interpreter
+    instructions each (port estimate ~10,400), ~2,200 pipe bytes each. Every reported difference was at pipe byte
+    16,384 exactly: the interpreter's capture buffer was 16 KB on the 3DS (the walk sends up to ~19 KB); all bytes
+    before it matched. The buffer is 128 KB in linear memory now (allocated at the first check); its re-check (jobs
+    1080-1081) did not run: the 2DS stopped polling during job 1079 (at 38.6 s of 60, cause unknown; no Luma check
+    possible remotely).
+  - **Next:** re-check 1080-1081 after a restart, then separate speed runs (Ordon, heavy area) with `--port-hooks 39`.
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
   would take (MSR.FP off: the OS's lazy FP switch).

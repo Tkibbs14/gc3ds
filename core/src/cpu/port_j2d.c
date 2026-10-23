@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "gekko_internal.h"
 #include "port.h"
 #include "memo.h"
@@ -55,6 +56,8 @@ enum {
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
     A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0,
     A_GDCURRENTDL = 0x80451980,  // (__GDCurrentDL: the GDLObj J3D's display-list writers append to)
+    A_PANE_DRAW = 0x802F67E0, A_PANE_DRAWSELF = 0x802F83C8, A_PANE_REWRITEALPHA = 0x802F83CC,
+    A_PICEX_REWRITEALPHA = 0x80306A0C, A_GRAFTYPE_ORTHO = 0x802E9C88, A_GRAFTYPE_CONTEXT = 0x802E9664,
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -83,6 +86,16 @@ static bool port_valid(void) {
 #define GXD_BYTES 0x5B0
 #define PIPE_CAP 8192
 #define LOG_MAX 64
+#define WALK_PIPE (64u << 10)  // the pane walk's pipe bytes (~600 a drawn J2DPictureEx) and stores with their old words
+#define WALK_UNDO 8192
+static void* walk_alloc(u32 n) {
+#ifdef __3DS__
+    extern void* linearAlloc(size_t size);
+    void* p = linearAlloc(n);
+    if (p) return p;
+#endif
+    return malloc(n);
+}
 typedef struct {
     Gekko* g;
     u32 gxd;               // __GXData's guest address
@@ -105,6 +118,14 @@ typedef struct {
     float l14, l15, l31;
     u32 gdA, gdN;          // bytes written at a GD display list's write pointer (J3D's writers), from gdA
     u8 gd[8 * 72];
+    // The pane walk (PORT_PANEWALK): its stores go straight to guest memory (children read what their parent just
+    // wrote), each with the word it replaced, so a walk that gives up puts everything back (walk_undo); its pipe bytes
+    // go to a larger buffer. pbase: where this call's pipe bytes start (pipe, or the walk's buffer).
+    u8* pbase;
+    u32 pcap;
+    bool wt;
+    u32 (*undo)[3];        // address, old word, new word
+    u32 nundo, undoCap;
 } Pc;
 
 // Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
@@ -131,6 +152,13 @@ static u32 rd32(Pc* c, u32 a) {
 static u32 rd8(Pc* c, u32 a) { return (rd32(c, a & ~3u) >> (8 * (3 - (a & 3)))) & 0xFF; }
 static void wr32(Pc* c, u32 a, u32 v) {
     if (a - c->gxd < GXD_BYTES && !(a & 3)) { *gxw(c, (a - c->gxd) >> 2) = v; return; }
+    if (c->wt) {  // the walk: written through, the old word kept
+        if ((a & 3) || !in_mem1(a, 4) || c->nundo >= c->undoCap) { give_up(c, 1); return; }
+        u32* u = c->undo[c->nundo++];
+        u[0] = a; u[1] = ram_rd32(g_pm, a - 0x80000000u); u[2] = v;
+        ram_wr32(g_pm, a - 0x80000000u, v);
+        return;
+    }
     if ((a & 3) || !in_mem1(a, 4) || c->nlog >= LOG_MAX) { give_up(c, 1); return; }
     c->log[c->nlog][0] = a;
     c->log[c->nlog][1] = v;
@@ -889,6 +917,187 @@ static void picex_draw_self(Pc* c, u32 p, u32 mtx) {  // J2DPictureEx::drawSelf 
     c->n += 40;
 }
 
+// ---- the pane walk: J2DPane::draw 0x802F67E0 over a whole subtree (libs/JSystem/src/J2DGraph/J2DPane.cpp) ----
+// Taken when the hooked pane has a parent and every pane below it draws as J2DPane or J2DPictureEx (drawSelf and
+// rewriteAlpha either class's); otherwise the guest code runs, and its calls to each child's draw come back here.
+// Comparisons follow fcmpo + cror on the singles' bits (the VFP flushes denormal inputs, the Gekko does not); every
+// float operation's inputs and result are plain() (zero or normal), so the VFP's single result is the Gekko's.
+static inline bool fnan(u32 v) { return ((v >> 23) & 0xFF) == 0xFF && (v & 0x7FFFFF); }
+static inline s32 fkey(u32 v) { return v & 0x80000000u ? -(s32)(v & 0x7FFFFFFFu) : (s32)v; }  // (-0 and +0 equal)
+static inline bool fge(u32 a, u32 b) { return !fnan(a) && !fnan(b) && fkey(a) >= fkey(b); }  // fcmpo; cror eq,gt,eq
+static inline bool fle(u32 a, u32 b) { return !fnan(a) && !fnan(b) && fkey(a) <= fkey(b); }  // fcmpo; cror eq,lt,eq
+static u32 fop(Pc* c, u32 a, u32 b, int op) {  // fadds / fsubs / fmuls / fdivs on plain singles
+    if (!plain(c, a) || !plain(c, b)) return 0;
+    float x = fbits(a), y = fbits(b), r = op == 0 ? x + y : op == 1 ? x - y : op == 2 ? x * y : x / y;
+    u32 v = bitsf(r);
+    plain(c, v);
+    return v;
+}
+#define FADD(a, b) fop(c, a, b, 0)
+#define FSUB(a, b) fop(c, a, b, 1)
+#define FMUL(a, b) fop(c, a, b, 2)
+#define FDIV(a, b) fop(c, a, b, 3)
+static inline u32 sda2(Pc* c, s32 off) { return f32(c->g->gpr[2] + (u32)off); }  // a constant at r2+off
+static void pw8(Pc* c, u32 a, u32 v) {  // stb through the walk's undo list
+    u32 w = rd32(c, a & ~3u), sh = 8 * (3 - (a & 3));
+    wr32(c, a & ~3u, (w & ~(0xFFu << sh)) | ((v & 0xFF) << sh));
+}
+// J2DOrthoGraph::scissorBounds 0x802E987C (g: the graph, q: the pane's clip box): the box in screen units, clamped to
+// the graph's scissor box.
+static void ortho_scissor_bounds(Pc* c, u32 g, u32* box, u32 q) {
+    u32 sx = FDIV(FSUB(f32(g + 12), f32(g + 4)), FSUB(f32(g + 196), f32(g + 188)));
+    u32 sy = FDIV(FSUB(f32(g + 16), f32(g + 8)), FSUB(f32(g + 200), f32(g + 192)));
+    u32 lo = sda2(c, -14496), x = f32(g + 4), y = f32(g + 8), ox = f32(g + 188), oy = f32(g + 192);
+    if (!fge(x, lo)) x = lo;
+    if (!fge(y, lo)) y = lo;
+    box[2] = FADD(x, FMUL(sx, FSUB(f32(q + 8), ox)));
+    box[1] = FADD(y, FMUL(sy, FSUB(f32(q + 4), oy)));
+    box[3] = FADD(y, FMUL(sy, FSUB(f32(q + 12), oy)));
+    box[0] = FADD(x, FMUL(sx, FSUB(f32(q + 0), ox)));
+    if (fle(box[0], f32(g + 20))) box[0] = f32(g + 20);
+    if (fle(box[1], f32(g + 24))) box[1] = f32(g + 24);
+    if (fge(box[2], f32(g + 28))) box[2] = f32(g + 28);
+    if (fge(box[3], f32(g + 32))) box[3] = f32(g + 32);
+    c->n += 71;
+}
+static u32 cvt_fp2unsigned(Pc* c, u32 v) {  // __cvt_fp2unsigned 0x803620AC on a plain single
+    plain(c, v);
+    float f = fbits(v);
+    c->n += 14;
+    return f < 0.0f ? 0 : f >= 4294967296.0f ? 0xFFFFFFFFu : (u32)f;
+}
+static void gx_set_scissor(Pc* c, u32 left, u32 top, u32 w, u32 h) {  // GXSetScissor 0x803604D0
+    u32 t = top + 342, l = left + 342;
+    GX(248) = rlwimi(GX(248), t, 0, 21, 31);
+    GX(248) = rlwimi(GX(248), l, 12, 9, 19);
+    GX(252) = rlwimi(GX(252), t + (h - 1), 0, 21, 31);
+    GX(252) = rlwimi(GX(252), l + (w - 1), 12, 9, 19);
+    bp(c, GX(248));
+    bp(c, GX(252));
+    bp_sent_not(c, 0);
+    c->n += 30;
+}
+// J2DGrafContext::setScissor 0x802E8E20 on the box s (the stack copy's scissor box; its own clamping of the copy's
+// fields is left out: the copy is not read again).
+static void graf_set_scissor(Pc* c, const u32* s) {
+    u32 x0 = s[0], y0 = s[1], x1 = s[2], y1 = s[3], lo = sda2(c, -14520), hi = sda2(c, -14512);
+    if (!(fge(x1, x0) && fge(y1, y0))) {
+        u32 a = x0, b = y0, cc = x1, d = y1;
+        if (fge(x0, x1)) x0 = x1;
+        if (fge(y0, y1)) y0 = y1;
+        if (fle(x1, a)) x1 = a;
+        if (fle(y1, b)) y1 = b;
+        if (fle(x1, cc)) x1 = cc;
+        if (fle(y1, d)) y1 = d;
+    }
+    if (fle(x0, lo)) x0 = lo;
+    if (fle(y0, lo)) y0 = lo;
+    if (fge(x1, hi)) x1 = hi;
+    if (fge(y1, hi)) y1 = hi;
+    c->n += 60;
+    if (!(fge(x1, x0) && fge(y1, y0))) { gx_set_scissor(c, 0, 0, 0, 0); return; }
+    u32 left = cvt_fp2unsigned(c, x0), top = cvt_fp2unsigned(c, y0);
+    if (left >= (1u << 24) || top >= (1u << 24) || !plain(c, x1) || !plain(c, y1)) { give_up(c, 2); return; }
+    u32 fl = bitsf((float)left), ft = bitsf((float)top);  // (the magic-number conversion, exact below 2^24)
+    u32 cx = bitsf((float)ceil((double)fbits(x1))), cy = bitsf((float)ceil((double)fbits(y1)));  // ceil 0x8036BEBC, frsp
+    u32 h = cvt_fp2unsigned(c, FSUB(cy, ft)), w = cvt_fp2unsigned(c, FSUB(cx, fl));
+    c->n += 2 * 60;
+    gx_set_scissor(c, left, cvt_fp2unsigned(c, ft), w, h);
+}
+// Whether the subtree at p (depth d) is the walk's: J2DPane or J2DPictureEx drawing throughout; counts the panes.
+#define WALK_DEPTH 24
+static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
+    if (d > WALK_DEPTH || !in_mem1(p, 344)) return false;
+    u32 vt = f32(p);
+    if (!in_mem1(vt, 92)) return false;
+    u32 ds = f32(vt + 56), ra = f32(vt + 88);
+    if ((ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) || (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA)) return false;
+    if (++*panes > 512) return false;
+    for (u32 l = f32(p + 220); l; l = f32(l + 12)) {
+        if (!in_mem1(l, 16) || !walk_scan(c, f32(l), d + 1, panes)) return false;
+    }
+    return true;
+}
+// J2DPane::draw (p, x, y, graph, clip, visible) for a pane with a parent; x and y are only read without one.
+static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d) {
+    if (c->fail || !span(c, p, 344)) return;
+    c->n += 40;
+    vis = vis && f8(p + 176);
+    u32 node = f32(p + 236), par = node && in_mem1(node, 16) ? f32(node + 12) : 0;
+    if (!par || !span(c, par, 240)) { give_up(c, 1); return; }
+    if (!(fge(f32(p + 40), f32(p + 32)) && fge(f32(p + 44), f32(p + 36)))) return;  // no box: nothing drawn, no children
+    u32 b0 = f32(p + 32), b1 = f32(p + 36), b2 = f32(p + 40), b3 = f32(p + 44), tx = f32(p + 212), ty = f32(p + 216);
+    u32 gb[4] = { FADD(b0, tx), FADD(b1, ty), FADD(b2, tx), FADD(b3, ty) };
+    if (vis) {
+        u32 vt = f32(p);
+        if (f32(vt + 88) == A_PICEX_REWRITEALPHA) {  // J2DPictureEx::rewriteAlpha: 178 = the material's alpha
+            u32 mat = f32(p + 336);
+            if (mat && span(c, mat, 20)) pw8(c, p + 178, f8(mat + 19));
+            c->n += 6;
+        }
+    }
+    u32 dx = FSUB(f32(par + 48), f32(par + 32)), dy = FSUB(f32(par + 52), f32(par + 36));
+    gb[0] = FADD(gb[0], dx); gb[1] = FADD(gb[1], dy); gb[2] = FADD(gb[2], dx); gb[3] = FADD(gb[3], dy);
+    for (u32 k = 0; k < 4; k++) wr32(c, p + 48 + 4 * k, gb[k]);
+    u32 m[12];
+    psmtx_concat(c, par + 128, p + 80, m);
+    if (c->fail) return;
+    for (u32 k = 0; k < 12; k++) wr32(c, p + 128 + 4 * k, m[k]);
+    c->n += 60;
+    if (vis) {
+        u32 cl[4] = { b0, b1, b2, b3 };
+        if (clip) {
+            for (u32 k = 0; k < 4; k++) cl[k] = gb[k];
+            u32 pc0 = f32(par + 64), pc1 = f32(par + 68), pc2 = f32(par + 72), pc3 = f32(par + 76);
+            if (fle(cl[0], pc0)) cl[0] = pc0;
+            if (fle(cl[1], pc1)) cl[1] = pc1;
+            if (fge(cl[2], pc2)) cl[2] = pc2;
+            if (fge(cl[3], pc3)) cl[3] = pc3;
+        }
+        for (u32 k = 0; k < 4; k++) wr32(c, p + 64 + 4 * k, cl[k]);
+        u32 a = rd32(c, p + 176) >> 8 & 0xFF;  // 178 (rewriteAlpha may have just written it)
+        pw8(c, p + 179, a);
+        if (f8(p + 180)) pw8(c, p + 179, (u32)((s32)(a * f8(par + 179)) / 255));
+        c->n += 30;
+    }
+    if (c->fail) return;
+    if (vis) {
+        u32 box[4], z = sda2(c, -14352);
+        box[0] = box[1] = box[2] = box[3] = z;
+        if (clip) ortho_scissor_bounds(c, g, box, p + 64);
+        u32 c0 = rd32(c, p + 64), c1 = rd32(c, p + 68), c2 = rd32(c, p + 72), c3 = rd32(c, p + 76);
+        if ((fge(c2, c0) && fge(c3, c1)) || !clip) {
+            if (clip) graf_set_scissor(c, box);
+            gx_set_cull_mode(c, f8(p + 177));
+            if (f32(f32(p) + 56) == A_PICEX_DRAWSELF) {
+                if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
+                picex_draw_self(c, p, g + 128);  // (the stack copy's matrix is the graph's at +128)
+            }
+            c->n += 60;
+        }
+    }
+    for (u32 l = f32(p + 220); l && !c->fail; l = f32(l + 12)) walk_pane(c, f32(l), g, clip, vis, d + 1);
+}
+u64 g_walkPanes;
+static void pane_walk(Pc* c, Gekko* g) {
+    u32 p = g->gpr[3], gr = g->gpr[4], panes = 0;
+    bool clip = g->gpr[5] & 0xFF, vis = g->gpr[6] & 0xFF;
+    u32 node = in_mem1(p, 240) ? f32(p + 236) : 0;
+    if (!node || !in_mem1(node, 16) || !f32(node + 12)) { give_up(c, 1); return; }  // a root: the guest code
+    if (!walk_scan(c, p, 0, &panes)) { give_up(c, 5); return; }
+    if (!span(c, gr, 204) || !span(c, f32(gr), 36)) return;
+    u32 gt = f32(f32(gr) + 32);
+    if (gt != A_GRAFTYPE_ORTHO && gt != A_GRAFTYPE_CONTEXT) { give_up(c, 5); return; }
+    if (gt != A_GRAFTYPE_ORTHO) clip = false;
+    if (!span(c, g->gpr[2] - 14520u, 180)) return;
+    c->wt = true;
+    walk_pane(c, p, gr, clip, vis, 0);
+    if (!c->fail) g_walkPanes += panes;
+}
+static void walk_undo(Pc* c) {
+    for (u32 i = c->nundo; i-- > 0;) ram_wr32(g_pm, c->undo[i][0] - 0x80000000u, c->undo[i][1]);
+}
+
 // ---- J3D: a shape's matrices (libs/JSystem/src/J3DGraphBase/J3DShapeMtx.cpp) ----
 // J3DFifoLoadPosMtxImm 0x8030FAE0 / J3DFifoLoadNrmMtxImm 0x8030FB60 / ...Imm3x3 0x8030FBCC: the words as they are.
 static void j3d_load_pos_mtx(Pc* c, const u32* m, u32 id) {
@@ -1001,8 +1210,22 @@ static Pc g_pc;
 // Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
 static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = c->dirty = c->gdN = 0;
-    c->pp = c->pipe;
+    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = 0;
+    c->wt = false;
+    c->pbase = c->pipe;
+    c->pcap = PIPE_CAP;
+    if (hook == PORT_PANEWALK) {  // the walk's buffers: linear memory on the 3DS (the heap is nearly full in gameplay)
+        static u8* walkPipe;
+        static u32 (*walkUndo)[3];
+        if (!walkPipe) walkPipe = walk_alloc(WALK_PIPE);
+        if (!walkUndo) walkUndo = walk_alloc(WALK_UNDO * sizeof *walkUndo);
+        if (!walkPipe || !walkUndo) return false;
+        c->pbase = walkPipe;
+        c->pcap = WALK_PIPE;
+        c->undo = walkUndo;
+        c->undoCap = WALK_UNDO;
+    }
+    c->pp = c->pbase;
     c->bpsn = ~0u;
     c->fail = 0;
     c->leak = false;
@@ -1015,14 +1238,17 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     // (Floating point off: the FPRs are another thread's until the OS takes the FP-unavailable exception, which the
     // guest code raises at its first float instruction: the float ports are not taken then.)
     if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { if (!c->fail) g_portFloatSite[4]++; give_up(c, 2); return false; }
-    if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
+    if (hook == PORT_PANEWALK) pane_walk(c, g);
+    else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
     else if (hook == PORT_PICTUREEX) picex_draw_self(c, g->gpr[3], g->gpr[4]);
     else material_set_gx(c, g->gpr[3]);
     tmark(5);
     gx_sync(c);
-    c->pn = (u32)(c->pp - c->pipe);
+    c->pn = (u32)(c->pp - c->pbase);
+    c->wt = false;
+    if (c->fail && c->nundo) walk_undo(c);  // (a walk that gave up leaves memory as it found it)
     return !c->fail;
 }
 static void port_commit(Pc* c) {
@@ -1032,7 +1258,7 @@ static void port_commit(Pc* c) {
     }
     for (u32 i = 0; i < c->nlog; i++) ram_wr32(g_pm, c->log[i][0] - 0x80000000u, c->log[i][1]);
     for (u32 i = 0; i < c->gdN; i++) ram_wr8(g_pm, c->gdA - 0x80000000u + i, c->gd[i]);
-    if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pipe, c->pn);
+    if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pbase, c->pn);  // (the walk's stores are in memory already)
 }
 
 // The registers the guest code would leave other than the ABI promises (PSMTXConcat's leaked lanes, Pc.leak).
@@ -1040,15 +1266,15 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
     if (!c->leak) return;
     g->fpr[14].ps1 = c->l14;
     g->fpr[15].ps1 = c->l15;
-    if (hook != PORT_PICTUREEX) g->fpr[31].ps1 = c->l31;  // (drawTexCoord saves and restores f31 whole)
+    if (hook != PORT_PICTUREEX && hook != PORT_PANEWALK) g->fpr[31].ps1 = c->l31;  // (drawTexCoord and J2DPane::draw save f31 whole)
 }
 
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
                                           "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
-                                          "J3DColorBlockLightOn::diffLightObj" };
+                                          "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
-           pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : -1;
+           pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -1067,9 +1293,12 @@ bool port_is_hook(u32 pc) {
 // stack pointer but its LR save word, every word the port would have written, the pipe bytes, the registers the ABI
 // keeps.
 extern void (*gp_capture)(const u8* data, u32 len);
-static u8 g_icap[PIPE_CAP * 2];
+// The interpreter's pipe bytes (allocated at the first check: a walk sends ~19 KB, more than the 16 KB this held, which
+// cut the walk's checks short at byte 16,384, jobs 1078-1079).
+#define ICAP_CAP (WALK_PIPE * 2)
+static u8* g_icap;
 static u32 g_icapN;
-static void icap_put(const u8* d, u32 len) { for (u32 i = 0; i < len && g_icapN < sizeof g_icap; i++) g_icap[g_icapN++] = d[i]; }
+static void icap_put(const u8* d, u32 len) { for (u32 i = 0; i < len && g_icapN < ICAP_CAP; i++) g_icap[g_icapN++] = d[i]; }
 static void chk_bad(Gekko* g0, Pc* c, u32 hook, u32 what, u32 a, u32 want, u32 mine) {
     PortStats* s = &g_portStats;
     if (s->bad++) return;
@@ -1090,12 +1319,14 @@ static void chk_bad(Gekko* g0, Pc* c, u32 hook, u32 what, u32 a, u32 want, u32 m
 }
 static u32 port_check(Gekko* g, u32 hook) {
     Pc* c = &g_pc;
+    if (!g_icap && !(g_icap = walk_alloc(ICAP_CAP))) return 0;
     PortHook* hs = &g_portStats.h[hook];
     Gekko g0 = *g;
     bool took = port_run(c, g, hook);
     *g = g0;
     if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }  // (the guest code runs as usual)
-    if (g_portMode == 3 && c->pn) c->pipe[c->pn - 1] ^= 1;  // (--port plant: a known difference, the checker must report it)
+    walk_undo(c);  // (the walk's stores: undone for the interpreter, compared below)
+    if (g_portMode == 3 && c->pn) c->pbase[c->pn - 1] ^= 1;  // (--port plant: a known difference, the checker must report it)
     u32 sp = g->gpr[1], ret = g->lr;
     g_chkN = 0;
     g_icapN = 0;
@@ -1111,13 +1342,13 @@ static u32 port_check(Gekko* g, u32 hook) {
     hs->insEst += c->n;
     hs->pipe += c->pn;
     if (why) { chk_bad(&g0, c, hook, 1, g->pc, 0, 0); return n ? n : 1; }
-    if (g_icapN != c->pn || memcmp(g_icap, c->pipe, c->pn)) {
+    if (g_icapN != c->pn || memcmp(g_icap, c->pbase, c->pn)) {
         u32 i = 0;
-        while (i < c->pn && i < g_icapN && g_icap[i] == c->pipe[i]) i++;
+        while (i < c->pn && i < g_icapN && g_icap[i] == c->pbase[i]) i++;
         u32 want = 0, mine = 0;
         for (u32 k = i & ~3u; k < (i & ~3u) + 4; k++) {
             want = want << 8 | (k < g_icapN ? g_icap[k] : 0);
-            mine = mine << 8 | (k < c->pn ? c->pipe[k] : 0);
+            mine = mine << 8 | (k < c->pn ? c->pbase[k] : 0);
         }
         chk_bad(&g0, c, hook, 2, i, want, mine);
         return n ? n : 1;
@@ -1128,6 +1359,7 @@ static u32 port_check(Gekko* g, u32 hook) {
         u32 want = ram_rd32(g_pm, a - 0x80000000u), mine = g_chkW[i][1];
         if (a - c->gxd < GXD_BYTES) { if (c->have[(a - c->gxd) >> 2]) mine = c->gx[(a - c->gxd) >> 2]; }
         else for (u32 k = 0; k < c->nlog; k++) if (c->log[k][0] == a) mine = c->log[k][1];
+        for (u32 k = 0; k < c->nundo; k++) if (c->undo[k][0] == a) mine = c->undo[k][2];  // (the walk's, newest last)
         for (u32 b = 0; b < 4; b++)  // (the GD bytes over the word as it was)
             if (a + b - c->gdA < c->gdN) mine = (mine & ~(0xFF000000u >> 8 * b)) | (u32)c->gd[a + b - c->gdA] << (24 - 8 * b);
         if (want != mine) { chk_bad(&g0, c, hook, 3, a, want, mine); return n ? n : 1; }
@@ -1142,6 +1374,12 @@ static u32 port_check(Gekko* g, u32 hook) {
         for (u32 k = i + 1; k < c->nlog; k++) later |= c->log[k][0] == c->log[i][0];
         u32 want = ram_rd32(g_pm, c->log[i][0] - 0x80000000u);
         if (!later && want != c->log[i][1]) { chk_bad(&g0, c, hook, 5, c->log[i][0], want, c->log[i][1]); return n ? n : 1; }
+    }
+    for (u32 i = 0; i < c->nundo; i++) {  // the walk's stores (the last to each word decides)
+        bool later = false;
+        for (u32 k = i + 1; k < c->nundo; k++) later |= c->undo[k][0] == c->undo[i][0];
+        u32 want = ram_rd32(g_pm, c->undo[i][0] - 0x80000000u);
+        if (!later && want != c->undo[i][2]) { chk_bad(&g0, c, hook, 5, c->undo[i][0], want, c->undo[i][2]); return n ? n : 1; }
     }
     for (u32 i = 0; i < c->gdN; i++) {
         u32 want = ram_rd8(g_pm, c->gdA - 0x80000000u + i);
@@ -1175,7 +1413,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322 };
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 100 };  // (the walk: not yet scaled)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;

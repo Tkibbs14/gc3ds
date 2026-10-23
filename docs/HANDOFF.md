@@ -35,6 +35,9 @@
 > binary: compare within one session. **`--vwbig` (on):** Mario Party 4 +2.9% (big draws on the worker, not the GX
 > thread). **Next:** the J2D pane walk (LIBRARY_PORTS.md, prerequisite done: the give-ups are denormal inputs, to be
 > computed through the interpreter's soft float per pane).
+> **J2D pane walk (2026-10-23, research/LIBRARY_PORTS.md):** built behind `--port-hooks 39` (off). Check mode matched
+> everything up to a 16 KB capture limit (fixed); the 2DS stopped during check job 1079 and needs a restart, then jobs
+> 1080-1081 re-check it and speed runs follow.
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%). **On by default since 2026-10-23** (James); `--faultmem off` / `--faultsync on` restore.
