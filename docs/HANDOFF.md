@@ -42,6 +42,16 @@
 > collision 5%, nothing above 4%) and the GX thread (nothing above 9.5%). No cheap merging headroom (MEASUREMENTS.md
 > "What keeps draws from merging"). **Next: G1 + G2** (EMULATOR_CEILING.md): per-segment matrices and array bases,
 > translated display lists; a multi-session redesign.
+> **G2 (2026-10-23 night, docs/research/G2_PLAN.md):** the census (`--dlkey on`, MEASUREMENTS.md "G2-0", jobs
+> 1127-1146) found every draw-carrying list repeating its structural state from one picture to the next (99.9-100% of
+> draws in TP heavy, Ordon, Mario Party 4, Wind Waker), but under several states per picture (variants needed), with the
+> projection and TEV colours changing every picture (to be applied, not checked) and no whole-state signature that
+> works across games. **G2a, pre-decoded lists (`--g2 on`, off):** exact (PC hash and frames; 2DS `--g2 check` 0
+> differed), the GX thread 1.3-2.5 points less busy, **speed unchanged** in all four scenes (jobs 1152-1161): TP and
+> Wind Waker are core-0-bound, Mario Party 4 waits on its vertex worker. Next GX steps by `ns_draw`'s phase profile
+> (`# shapes phases 10s`): the batch-open work done once, the converted draw call through C25's raw path, G2b's memo.
+> Also found: lists recorded through the pipe and save-state RAM were never stamped (fixed, 0d291e3), and Mario Party
+> 4's shapes are converted again after stamps whose bytes did not change (~180 ms/s of its GX thread).
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%).

@@ -2140,6 +2140,14 @@ static const char* run_body(const char* path) {
                                     (unsigned long long)(ns[9] - lastN[9]), (double)(ns[11] - lastN[11]) * 1000.0 / SYSCLOCK_ARM11,
                                     (double)(ns[12] - lastN[12]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long)live, (unsigned long)kb);
                             memcpy(lastN, ns, sizeof ns);
+                            extern u64 g_nsPhase[7];
+                            static u64 lastP[7];
+                            double ph[7];
+                            for (int k = 0; k < 7; k++) { ph[k] = (double)(g_nsPhase[k] - lastP[k]); lastP[k] = g_nsPhase[k]; }
+                            fprintf(g_perf, "# shapes phases 10s (GX thread ms/s, 1 draw in 16 timed): entry %.1f, batch check %.1f, lookup %.1f, "
+                                    "state %.1f, matrices and attributes %.1f, draw call %.1f (%.0f timed)\n",
+                                    ph[0] * 100.0 / SYSCLOCK_ARM11, ph[1] * 100.0 / SYSCLOCK_ARM11, ph[2] * 100.0 / SYSCLOCK_ARM11,
+                                    ph[3] * 100.0 / SYSCLOCK_ARM11, ph[4] * 100.0 / SYSCLOCK_ARM11, ph[5] * 100.0 / SYSCLOCK_ARM11, ph[6]);
                             static u64 lastW[5];
                             fprintf(g_perf, "# shapes never made 10s: vertex layout %llu, run %llu, limits %llu, matrix row past 27 %llu, memory %llu\n",
                                     (unsigned long long)(g_nsWhy[0] - lastW[0]), (unsigned long long)(g_nsWhy[1] - lastW[1]),

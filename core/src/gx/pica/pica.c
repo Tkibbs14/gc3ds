@@ -3157,6 +3157,11 @@ static volatile bool g_nsWant = true;
 // [8] of them changed, [9] evictions, [10] draws of shapes left on the old path as changing; ticks of [11] conversions,
 // [12] native draws (conversions included); [13] flushed ranges looked at, [14] ring overflows.
 u64 g_nsStats[16];
+// ns_draw's time by phase (G2_PLAN.md G2b: what a per-run memo could skip), one call in 16 timed, ticks x16: [0] entry
+// (an open merged draw issued, the worker's records applied, the frame begun), [1] the batch check (key, TEV lookup, state
+// support), [2] the shape lookup, [3] the batch's state (flush, TEV, textures, fragment state, lights), [4] projection,
+// matrix rows, attributes and texture rows, [5] the draw call; [6] calls timed.
+u64 g_nsPhase[7];
 void pica_set_native_shapes(bool on) { g_nsWant = on; }
 bool pica_native_shapes(void) { return g_nsWant; }
 u32 pica_native_bytes(u32* live) { if (live) *live = g_nsLiveN; return g_nsBytes; }
@@ -3634,6 +3639,10 @@ static bool ns_draw(System* s, const NsReq* q) {
     if (!q->list && (q->nv > 0xFFFF || q->nv == 0 || q->ni < 3)) return false;
     if (g_fskipNow) { g_fskipDraws++; return true; }
     if (ns_dynamic(q->cmd)) { g_nsStats[10]++; return false; }
+    static u32 nph;
+    bool ph = g_profClock && !(++nph & 15);
+    u64 pt = ph ? g_profClock() : 0;
+#define NS_PH(k) do { if (ph) { u64 t_ = g_profClock(); g_nsPhase[k] += (t_ - pt) * 16; pt = t_; } } while (0)
     u64 t0 = g_profClock ? g_profClock() : 0;
     GXCore* gx = &s->gx.core;
     if (g_gxMergeOpen) merge_issue(s);
@@ -3643,6 +3652,7 @@ static bool ns_draw(System* s, const NsReq* q) {
 #ifdef GC3DS_NATIVE
     ns_dirty();
 #endif
+    NS_PH(0);
     u32 cull = (gx->bp[0x00] >> 14) & 3;
     if (cull == 3) { g_nsStats[0]++; return true; }  // every triangle culled
     u32 zop;
@@ -3664,9 +3674,11 @@ static bool ns_draw(System* s, const NsReq* q) {
         const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, tk, tn, &tmp, NULL);
         if (!ns_state_ok(gx, t, false)) { g_nsStats[3]++; return false; }
     }
+    NS_PH(1);
     u32 frameBefore = g.frameNo;
     NShape* e = ns_get(gx, q);
     if (!e) return false;
+    NS_PH(2);
     if (g.frameNo != frameBefore) same = false;  // a retired shape ended the frame: state is applied again
     for (int attempt = 0; !same && attempt < 3; attempt++) {
         frameBefore = g.frameNo;
@@ -3701,6 +3713,7 @@ static bool ns_draw(System* s, const NsReq* q) {
     g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
     g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
     split_early();
+    NS_PH(3);
     e->lastFrame = g.frameNo;
     // Projection (as the GPU transform's), when the XF registers changed.
     if (!g.natProjOk || g.natProjVer != gx->xfRegVersion || !g.projValid) {
@@ -3787,8 +3800,12 @@ static bool ns_draw(System* s, const NsReq* q) {
         ns_const(ai, bi, 6, false);
     }
     if (!g.natAttr) { C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 1, 0, 0, 0); g.natAttr = true; }
+    NS_PH(4);
     g_gxWhere = GW_SHAPES;
     C3D_DrawElements(GPU_TRIANGLES, (int)e->ni, C3D_UNSIGNED_SHORT, m + e->off[NO_IDX]);
+    NS_PH(5);
+    if (ph) g_nsPhase[6]++;
+#undef NS_PH
     g_picaStats.drawCalls++;
     g_nsSince += e->ni;
     g_nsStats[0]++;

@@ -2532,6 +2532,44 @@ done
 - **X5 still bounds G2 in TP:** list calls are 32-34% of TP's GX thread (19-33% repeating); G2 alone moves
   TP's GX wall by at most that share. The design that follows from these numbers is in docs/research/G2_PLAN.md.
 
+### G2a: pre-decoded display lists (jobs 1147-1161, 2026-10-23, `--g2`)
+
+- **What:** G2_PLAN.md stage a (`core/src/gx/g2.c`, fifo.c `g2_replay`): a list called from the FIFO is decoded once
+  into ops and replayed through the decoder's own state functions while its pages are unstamped and the vertex formats
+  its parse read hold. Lists whose bytes change every frame are given up after four decodings.
+- **Exactness:** PC, title spans 5000, 900, 6590 (200 fields each, drawing on): state hash and last frame of G2 off;
+  `G2=check` 0 differed in 12,099 compared replays; `G2=plant` 1,039 / 1,228 / 783 differed. 2DS, `--g2 check` (1
+  replay in 8 run by the decoder on a copy of the state and compared): **0 differed** in TP heavy (job 1147, ~5,300
+  checked per 10 s), Ordon (1148, ~7,000), Mario Party 4 (1149, ~7,900), Wind Waker (1150, ~2,450); byte hashes 0
+  changed; `--g2 plant` (1151) ~900 differed per 10 s. Replayed: TP heavy 68.5% of list calls (the rest change every
+  frame), Ordon 91%, Mario Party 4 100%, Wind Waker 83.5%.
+- **Separate whole runs, one build, `--profile on` (jobs 1152-1161):**
+
+  | Scene | Speed off -> on | GX thread busy off -> on | Decoder share (`dec_*`) |
+  |---|---|---|---|
+  | TP heavy area (two pairs) | 22.077 / 22.087 -> 22.048 / 22.073% | 88.7 / 88.8 -> 86.3 / 86.3% | 15.8 -> 12.1% |
+  | TP Ordon walk | 30.848 -> 30.833% | 83.5 -> 81.0% | 15.6 -> 11.2% |
+  | Mario Party 4 board | 14.369 -> 14.379% | 74.7 -> 74.1% | 5.5 -> 2.6% |
+  | Wind Waker, Outset | 20.133 -> 20.136% | 38.3 -> 37.0% | 7.7 -> 6.5% |
+
+- **Reading:** exact, and it takes **1.3-2.5 points off the GX thread's busy time** (the decoder 3-4.4 points; the rest
+  of the saving reappears as the replay's own work), the size G2_PLAN.md predicted for removing the parse. **Speed
+  does not move** in any scene (within 0.1%): TP and Wind Waker are core-0-bound (core 0 waits on the GX thread
+  0.4-1.2% of the time), and Mario Party 4's GX thread waits on the vertex worker (`vwalloc` + `vwqueue` ~25%), so the
+  decoder's saving there became waiting (busy -0.6 points). Kept off (owner's call); it is the base G2b builds on.
+- **Where a converted run's time goes (jobs 1162, 1164, `# shapes phases 10s`, 1 `ns_draw` in 16 timed, GX thread
+  ms/s):**
+
+  | Scene | Entry | Batch check | Shape lookup | Batch state | Matrices, attributes | Draw call | Total |
+  |---|---|---|---|---|---|---|---|
+  | TP heavy area (~2,090 runs/s) | 6.5 | 15.3 | 6.6 | 53.7 | 10.2 | 25.0 | ~117 (~55 us a run) |
+  | Mario Party 4 board (~4,400 runs/s) | 32-46 | 15.0 | 188-204 | 68-79 | 17.0 | 38.6 | ~370 |
+
+  The batch state (flush, `update_tev`, the batch key built again, texture lookups and setters, the lighting set-up
+  again, fragment state, uniforms) is ~46% of TP's converted-run time, the draw call (`C3D_DrawElements`, not C25's raw
+  path) ~21%, the batch check ~13%. Mario Party 4's lookup is its conversions after stamps (~180 ms/s, "G2-0" finding
+  (a)). (Ordon's phase run, job 1163, did not start: its `--press` list was empty.)
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

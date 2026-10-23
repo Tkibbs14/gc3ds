@@ -22,10 +22,12 @@ saving there shows up as a lower `gx thread where` busy share before it shows up
 ## 2. Where the GX thread's list time goes now (heavy area, job 1124, `--profile on`)
 
 - **Converted shapes (G1) already turned each run of ~43 draws into one draw call** (2,030 of 2,660 runs a second;
-  ~22% are CPU-deformed and stay on the old path). Their remaining cost is per run, in `ns_draw`: ~108 ms/s (~12% of
-  the GX thread), most of it the batch path that 89.9% of draws take: the batch key (TEV key of 58 words, texture
-  keys), `update_tev` (the TEV key built again, hashed, looked up), texture lookups and their citro3d setters,
-  `apply_frag`, light set-up, matrix rows, the attribute layout, the draw call.
+  ~22% are CPU-deformed and stay on the old path). Their remaining cost is per run, in `ns_draw`: ~117 ms/s (~13% of
+  the GX thread, ~55 us a run; job 1162, `# shapes phases 10s`): **batch state 54 ms/s** (flush, `update_tev`, the
+  batch key built a second time, texture lookups and setters, the lighting set-up a second time, `apply_frag`,
+  uniforms), **the draw call 25** (`C3D_DrawElements`: citro3d's own path, not C25's raw one), **the batch check 15**
+  (batch key, TEV key and lookup, the lighting set-up), matrices and attributes 10, the shape lookup 7, entry 6.5.
+  When a batch opens, the TEV key is built up to four times and the lighting set-up twice.
 - **Decoding inside lists:** `dec_list` 2.5%, `dec_run` 2.1%, part of `dec_op` 4.2%, `dec_bp` 2.6%, `dec_xf` 0.9%.
 - **The old path** for changing runs: vertex preparation and the job ring (`vprep` 9.3%, `vwalloc` 5.6%, `palassign`
   3.2%): G2 cannot skip vertex work, only state work.
@@ -90,7 +92,15 @@ GX-bound scenes (Mario Party 4's minigame, the title cutscene).
 ## 4. Order and status
 
 1. G2-0 census: done (MEASUREMENTS.md "G2-0").
-2. G2a: built behind `--g2`, checks above; measured in MEASUREMENTS.md "G2a".
-3. G2b, then G2c (G2c first if Ordon's TEV compiles show up in its profile), then G2d.
+2. **G2a: built, exact (PC and 2DS check mode), measured (MEASUREMENTS.md "G2a"):** the GX thread 1.3-2.5 points less
+   busy in all four scenes, **speed unchanged** (TP and Wind Waker are core-0-bound, Mario Party 4 waits on its vertex
+   worker). Off by default.
+3. Next, by the phase profile (TP heavy, ms/s of ~117 in `ns_draw`), cheapest first:
+   - **the batch-open work done once:** the batch key, TEV key and lookup and the lighting set-up computed in the check
+     are reused by the state step (today built again); exact by construction, no G2 machinery (part of 15 + 54);
+   - **the converted draw call through C25's raw path** (part of 25; C25 cut a call 8.15 -> 5.3 us);
+   - **G2b's memo** keyed by variant and run (the rest of the check and the key / lookup work in the state step).
+   Then G2c (TEV colours as parameters) and G2d (recorded state words). Each GX-side stage turns into speed only where
+   the GX thread is the limit: after core-0 gains, in Mario Party 4's minigame and in the title cutscene.
 4. Outside G2, found by the census: Mario Party 4's converted shapes made again after stamps whose bytes did not
-   change (a G1 fix, its own task).
+   change (~180 ms/s of its GX thread; a G1 fix, its own task).

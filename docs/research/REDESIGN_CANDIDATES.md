@@ -650,8 +650,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C36. Translated display lists (G2): lists decoded once and replayed per state variant (2026-10-23)
 
-- **Status:** **G2a built** (`--g2 on|check|plant`, off; core/src/gx/g2.c, fifo.c `g2_replay`); G2b-G2e designed, not
-  built (docs/research/G2_PLAN.md). Device measurement of G2a: MEASUREMENTS.md "G2a".
+- **Status:** **G2a built and measured** (`--g2 on|check|plant`, off; core/src/gx/g2.c, fifo.c `g2_replay`): exact on the
+  PC and in the 2DS check mode (0 differed), the GX thread 1.3-2.5 points less busy in four scenes, speed unchanged
+  (jobs 1147-1161, MEASUREMENTS.md "G2a"). G2b-G2e designed, not built (docs/research/G2_PLAN.md section 4 orders the
+  next steps by the `ns_draw` phase profile, jobs 1162 / 1164).
 - **What:** EMULATOR_CEILING.md G2. Each display list called from the FIFO is decoded once into ops and replayed while
   its bytes (page stamps, sampled hashes) and the state its decoding depends on hold; later stages keep the backend's
   per-run batch decisions with each state variant (G2b), compile TEV programs by structure with colours as parameters
