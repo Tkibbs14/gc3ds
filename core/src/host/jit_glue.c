@@ -12,6 +12,8 @@
 #include "../jit/jit.h"
 #include "../cpu/hle.h"
 
+void* jit_host_alloc_data(u32 bytes) { return malloc(bytes); }
+
 void* jit_host_alloc_exec(u32 bytes) {
     void* p = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : p;

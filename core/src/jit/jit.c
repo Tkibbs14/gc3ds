@@ -93,6 +93,7 @@ typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro
 static bool g_tierCompile, g_tierNoGain;  // compile_block: a region for tier_block; it found no label (no gain)
 static u32 g_tierKey, g_tierHeadEnd, g_tierHeadRuns, g_tierHeadCtr, g_tierN;
 static u8 g_tierCov[MAX_BLOCK_INSNS];
+static bool g_compileChecked;  // compile_block without fault mode's unchecked accesses (compile: after a cold overflow)
 // --tier-relayout KB: the regions' profiles (coverage, the head's bctrl target) are remembered in Jit.relay, which a flush
 // keeps; once the blocks regions replaced since the last flush reach KB, the cache is flushed and a remembered head is
 // compiled straight into its region when next looked up, so the replaced blocks no longer sit between live code (OPT_TIER
@@ -4687,7 +4688,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     c->rProfiled = c->region && g_tierCompile;
     c->trace = j->traces && !noLink && !c->region && !(j->opt & OPT_TIER);  // (OPT_TIER: blocks end at branches, the profile)
     c->fastmem = j->fastmem && (g->msr & MSR_DR) && (!(g->msr & MSR_PR) || j->fastmemUser);
-    c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM;  // (swapped RAM: a misaligned word would not fault)
+    c->faultMem = c->fastmem && j->faultMem && !GC_SWAPRAM && !g_compileChecked;  // (swapped RAM: a misaligned word would not fault)
     c->fp = (g->msr & MSR_FP) && !(g->fpscr & FPSCR_RN);
     c->fcOn = c->fp && (j->opt & OPT_FCACHE) && fc_gate(j, pa, c->region);
     c->ps = c->fp && (g->spr[SPR_HID2] & HID2_PSE);
@@ -5139,6 +5140,9 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
 }
 
 static u32 zone_start(const Jit* j) { return j->coldStart - j->coldStart / 4; }
+// Fault mode gives every access its own slow path in cold code; a block whose cold code then overflows is compiled
+// again with checked accesses rather than failing (a failed block is retried at every entry: TP's heavy area spent
+// 12-33% of core 0 compiling, ~1,300 cold overflows a second, job 1048).
 
 static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     u64 t0 = prof_begin();
@@ -5146,7 +5150,14 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     if (j->zoneUsed < zone_start(j)) j->zoneUsed = zone_start(j);
     bool zone = jit_region_zone && g_tierCompile && j->coldStart - j->zoneUsed >= BLOCK_MAX_WORDS;  // full: with the blocks
     if (zone) j->codeUsed = j->zoneUsed;  // compile_block emits at codeUsed: point it into the zone for this one
+    u64 coldFails = j->stats.compileFails[1];
     BlockFn fn = compile_block(j, pc, noLink);
+    if (!fn && j->faultMem && j->stats.compileFails[1] != coldFails && j->gen == gen) {
+        g_compileChecked = true;
+        fn = compile_block(j, pc, noLink);
+        g_compileChecked = false;
+        if (fn) j->stats.faultChecked++;
+    }
     if (zone && j->gen == gen) { j->zoneUsed = j->codeUsed; j->codeUsed = blocksUsed; }
     prof_end(PROF_JITC, t0);
     return fn;
@@ -6746,9 +6757,9 @@ static Jit* g_faultJits[4];
 
 void jit_set_fault_mem(Jit* j, bool on) {
     if (on && !j->faultKey) {
-        j->faultKey = malloc(FAULT_SLOTS * sizeof(u32));
-        j->faultVal = malloc(FAULT_SLOTS * sizeof(u32));
-        if (!j->faultKey || !j->faultVal) { free(j->faultKey); free(j->faultVal); j->faultKey = j->faultVal = NULL; return; }
+        j->faultKey = jit_host_alloc_data(FAULT_SLOTS * sizeof(u32));  // (kept for the process: never freed)
+        j->faultVal = jit_host_alloc_data(FAULT_SLOTS * sizeof(u32));
+        if (!j->faultKey || !j->faultVal) { j->faultKey = j->faultVal = NULL; return; }
         memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32));
     }
     if (on && !jit_host_fault_init(j->ram)) on = false;

@@ -33,6 +33,7 @@ typedef struct {
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
     u64 tierUps, tierNoGain, tierNotHead, tierMember, tierFails;  // OPT_TIER: regions compiled; counters stopped without one
+    u64 faultChecked;  // fault mode: blocks compiled again with checked accesses after their cold code overflowed
     u64 tierRelaid, tierRelayouts;  // --tier-relayout: regions compiled from their remembered profile; relayout flushes
     u64 tierWordsRegion, tierWordsReplaced;  // OPT_TIER: host words (hot + cold) of the regions, and of the head and member blocks they replaced
     u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
@@ -219,6 +220,7 @@ static inline void jit_host_fpscr_init(void) {}
 
 // Host services each frontend provides: executable memory and instruction-cache maintenance.
 void* jit_host_alloc_exec(u32 bytes);
+void* jit_host_alloc_data(u32 bytes);  // large data tables, kept for the process's lifetime (3DS: linear memory, off the heap)
 void jit_host_sync_icache(void* start, u32 bytes);
 // Installs the host's fault handler (once; it calls jit_fault) and checks that the host addresses the guest's non-MEM1
 // regions land on with base ram - 0x80000000 are not mapped (reserving them where it can). false: fault mode stays off.

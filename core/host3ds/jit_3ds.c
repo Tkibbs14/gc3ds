@@ -26,6 +26,14 @@ static void __attribute__((naked, noinline)) luma_invalidate_entire_icache(void)
 #define GC3DS_CODE_ALIGN 0x1000
 #endif
 u32 jit_host_exec_align = GC3DS_CODE_ALIGN, jit_host_exec_base;
+// Large data tables (fault mode's 2 MB site table) go to linear memory: the heap had 0.2-0.5 MB free in gameplay, and
+// the fault table taken from it starved the relay's TLS reconnects ("relay error", jobs 1058 and 1060); the linear heap
+// had 7-12 MB free. Never freed (the tables live as long as the process).
+void* jit_host_alloc_data(u32 bytes) {
+    void* p = linearAlloc(bytes);
+    return p ? p : malloc(bytes);
+}
+
 void* jit_host_alloc_exec(u32 bytes) {
     u32 align = jit_host_exec_align < 0x1000 ? 0x1000 : jit_host_exec_align;
     bytes = (bytes + align - 1) & ~(align - 1);

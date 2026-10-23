@@ -2174,11 +2174,11 @@ static const char* run_body(const char* path) {
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
                         if (jit_tier_watch_hi) { static char tw[16 * 220]; if (jit_tier_watch_report(tw, sizeof tw)) fputs(tw, g_perf); }
                         fprintf(g_perf, "# jit buffer at %08lx (aligned to %lu KB)\n", (unsigned long)jit_host_exec_base, (unsigned long)(jit_host_exec_align >> 10));
-                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu; region words %llu for %llu replaced; relayouts %llu, regions from profile %llu\n",
+                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu; region words %llu for %llu replaced; relayouts %llu, regions from profile %llu; fault-mode blocks compiled checked %llu\n",
                                 (unsigned long long)js->tierUps, (unsigned long long)js->tierNoGain, (unsigned long long)js->tierNotHead,
                                 (unsigned long long)js->tierMember, (unsigned long long)js->tierFails, (unsigned long long)js->tierInlines,
                                 (unsigned long long)js->tierWordsRegion, (unsigned long long)js->tierWordsReplaced,
-                                (unsigned long long)js->tierRelayouts, (unsigned long long)js->tierRelaid);
+                                (unsigned long long)js->tierRelayouts, (unsigned long long)js->tierRelaid, (unsigned long long)js->faultChecked);
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu, calls followed %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],
