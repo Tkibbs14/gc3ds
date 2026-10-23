@@ -21,6 +21,7 @@
 #include "../src/cpu/memo.h"
 #include "../src/cpu/port.h"
 #include "../src/jit/jit.h"
+extern u32 jit_host_exec_align, jit_host_exec_base;  // jit_3ds.c: GC3DS_CODE_ALIGN, and where the buffer went
 #include "gxthread.h"
 #include "pmu.h"
 #include "jitsample.h"
@@ -620,6 +621,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--tier-runs")) o->tierRuns = (unsigned)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--tier-loops")) jit_tier_loops_only = !strcmp(v, "on");
         else if (!strcmp(a, "--region-zone")) jit_region_zone = !strcmp(v, "on");
+        else if (!strcmp(a, "--tier-relayout")) jit_tier_relayout_words = (u32)strtoul(v, NULL, 10) * 256;
         else if (!strcmp(a, "--tier-watch")) { jit_tier_watch_lo = (u32)strtoul(v, NULL, 16); jit_tier_watch_hi = jit_tier_watch_lo + 0x200; }
         else if (!strcmp(a, "--zgpr")) o->zgpr = !strcmp(v, "on");
         else if (!strcmp(a, "--zgx")) o->zgx = !strcmp(v, "on");
@@ -2168,10 +2170,12 @@ static const char* run_body(const char* path) {
                         fprintf(g_perf, "\n");
                         lastRep = js->compileRepeats; lastComp = js->blocksCompiled;
                         if (jit_tier_watch_hi) { static char tw[16 * 220]; if (jit_tier_watch_report(tw, sizeof tw)) fputs(tw, g_perf); }
-                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu; region words %llu for %llu replaced\n",
+                        fprintf(g_perf, "# jit buffer at %08lx (aligned to %lu KB)\n", (unsigned long)jit_host_exec_base, (unsigned long)(jit_host_exec_align >> 10));
+                        fprintf(g_perf, "# jit tier (all time): regions %llu, no join %llu, not a head %llu, inside a region %llu, failed %llu, leaves inlined %llu; region words %llu for %llu replaced; relayouts %llu, regions from profile %llu\n",
                                 (unsigned long long)js->tierUps, (unsigned long long)js->tierNoGain, (unsigned long long)js->tierNotHead,
                                 (unsigned long long)js->tierMember, (unsigned long long)js->tierFails, (unsigned long long)js->tierInlines,
-                                (unsigned long long)js->tierWordsRegion, (unsigned long long)js->tierWordsReplaced);
+                                (unsigned long long)js->tierWordsRegion, (unsigned long long)js->tierWordsReplaced,
+                                (unsigned long long)js->tierRelayouts, (unsigned long long)js->tierRelaid);
                         fprintf(g_perf, "# jit cache 10s: %lu blocks, flushes %llu, compile fails %llu/%llu/%llu, traces "
                                 "follow %d side %lu len %lu link %d: b followed %llu, side exits %llu, calls followed %llu\n", (unsigned long)jit_entries(g_jit),
                                 (unsigned long long)(js->flushes - lastFlush), (unsigned long long)js->compileFails[0],

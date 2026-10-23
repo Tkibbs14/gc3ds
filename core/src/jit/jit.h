@@ -33,6 +33,7 @@ typedef struct {
     u64 faults;      // fault-mode sites patched to their slow path (jit_fault)
     u64 deopts;      // blocks recompiled with per-access checks after a failed window check (OPT_HOIST)
     u64 tierUps, tierNoGain, tierNotHead, tierMember, tierFails;  // OPT_TIER: regions compiled; counters stopped without one
+    u64 tierRelaid, tierRelayouts;  // --tier-relayout: regions compiled from their remembered profile; relayout flushes
     u64 tierWordsRegion, tierWordsReplaced;  // OPT_TIER: host words (hot + cold) of the regions, and of the head and member blocks they replaced
     u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
@@ -199,6 +200,7 @@ extern void (*jit_debug_on_compile)(const u32* code, u32 words);  // called with
 extern u32 jit_tier_watch_lo, jit_tier_watch_hi;  // --tier-watch: heads whose tier decisions and plans are reported
 int jit_tier_watch_report(char* out, int cap);
 extern u32 jit_tier_threshold;
+extern u32 jit_tier_relayout_words;  // --tier-relayout KB (as words): flush once regions have replaced this much code; 0 off
 extern bool jit_region_zone;  // --region-zone on: regions packed into the top quarter of the hot area
 extern bool jit_tier_loops_only;  // --tier-loops on: regions only for heads whose function loops      // OPT_TIER: block runs before its region (default 64)
 extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed

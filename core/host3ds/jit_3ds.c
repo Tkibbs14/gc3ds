@@ -18,13 +18,23 @@ static void __attribute__((naked, noinline)) luma_invalidate_entire_icache(void)
     __asm__ volatile("svc 0x94\n\tbx lr\n");
 }
 
+// GC3DS_CODE_ALIGN (EXTRA_CFLAGS=-DGC3DS_CODE_ALIGN=bytes): the buffer's alignment, 4 KB by default (a build option: the
+// buffer is made at startup, before a job's options). The kernel can map an aligned range with 64 KB large pages
+// or 1 MB sections, each one micro-TLB entry instead of 16 or 256 (ARM11 MPCore TRM: the instruction micro-TLB has
+// 10 entries); TP's instruction micro-TLB misses moved 2-3x between builds that only moved the heap (jobs 967 vs 979).
+#ifndef GC3DS_CODE_ALIGN
+#define GC3DS_CODE_ALIGN 0x1000
+#endif
+u32 jit_host_exec_align = GC3DS_CODE_ALIGN, jit_host_exec_base;
 void* jit_host_alloc_exec(u32 bytes) {
-    bytes = (bytes + 0xFFF) & ~0xFFFu;
-    void* p = memalign(0x1000, bytes);
+    u32 align = jit_host_exec_align < 0x1000 ? 0x1000 : jit_host_exec_align;
+    bytes = (bytes + align - 1) & ~(align - 1);
+    void* p = memalign(align, bytes);
     if (!p) return NULL;
     if (!g_proc && R_FAILED(svcDuplicateHandle(&g_proc, CUR_PROCESS_HANDLE))) return NULL;
     if (R_FAILED(svcControlProcessMemory(g_proc, (u32)p, (u32)p, bytes, MEMOP_PROT,
                                          MEMPERM_READ | MEMPERM_WRITE | MEMPERM_EXECUTE))) return NULL;
+    jit_host_exec_base = (u32)p;
     crashlog_set_info(CRASH_INFO_JIT_START, (u32)p);
     crashlog_set_info(CRASH_INFO_JIT_END, (u32)p + bytes);
     return p;

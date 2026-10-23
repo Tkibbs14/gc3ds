@@ -843,7 +843,8 @@ int main(int argc, char** argv) {
     jit_set_sched(jit, getenv("JIT_FUZZ_NOSCHED") ? 0 : SCHED_ALL);
     if (getenv("JIT_FUZZ_OPT")) jit_set_opt(jit, (u32)strtoul(getenv("JIT_FUZZ_OPT"), NULL, 0));  // optimizing-JIT stages
     if (getenv("JIT_FUZZ_RCOVER")) jit_debug_region_cover = (u32)strtoul(getenv("JIT_FUZZ_RCOVER"), NULL, 0);  // regions: pseudo-random coverage
-    if (getenv("JIT_FUZZ_ZONE")) jit_region_zone = true;  // --region-zone: regions in their own part of the hot area
+    if (getenv("JIT_FUZZ_ZONE")) jit_region_zone = true;
+    if (getenv("JIT_FUZZ_RELAYOUT")) jit_tier_relayout_words = (u32)strtoul(getenv("JIT_FUZZ_RELAYOUT"), NULL, 0);  // --tier-relayout, in words  // --region-zone: regions in their own part of the hot area
     if (getenv("JIT_FUZZ_TIER")) jit_tier_threshold = (u32)strtoul(getenv("JIT_FUZZ_TIER"), NULL, 0);  // OPT_TIER: runs before a region
     if (plant != 9) jit_set_mem_stamps(jit, &g_jitStamps);  // plant 9: compiled dcbf / dcbst / dcbz stamp nothing
     if (plant == 2) jit_debug_plant = 1;
@@ -1241,6 +1242,8 @@ int main(int argc, char** argv) {
     printf("pipe stores compiled at a known address (OPT_PIPEK): %llu\n", (unsigned long long)jit_stats(jit)->pipeKnown);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
+    if (getenv("JIT_FUZZ_RELAYOUT")) printf("relayout: tier-ups %llu, relayouts %llu, regions from profile %llu\n", (unsigned long long)jit_stats(jit)->tierUps,
+                                           (unsigned long long)jit_stats(jit)->tierRelayouts, (unsigned long long)jit_stats(jit)->tierRelaid);
     jit_destroy(jit);
     jit = NULL;
     sys_free(&A);

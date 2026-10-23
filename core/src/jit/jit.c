@@ -93,6 +93,15 @@ typedef struct { u32 pc; u32 msrBits; BlockFn fn; bool idle; u8 poll, count, pro
 static bool g_tierCompile, g_tierNoGain;  // compile_block: a region for tier_block; it found no label (no gain)
 static u32 g_tierKey, g_tierHeadEnd, g_tierHeadRuns, g_tierHeadCtr, g_tierN;
 static u8 g_tierCov[MAX_BLOCK_INSNS];
+// --tier-relayout KB: the regions' profiles (coverage, the head's bctrl target) are remembered in Jit.relay, which a flush
+// keeps; once the blocks regions replaced since the last flush reach KB, the cache is flushed and a remembered head is
+// compiled straight into its region when next looked up, so the replaced blocks no longer sit between live code (OPT_TIER
+// grew TP's hot footprint 15-20% while its regions were 27% smaller than what they replaced, jobs 961-968).
+#define RELAY_SLOTS 4096
+typedef struct { u32 pc, key, ctr; u8 n; u64 cov; } Relay;
+u32 jit_tier_relayout_words;
+static const Relay* g_tierRelay;  // compiling a remembered region: its coverage instead of the block tier's
+static bool g_tierRelayBad;       // ... and its plan no longer has the remembered length
 u32 jit_tier_threshold = 64;
 bool jit_tier_loops_only;  // --tier-loops on: regions only where the head's function loops (no plain joins)
 // --region-zone on: regions are compiled into the top quarter of the hot area (their own bump pointer, Jit.zoneUsed)
@@ -129,6 +138,10 @@ struct Jit {
     // OPT_TIER: the last target of each bctrl the block tier compiled (by its address; direct-mapped), which regions
     // inline against (plan_ctr_guess). Kept by the call's address, so a region replacing the block keeps it.
     struct { u32 pc, target; } ctrProf[2048];
+    Relay relay[RELAY_SLOTS];   // --tier-relayout: remembered regions, open addressing by head (pc 0: empty); kept by flushes
+    u32 replacedSinceFlush;     // ... host words of the blocks regions replaced since the last flush
+    u32 plainSet[16384];        // ... blocks whose tier was decided against a region (no gain, not a head, a member): after
+                                // a relayout they are compiled decided (linkable, not counted again); open addressing, 0 empty
     Gekko* g;
     u8* ram;
     u32 ramSize;
@@ -2482,7 +2495,10 @@ static void region_plan(Cg* c, u32 pc, u32 pa, u32 maxInsns) {
     // Coverage: what the block tier ran (the head block's range and the blocks starting at plan instructions, over the
     // instructions that follow them in their function); with the fuzzer's map, pseudo-random.
     for (u32 i = 0; i < n; i++) c->rCover[i] = !c->rProfiled;
-    if (c->rProfiled && !jit_debug_region_cover) {
+    if (c->rProfiled && g_tierRelay) {  // a remembered region (--tier-relayout): its coverage, if the plan is the same length
+        if (n != g_tierRelay->n) g_tierRelayBad = true;
+        for (u32 i = 0; i < n; i++) c->rCover[i] = (u8)(g_tierRelay->cov >> i & 1);
+    } else if (c->rProfiled && !jit_debug_region_cover) {
         for (u32 s0 = 0; s0 < n; s0++) {
             u32 end = g_tierHeadEnd;
             if (s0) {
@@ -4751,7 +4767,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (c->region) {
         for (u32 k = 0; k < MAX_BLOCK_INSNS; k++) c->rLabelAt[k] = NO_BRANCH;
         region_plan(c, pc, startPa, maxInsns);
-        if (c->rProfiled && ((!c->rLastLabel && !c->nInlined) || (jit_tier_loops_only && !c->rLoops))) {  // nothing joins or inlines (or, --tier-loops, no loop): the block tier's block is as good
+        if (c->rProfiled && ((g_tierRelay && g_tierRelayBad) || (!c->rLastLabel && !c->nInlined) || (jit_tier_loops_only && !c->rLoops))) {  // nothing joins or inlines (or, --tier-loops, no loop): the block tier's block is as good
 #ifndef __3DS__
             if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiercov %08x n %u ", pc, c->rEnd); for (u32 k = 0; k < c->rEnd; k++) fputc(c->rCover[k] ? 49 : 48, stderr); fputc(10, stderr); }
 #endif
@@ -6144,6 +6160,32 @@ static Entry* rs_find(Jit* j, u32 pc, u32 msrBits) {  // the region model: a com
 }
 #endif
 
+// The slot of a remembered region for (pc, key): its own, or the empty one where it would go (NULL: the table is full).
+static Relay* relay_find(Jit* j, u32 pc, u32 key) {
+    u32 h = ((pc >> 2) * 2654435761u ^ key) & (RELAY_SLOTS - 1);
+    Relay* del = NULL;
+    for (u32 k = 0; k < 64; k++, h = (h + 1) & (RELAY_SLOTS - 1)) {
+        Relay* r = &j->relay[h];
+        if (r->pc == pc && r->key == key) return r;
+        if (r->pc == 1 && !del) del = r;
+        if (!r->pc) return del ? del : r;
+    }
+    return del;
+}
+
+static u32* plain_slot(Jit* j, u32 pc) {
+    u32 h = (pc >> 2) * 2654435761u >> 18;
+    for (u32 k = 0; k < 32; k++, h = (h + 1) & 16383)
+        if (j->plainSet[h] == pc || !j->plainSet[h]) return &j->plainSet[h];
+    return NULL;  // full here: not remembered
+}
+static void plain_add(Jit* j, u32 pc) {
+    if (!jit_tier_relayout_words) return;
+    u32* s = plain_slot(j, pc);
+    if (s) *s = pc;
+}
+static bool plain_has(Jit* j, u32 pc) { u32* s = plain_slot(j, pc); return s && *s == pc; }
+
 // Finds the block for (pc, msrBits), compiling it on first use; NULL when it cannot be compiled.
 static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     u32* head = &j->buckets[bucket_of(pc, msrBits)];
@@ -6163,7 +6205,17 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     u32 poll = gekko_poll_loop_len(g, pc);
     unsigned char wasWhere = g_where;
     g_where = WH_COMPILE;
-    BlockFn fn = compile(j, pc, poll != 0);
+    BlockFn fn = NULL;
+    Relay* rl = (j->opt & OPT_TIER) && !g_tierCompile && !poll ? relay_find(j, pc, msrBits) : NULL;
+    if (rl && rl->pc == pc) {  // a remembered region: compiled straight away, with the coverage it had
+        g_tierCompile = true; g_tierNoGain = false; g_tierKey = msrBits; g_tierHeadEnd = pc; g_tierHeadRuns = 0;
+        g_tierHeadCtr = rl->ctr; g_tierN = 0; g_tierRelay = rl; g_tierRelayBad = false;
+        fn = compile(j, pc, false);
+        g_tierCompile = false; g_tierRelay = NULL;
+        if (fn) j->stats.tierRelaid++;
+        else rl->pc = 1;  // the code changed: forgotten (1: a deleted slot, never a guest PC)
+    }
+    if (!fn) fn = compile(j, pc, poll != 0);
     stub_check(j, "compile", pc);
     g_where = wasWhere;
     if (!fn) return NULL;
@@ -6181,7 +6233,7 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     en->words = g_lastWords;
     en->runs = 0;
     en->lastCtr = 0;
-    en->pending = g_lastPending;
+    en->pending = g_lastPending && !(jit_tier_relayout_words && plain_has(j, pc));  // decided before a relayout: decided
     en->member = false;
     en->next = *head;
     *head = idx;
@@ -6273,9 +6325,10 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
 #ifndef __3DS__
     if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tierask %08x member %d head %d", pc, old->member, region_head(j, pc)); fputc(10, stderr); }
 #endif
-    if (old->member) { j->stats.tierMember++; return; }
+    if (old->member) { j->stats.tierMember++; plain_add(j, pc); return; }
     if (!region_head(j, pc)) {
         j->stats.tierNotHead++;
+        plain_add(j, pc);
         if (tw_on(pc)) { char line[64]; snprintf(line, sizeof line, "%08lx not a head", (unsigned long)pc); tw_add(line); }
         return;
     }
@@ -6291,7 +6344,7 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
         if (getenv("JIT_TIERLOG")) { fprintf(stderr, "tiernot %08x nogain %d gen %d", pc, g_tierNoGain, j->gen != gen); fputc(10, stderr); }
 #endif
         if (tw_on(pc)) { char line[64]; snprintf(line, sizeof line, "%08lx %s", (unsigned long)pc, g_tierNoGain ? "no gain" : "failed"); tw_add(line); }
-        old->pc = pc; if (g_tierNoGain) j->stats.tierNoGain++; else j->stats.tierFails++; return;
+        old->pc = pc; if (g_tierNoGain) { j->stats.tierNoGain++; plain_add(j, pc); } else j->stats.tierFails++; return;
     }
     j->stats.tierUps++;
     j->stats.tierWordsRegion += en->words;
@@ -6306,10 +6359,23 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
     s32 off = (s32)((const u32*)(void*)en->fn - (oldFn + 2));
     *oldFn = 0xEA000000u | ((u32)off & 0xFFFFFF);  // B region: link sites and indirect-table slots follow
     jit_host_sync_icache(oldFn, 4);
+    u32 replaced = old->words;
     for (u32 k = 1; k < g_tierN; k++) {
         if (!g_tierCov[k]) continue;
         Entry* m = entry_find(j, pc + 4 * k, key);
-        if (m) { m->member = true; m->pending = false; j->stats.tierWordsReplaced += m->words; }
+        if (m) { m->member = true; m->pending = false; j->stats.tierWordsReplaced += m->words; replaced += m->words; plain_add(j, m->pc); }
+    }
+    if (!jit_tier_relayout_words) return;
+    Relay* rl = relay_find(j, pc, key);
+    if (rl) {
+        rl->pc = pc; rl->key = key; rl->ctr = g_tierHeadCtr; rl->n = (u8)g_tierN; rl->cov = 0;
+        for (u32 k = 0; k < g_tierN; k++) if (g_tierCov[k]) rl->cov |= 1ull << k;
+    }
+    j->replacedSinceFlush += replaced;
+    if (j->replacedSinceFlush >= jit_tier_relayout_words) {  // relayout: flushed; remembered heads come back as regions
+        jit_invalidate_all(j);
+        j->stats.flushes++;
+        j->stats.tierRelayouts++;
     }
 }
 
@@ -6838,6 +6904,7 @@ void jit_invalidate_all(Jit* j) {
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;
     j->zoneUsed = 0;
+    j->replacedSinceFlush = 0;
     j->insnsSinceFlush = 0;
     if (j->faultKey) { memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32)); j->faultN = 0; }
     j->faultPendN = 0;  // the code is gone (the next blocks are synced as they are compiled)
