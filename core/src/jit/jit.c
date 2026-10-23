@@ -6786,7 +6786,7 @@ u32* jit_scratch(Jit* j, u32* words) {
 // The cache sync for the sites jit_fault patched (outside the fault handler: see faultPend).
 // jit_fault_nosync: no cache maintenance at all (a stale copy faults again until the caches let it go; job 167 still
 // crashed the 2DS kernel after 6,166 faults with the sync moved here, so the root-cause test drops svc 0x94 entirely).
-bool jit_fault_nosync;
+bool jit_fault_nosync = true;  // the default since 2026-10-23 (the configuration measured, jobs 1071-1076); --faultsync on syncs
 static void fault_sync(Jit* j) {
     if (jit_fault_nosync) { j->faultPendN = 0; j->faultPendAll = false; return; }
     if (j->faultPendAll) jit_host_sync_icache(j->code, j->codeWords * 4);

@@ -37,7 +37,7 @@
 > computed through the interpreter's soft float per pane).
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
-> gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%). Default is James's call.
+> gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%). **On by default since 2026-10-23** (James); `--faultmem off` / `--faultsync on` restore.
 > **Across scenes (jobs 948-1014):** WW +7.4%, TP heavy -0.9%, Ordon -0.6..-1.4%, MP4 flat, TP title -1.1% / +2.6%
 > (one pair). `--tier-loops on` measures the same with fewer regions. The loss is fetch stalls from the replaced
 > blocks left in place; region zone, relayout (`--tier-relayout`), thresholds 16-1024 and code alignment were measured
