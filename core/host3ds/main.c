@@ -572,7 +572,9 @@ static void opts_default(RunOpts* o) {
     o->dblframe = true;  // overlapped GPU frames (pica.c, C30): heavy area +1.9% frames, Ordon even (jobs 548-560)
     o->fcache = true;    // float lanes (OPT_FCACHE, C11): heavy area +1.5%, Ordon +1.6%, title +0.6-2.4% (separate runs, jobs 567-576)
     o->ind2 = true;      // 2-way indirect-branch table (OPT_IND2): heavy area +0.85%, Ordon +0.9%, title +0.3-0.8% (jobs 565-576)
-    o->faultMem = true;  // fault mode: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, 600 s soaks clean (jobs 1071-1076; James 2026-10-23: on)
+    // Fault mode stays off: on by default it crashed the 2DS twice in an hour (jobs 1096-1097, Luma dump 16: kernel
+    // prefetch abort inside svc 0x94, as on 10-15) although the 600 s soaks had passed. Measured: WW +5.1%, Ordon +2.5%,
+    // TP heavy +2.3%, MP4 +0.9% (jobs 1071-1076). --faultmem on.
     o->tier = true;      // regions of the code that ran (OPT_TIER): Wind Waker +7.4%, TP heavy -0.9%, Ordon -0.6..-1.4%, MP4 flat (jobs 936-1014; James 2026-10-22: on)
     o->gprinline = true; // _savegpr_N / _restgpr_N inlined at the bl (X3): Ordon +0.80%, heavy area +0.57%, cutscene +0.64% (jobs 708-725)
     o->port = 1;         // the native J2DMaterial::setGX port: heavy area +1.6-1.7%, Ordon +0.5% (jobs 467-468, 475-476); exact (jobs 459, 463-464)
