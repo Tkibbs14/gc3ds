@@ -84,15 +84,19 @@ u32 gx_vertex_size(const GXCore* gx, u32 vat) {
 // EFB copies) first lets the backend issue the open draw.
 bool g_gxMergeOpen;
 volatile u8 g_gxWhere;
-static inline void merge_break(System* s, GXCore* gx) {
-    if (g_gxMergeOpen && gx->backend && gx->backend->flush) gx->backend->flush(gx->backendCtx, s);
+// g_mergeBreak: open draws issued, by what changed (MB_*; '# merge breaks 10s').
+enum { MB_XFMTX, MB_XFNRM, MB_XFDUAL, MB_XFLIGHT, MB_XFIDX, MB_XFREG, MB_BP, MB_CPIDX, MB_CPARRAY, MB_CPOTHER, MB_TEXADDR, MB_TLUT, MB_N };
+u64 g_mergeBreak[MB_N];
+static inline void merge_break(System* s, GXCore* gx, int why) {
+    if (g_gxMergeOpen && gx->backend && gx->backend->flush) { g_mergeBreak[why]++; gx->backend->flush(gx->backendCtx, s); }
 }
 
 static void xf_write(System* s, GXCore* gx, u32 addr, u32 v) {
     if (addr >= sizeof gx->xf / 4) return;
     GXCENSUS(gxcensus_reg(2, addr, gx->xf[addr], v));
     if (gx->xf[addr] == v) return;
-    merge_break(s, gx);
+    merge_break(s, gx, addr < 0x400 ? MB_XFMTX : addr < 0x500 ? MB_XFNRM : addr < 0x600 ? MB_XFDUAL : addr < 0x1000 ? MB_XFLIGHT :
+                       addr == 0x1018 || addr == 0x1019 ? MB_XFIDX : MB_XFREG);
     // Lights, channel controls and texgen settings: what shader lighting depends on (GXCore.xfLightVersion).
     if (((addr >= 0x600 && addr < 0x680) || (addr >= 0x1009 && addr <= 0x1011) || (addr >= 0x103F && addr <= 0x1047)) &&
         gx->xf[addr] != v)
@@ -311,7 +315,7 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
     });
     if (nv != gx->bp[reg] || reg == BP_PE_DONE || reg == BP_PE_TOKEN || reg == BP_PE_TOKEN_INT || reg == BP_COPY_EXEC ||
         reg == 0x65)
-        merge_break(s, gx);
+        merge_break(s, gx, MB_BP);
     if (nv != gx->bp[reg]) {
         gx->bpVersion++;
         if (reg == 0 || (reg >= 0x28 && reg <= 0x2F) || (reg >= 0xC0 && reg <= 0xE7) || (reg >= 0xF6 && reg <= 0xFD))
@@ -424,7 +428,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
     if (sub >= 0x0010 && sub <= 0x001F) {  // LOAD_ARRAYBASE | array: u64 data, u32 size, u8 little-endian
         NEED(13);
         u32 r = CP_ARRAY_BASE + (sub & 15), v = rd32(a + 4), bit = 1u << (sub & 15);
-        if (gx->cp[r] != v) { merge_break(s, gx); gx->cp[r] = v; }
+        if (gx->cp[r] != v) { merge_break(s, gx, MB_CPOTHER); gx->cp[r] = v; }
         if (rd8(a + 12)) { gx->arrayLE |= bit; gx->aurora[1]++; } else gx->arrayLE &= ~bit;
         gx->aurora[0]++;
         return 3 + 13;
@@ -438,7 +442,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
     case 0x0030: {  // LOAD_TEXOBJ: u8 map, u64 data, u32 width, height, format, tlut, u8 mips, u32 id, version
         NEED(34);
         u32 map = rd8(a) & 7, addr = rd32(a + 5);
-        if (gx->texAddr[map] != addr) { merge_break(s, gx); gx->texAddr[map] = addr; gx->bpVersion++; }
+        if (gx->texAddr[map] != addr) { merge_break(s, gx, MB_TEXADDR); gx->texAddr[map] = addr; gx->bpVersion++; }
         gx->aurora[2]++;
         return 3 + 34;
     }
@@ -447,7 +451,7 @@ static u32 aurora_cmd(System* s, GXCore* gx, const u8* p, u32 avail, bool inList
         // goes there, and its format is added to that register when it is written (bp_write).
         NEED(23);
         u32 slot = rd8(a) & 31, addr = rd32(a + 5), bytes = rd16(a + 13) * 2u, at = slot << 9;
-        merge_break(s, gx);
+        merge_break(s, gx, MB_TLUT);
         if (addr >= PA_MEM1_BEGIN && at + bytes <= (1u << 20)) ram_to_be(gx->tmem + at, s->mem1, addr, bytes);
         gx->tlutFmt[slot] = (u8)(rd32(a + 9) & 3);
         gx->tlutVersion++;
@@ -596,7 +600,7 @@ static u32 exec_one_(System* s, GXCore* gx, const u8* p, u32 avail, bool inList)
             u32 v = rd32(p + 2), r = rd8(p + 1);
             GXCENSUS(gxcensus_reg(1, r, gx->cp[r], v));
             if (gx->cp[r] != v) {
-                merge_break(s, gx);
+                merge_break(s, gx, (r & 0xF0) == 0x30 || (r & 0xF0) == 0x40 ? MB_CPIDX : r >= 0xA0 && r <= 0xBF ? MB_CPARRAY : MB_CPOTHER);
                 if ((r & 0xF0) != 0x30 && (r & 0xF0) != 0x40 && (r < 0xA0 || r > 0xBF)) gx->cpVersion++;
             }
             gx->cp[r] = v;

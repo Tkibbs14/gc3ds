@@ -2443,6 +2443,25 @@ done
   The fault itself must be what disturbs the kernel: next, check the kernel's exception entry (what our resume skips)
   and whether a fault taken while an interrupt or another core's cache broadcast is pending is the trigger.
 
+### What keeps draws from merging (jobs 1116-1126, 2026-10-23, `# merge why` / `# merge unmergeable` / `# merge breaks`)
+
+- **Could not join an open draw:** another vertex format, the byte cap and the segment cap never; the 256-vertex cap
+  ~130 a second. TP's heavy area: ~5,800 line or point draws a second are its whole "not mergeable" count (Ordon ~3,000).
+  Joining lines and points (`--mergelines`, tried in 1121-1122): jobs issued rose 8,583 -> 11,619 a second for no
+  speed (22.08 / 22.06%), since nearly every line draw follows a state change; not kept.
+- **Open draws issued by a state change (per 10 s):**
+
+  | Scene | BP | CP array bases | XF matrices | XF registers | other |
+  |---|---|---|---|---|---|
+  | TP heavy area (1124) | 8,978 | 7,772 | 4,047 | 2,412 | 134 |
+  | Wind Waker (1125) | 43,864 | 630 | 2,016 | 485 | 0 |
+  | Mario Party 4 (1126) | 959 | 87 | 6,398 | 263 | 0 |
+
+- **Reading:** no cheap merging headroom. BP changes are mostly real material / TEV changes (separate draw calls
+  anyway); merging across array-base changes needs per-segment array bases in the gather, and across matrix loads
+  per-segment matrices (a palette): both are G1 / G2 territory (EMULATOR_CEILING.md). Mario Party 4's breaks are
+  83% matrix loads, the heavy area's 34% array bases + 17% matrices.
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws

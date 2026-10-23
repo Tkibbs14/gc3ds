@@ -1999,6 +1999,14 @@ static const char* run_body(const char* path) {
                                     (unsigned long long)(g_picaMergeWhy[5] - lastW[5]), (unsigned long long)(g_picaMergeWhy[6] - lastW[6]),
                                     (unsigned long long)(g_picaMergeWhy[7] - lastW[7]), (unsigned long long)(g_picaMergeWhy[8] - lastW[8]));
                             memcpy(lastW, g_picaMergeWhy, sizeof lastW);
+                            extern u64 g_mergeBreak[12];
+                            static u64 lastB[12];
+                            static const char* const kMb[12] = { "xf matrices", "xf normal", "xf dual tex", "xf lights", "xf matrix index",
+                                                                 "xf regs", "bp", "cp matrix index", "cp arrays", "cp other", "tex address", "tlut" };
+                            fprintf(g_perf, "# merge breaks 10s (open draws issued by a change of):");
+                            for (int k = 0; k < 12; k++) fprintf(g_perf, " %s %llu", kMb[k], (unsigned long long)(g_mergeBreak[k] - lastB[k]));
+                            fprintf(g_perf, "\n");
+                            memcpy(lastB, g_mergeBreak, sizeof lastB);
                         }
                         {  // display lists (fifo.c dl_note): could their gathered vertices be cached across frames?
                             static u64 lastD[7];
