@@ -138,10 +138,11 @@ struct Jit {
     // OPT_TIER: the last target of each bctrl the block tier compiled (by its address; direct-mapped), which regions
     // inline against (plan_ctr_guess). Kept by the call's address, so a region replacing the block keeps it.
     struct { u32 pc, target; } ctrProf[2048];
-    Relay relay[RELAY_SLOTS];   // --tier-relayout: remembered regions, open addressing by head (pc 0: empty); kept by flushes
+    Relay* relay;               // --tier-relayout (allocated on first use, 96 KB): remembered regions, open addressing by
+                                // head (pc 0: empty); kept by flushes
     u32 replacedSinceFlush;     // ... host words of the blocks regions replaced since the last flush
-    u32 plainSet[16384];        // ... blocks whose tier was decided against a region (no gain, not a head, a member): after
-                                // a relayout they are compiled decided (linkable, not counted again); open addressing, 0 empty
+    u32* plainSet;              // ... (16384, with relay) blocks whose tier was decided against a region (no gain, not a head,
+                                // a member): after a relayout they are compiled decided (linkable, not counted again); 0 empty
     Gekko* g;
     u8* ram;
     u32 ramSize;
@@ -6162,6 +6163,12 @@ static Entry* rs_find(Jit* j, u32 pc, u32 msrBits) {  // the region model: a com
 
 // The slot of a remembered region for (pc, key): its own, or the empty one where it would go (NULL: the table is full).
 static Relay* relay_find(Jit* j, u32 pc, u32 key) {
+    if (!j->relay) {  // the tables cost 160 KB of heap: only once --tier-relayout is on (the relay's log buffer needs the room)
+        if (!jit_tier_relayout_words) return NULL;
+        j->relay = calloc(RELAY_SLOTS, sizeof *j->relay);
+        j->plainSet = calloc(16384, sizeof *j->plainSet);
+        if (!j->relay || !j->plainSet) { free(j->relay); free(j->plainSet); j->relay = NULL; j->plainSet = NULL; return NULL; }
+    }
     u32 h = ((pc >> 2) * 2654435761u ^ key) & (RELAY_SLOTS - 1);
     Relay* del = NULL;
     for (u32 k = 0; k < 64; k++, h = (h + 1) & (RELAY_SLOTS - 1)) {
@@ -6174,6 +6181,7 @@ static Relay* relay_find(Jit* j, u32 pc, u32 key) {
 }
 
 static u32* plain_slot(Jit* j, u32 pc) {
+    if (!j->plainSet) return NULL;
     u32 h = (pc >> 2) * 2654435761u >> 18;
     for (u32 k = 0; k < 32; k++, h = (h + 1) & 16383)
         if (j->plainSet[h] == pc || !j->plainSet[h]) return &j->plainSet[h];
@@ -6687,6 +6695,8 @@ void jit_destroy(Jit* j) {
     free(j->buckets);
     free(j->fastMem);
     free(j->compiledPc);
+    free(j->relay);
+    free(j->plainSet);
     free(j);  // the executable region is kept for the process lifetime
 }
 

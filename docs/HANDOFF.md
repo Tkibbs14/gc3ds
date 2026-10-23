@@ -30,6 +30,10 @@
 > three deep) in regions whose head function loops. **Wind Waker +7.2%** (the actor search, C35, in one region: 21.7
 > -> 15.0% of core 0); TP heavy area -0.9%, Ordon +0.2%, Mario Party 4 +0.2%. Still off by default (owner decision:
 > on for all, given the heavy area's -0.9%?). `--tier-watch ADDR` shows the plans for heads near ADDR on the device.
+> **Across scenes (jobs 948-1014):** WW +7.4%, TP heavy -0.9%, Ordon -0.6..-1.4%, MP4 flat, TP title -1.1% / +2.6%
+> (one pair). `--tier-loops on` measures the same with fewer regions. The loss is fetch stalls from the replaced
+> blocks left in place; region zone, relayout (`--tier-relayout`), thresholds 16-1024 and code alignment were measured
+> and are off (MEASUREMENTS.md "Region tier across scenes"). Builds move a baseline ~0.8%: pool pairs over builds.
 > **Limits now: core 0 in every scene.** The joint-state line ('# joint 10s', every run) shows core 0 running guest
 > code 93-97% of the time; the GX thread is idle 12-13% in gameplay and 40-75% in the title, the vertex worker idle
 > ~70-96%. So the levers are cheaper guest code on core 0 (the JIT, ports, stand-ins, memos) and work taken off core 0.

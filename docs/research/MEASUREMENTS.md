@@ -2319,6 +2319,53 @@ done
   more work removed per region (float lanes and CR flags across labels, extents past 64 instructions, leaf and
   devirtualised calls inlined). Grouping regions apart was measured and loses (row above).
 
+### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
+
+- **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**
+
+  | Scene | Tier off -> on, each build | Reading |
+  |---|---|---|
+  | Wind Waker, Outset (ww_outset) | +7.2, +7.4, +7.4% | **+7.4%**, every build |
+  | TP heavy area (tp_area2) | -0.9, -1.0, -0.7, -1.1, -0.8, -0.9% | **-0.9%**, every build |
+  | TP Ordon walk (tp_ordon) | +0.2% (940/941); -1.45, -1.45% (1005/1006, 1010/1011) | -0.6 to -1.4% |
+  | Mario Party 4 board (mp4_board) | +0.2% (942/943), -0.25% (1012/1013) | flat |
+  | TP title (tp850, title_sections.py, 948/949) | cutscene 35.77 -> 35.38 (-1.1%), after it 23.76 -> 24.38 (+2.6%) | one pair |
+  | TP / WW / MP4 boot (no state) | the logos run at full speed (99.7%): nothing to measure; runs 952-955 cancelled | - |
+
+- **Builds move the baseline by up to ~0.8% with nothing in the path changed:** Ordon tier off read 30.08 on one build
+  and 30.31 / 30.32 on another, tier on 30.14 and 29.89 / 29.87. One off/on pair on one build cannot settle a 1% effect;
+  pool pairs over builds.
+- **--tier-loops on (regions only where the head's function loops):** heavy -0.9%, Wind Waker +7.3%, Ordon -1.1%,
+  Mario Party 4 -0.45% (962/965/1007/1014): the same as all regions, with a third to a half of them (720 vs 1905 heavy).
+- **--tier-runs (runs before a region, default 64):** 16: heavy -1.7%, WW +7.9%; 32: heavy -1.5%, WW +6.7%; 256: heavy
+  -2.6%, WW +5.1%; 1024: heavy -7.7%, WW -0.4% (971-982, against 961/964). Pending blocks are unlinked, so a high
+  threshold keeps hot code going through the dispatcher and compiling inside the scored window (jitc 0.8 -> 2.0%).
+  64 stays.
+- **Regions are smaller than what they replace:** host words of the regions against the head and member blocks they
+  replaced: heavy 328,793 / 452,417, WW 263,227 / 374,093, Ordon 377,647 / 526,831, MP4 88,117 / 132,226 (0.67-0.73).
+  The code buffer still grows (heavy 47 -> 60%): the replaced blocks stay where they were, between live ones. Hot
+  footprint (`# code footprint`, blocks covering 90% of compiled time): heavy 504 -> 580 KB, WW 320 -> 385 KB; the new
+  `# code pages 10s` line (4 KB host pages those blocks span): heavy 398 -> 477, WW 262 -> 336.
+- **Instruction micro-TLB misses are not the cost.** They swing 2-3x between builds with the same settings (heavy tier
+  on 238 k/s in 967, 91 k/s in 979, 405 k/s in 990), with the code buffer's address. GC3DS_CODE_ALIGN (993-998, one
+  build each, buffer at 0af0c000 / 0af10000 / 0b000000): 4 KB / 64 KB / 1 MB alignment, tier off 288 / 85 / 40 k/s at
+  21.15 / 21.26 / 21.15%, tier on 411 / 151 / 45 k/s at 21.00 / 21.03 / 20.99%; stall_inst unchanged (204 / 204 / 203
+  M cycles/s). The kernel maps an aligned buffer with large pages, and the micro-TLB miss is cheap. Alignment stays 4 KB
+  (1 MB costs up to 1 MB of heap for nothing measurable).
+- **What the loss is:** instruction-fetch stall cycles. Heavy stall_inst 204 -> 215 M cycles/s (~1.4% of core 0),
+  Ordon 220 -> 242, MP4 174 -> 189, with I-cache misses +1.3%, +6.8%, +5.8%; regions' own compiles add ~0.3% after the
+  first 50 s (heavy compile 0.5 -> 0.8% of core 0). Wind Waker pays the same stalls (150 -> 175) and gains more from
+  its actor search.
+- **Tried against it, not kept:** regions in the top quarter of the hot area (`--region-zone on`, 969/970): heavy
+  21.07 -> 20.94%, micro-TLB 238 -> 323 k/s, WW unchanged (repeats 874-881: regions link into the code around them).
+  A relayout (`--tier-relayout KB`: regions remember their coverage and the decisions against regions; once regions
+  replaced KB of code the cache is flushed and remembered heads compile straight into regions; 975-978, 983-986):
+  stall_inst back to the tier-off level (heavy 205), but the flush's recompile and the re-tiering cost as much:
+  heavy 20.96-21.01% (tier on 21.07), WW 20.24-20.29% (20.12), 512 KB worse than 1024 KB (three flushes, the last
+  inside the scored window). Off by default, commit abb44aa.
+- **Dispatcher:** link requests 2-22/s -> 144-499/s with the tier on are links to pending targets (counted as
+  "target polling / idle"); under 0.1% of core 0.
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws
