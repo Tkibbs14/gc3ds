@@ -2701,9 +2701,11 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         }
         if (gpuPos) {
             u64 tpal = dprof_begin();
+            g_gxWhere = GW_PALASSIGN;
             bool palOk = pal_assign(w.job);
             dprof_end(PROF_VPAL, tpal);
             if (!palOk) {
+                g_gxWhere = GW_CPUALONE;
                 draw_cpu_alone(&w, gx, &f, prim, count, nIdx);
                 dprof_end(PROF_GXVTX, t0);
                 return;
@@ -2717,13 +2719,17 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
                 g.idxUsed += nIdx;
                 w.vrel = (u16)(w.dst - g.vbase);
             }
+            g_gxWhere = work ? GW_VWQUEUE : GW_VWDO;
             if (work) vw_queue(&w, 0);
             else vw_do(&w);
         } else if (work) {  // the worker appends the triangles it keeps; the batch's draw call waits for it (flush_batch)
+            g_gxWhere = GW_VWQUEUE;
             vw_queue(&w, workVerts);
         } else {  // too large for the worker's ring: culled and appended here, after the worker's queued draws
+            g_gxWhere = GW_VWWAIT;
             vw_sync();
             g_vwPos = g.arenaUsed;
+            g_gxWhere = GW_VWDO;
             vw_do(&w);
             g.arenaUsed = g_vwPos;
         }

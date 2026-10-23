@@ -16,7 +16,7 @@
 static u32* g_samples;
 static volatile u32 g_n, g_outside, g_whereN[WH_N];
 extern volatile u8 g_gxWhere;  // the GX thread's position (pica.c GW_*), sampled with core 0
-#define GXW_N 32
+#define GXW_N 40
 static volatile u32 g_gxwN[GXW_N];
 static volatile bool g_quit;
 static Thread g_thread;
@@ -193,7 +193,8 @@ void jitsample_report(FILE* f, const Jit* j) {
         static const char* const kGw[] = { "idle/ring", "draw", "drawcall", "vwwait", "vwalloc", "splitwait", "framebegin",
                                            "frameend", "split", "tex", "copy", "shapes", "fifo", "merge", "flush", "tev",
                                            "batchkey", "vprep", "vqueue", "state2", "drawtail", "dlist", "dec_bp",
-                                           "dec_xf", "dec_cp", "dec_idx", "dec_list", "dec_feed", "dec_dlnote", "dec_draw", "dec_run", "dec_op" };
+                                           "dec_xf", "dec_cp", "dec_idx", "dec_list", "dec_feed", "dec_dlnote", "dec_draw", "dec_run", "dec_op",
+                                           "palassign", "cpualone", "vwqueue", "vwdo" };
         u32 gt = 0;
         for (int k = 0; k < GXW_N; k++) gt += g_gxwN[k];
         fprintf(f, "# gx thread where 10s (%u samples):", (unsigned)gt);

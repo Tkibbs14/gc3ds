@@ -481,7 +481,8 @@ typedef struct {
     u32 splitVerts; bool abSplitverts;  // --splitverts N: arena vertices between early splits; --ab splitverts: N and 8192
     bool abProfclock;  // --ab profclock: the host profile's clock on and off (profclock column; off phases read 0 there)
     bool abGxdiag;  // --ab gxdiag: the decoder's statistics on and off (gxdiag column; measures their cost)
-    bool nogxdiag;  // --gxdiag off: no decoder statistics even with --profile on (the GX thread's positions without them)
+    bool gxdiag;    // --gxdiag on (with --profile on): the decoder's statistics (# gx decode, # dlist time...). Off by default
+                    // since 2026-10-22: they cost ~6.5% in TP's heavy area (jobs 818-1021 ran with them, 813 without)
     bool abBlacklit;  // --ab blacklit: black lights left out and kept (blacklit column)
     bool abVscache;  // --ab vscache: 8 vertex set-ups kept, and 1 (vscache column)
     bool noshlight, abShlight;  // --shlight on|off (off): lighting in the vertex shader or on the CPU; --ab shlight
@@ -640,7 +641,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--tribench")) o->tribench = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
-        else if (!strcmp(a, "--gxdiag")) o->nogxdiag = !strcmp(v, "off");
+        else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
@@ -1193,7 +1194,7 @@ static const char* run_body(const char* path) {
         if (g_opt.abBlacklit) g_vfSkipBlack = false;  // --ab blacklit starts with them
         if (g_pica) pica_set_xfb_fcram(g_opt.vramtex || g_opt.abVramtex);
         if (g_pica) pica_set_vramtex(g_opt.vramtex && !g_opt.abVramtex);  // --ab vramtex starts off
-        g_gxDiag = g_opt.profile && !g_opt.abGxdiag && !g_opt.nogxdiag;  // --ab gxdiag starts off
+        g_gxDiag = g_opt.profile && !g_opt.abGxdiag && g_opt.gxdiag;  // --ab gxdiag starts off
         if (g_pica) pica_set_split_verts(g_opt.splitVerts && !g_opt.abSplitverts ? g_opt.splitVerts : 8192);
         l2pf_begin();
         if (g_pica) pica_set_qbig(g_opt.qbig && !g_opt.abQbig);  // --ab qbig starts off
