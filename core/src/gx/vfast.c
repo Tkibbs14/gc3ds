@@ -360,8 +360,21 @@ static u32 align8(u32 v) { return (v + 7) & ~7u; }
 // Job memory: VJob, the vertices, the stream copy, then room for the most position and texture matrices the draw can
 // use. vfast_prepare packs the matrices it used at the start of that room, so the job ends at vfast_job_used bytes and a
 // ring allocator can take the rest back (the 3DS vertex worker's job ring: most draws use a few of the 64 matrices).
+// With --vin (g_vinCompact) the vertices take vin_stride of the texture coordinates the draw reads; reserved here from
+// the sources of every enabled texgen (setup_compute takes those of the selected ones: a subset, so a stride no larger),
+// rather than a whole VIn each (the reservation, not the trimmed job, is what fills the ring the GX thread waits on).
+static u32 vin_reserve(const GXCore* gx) {
+    if (!g_vinCompact) return (u32)sizeof(VIn);
+    u32 numGens = gx->xf[0x103F] & 15, bound = 0;
+    if (numGens > 8) numGens = 8;
+    for (u32 gi = 0; gi < numGens; gi++) {
+        u32 cfg = gx->xf[0x1040 + gi], type = (cfg >> 4) & 7, src = (cfg >> 7) & 31;
+        if (type < 2 && src >= 5 && src <= 12) bound |= 1u << (src - 5);
+    }
+    return vin_stride(bound);
+}
 u32 vfast_job_bytes(const GXCore* gx, u32 count, u32 vsize) {
-    return align8(sizeof(VJob)) + align8(count * (u32)sizeof(VIn)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize + 4) +
+    return align8(sizeof(VJob)) + align8(count * vin_reserve(gx)) + align8(count * (u32)sizeof(VIx)) + align8(count * vsize + 4) +
            align8(pos_cap(gx, count) * 21 * 4) + align8(tex_cap(gx, count) * 12 * 4) + 4 * align8((u32)sizeof(VHalf));
 }
 // Written only by the thread that prepares jobs (pica.c begin_frame, soft.c): CPU-lit draws leave their gather and
@@ -973,7 +986,7 @@ VJob* vfast_prepare(System* s, const GXCore* gx, u32 vat, const VFold* f, const 
     g_vsLast = (u32)(S - g_vs);
     memcpy(job->P, S->P, sizeof job->P);
     memcpy(job->unit, S->unit, sizeof job->unit);
-    // The job's memory (vfast_job_bytes reserved it for a full VIn per vertex; the vertices take only inStride).
+    // The job's memory (vfast_job_bytes reserved vin_reserve per vertex, at least inStride: the vertices take inStride).
     u8* m = (u8*)mem + align8(sizeof(VJob));
     job->in = (VIn*)(void*)m;
     job->inStride = vin_stride(S->texUsed);
