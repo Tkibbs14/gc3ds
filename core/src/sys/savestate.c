@@ -91,6 +91,7 @@ bool sys_load_state(System* s, const char* path) {
     if (!ok) { free(t); return false; }
     swap_words(s->mem1, MEM1_SIZE);
     swap_words(s->lockedCache, LOCKED_CACHE_SIZE);
+    mem_dirty(0, MEM1_SIZE);  // all of RAM replaced: what was converted or translated from it before is stale
     if (GC_SWAPRAM && h.pendingLen) {
         u8* be = malloc(h.pendingLen);
         if (!be) { free(t); return false; }

@@ -61,7 +61,7 @@ bool g_gpBulk = true;  // on: heavy area +3.2%, Ordon +4.5% (jobs 477-478); PC s
 u64 g_gpLinked, g_gpUnlinked;  // bursts fed to the GP, and held in RAM while the GP is not linked (reports)
 static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
-    u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29);
+    u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29), start = wp;
     if (g_gpBulk && !GC_SWAPRAM && wp + 32 <= PA_MEM1_END && (!pi->fifoEnd || wp + 32 <= pi->fifoEnd)) {
         memcpy(s->mem1 + wp, data, 32);
         wp += 32;
@@ -78,8 +78,10 @@ static void gp_burst(System* s, const u8* data) {
     // CP control bit 4 links the GP to the CPU's FIFO. GXSetCPUFifo clears it when the CPU FIFO is not the GP's, as
     // GXBeginDisplayList does while a list is recorded through the pipe (Mario Party 4's models): the bytes then only
     // go to RAM, and the GP sees them when the list is called. A control register never written (0) counts as linked.
+    // Such a list is RAM the GP reads later, written without a cache flush: its page is stamped like a flushed one,
+    // so the converted shapes and translated lists made from an earlier recording there are made again.
     u16 cr = s->gx.cpRegs[0x02 / 2];
-    if (cr && !(cr & 0x10)) { g_gpUnlinked++; return; }
+    if (cr && !(cr & 0x10)) { g_gpUnlinked++; mem_dirty(start, 32); return; }
     g_gpLinked++;
     if (s->gxAsync) s->gxAsync->feed(s, data, 32);
     else gxcore_feed(s, &s->gx.core, data, 32);
