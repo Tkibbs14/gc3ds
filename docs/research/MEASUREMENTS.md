@@ -2407,18 +2407,24 @@ done
   | TP heavy area (1067 / 1056, 1057 sync on) | 21.86% | 20.43 / 20.44% | **-6.5%** |
   | Mario Party 4 (1069 / 1060) | 14.28% | no complete run | |
 
-- **Why the heavy area loses:** core 0 runs better (stall_inst 229 -> 213 M cycles/s, instructions 270 -> 274 M/s) but
-  waits for the GX thread 15.6% of the time (0.5% off); the GX thread works more (gx 89.7 -> 93.9%) for fewer frames,
-  and core 0's data stalls rise 170 -> 187 M cycles/s. Reading: denser unchecked memory traffic from core 0 contends in
-  the shared 2 MB L2 with the GX thread, which is the heavy area's limit (C2's second-worker loss had the same shape).
-  Wind Waker (GX thread ~40% busy) gains.
+- **Why the heavy area lost (1056):** core 0 waited for the GX thread 15.6% of the time (0.5% off), the GX thread
+  working more for fewer frames. Not L2 contention, as first read: it was the heap. **With the site table in linear
+  memory (0bc59ff, jobs 1071-1074) every scene gains and none stopped:**
+
+  | Scene | Off (1067-1070) | Fault mode, table in linear memory | |
+  |---|---|---|---|
+  | Wind Waker | 20.13% | 21.15% (1074) | **+5.1%** |
+  | TP Ordon walk | 30.09% | 30.84% (1072) | +2.5% |
+  | TP heavy area | 21.86% | 22.36% (1073), GX wait 0.57% | +2.3% |
+  | Mario Party 4 | 14.28% | 14.41% (1071) | +0.9% |
+
 - **The "crashes" today were relay memory:** jobs 1058 (Ordon, at 5 s) and 1060 (Mario Party 4, at 15 s) stopped
   posting; the 2DS showed a relay error, not a Luma crash, and left no crash record. Fault mode's 2 MB site table came
   out of a heap with 0.2-0.5 MB free (linear memory had 7-12 MB): moved to linear memory (0bc59ff), not yet run.
   The sync-on configuration that crashed in svc 0x94 on 10-15 ran 150 s clean (1057) and Ordon 102 s (1065).
   Fault-mode runs have no sampler profile lines.
-- **Stays off.** Re-evaluate: a run of each scene with the table in linear memory (James restarting), and a way to keep
-  the GX-bound scenes from losing (fault mode only while core 0 is the limit, by gxwait).
+- **Soak runs, 600 s each, no stop:** title (1075: cutscene 36.33%, later 23.92%, movie 13.30%) and heavy area (1076:
+  22.47% over 53 windows, against 21.86% off; 1,430 faults, heap 0.36 MB free). Default: owner decision.
 
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
