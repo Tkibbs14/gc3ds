@@ -642,6 +642,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
+        else if (!strcmp(a, "--vwbig")) pica_set_vw_big(!strcmp(v, "on"));
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);

@@ -2322,10 +2322,40 @@ static volatile bool g_vwTrim = true;
 void pica_set_vw_trim(bool on) { g_vwTrim = on; }
 bool pica_vw_trim(void) { return g_vwTrim; }
 
+// --vwbig on|off (pica_set_vw_big, on by default): a job larger than the ring in use (g_vwLimit) goes to the buffer
+// past the ring (it is VW_MEM whatever the limit), one such job at a time, so it waits only for the previous big job,
+// never for the ring to drain (from the buffer's start it did: vwalloc took vw_do's 20%, job 1035); small jobs keep the
+// shallow ring. Without it such a draw is done on the GX thread (Mario Party 4: 20.6% of its GX thread, job 1015; a
+// 512 KB ring for everything: +2.2%, job 1022, but deeper rings lose for TP).
+static volatile bool g_vwBig = true;  // on by default: Mario Party 4 13.89 -> 14.29% (+2.9%), TP heavy even (jobs 1040-1042)
+static bool g_vwBigBusy;  // a big job may be in flight: the one queued as job g_vwBigIdx
+static u32 g_vwBigIdx;
+u64 g_vwBigJobs;
+void pica_set_vw_big(bool on) { g_vwBig = on; }
+bool pica_vw_big(void) { return g_vwBig; }
+
 // `bytes` of job memory, after waiting for the worker to free them if the ring is short.
 static u8* vw_alloc(u32 bytes) {
     if (g_vwLimitWant != g_vwLimit && g_vwTail == g_vwHead) { g_vwLimit = g_vwLimitWant; g_vwMemHead = 0; }
-    if (bytes > g_vwLimit) return NULL;
+    if (bytes > g_vwLimit) {
+        if (!g_vwBig || bytes > VW_MEM - g_vwLimit) return NULL;
+        u64 tb = 0;
+        GW_ENTER(GW_VWALLOC);
+        for (;;) {  // the previous big job done (it was queued as job g_vwBigIdx), and a free slot
+            u32 t = g_vwTail;
+            vw_dmb();
+            if (t == g_vwHead) break;
+            if (g_vwHead - t < VW_SLOTS && (!g_vwBigBusy || (s32)(t - g_vwBigIdx) > 0)) break;
+            if (!tb) tb = prof_begin();
+            vw_steal();
+        }
+        GW_LEAVE();
+        if (tb) { prof_end(PROF_VWAIT, tb); prof_end(PROF_VALLOC, tb); }
+        g_vwBigBusy = true;
+        g_vwBigIdx = g_vwHead;  // the next job queued (if this draw is not queued, a later job: only a longer wait)
+        g_vwBigJobs++;
+        return g_vwMem + g_vwLimit;
+    }
     u32 start = g_vwMemHead;
     if (start + bytes > g_vwLimit) start = 0;
     u64 t0 = 0;
@@ -2336,8 +2366,11 @@ static u8* vw_alloc(u32 bytes) {
         vw_dmb();
         if (t == g_vwHead) break;  // nothing in flight
         bool full = g_vwHead - t >= VW_SLOTS;
+        u32 k = t;  // the oldest job in flight in the ring (big jobs past it skipped)
+        while (k != g_vwHead && g_vw[k % VW_SLOTS].memStart >= g_vwLimit) k++;
+        if (k == g_vwHead && !full) break;
         // In flight: [os, head) going round the ring.
-        u32 os = g_vw[t % VW_SLOTS].memStart, he = g_vwMemHead, end = start + bytes;
+        u32 os = g_vw[k % VW_SLOTS].memStart, he = g_vwMemHead, end = start + bytes;
         bool overlap = os <= he ? (start < he && end > os) || (os == he) : (start < he || end > os);
         if (!full && !overlap) break;
         if (!waited) { waited = true; t0 = prof_begin(); g_vwStats[3]++; g_vwStats[4] += g_vwHead - t; }

@@ -95,6 +95,8 @@ bool pica_vertex_worker(void);
 bool pica_vertex_worker_wanted(void);  // the setting (the GX thread applies it at its next draw)
 // The vertex worker's job ring in bytes (64 KB to 1 MB, default 256 KB; applied when the ring is next empty).
 void pica_set_job_ring(u32 bytes);
+void pica_set_vw_big(bool on);  // --vwbig on: jobs larger than the ring in use take the buffer past it
+bool pica_vw_big(void);
 u32 pica_job_ring(void);
 // Starting citro3d's GX queue at each split (on by default when the queue was found), so the GPU overlaps the GX
 // thread; off waits for C3D_FrameEnd as citro3d does (comparison). pica_queue_offset: where the queue was found in
