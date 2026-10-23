@@ -2366,6 +2366,33 @@ done
 - **Dispatcher:** link requests 2-22/s -> 144-499/s with the tier on are links to pending targets (counted as
   "target polling / idle"); under 0.1% of core 0.
 
+### Profiled runs paid for the decoder's statistics; the device drifted ~2% (jobs 1017-1039, 2026-10-22/23)
+
+- **What looked like a regression:** every scene's tier-off speed sat 2-6.5% under the 10-21 baseline (heavy 22.74 ->
+  21.3%). A bisect on the 2DS ran the baseline commit a45608e itself at **21.32%** (1017) and 20e9cb0 / 3b0ce88 / 0e4fff4
+  / HEAD at 21.19-21.38% (1018-1021): no code regression.
+- **The cause:** `--profile on` also turned on the GX decoder's statistics (a clock read around one command in 16, the
+  display-list sampler) unless `--gxdiag off` was given; the baseline jobs gave it, jobs 818-1021 did not. The cost:
+  heavy area ~6.5% (core 0's GX wait 0.4 -> 5.2%, dispatch 2.9 -> 7.9%). **Since 01b4be6 the statistics are opt-in
+  (`--gxdiag on`).** A `# gx decode 10s` line with 0.0 ms/s means they were off. Off/on pairs inside one setting held:
+  the tier's effects re-measured without them (1024-1031): heavy 22.11 -> 21.92 (-0.9%), WW 18.78 -> 20.15 (+7.3%),
+  MP4 13.95 -> 13.90 (-0.4%), Ordon 30.91 -> 30.12 (-2.5%).
+- **The rest is the device:** the same a45608e binary with `--gxdiag off` (1038-1039): heavy 22.24% (22.74 on 10-21),
+  Ordon 30.96% (31.84): ~2-3% lower a day later, with HEAD within 0.2-0.6% of it. Compare only within one session.
+
+### Mario Party 4's GX thread did the vertex work of draws too big for the job ring (jobs 1015-1043)
+
+- **What:** GW_DRAWTAIL split into palette assignment, the CPU fallback, the worker queue and vw_do on the GX thread
+  (jitsample.c `vwdo`, ...). Mario Party 4 (1015): **vwdo 20.6% of the GX thread**, the worker idle ~70%: draws whose
+  job is larger than the 128 KB ring in use run on the GX thread. TP heavy (1016): none.
+- **Ring size for everything (`--vwmem`, 1022-1023):** 512 KB / 1 MB: 13.82 -> 14.14 / 14.07% (+2.2%), vwdo gone;
+  deeper rings lose for TP (ruled out earlier).
+- **`--vwbig` (81739bf, on by default):** a job larger than the ring takes the buffer past it (VW_MEM is 1 MB whatever
+  the ring), one at a time. First form, from the buffer's start (1032-1037): +0.1%, the GX thread waited in vwalloc
+  (19.9%) for the ring to drain. Final form, past the ring (1040-1042): **Mario Party 4 13.89 -> 14.29% (+2.9%)**,
+  core 0's GX wait 9.9 -> 5.7%, the GX thread idle 22 -> 28%; TP heavy 21.86 -> 21.82%, Ordon 30.04 -> 30.15%, Wind Waker 20.11 -> 20.12% (even;
+  1044-1047). Frames correct (1043).
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws

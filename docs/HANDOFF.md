@@ -30,6 +30,11 @@
 > three deep) in regions whose head function loops. **Wind Waker +7.2%** (the actor search, C35, in one region: 21.7
 > -> 15.0% of core 0); TP heavy area -0.9%, Ordon +0.2%, Mario Party 4 +0.2%. **On by default since 2026-10-22**
 > (James: on; `--tier off` for the block tier alone). `--tier-watch ADDR` shows the plans for heads near ADDR on the device.
+> **Scoring (2026-10-23):** `--profile on` no longer turns on the GX decoder's statistics (`--gxdiag on`); they cost
+> ~6.5% and every profiled run from job 818 to 1021 paid them. The device also drifted ~2% in a day with the same
+> binary: compare within one session. **`--vwbig` (on):** Mario Party 4 +2.9% (big draws on the worker, not the GX
+> thread). **Next:** the J2D pane walk (LIBRARY_PORTS.md, prerequisite done: the give-ups are denormal inputs, to be
+> computed through the interpreter's soft float per pane).
 > **Across scenes (jobs 948-1014):** WW +7.4%, TP heavy -0.9%, Ordon -0.6..-1.4%, MP4 flat, TP title -1.1% / +2.6%
 > (one pair). `--tier-loops on` measures the same with fewer regions. The loss is fetch stalls from the replaced
 > blocks left in place; region zone, relayout (`--tier-relayout`), thresholds 16-1024 and code alignment were measured
