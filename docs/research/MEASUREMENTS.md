@@ -2424,7 +2424,14 @@ done
   The sync-on configuration that crashed in svc 0x94 on 10-15 ran 150 s clean (1057) and Ordon 102 s (1065).
   Fault-mode runs have no sampler profile lines.
 - **Soak runs, 600 s each, no stop:** title (1075: cutscene 36.33%, later 23.92%, movie 13.30%) and heavy area (1076:
-  22.47% over 53 windows, against 21.86% off; 1,430 faults, heap 0.36 MB free). Default: owner decision.
+  22.47% over 53 windows, against 21.86% off; 1,430 faults, heap 0.36 MB free).
+- **On by default it crashed (6669041, reverted in 621b7cc):** jobs 1096 (Mario Party 4, at 9 s) and 1097 (TP heavy,
+  before its first log post) stopped within an hour; Luma's dump 16 (reported by 1098): kernel prefetch abort at pc
+  fffffffe, r9 = 0x94, svc mode, the same as 10-15's dumps: inside svc 0x94 (Luma's instruction-cache invalidation),
+  which every compile issues (jit_host_sync_icache), not only fault mode's patch sync. With `--faultsync off` the crash
+  is rarer, not gone. **Off by default again.** Open: why svc 0x94 faults only after the user exception handler has
+  run (it resumes the thread straight from the handler: jit_fault_resume); a clean return through the kernel, or no
+  svc 0x94 while fault mode is on (a cache sync without it), are the next things to try, with James at the 2DS.
 
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
