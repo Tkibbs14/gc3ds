@@ -2432,6 +2432,16 @@ done
   is rarer, not gone. **Off by default again.** Open: why svc 0x94 faults only after the user exception handler has
   run (it resumes the thread straight from the handler: jit_fault_resume); a clean return through the kernel, or no
   svc 0x94 while fault mode is on (a cache sync without it), are the next things to try, with James at the 2DS.
+- **What the crash is (Luma3DS sources, k11_extension, read 2026-10-23):** svc 0x94 is `mvn r1, #0; ldr r12,
+  =invalidateInstructionCacheRange; bx r12`, a tail call into the stock kernel's ranged I-cache routine with length -1
+  (svc.c buildAlteredSvcTable; utils.s); the routine's address is found at boot by scanning for `pop {r3, pc}`
+  (0xE8BD8008, main.c). Luma keeps no per-thread exception state (fatalExceptionHandlersMain.c only decides fatal or
+  not). Dump 16: r12 = fff1da0c (in that routine), r3 = r4 = r5 = 0xFFFFFFFF, lr 0, pc 0xFFFFFFFE: the routine's final
+  `pop {r3, pc}` read two 0xFFFFFFFF words: its kernel stack had been overwritten. User code cannot write there.
+- **Not an escape:** our own I-cache routine through svcBackdoor also ended in a kernel prefetch abort (2d9947f,
+  2026-10-10, before fault mode existed; replaced by svc 0x94 in 9c61dc7); Luma's ranged 0x93 reached other cores.
+  The fault itself must be what disturbs the kernel: next, check the kernel's exception entry (what our resume skips)
+  and whether a fault taken while an interrupt or another core's cache broadcast is pending is the trigger.
 
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
