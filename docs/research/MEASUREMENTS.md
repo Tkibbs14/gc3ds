@@ -2393,6 +2393,33 @@ done
   core 0's GX wait 9.9 -> 5.7%, the GX thread idle 22 -> 28%; TP heavy 21.86 -> 21.82%, Ordon 30.04 -> 30.15%, Wind Waker 20.11 -> 20.12% (even;
   1044-1047). Frames correct (1043).
 
+### Fault mode re-measured with the region tier (jobs 1048-1070, 2026-10-23, James restarting the 2DS)
+
+- **Cold-code overflow:** with fault mode every access has its own slow path in cold code; one block overflowed it, failed
+  to compile and was retried at every entry: heavy area 17.19% against 21.86, compile 12-33% of core 0, 19,502 failed
+  compiles (1048). Fixed in 0bc59ff: such a block is compiled again with checked accesses (1 block in 1056).
+- **Same session, fault mode against off (`--faultsync off` unless noted):**
+
+  | Scene | Off | Fault mode | |
+  |---|---|---|---|
+  | Wind Waker (1068 / 1059) | 20.13% | 21.44% | **+6.5%** |
+  | TP Ordon walk, 50-100 s (1070 / 1065, sync on, stopped at 102 s) | 30.50% | 31.54% | +3.4% |
+  | TP heavy area (1067 / 1056, 1057 sync on) | 21.86% | 20.43 / 20.44% | **-6.5%** |
+  | Mario Party 4 (1069 / 1060) | 14.28% | no complete run | |
+
+- **Why the heavy area loses:** core 0 runs better (stall_inst 229 -> 213 M cycles/s, instructions 270 -> 274 M/s) but
+  waits for the GX thread 15.6% of the time (0.5% off); the GX thread works more (gx 89.7 -> 93.9%) for fewer frames,
+  and core 0's data stalls rise 170 -> 187 M cycles/s. Reading: denser unchecked memory traffic from core 0 contends in
+  the shared 2 MB L2 with the GX thread, which is the heavy area's limit (C2's second-worker loss had the same shape).
+  Wind Waker (GX thread ~40% busy) gains.
+- **The "crashes" today were relay memory:** jobs 1058 (Ordon, at 5 s) and 1060 (Mario Party 4, at 15 s) stopped
+  posting; the 2DS showed a relay error, not a Luma crash, and left no crash record. Fault mode's 2 MB site table came
+  out of a heap with 0.2-0.5 MB free (linear memory had 7-12 MB): moved to linear memory (0bc59ff), not yet run.
+  The sync-on configuration that crashed in svc 0x94 on 10-15 ran 150 s clean (1057) and Ordon 102 s (1065).
+  Fault-mode runs have no sampler profile lines.
+- **Stays off.** Re-evaluate: a run of each scene with the table in linear memory (James restarting), and a way to keep
+  the GX-bound scenes from losing (fault mode only while core 0 is the limit, by gxwait).
+
 ### X5: GX-thread time inside display-list calls, by repetition (jobs 801-804, 2026-10-22, `--profile on`)
 
 - **What:** each list call's GX-thread ticks (nested commands and draws included; the vertex worker's gather and draws
