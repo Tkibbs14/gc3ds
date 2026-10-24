@@ -1585,7 +1585,7 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
 // Waker: never, jobs 1257-1260). 2 check: hashed as without it and decided by the hash, the cases where
 // the two disagree counted. g_copyStampStats: [0] lookups in a later frame, [1] kept by clean stamps, [2] dropped on a
 // stamp, [3] check: clean stamps but the bytes changed, [4] check: stamped but the bytes the same.
-static volatile u32 g_copyStamp;
+static volatile u32 g_copyStamp = 1;  // on by default since 2026-10-24: TP heavy +0.7%, Ordon +0.9% (jobs 1261-1268)
 u64 g_copyStampStats[5];
 void pica_set_copystamp(u32 mode) { g_copyStamp = mode; }
 
