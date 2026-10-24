@@ -184,7 +184,9 @@ bool gk_psq_load(Gekko* g, u32 ea, u32 w, u32 idx, u64* p0, u64* p1);   // aot.c
 bool gk_psq_store(Gekko* g, u32 ea, u32 w, u32 idx, u64 v0, u64 v1);
 // Runs instructions in the interpreter from g->pc until the call returns (pc == retPc with r1 == sp), with no hooks,
 // interrupts or idle skips; *why: 0 returned, 1 an exception or a stop, 2 more than max instructions. (memo.c)
-u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why);
+// throughBrk: an interrupt-check request (mtmsr, sc, rfi, an exception) does not end it, only a stop does (port
+// check mode: J3DMaterial::diff's OSDisableInterrupts and DCFlushRange's sc with its handler).
+u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why, bool throughBrk);
 
 // ---- Data memory (gekko_mem.c). Each returns false after raising DSI; the caller must then stop. ----
 bool gk_read_slow(Gekko* g, u32 ea, u32 size, u64* out);

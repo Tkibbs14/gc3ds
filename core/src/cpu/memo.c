@@ -152,7 +152,7 @@ u32 memo_probe(Gekko* g) {
     g_sp = g->gpr[1];
     g_memoRec = (void*)1;
     int why = 0;
-    u32 n = gekko_run_call(g, ret, g_sp, 4000000u, &why);
+    u32 n = gekko_run_call(g, ret, g_sp, 4000000u, &why, false);
     g_memoRec = NULL;
     for (u32 i = 0; i < g_nSeenUsed; i++) g_seen[g_seenUsed[i]].state = 0;
     g_nSeenUsed = 0;

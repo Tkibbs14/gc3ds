@@ -378,7 +378,7 @@ u32 gekko_interp_one(Gekko* g, u32 pc, u32 inst, bool* stop) {
 
 u64 g_gekkoRuns;
 
-u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why) {
+u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why, bool throughBrk) {
     GkPriv* p = GKP(g);
     u32 pc = g->pc, n = 0;
     *why = 2;
@@ -392,8 +392,9 @@ u32 gekko_run_call(Gekko* g, u32 retPc, u32 sp, u32 max, int* why) {
         gk_prim[inst >> 26](g, inst);
         pc = p->npc;
         n++;
-        if (p->brk || p->stopReq) { *why = 1; break; }
+        if ((p->brk && !throughBrk) || p->stopReq) { *why = 1; break; }
     }
+    if (throughBrk) p->brk = true;  // (the dispatcher checks for interrupts afterwards)
     g->pc = pc;
     return n;
 }

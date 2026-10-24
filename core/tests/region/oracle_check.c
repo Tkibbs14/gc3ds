@@ -28,7 +28,7 @@ void x4_call(Gekko* g, u32 target, u32 ret) {
     int why;
     g->pc = target;
     g->lr = ret;
-    gekko_run_call(g, ret, g->gpr[1], 1000000, &why);
+    gekko_run_call(g, ret, g->gpr[1], 1000000, &why, false);
     if (why) {
         fprintf(stderr, "callee %08x failed %d pc %08x\n", target, why, g->pc);
         exit(2);
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     gp_capture = cap;
     GKP(g)->stopReq = GKP(g)->brk = false;
     int why;
-    u32 n = gekko_run_call(g, g->lr, g->gpr[1], 1000000, &why);
+    u32 n = gekko_run_call(g, g->lr, g->gpr[1], 1000000, &why, false);
     Gekko want = *g;
     memcpy(after, s.mem1, 0x1800000);
     u32 wantN = pn;

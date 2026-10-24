@@ -33,7 +33,7 @@ void port_set_memory(u8* mem1, u32 size) {
     g_psz = size;
 #ifndef __3DS__
     if (getenv("GC3DS_PORT")) g_portMode = 1;
-    if (getenv("PORT_CHECK")) g_portMode = 2;
+    if (getenv("PORT_CHECK")) g_portMode = !strcmp(getenv("PORT_CHECK"), "plant") ? 3 : 2;  // (plant: --port plant)
     if (getenv("GC3DS_PORT_HOOKS")) g_portHooks = (u32)strtoul(getenv("GC3DS_PORT_HOOKS"), NULL, 0);
 #endif
 }
@@ -54,7 +54,7 @@ enum {
     A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
     A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
-    A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0,
+    A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0, A_J3D_MATDIFF = 0x803167D8,
     A_GDCURRENTDL = 0x80451980,  // (__GDCurrentDL: the GDLObj J3D's display-list writers append to)
     A_PANE_DRAW = 0x802F67E0, A_PANE_DRAWSELF = 0x802F83C8, A_PANE_REWRITEALPHA = 0x802F83CC,
     A_PICEX_REWRITEALPHA = 0x80306A0C, A_GRAFTYPE_ORTHO = 0x802E9C88, A_GRAFTYPE_CONTEXT = 0x802E9664,
@@ -116,8 +116,9 @@ typedef struct {
     // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
     bool leak;
     float l14, l15, l31;
-    u32 gdA, gdN;          // bytes written at a GD display list's write pointer (J3D's writers), from gdA
-    u8 gd[8 * 72];
+    u32 gdA, gdN, gdRoom;  // bytes written at a GD display list's write pointer (J3D's writers), from gdA; its room
+    u8 gd[2048];
+    u32 flushA, flushLen;  // J3DMaterial::diff: the buffer DCFlushRange flushes after the commit (md_flush)
     // The pane walk (PORT_PANEWALK): its stores go straight to guest memory (children read what their parent just
     // wrote), each with the word it replaced, so a walk that gives up puts everything back (walk_undo); its pipe bytes
     // go to a larger buffer. pbase: where this call's pipe bytes start (pipe, or the walk's buffer).
@@ -1181,14 +1182,8 @@ static void gd_xf(Pc* c, u32 addr, u32 n, u32 src) {  // J3DGDWriteXFCmdHdr and 
     gd16(c, addr);
     for (u32 i = 0; i < n; i++) gd32(c, f32(src + 4 * i));
 }
-static void j3d_diff_light_obj(Pc* c, u32 blk, u32 n) {
-    if (n > 8 || !span(c, blk + 0x20, 32) || !span(c, A_GDCURRENTDL, 4)) { give_up(c, 1); return; }
-    u32 dl = f32(A_GDCURRENTDL), k = 0;
-    if (!span(c, dl, 16)) return;
-    for (u32 i = 0; i < n; i++) k += f32(blk + 0x20 + 4 * i) != 0;
-    u32 ptr = f32(dl + 8), top = f32(dl + 12);
-    if (ptr + 72 * k > top || !span(c, ptr, 72 * k)) { give_up(c, 1); return; }
-    c->gdA = ptr;
+// J3DLightObj::load 0x80323590 for each light of the block (n of them): the GD bytes after c->gdN.
+static void light_bytes(Pc* c, u32 blk, u32 n) {
     for (u32 i = 0; i < n; i++) {
         u32 l = f32(blk + 0x20 + 4 * i), o = 16 * i;
         c->n += 6;
@@ -1200,8 +1195,335 @@ static void j3d_diff_light_obj(Pc* c, u32 blk, u32 n) {
         gd_xf(c, 0x060D + o, 3, l + 0x0C);  // direction
         c->n += 160;
     }
+}
+static void j3d_diff_light_obj(Pc* c, u32 blk, u32 n) {
+    if (n > 8 || !span(c, blk + 0x20, 32) || !span(c, A_GDCURRENTDL, 4)) { give_up(c, 1); return; }
+    u32 dl = f32(A_GDCURRENTDL), k = 0;
+    if (!span(c, dl, 16)) return;
+    for (u32 i = 0; i < n; i++) k += f32(blk + 0x20 + 4 * i) != 0;
+    u32 ptr = f32(dl + 8), top = f32(dl + 12);
+    if (ptr + 72 * k > top || !span(c, ptr, 72 * k)) { give_up(c, 1); return; }
+    c->gdA = ptr;
+    light_bytes(c, blk, n);
     wr32(c, dl + 8, ptr + c->gdN);
     c->n += 12;
+}
+
+// ---- J3D: J3DMaterial::diff 0x803167D8 (this, diff flags): the material's blocks append their changed state to the
+// packet's display list between J3DMatPacket::beginDiff and endDiff (J3DDisplayListObj::beginDL / endDL) ----
+// Census (jobs 1324-1327): every material in TP's heavy area and Ordon has J3DColorBlockLightOn, J3DTexGenBlockPatched,
+// J3DTevBlock2 or 4, J3DIndBlockFull and J3DPEBlockFull; the flags used are ambient colour, channels, lights, texture
+// matrices, texgens, texture numbers, gen mode, TEV registers and fog, all ported; any other class, flag or vtable entry
+// gives up and the guest code runs (PortStats.mdWhy).
+enum {
+    A_MD_COLORDIFF = 0x8031A13C, A_MD_AMB = 0x8031A1DC, A_MD_MAT = 0x8031A358, A_MD_CHAN = 0x8031A4D4,
+    A_MD_TEXGENDIFF = 0x8031AC68, A_MD_TEXMTXDIFF = 0x8031ACD0, A_MD_TEXGENGEN = 0x8031AD30, A_MD_TEXGENNUM = 0x80322D48,
+    A_MD_TEVDIFF = 0x8031CD44, A_MD_TEV2REG = 0x8031D434, A_MD_TEV4REG = 0x8031D7BC,
+    A_MD_TEV2STAGES = 0x8032258C, A_MD_TEV4STAGES = 0x803221C8, A_MD_TEV2TEXNO = 0x8031D3D0, A_MD_TEV4TEXNO = 0x8031D758,
+    A_MD_INDDIFF = 0x8031E328, A_MD_INDSTAGES = 0x803233A4, A_MD_PEDIFF = 0x8031FCA0, A_MD_FOG = 0x8031F940,
+    A_MD_GDLOBJ = 0x80434C70,    // (beginDL's GDLObj, __GDCurrentDL while the diff runs)
+    A_MD_FLUSH_SC = 0x8033B5D4,  // DCFlushRange's sc (its handler runs after the port, md_flush)
+};
+// Why J3DMaterial::diff was not taken: texture numbers, texgens, PE blend, TEV stages / indirect / texcoord scale, a block
+// class or vtable entry not ported, the display list's room, floats, other.
+enum { MDW_TEXNO, MDW_TEXGEN, MDW_BLEND, MDW_STAGES, MDW_CLASS, MDW_ROOM, MDW_FLOAT, MDW_OTHER };
+static inline void md_why(Pc* c, u32 why) {
+    if (!c->fail) g_portStats.mdWhy[why]++;
+    give_up(c, why == MDW_ROOM ? 1 : why == MDW_FLOAT ? 2 : 5);
+}
+static inline u32 rlwinm(u32 v, u32 sh, u32 mb, u32 me) { return rlwimi(0, v, sh, mb, me); }
+static inline u32 vfn(u32 obj, u32 off) {  // a virtual function's address (0: not readable)
+    u32 vt = in_mem1(obj, 4) ? f32(obj) : 0;
+    return vt && in_mem1(vt + off, 4) ? f32(vt + off) : 0;
+}
+// GDOverflowCheck(size) at the current write pointer: the guest calls GDOverflowed when it fails; the port gives up.
+static inline bool gd_room(Pc* c, u32 size) {
+    if (c->gdN + size > c->gdRoom || c->gdN + size > sizeof c->gd) { md_why(c, MDW_ROOM); return false; }
+    return true;
+}
+static void bp_word(Pc* c, u32 w) { gd8(c, 0x61); gd32(c, w); }  // J3DGDWriteBPCmd
+// J3DGDSetTevColorS10 0x8030F3FC (reg 1-3, the colour's s16 fields at a): RA once, BG three times.
+static void md_tev_color_s10(Pc* c, u32 id, u32 a) {
+    u32 r = (u32)(s32)(s16)f16(a), g = (u32)(s32)(s16)f16(a + 2), b = (u32)(s32)(s16)f16(a + 4), al = (u32)(s32)(s16)f16(a + 6);
+    u32 ra = rlwimi(rlwimi(rlwinm(al, 12, 9, 19), r, 0, 21, 31), id * 2 + 224, 24, 0, 7);
+    u32 bg = rlwimi(rlwimi(rlwinm(g, 12, 9, 19), b, 0, 21, 31), id * 2 + 225, 24, 0, 7);
+    if (!gd_room(c, 20)) return;
+    bp_word(c, ra); bp_word(c, bg); bp_word(c, bg); bp_word(c, bg);
+    c->n += 150;
+}
+// J3DGDSetTevKColor 0x8030F294 (konst colour 0-3, the GXColor's bytes at a).
+static void md_tev_kcolor(Pc* c, u32 id, u32 a) {
+    u32 w1 = (rlwimi(f8(a), f8(a + 3), 12, 12, 19) | 0x800000u) | (id * 2 + 224) << 24;
+    u32 w2 = (rlwimi(f8(a + 2), f8(a + 1), 12, 12, 19) | 0x800000u) | (id * 2 + 225) << 24;
+    if (!gd_room(c, 10)) return;
+    bp_word(c, w1); bp_word(c, w2);
+    c->n += 90;
+}
+// J3DTevBlock2::diffTevReg 0x8031D434 / J3DTevBlock4::diffTevReg 0x8031D7BC: colours 1-3 and the four konst colours.
+static void md_tev_reg(Pc* c, u32 tev, u32 colors, u32 kcolors) {
+    if (!span(c, tev + colors, 24) || !span(c, tev + kcolors, 16)) return;
+    for (u32 i = 0; i < 3 && !c->fail; i++) md_tev_color_s10(c, i + 1, tev + colors + 8 * i);
+    for (u32 i = 0; i < 4 && !c->fail; i++) md_tev_kcolor(c, i, tev + kcolors + 4 * i);
+    c->n += 40;
+}
+// A constant the guest loads from its small-data area (r2 + off): the expected bits, else not taken.
+static bool sda_is(Pc* c, s32 off, u32 bits) {
+    if (f32(c->g->gpr[2] + (u32)off) == bits) return true;
+    md_why(c, MDW_OTHER);
+    return false;
+}
+static bool sda_is_d(Pc* c, s32 off, u32 hi, u32 lo) { return sda_is(c, off, hi) && sda_is(c, off + 4, lo); }
+// J3DGDSetFog 0x8030F630 then J3DGDSetFogRangeAdj 0x8030F994, as J3DPEBlockFull::diffFog 0x8031F940 calls them (fog at pe + 4).
+static void md_fog(Pc* c, u32 pe) {
+    if (!span(c, pe + 4, 44) || !gd_room(c, 55)) return;
+    if (!sda_is(c, -14028, 0) || !sda_is(c, -14024, 0x3F000000u) || !sda_is_d(c, -14016, 0x3FF00000u, 0) ||
+        !sda_is_d(c, -14000, 0x3FE00000u, 0) || !sda_is(c, -14008, 0x40000000u) ||
+        !sda_is_d(c, -13984, 0x43300000u, 0x80000000u) || !sda_is(c, -13992, 0x4B00001Eu))
+        return;
+    u32 type = f8(pe + 4), sz = f32(pe + 8), ez = f32(pe + 12), nz = f32(pe + 16), fz = f32(pe + 20);
+    if (!plain(c, sz) || !plain(c, ez) || !plain(c, nz) || !plain(c, fz)) { g_portStats.mdWhy[MDW_FLOAT]++; return; }
+    u32 A, B, C;
+    if (fbits(fz) == fbits(nz) || fbits(ez) == fbits(sz)) { A = 0; B = 0x3F000000u; C = 0; }  // (fcmpu: -0 == +0)
+    else {
+        u32 fn = FMUL(fz, nz), d = FSUB(fz, nz), e = FSUB(ez, sz);
+        A = FDIV(fn, FMUL(d, e));
+        B = FDIV(fz, d);
+        C = FDIV(sz, e);
+    }
+    if (c->fail) { g_portStats.mdWhy[MDW_FLOAT]++; return; }
+    u32 expn = 1;  // (B_mant > 1.0 and 0.0f < B_mant < 0.5: compares against doubles, exact for a single)
+    for (u32 k = 0; fbits(B) > 1.0f && k < 300 && !c->fail; k++) { B = FMUL(B, 0x3F000000u); expn++; }
+    for (u32 k = 0; fbits(B) > 0.0f && fbits(B) < 0.5f && k < 300 && !c->fail; k++) { B = FMUL(B, 0x40000000u); expn--; }
+    u32 sh = expn & 63, p = sh < 32 ? 1u << sh : 0;
+    if (!p || c->fail) { md_why(c, MDW_FLOAT); return; }
+    u32 Af = FDIV(A, bitsf((float)(s32)p));  // (the int-to-double trick, then fsubs: exact for a power of two)
+    u32 bm = cvt_fp2unsigned(c, FMUL(0x4B00001Eu, B));
+    if (c->fail) { g_portStats.mdWhy[MDW_FLOAT]++; return; }
+    bp_word(c, (Af >> 12) | 0xEE000000u);
+    bp_word(c, bm | 0xEF000000u);
+    bp_word(c, expn | 0xF0000000u);
+    bp_word(c, rlwimi(type << 21, C, 20, 12, 31) | 0xF1000000u);
+    u32 col = pe + 24;
+    bp_word(c, rlwimi(rlwimi(f8(col + 2), f8(col + 1), 8, 16, 23), f8(col), 16, 8, 15) | 0xF2000000u);
+    u32 en = f8(pe + 5), tbl = pe + 28;
+    if (en)
+        for (u32 k = 0; k < 5; k++) bp_word(c, (k + 233) << 24 | f16(tbl + 4 * k + 2) << 12 | f16(tbl + 4 * k));
+    bp_word(c, ((f16(pe + 6) + 342) | 0xE8000000u) | rlwinm(en, 10, 14, 21));
+    c->n += 260;
+}
+// J3DColorBlockLightOn::diffAmbColor / diffMatColor: XF 0x100A / 0x100C, two colours (at blk + off), room from the SDA.
+static void md_two_colors(Pc* c, u32 blk, u32 off, u32 xf, s32 sizeAt) {
+    if (!gd_room(c, f32(c->g->gpr[13] + (u32)sizeAt))) return;
+    gd8(c, 0x10); gd16(c, 1); gd16(c, xf); gd32(c, f32(blk + off)); gd32(c, f32(blk + off + 4));
+    c->n += 95;
+}
+// J3DColorBlockLightOn::diffColorChan 0x8031A4D4: XF 0x100E, the four channel controls (in the order 0, 2, 1, 3).
+static void md_color_chan(Pc* c, u32 blk) {
+    if (!gd_room(c, f32(c->g->gpr[13] - 31768u))) return;
+    u32 tbl = c->g->gpr[2] - 13912u;
+    if (!span(c, tbl, 4)) return;
+    gd8(c, 0x10); gd16(c, 3); gd16(c, 0x100E);
+    static const u32 kAt[4] = { 22, 26, 24, 28 };
+    for (u32 q = 0; q < 4; q++) {  // J3DColorChan::load's word, instruction by instruction
+        u32 v = f16(blk + kAt[q]);
+        u32 r11 = f8(tbl + rlwinm(v, 23, 30, 31)), r10 = rlwinm(v, 25, 30, 31);
+        u32 r3 = rlwimi(rlwinm(v, 25, 24, 27), v, 30, 28, 31), r9 = r3 & 0xFF;
+        u32 r6 = rlwinm(r3, 7, 17, 20), r5 = rlwinm(r11 != 0, 10, 14, 21), r4 = rlwinm(2 - r11 != 0, 9, 15, 22);
+        u32 r8 = rlwimi(rlwimi(rlwimi(v & 1, v, 0, 30, 30), r9, 2, 26, 29), v, 0, 25, 25);
+        if (!r11) r10 = 0;
+        gd32(c, r6 | r4 | r5 | r8 | r10 << 7);
+    }
+    c->n += 210;
+}
+// J3DGDSetTexCoordGen 0x8030E064 (texgen function, source): the XF word, as its two switches leave it (a function out of
+// range keeps the source's value as the type, the register the code reuses).
+static u32 md_texcoord_gen(u32 func, u32 src) {
+    u32 form = 0, proj = 0, row = 5, eRow = 5, eLit = 0, type = src;
+    if (src <= 3) { static const u8 kRow[4] = { 0, 1, 3, 4 }; row = kRow[src]; form = 1; }
+    else if (src <= 11) row = src + 1;           // GX_TG_TEX0-7: rows 5-12
+    else if (src <= 18) eRow = src - 12;         // GX_TG_TEXCOORD0-6
+    else if (src <= 20) row = 2;                 // GX_TG_COLOR0 / COLOR1
+    if (func == 1) type = 0;                     // GX_TG_MTX2x4
+    else if (func == 0) { type = 0; proj = 1; }  // GX_TG_MTX3x4
+    else if (func >= 2 && func <= 9) { type = 1; eLit = func - 2; }  // GX_TG_BUMP0-7
+    else if (func == 10) type = src == 19 ? 2 : 3;                   // GX_TG_SRTG
+    else if ((s32)func < 0 || func > 10) type = src;
+    return eLit << 15 | eRow << 12 | row << 7 | type << 4 | form << 2 | proj << 1;
+}
+// J3DTexGenBlockPatched::diffTexGen 0x8031AD30 with loadTexCoordGens 0x80323644 (count and J3DTexCoords of 6 bytes at tg + 4).
+static void md_texgens(Pc* c, u32 tg, bool post) {
+    u32 n = f32(tg + 4);
+    c->n += 8;
+    if (!n) return;
+    if (n > 8 || !span(c, tg + 8, 6 * n)) { md_why(c, MDW_OTHER); return; }
+    if (!gd_room(c, n * 8 + 10)) return;
+    u32 cnt = ((n & 0xFF) - 1) & 0xFFFF;
+    gd8(c, 0x10); gd16(c, cnt); gd16(c, 0x1040);
+    for (u32 i = 0; i < n; i++) gd32(c, md_texcoord_gen(f8(tg + 8 + 6 * i), f8(tg + 9 + 6 * i)));
+    gd8(c, 0x10); gd16(c, cnt); gd16(c, 0x1050);
+    for (u32 i = 0; i < n; i++) gd32(c, post ? (f8(tg + 10 + 6 * i) == 60 ? 61 : i * 3) : 61);
+    c->n += 40 + 45 * n;
+}
+// fctiwz: toward zero, saturating (a plain single here).
+static u32 fctiwz(u32 v) {
+    float f = fbits(v);
+    return f >= 2147483648.0f ? 0x7FFFFFFFu : f <= -2147483649.0f ? 0x80000000u : (u32)(s32)f;
+}
+// (float)(s32)v as the guest makes it: the int-to-double trick with sda2(-13896) = 0x4330000080000000, then fsubs (exact
+// for the small integers here).
+static u32 int_to_single(s32 v) { return bitsf((float)v); }
+// loadTexNo 0x80323F94 (texture map i, ResTIMG index): the texcoord scale table, then J3DGDSetTexImgPtr / ImgAttr /
+// LookupMode and, for an index texture, J3DGDLoadTlut and J3DGDSetTexTlut.
+static void md_texno(Pc* c, u32 i, u32 no) {
+    u32 sda = c->g->gpr[13], tex = f32(A_J3DSYS + 88);
+    if (!span(c, tex, 8) || !span(c, f32(tex + 4) + (no << 5), 32) || !span(c, sda - 31860u, 48)) return;
+    u32 t = f32(tex + 4) + (no << 5);
+    u32 w = f16(t + 2), h = f16(t + 4);
+    wr32(c, 0x80434C2Cu + 8 * i, w << 16 | h);  // J3DSys::sTexCoordScaleTable[i] (two halfword stores, one word)
+    if (!gd_room(c, 20)) return;
+    if (!sda_is_d(c, -13896, 0x43300000u, 0x80000000u)) return;
+    u32 img = t + f32(t + 28);
+    bp_word(c, ((img - 0x80000000u) >> 5) | f8(sda - 31836u + i) << 24);                                           // ImgPtr
+    bp_word(c, f8(sda - 31844u + i) << 24 | (f8(t) & 15) << 20 | (((h - 1) << 10) | (w - 1)));                        // ImgAttr
+    u32 k8 = sda2(c, -13904), k01 = sda2(c, -13900), kb = sda2(c, -14040), k16 = sda2(c, -14036);
+    u32 minL = FMUL(k8, int_to_single((s8)f8(t + 22))), maxL = FMUL(k8, int_to_single((s8)f8(t + 23)));
+    u32 bias = FMUL(k01, int_to_single((s16)f16(t + 26)));
+    u32 bi = fctiwz(FMUL(kb, bias)), mi = fctiwz(FMUL(k16, minL)), ma = fctiwz(FMUL(k16, maxL));
+    if (c->fail) { g_portStats.mdWhy[MDW_FLOAT]++; return; }
+    u32 wrapS = f8(t + 6), wrapT = f8(t + 7), minF = f8(t + 20), magF = f8(t + 21), clamp = f8(t + 18), edge = f8(t + 17);
+    u32 aniso = f8(t + 19);
+    u32 clzEdge = edge ? (u32)__builtin_clz(edge) : 32, d = 1 - magF, clzMag = d ? (u32)__builtin_clz(d) : 32;
+    u32 m0 = wrapS | wrapT << 2 | rlwinm(clzMag, 31, 20, 27) | f8(sda - 31820u + minF) << 5 | rlwinm(clzEdge, 3, 16, 23) |
+             rlwinm(bi, 9, 15, 22) | aniso << 19 | rlwinm(clamp, 21, 3, 10) | f8(sda - 31860u + i) << 24;
+    bp_word(c, m0);                                                                                                 // LookupMode
+    bp_word(c, rlwimi(rlwimi(rlwinm(ma, 8, 16, 23), mi, 0, 24, 31), f8(sda - 31852u + i), 24, 0, 7));
+    c->n += 160;
+    if (f8(t + 8) != 1) return;
+    u32 size = f16(t + 10) > 16 ? 16 : 1, tmem = (i << 13) + 0xF0000u, pal = t + f32(t + 12);
+    if (!gd_room(c, 20)) return;
+    bp_word(c, 0xFEFFFF00u); bp_word(c, 0x0F000000u);                                                             // LoadTlut
+    bp_word(c, ((pal - 0x80000000u) >> 5) | 0x64000000u);
+    bp_word(c, (((tmem - 0x80000u) >> 9) | size << 10) | 0x65000000u);
+    bp_word(c, 0xFEFFFF00u); bp_word(c, 0x0F000000u);
+    bp_word(c, f8(sda - 31828u + i) << 24 | (((tmem - 0x80000u) >> 9) | f8(t + 9) << 10));                         // TexTlut
+    c->n += 120;
+}
+static void j3d_material_diff(Pc* c, u32 m, u32 flags) {
+    Gekko* g = c->g;
+    if (!span(c, A_J3DSYS, 64) || !span(c, m + 36, 20)) return;
+    u32 pk = f32(A_J3DSYS + 60);
+    if (!span(c, pk + 40, 4) || !span(c, f32(pk + 40) + 32, 4)) return;
+    u32 dlo = f32(f32(pk + 40) + 32);
+    c->n += 30;
+    if (!dlo) return;  // (isEnabled_Diff false: nothing happens)
+    u32 col = f32(m + 36), tg = f32(m + 40), tev = f32(m + 44), ind = f32(m + 48), pe = f32(m + 52);
+    if (!span(c, dlo, 16) || !span(c, col, 48) || !span(c, tg, 92) || !span(c, tev, 120) || !span(c, ind, 8) || !span(c, pe, 48))
+        return;
+    u32 tevReg = vfn(tev, 24), tevStages = vfn(tev, 152);
+    u32 tevTexNo = vfn(tev, 20);
+    bool tev2 = tevReg == A_MD_TEV2REG && tevStages == A_MD_TEV2STAGES && tevTexNo == A_MD_TEV2TEXNO;
+    bool tev4 = tevReg == A_MD_TEV4REG && tevStages == A_MD_TEV4STAGES && tevTexNo == A_MD_TEV4TEXNO;
+    if (vfn(col, 28) != A_MD_COLORDIFF || vfn(col, 32) != A_MD_AMB || vfn(col, 36) != A_MD_MAT || vfn(col, 40) != A_MD_CHAN ||
+        vfn(col, 44) != A_J3D_DIFFLIGHTOBJ || vfn(tg, 36) != A_MD_TEXGENDIFF || vfn(tg, 40) != A_MD_TEXMTXDIFF ||
+        vfn(tg, 44) != A_MD_TEXGENGEN || vfn(tg, 64) != A_MD_TEXGENNUM || vfn(tev, 16) != A_MD_TEVDIFF || (!tev2 && !tev4) || vfn(ind, 12) != A_MD_INDDIFF ||
+        vfn(ind, 32) != A_MD_INDSTAGES || vfn(pe, 20) != A_MD_PEDIFF || vfn(pe, 24) != A_MD_FOG) {
+        md_why(c, MDW_CLASS);
+        return;
+    }
+    if (flags & 0x20000000u) { md_why(c, MDW_BLEND); return; }
+    if ((flags & 0x0C000000u) || ((flags >> 20) & 15)) { md_why(c, MDW_STAGES); return; }
+    // beginDL 0x80312644: the two buffers swapped, interrupts off (their state kept at r13 - 28640), GDInitGDLObj
+    u32 buf = f32(dlo + 4), len = f32(dlo + 12), sda = g->gpr[13];
+    if (!in_mem1(buf, len ? len : 1) || !span(c, sda - 28640u, 4) || sda - 27648u != A_GDCURRENTDL || !span(c, A_MD_GDLOBJ, 16)) {
+        md_why(c, MDW_OTHER);
+        return;
+    }
+    wr32(c, dlo, buf);
+    wr32(c, dlo + 4, f32(dlo));
+    wr32(c, sda - 28640u, (g->msr >> 15) & 1);
+    c->gdA = buf;
+    c->gdN = 0;
+    c->gdRoom = len;
+    // J3DTevBlock::diff 0x8031CD44: texture numbers (diffTexNo: each map's index at tev + 8 unless 0xFFFF), then TEV registers
+    // (texcoord scale and stages gave up above)
+    if ((flags >> 16) & 15)
+        for (u32 i = 0; i < (tev2 ? 2u : 4u) && !c->fail; i++) {
+            u32 no = f16(tev + 8 + 2 * i);
+            c->n += 7;
+            if (no != 0xFFFF) md_texno(c, i, no);
+        }
+    if ((flags & 0x01000000u) && !c->fail) md_tev_reg(c, tev, tev2 ? 20 : 66, tev2 ? 69 : 98);
+    // J3DIndBlockFull::diff: only with the indirect TEV stage flag (gave up above). J3DPEBlockFull::diff: fog.
+    if ((flags & 0x10000000u) && !c->fail) md_fog(c, pe);
+    if ((flags & 0x02000000u) && !c->fail) {  // J3DGDSetGenMode_3Param 0x8030D210, then GX_NUMTEXGENS through XF 0x103F
+        u32 ntg = f32(tg + 4) & 0xFF, ntev = f8(tev + (tev2 ? 52 : 32)), nind = f8(ind + 4);  // (the getters: a u32 at +4, bytes)
+        if (gd_room(c, 10)) {
+            bp_word(c, 0xFE073C0Fu);
+            bp_word(c, rlwinm(nind, 16, 8, 15) | rlwimi((ntev - 1) << 10, ntg, 0, 24, 31));
+            gd8(c, 0x10); gd16(c, 0); gd16(c, 0x103F); gd32(c, ntg);
+            c->n += 120;
+        }
+    }
+    bool post = f32(A_J3DSYS + 52) & 0x40000000u;  // (J3DSys flag 0x40000000: post-texture matrices)
+    if (((flags >> 8) & 15) && !c->fail) {  // J3DTexGenBlockPatched::diffTexMtx 0x8031ACD0: J3DTexMtx::load per matrix
+        for (u32 i = 0; i < 8 && !c->fail; i++) {
+            u32 tm = f32(tg + 56 + 4 * i);
+            c->n += 8;
+            if (!tm) continue;
+            if (!span(c, tm, 148) || !gd_room(c, 53)) return;
+            u32 mtx = tm + 100, rows = post || f8(tm) != 1 ? 3 : 2;  // (loadPostTexMtx: always 3x4; loadTexMtx: GX_MTX2x4 is 1)
+            for (u32 k = 0; k < 4 * rows; k++)
+                if (!plain(c, f32(mtx + 4 * k))) { g_portStats.mdWhy[MDW_FLOAT]++; return; }  // (through lfs / stfs)
+            u32 addr = post ? (i * 3) * 4 + 1280 : ((i * 3 + 30) << 2) & 0xFFFC;
+            gd8(c, 0x10); gd16(c, 4 * rows - 1); gd16(c, addr);
+            for (u32 k = 0; k < 4 * rows; k++) gd32(c, f32(mtx + 4 * k));
+            c->n += 30 + 25 * rows;
+        }
+        if ((flags & 0x1000) && !c->fail) md_texgens(c, tg, post);  // (then diffTexGen)
+    }
+    if (!c->fail) {  // J3DColorBlockLightOn::diff 0x8031A13C
+        if (flags & 4) md_two_colors(c, col, 12, 0x100A, -31772);
+        if ((flags & 1) && !c->fail) md_two_colors(c, col, 4, 0x100C, -31776);
+        if ((flags & 2) && !c->fail) md_color_chan(c, col);
+        u32 nl = (flags >> 4) & 15, k = 0;
+        if (nl && !c->fail) {
+            if (nl > 8) { md_why(c, MDW_OTHER); return; }
+            for (u32 i = 0; i < nl; i++) k += f32(col + 0x20 + 4 * i) != 0;
+            if (gd_room(c, 72 * k)) light_bytes(c, col, nl);
+        }
+    }
+    if (c->fail) return;
+    // endDL 0x80312698: GDPadCurr32, interrupts as they were, the length, GDFlushCurrToMem (DCFlushRange over the whole
+    // buffer: dcbf per line, then sc), __GDCurrentDL cleared
+    while ((buf + c->gdN) & 31) gd8(c, 0);
+    if (c->gdN > c->gdRoom || !span(c, buf, c->gdN ? c->gdN : 1)) { md_why(c, MDW_ROOM); return; }
+    wr32(c, A_MD_GDLOBJ, buf);
+    wr32(c, A_MD_GDLOBJ + 4, len);
+    wr32(c, A_MD_GDLOBJ + 8, buf + c->gdN);
+    wr32(c, A_MD_GDLOBJ + 12, buf + len);
+    wr32(c, dlo + 8, c->gdN);
+    wr32(c, sda - 27648u, 0);
+    c->flushA = buf;
+    c->flushLen = len;
+    c->n += 60 + (len ? ((buf & 31) + len + 31) / 32 * 3 + 12 : 0);
+}
+// After a taken J3DMaterial::diff: DCFlushRange's dcbf per line (page stamps, as the interpreter's cache op does) and its
+// sc with the OS's handler, run by the interpreter as the JIT does (jit_sc_handler), so SRR0 / SRR1, HID0 and the
+// handler's registers end as the guest code leaves them.
+static void md_flush(Pc* c, Gekko* g) {
+    u32 a = c->flushA, len = c->flushLen;
+    if (!len) return;
+    u32 lines = ((a & 31) + len + 31) >> 5;
+    for (u32 i = 0; i < lines; i++)
+        if (g->bus->cache_op) g->bus->cache_op(g->bus->ctx, CACHE_DCBF, ((a & ~31u) + 32 * i) - 0x80000000u);
+    bool stop;
+    u32 npc = gekko_interp_one(g, A_MD_FLUSH_SC, 0x44000002u, &stop);
+    for (u32 k = 0; k < 32 && npc != A_MD_FLUSH_SC + 4; k++) {
+        u32 pa, w = 0;
+        if (gk_translate(g, npc, false, false, &pa, false) && pa + 4 <= g_psz) w = ram_rd32(g_pm, pa);
+        npc = gekko_interp_one(g, npc, w, &stop);
+    }
+    if (npc != A_MD_FLUSH_SC + 4) g_portStats.mdWhy[MDW_OTHER] += 1000000;  // (cannot happen with the OS's handler: shows loudly)
 }
 
 // ---- entry ----
@@ -1210,7 +1532,7 @@ static Pc g_pc;
 // Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
 static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = 0;
+    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = c->flushLen = 0;
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
@@ -1238,7 +1560,8 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     // (Floating point off: the FPRs are another thread's until the OS takes the FP-unavailable exception, which the
     // guest code raises at its first float instruction: the float ports are not taken then.)
     if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { if (!c->fail) g_portFloatSite[4]++; give_up(c, 2); return false; }
-    if (hook == PORT_PANEWALK) pane_walk(c, g);
+    if (hook == PORT_MATDIFF) j3d_material_diff(c, g->gpr[3], g->gpr[4]);
+    else if (hook == PORT_PANEWALK) pane_walk(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
@@ -1272,10 +1595,12 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
 
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
                                           "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
-                                          "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)" };
+                                          "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
+                                          "J3DMaterial::diff" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
-           pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK : -1;
+           pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
+           pc == A_J3D_MATDIFF ? PORT_MATDIFF : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -1329,13 +1654,14 @@ static u32 port_check(Gekko* g, u32 hook) {
     if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }  // (the guest code runs as usual)
     walk_undo(c);  // (the walk's stores: undone for the interpreter, compared below)
     if (g_portMode == 3 && c->pn) c->pbase[c->pn - 1] ^= 1;  // (--port plant: a known difference, the checker must report it)
+    else if (g_portMode == 3 && c->gdN) c->gd[0] ^= 1;  // (no pipe bytes: the first GD byte)
     u32 sp = g->gpr[1], ret = g->lr;
     g_chkN = 0;
     g_icapN = 0;
     gp_capture = icap_put;
     g_memoRec = (void*)2;
     int why = 0;
-    u32 n = gekko_run_call(g, ret, sp, 10000000u, &why);
+    u32 n = gekko_run_call(g, ret, sp, 10000000u, &why, true);
     g_memoRec = NULL;
     gp_capture = NULL;
     if (g_icapN && g_ppipe) g_ppipe(g_pctx, g_icap, g_icapN);
@@ -1364,7 +1690,20 @@ static u32 port_check(Gekko* g, u32 hook) {
         for (u32 k = 0; k < c->nundo; k++) if (c->undo[k][0] == a) mine = c->undo[k][2];  // (the walk's, newest last)
         for (u32 b = 0; b < 4; b++)  // (the GD bytes over the word as it was)
             if (a + b - c->gdA < c->gdN) mine = (mine & ~(0xFF000000u >> 8 * b)) | (u32)c->gd[a + b - c->gdA] << (24 - 8 * b);
-        if (want != mine) { chk_bad(&g0, c, hook, 3, a, want, mine); return n ? n : 1; }
+        if (want != mine) {
+#ifndef __3DS__
+            static int dumped;  // PORT_DUMP=1: the first difference's GD bytes, port then interpreter (debugging)
+            if (getenv("PORT_DUMP") && !dumped++) {
+                fprintf(stderr, "PORT_DUMP r4 %08lx at %08lx (+%lu):\n port:", (unsigned long)g0.gpr[4], (unsigned long)c->gdA, (unsigned long)(a - c->gdA));
+                for (u32 k = 0; k < c->gdN; k++) fprintf(stderr, "%s%02x", k % 32 ? " " : "\n  ", c->gd[k]);
+                fprintf(stderr, "\n guest:");
+                for (u32 k = 0; k < c->gdN + 32; k++) fprintf(stderr, "%s%02x", k % 32 ? " " : "\n  ", ram_rd8(g_pm, c->gdA - 0x80000000u + k));
+                fputc('\n', stderr);
+            }
+#endif
+            chk_bad(&g0, c, hook, 3, a, want, mine);
+            return n ? n : 1;
+        }
     }
     for (u32 k = 0; k < c->nt; k++) {
         u32 i = c->touched[k];
@@ -1408,6 +1747,11 @@ static void port_report(void) {
         for (int q = 0; q < 8; q++) fprintf(stderr, " %llu", (unsigned long long)s->refusedBy[q]);
         fputc('\n', stderr);
     }
+    const u64* w = g_portStats.mdWhy;
+    fprintf(stderr, "PORT: J3DMaterial::diff not taken because of texture numbers %llu, texgens %llu, blend %llu, TEV stages %llu, "
+            "block class %llu, room %llu, floats %llu, other %llu\n", (unsigned long long)w[0], (unsigned long long)w[1],
+            (unsigned long long)w[2], (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5],
+            (unsigned long long)w[6], (unsigned long long)w[7]);
     fprintf(stderr, "PORT: %llu checked calls differed\n", (unsigned long long)g_portStats.bad);
 }
 #endif
@@ -1415,7 +1759,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129 };  // (the walk: 13,377 against 10,400, job 1080)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
@@ -1438,6 +1782,7 @@ u32 port_run_hook(Gekko* g) {
     if (g_portCommitBegin) g_portCommitBegin();
     port_commit(c);
     port_regs(c, g, (u32)hook);
+    if (hook == PORT_MATDIFF) md_flush(c, g);
     if (g_portCommitEnd) g_portCommitEnd();
     if (t0) {
         hs->timed++;

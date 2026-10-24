@@ -63,7 +63,7 @@ void x4_call(Gekko* g, u32 target, u32 ret) {
     g->pc = target; g->lr = ret;
     if (x4_trace) {
         int why;
-        u32 n = gekko_run_call(g, ret, g->gpr[1], 10000000, &why);
+        u32 n = gekko_run_call(g, ret, g->gpr[1], 10000000, &why, false);
         if (why || x4_nc == 2048) { x4_bad = true; return; }
         fprintf(x4_log, "# regionbench external target %08lx ret %08lx guest %lu\n",
                 (unsigned long)target, (unsigned long)ret, (unsigned long)n);
@@ -213,7 +213,7 @@ static u32 x4_run(Gekko* g) {
     g_chkN = 0; x4_pn = x4_len = 0;
     gp_capture = x4_direct; g_memoRec = (void*)2;
     int why = 0;
-    x4_count = gekko_run_call(g, g->lr, g->gpr[1], 10000000, &why);
+    x4_count = gekko_run_call(g, g->lr, g->gpr[1], 10000000, &why, false);
     g_memoRec = NULL; x4_expect = *g;
     x4_nw = g_chkN;
     memcpy(x4_before, g_chkW, x4_nw * 8);

@@ -93,3 +93,53 @@
     { 0x802F83C8, 0x4, 0x2F639DC45181817Full },  // drawSelf__7J2DPaneFffPA3_A4_f
     { 0x802E9664, 0x8, 0x483349B35D8BA64Dull },  // getGrafType__14J2DGrafContextCFv
     { 0x802E9C88, 0x8, 0x482FA3B35D885664ull },  // getGrafType__13J2DOrthoGraphCFv
+// J3DMaterial::diff (PORT_MATDIFF) and what it reaches: the blocks' diff functions, the GD writers, beginDL / endDL
+    { 0x803167D8, 0x204, 0x3157BE29DB8BE937ull },  // diff__11J3DMaterialFUl
+    { 0x80312A24, 0x28, 0xCB7EB100161303AEull },  // beginDiff__12J3DMatPacketFv
+    { 0x80312A4C, 0x28, 0xCC9DEAC0CE52369Aull },  // endDiff__12J3DMatPacketFv
+    { 0x80312644, 0x54, 0xB7FE19C6416C68DCull },  // beginDL__17J3DDisplayListObjFv
+    { 0x80312698, 0x5C, 0x9F644F1396DC1E55ull },  // endDL__17J3DDisplayListObjFv
+    { 0x80312604, 0x14, 0xACE9C3C307C2BA0Full },  // swapBuffer__17J3DDisplayListObjFv
+    { 0x8033D6F4, 0x14, 0x626587836000E9B5ull },  // OSDisableInterrupts
+    { 0x8033D71C, 0x24, 0x37AD49EE13887B09ull },  // OSRestoreInterrupts
+    { 0x80360F98, 0x18, 0xDB598737684D3A59ull },  // GDInitGDLObj
+    { 0x80360FDC, 0xF8, 0x55DE082D3EBF2D41ull },  // GDPadCurr32
+    { 0x80360FB0, 0x2C, 0x268E0229F29EC6D0ull },  // GDFlushCurrToMem
+    { 0x8033B5AC, 0x30, 0x00CF29133535345Aull },  // DCFlushRange
+    { 0x8031A13C, 0xA0, 0x05EFC4A7F2EE5561ull },  // diff__20J3DColorBlockLightOnFUl
+    { 0x8031A1DC, 0x17C, 0x55889B612D31FB34ull },  // diffAmbColor__20J3DColorBlockLightOnFv
+    { 0x8031A358, 0x17C, 0x5F6F1E295C8CEE22ull },  // diffMatColor__20J3DColorBlockLightOnFv
+    { 0x8031A4D4, 0x40C, 0x3F1167CBB1D52B1Eull },  // diffColorChan__20J3DColorBlockLightOnFv
+    { 0x8031AC68, 0x68, 0x4CEE11EB41B4A247ull },  // diff__21J3DTexGenBlockPatchedFUl
+    { 0x8031ACD0, 0x60, 0xA9BD36AA132F1E67ull },  // diffTexMtx__21J3DTexGenBlockPatchedFv
+    { 0x80322D48, 0x8, 0xE2239F2E6B5719A9ull },  // getTexGenNum__21J3DTexGenBlockPatchedCFv
+    { 0x803238C4, 0x3C, 0xF8A8E6D7346F419Dull },  // load__9J3DTexMtxCFUl
+    { 0x80324358, 0x64, 0x59900D258781FFE5ull },  // loadTexMtx__9J3DTexMtxCFUl
+    { 0x803243BC, 0x60, 0x8D773723CFB8B893ull },  // loadPostTexMtx__9J3DTexMtxCFUl
+    { 0x8032441C, 0x580, 0x95A0B927A40FE7ACull },  // J3DGDLoadTexMtxImm__FPA4_fUl13_GXTexMtxType
+    { 0x8032499C, 0x56C, 0x778251767171D5C5ull },  // J3DGDLoadPostTexMtxImm__FPA4_fUl
+    { 0x8031CD44, 0xBC, 0x2F8A5EBE1DCD3063ull },  // diff__11J3DTevBlockFUl
+    { 0x8031D434, 0x9C, 0x0F55633F920049D2ull },  // diffTevReg__12J3DTevBlock2Fv
+    { 0x8031D7BC, 0x9C, 0xCA293B1A0B64BB0Bull },  // diffTevReg__12J3DTevBlock4Fv
+    { 0x8032258C, 0x8, 0xE1ED158963287A59ull },  // getTevStageNum__12J3DTevBlock2CFv
+    { 0x803221C8, 0x8, 0xE1C44D896305D46Dull },  // getTevStageNum__12J3DTevBlock4CFv
+    { 0x8030F3FC, 0x234, 0x9E35343B2CDCD2F6ull },  // J3DGDSetTevColorS10__F11_GXTevRegID11_GXColorS10
+    { 0x8030F294, 0x168, 0x959DCA7273B68C4Aull },  // J3DGDSetTevKColor__F14_GXTevKColorID8_GXColor
+    { 0x8031E328, 0xE0, 0xAD71E8F30E563CBFull },  // diff__15J3DIndBlockFullFUl
+    { 0x803233A4, 0x8, 0xE223B589635719A9ull },  // getIndTexStageNum__15J3DIndBlockFullCFv
+    { 0x8031FCA0, 0x68, 0x627E98A9F73E0F51ull },  // diff__14J3DPEBlockFullFUl
+    { 0x8031F940, 0x78, 0xEE105184530D35B6ull },  // diffFog__14J3DPEBlockFullFv
+    { 0x8030F630, 0x364, 0xAF0D098A1D2D6DD1ull },  // J3DGDSetFog__F10_GXFogTypeffff8_GXColor
+    { 0x8030F994, 0x14C, 0x54346B1BA4D9DD24ull },  // J3DGDSetFogRangeAdj__FUcUsP14_GXFogAdjTable
+    { 0x8030D210, 0x154, 0xB56E12E3FC5895A2ull },  // J3DGDSetGenMode_3Param__FUcUcUc
+    { 0x8031AD30, 0x34, 0x9948F1D303D92548ull },  // diffTexGen__21J3DTexGenBlockPatchedFv
+    { 0x80323644, 0x280, 0x7718ABA09DEF4CE8ull },  // loadTexCoordGens__FUlP11J3DTexCoord
+    { 0x8030E064, 0x1D0, 0xA96E490981AFE3AAull },  // J3DGDSetTexCoordGen__F13_GXTexGenType12_GXTexGenSrc
+    { 0x8031D3D0, 0x64, 0xA345FFF83521E0B6ull },  // diffTexNo__12J3DTevBlock2Fv
+    { 0x8031D758, 0x64, 0x7D29A2B8C23A35ACull },  // diffTexNo__12J3DTevBlock4Fv
+    { 0x80323F94, 0x1A8, 0x477A6859D39EAF5Dull },  // loadTexNo__FUlRCUs
+    { 0x8030E67C, 0x90, 0x261155BBAC2CFA49ull },  // J3DGDSetTexImgPtr__F11_GXTexMapIDPv
+    { 0x8030E5D4, 0xA8, 0xD9DE7004B7167AD7ull },  // J3DGDSetTexImgAttr__F11_GXTexMapIDUsUs9_GXTexFmt
+    { 0x8030E438, 0x19C, 0x0DF3B72A726B7CF9ull },  // J3DGDSetTexLookupMode__F11_GXTexMapID14_GXTexWrapMode14_GXTexWrapMode12_GXTexFilter12_GXTexFilterfffUcUc13_GXAnisotropy
+    { 0x8030E7E0, 0x98, 0x26E9E11FDC587CDBull },  // J3DGDSetTexTlut__F11_GXTexMapIDUl10_GXTlutFmt
+    { 0x8030E878, 0x2B8, 0x526C9455FF82FADCull },  // J3DGDLoadTlut__FPvUl11_GXTlutSize
