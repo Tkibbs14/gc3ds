@@ -52,6 +52,9 @@
 > (`# shapes phases 10s`): the batch-open work done once, the converted draw call through C25's raw path, G2b's memo.
 > Also found: lists recorded through the pipe and save-state RAM were never stamped (fixed, 0d291e3), and Mario Party
 > 4's shapes are converted again after stamps whose bytes did not change (~180 ms/s of its GX thread).
+> **Batch-state steps (2026-10-24, MEASUREMENTS.md):** `--nsonce`, `--drawonce` exact and even, `--nsraw` no gain;
+> **`--texfast 2` (textures re-checked by page stamps, C37): TP heavy +0.6-0.8%, Ordon +0.9%, Mario Party 4 +4.2%, Wind
+> Waker +0.4%**, check mode 0 misses. Off; the default is the owner's call.
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%).

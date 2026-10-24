@@ -102,5 +102,11 @@ GX-bound scenes (Mario Party 4's minigame, the title cutscene).
    - **G2b's memo** keyed by variant and run (the rest of the check and the key / lookup work in the state step).
    Then G2c (TEV colours as parameters) and G2d (recorded state words). Each GX-side stage turns into speed only where
    the GX thread is the limit: after core-0 gains, in Mario Party 4's minigame and in the title cutscene.
+   **Done 2026-10-24 (MEASUREMENTS.md "The GX thread's batch-state steps"):** the batch-open work done once
+   (`--nsonce`, `--drawonce`: exact, GX -0.1-1.1 points, speed even); the raw converted draw call (`--nsraw`: exact,
+   no gain, fixed attributes keep the draws on citro3d); and, found by `# shapes state 10s`, the texture re-hash by
+   page stamps (`--texfast 2`: **TP heavy +0.6-0.8%, Ordon +0.9%, Mario Party 4 +4.2%, Wind Waker +0.4%**, 0 misses
+   in check mode; candidate default). G2b's memo is next only if the GX thread becomes the limit: after these the
+   state step's remaining keys and lookups are a few ms/s.
 4. Outside G2, found by the census: Mario Party 4's converted shapes made again after stamps whose bytes did not
    change (~180 ms/s of its GX thread; a G1 fix, its own task).

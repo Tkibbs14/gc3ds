@@ -2570,6 +2570,49 @@ done
   path) ~21%, the batch check ~13%. Mario Party 4's lookup is its conversions after stamps (~180 ms/s, "G2-0" finding
   (a)). (Ordon's phase run, job 1163, did not start: its `--press` list was empty.)
 
+### The GX thread's batch-state steps: --nsonce, --drawonce, --nsraw, --texfast (jobs 1165-1228, 2026-10-23/24)
+
+G2_PLAN.md section 4's next GX steps, each behind its own switch with a check mode, scored with separate whole runs
+in one session (`--profile on`, runs.py; GX busy from `# gx thread where`). `# shapes state 10s` (job 1179) split
+ns_draw's batch state step in TP heavy: **textures 30 ms/s** of ~49, issue + split 8, fragment + binds + uniforms 4.4,
+TEV + key 3.6, lighting 2.7; each converted draw call writes ~259 command words (6 dirty blocks, 27 uniform vectors).
+
+- **--nsonce** (ns_draw's batch check hands its batch key, TEV lookup and lighting set-up to the state step): check
+  0 differed in ~83,000 compared (jobs 1165-1167), plant differs (1168). TP heavy 21.959 / 21.969 -> 21.972 / 21.974%,
+  GX busy 88.8 / 88.7 -> 88.0 / 88.0%, state step 55.8 -> 48.5 ms/s; Ordon 30.791 -> 30.769%, busy 83.7 -> 83.3%;
+  Mario Party 4 14.347 -> 14.350%; Wind Waker 20.139 -> 20.125% (1169-1178). Exact, GX -0.2-0.8 points, speed even.
+- **--drawonce** (the same in pica_draw, the old path): check 0 differed in ~257,000 compared (1191-1194), plant
+  differs (1195). TP heavy 21.956 / 21.946 -> 21.972 / 21.958%, busy 89.0 / 89.1 -> 87.9 / 88.0% (`batchkey` 5.8 ->
+  4.3%); Ordon 30.744 -> 30.744%, busy 83.6 -> 83.1%; Mario Party 4 14.285 -> 14.275%; Wind Waker 20.131 -> 20.137%
+  (1196-1205). Exact, GX -0.1-1.1 points, speed even.
+- **--nsraw** (converted draws through C25's raw draw call, attribute / buffer blocks by citro3d's own binds inside
+  raw state): C25's compare 0 differed (736 compared, job 1182). **No gain:** TP heavy 21.991 / 21.992 -> 21.989 /
+  21.975%, busy unchanged (1181-1190): the converted draws still went to citro3d (2,100 a second "to citro3d" against
+  366 without it) because each also leaves fixed attributes dirty (ns_const), which raw state does not write.
+- **--texfast 3** (bit 1: a hint table in front of the 384-entry texture table scan; bit 2: the once-a-frame texture
+  re-hash only for textures whose RAM pages were stamped since): check (`--texfast 7`, 1206-1209) **0 textures clean
+  by stamps yet changed** in ~5,800-11,000 re-hashes per 10 s per scene; the hint took 11,000-19,000 lookups per
+  10 s that scanned the table before (scans 11,799 -> 702 in TP heavy). Separate whole runs (1210-1219):
+
+  | Scene | Speed off -> on | GX busy off -> on |
+  |---|---|---|
+  | TP heavy (two pairs) | 21.923 / 21.921 -> 22.083 / 22.099% (**+0.8%**) | 89.3 / 89.2 -> 86.8 / 86.9% |
+  | TP Ordon walk | 30.733 -> 31.006% (**+0.9%**) | 83.5 -> 81.4% |
+  | Mario Party 4 board | 14.225 -> 14.833% (**+4.3%**, 8.50 -> 8.88 frames a second) | 74.8 -> 72.4% |
+  | Wind Waker, Outset | 20.094 -> 20.166% (+0.4%) | 38.2 -> 36.1% |
+
+  TP heavy's converted-run texture time 31.1 -> 4.9 ms/s. Speed moves even where core 0 is the limit: the re-hash
+  streamed guest texture RAM through the shared L2 every frame, evicting core 0's working set (the effect measured in
+  C2: a second core reading guest RAM costs core 0 ~6%). Mario Party 4's core 0 waited on the GX thread 6.1 -> 2.6%.
+  Exactness: the re-hash it replaces was itself sampled (at most 4,096 words a texture); the stamps cover every byte
+  of a texture written by DMA, a cache flush or an EFB copy, the rule G1's shapes already rely on. A game writing
+  texture memory without flushing it would keep a stale texture where the sampled hash may have caught it.
+- **The two bits apart (jobs 1220-1228, separate whole runs, one build):** TP heavy off 21.953 / 21.906%, hint only
+  (`--texfast 1`) 21.920 / 21.930%, stamps only (`--texfast 2`) **22.058 / 22.074%** (busy 89.1 / 88.9 -> 86.9 /
+  87.0%); Mario Party 4 off 14.231%, hint 14.220%, stamps **14.825%**. **The stamps carry the whole gain; the hint
+  table measures nothing** (the per-map last-texture check already takes 86% of TP's lookups). Candidate default:
+  `--texfast 2` (owner's call).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

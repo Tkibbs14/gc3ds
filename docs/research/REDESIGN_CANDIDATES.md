@@ -669,3 +669,19 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   speed.
 - **Re-evaluate when:** after G2a's device runs (whether decoding is worth replaying at all), and whenever the GX
   thread becomes the limit again (core 0 gains, Mario Party 4's minigame, the title cutscene).
+
+## C37. Textures re-checked by page stamps instead of a once-a-frame re-hash (2026-10-24)
+
+- **Status:** **built, measured as a gain, off** (`--texfast 2`; bit 1, a hint table in front of the texture table,
+  measured even; bit 4 the check). Default is the owner's call.
+- **What:** pica.c `cached_texture` re-hashed (sampled, at most 4,096 words) every texture's RAM once per emulated frame
+  to catch the CPU changing it. With bit 2 the hash runs only for textures whose RAM pages were stamped (cache
+  flushes, DMA, EFB copies, pipe bursts held in RAM) since it was last hashed.
+- **For (jobs 1206-1228):** TP heavy +0.6-0.8%, Ordon +0.9%, Mario Party 4 +4.2%, Wind Waker +0.4% (separate whole
+  runs); `--texfast 7` found 0 textures clean by stamps yet changed in ~5,800-11,000 re-hashes per 10 s per scene.
+  The gain reaches core 0 although the hash ran on core 2: it streamed guest RAM through the shared L2 (as C2).
+- **Against:** a game that writes texture memory with plain stores and no cache flush would keep a stale texture (the
+  sampled hash may have caught it, on hardware the GPU would read whatever reached RAM). G1's converted shapes take the
+  same rule for vertex data.
+- **Re-evaluate when:** a game shows a stale texture with it on: then add a sampled verify (a few textures re-hashed a
+  frame, round robin) as G1's ns_verify does.
