@@ -9,6 +9,10 @@
 > call makes it pay: **heavy area +2.7%** (22.24 -> 22.87%), Ordon even (31.39 / 31.36%), exact (PC hash identical to the
 > byte loop, `PORT_CHECK` 0 differed in 9,348 calls). Next: the rest of `J3DMaterial::diff` (9.1% of the heavy area's core 0, the
 > light part is 4.1% of it) the same way. Device check with it on (job 1323): 0 differed.
+> **J3DMaterial::diff as one port (2026-10-24, `--port-hooks 119`, bit 6, off; commit 023e0c5):** every block's diff,
+> beginDL / endDL and DCFlushRange in one context. Exact (PC 10,000 calls and 2DS jobs 1338-1339, 0 differed); separate
+> runs **heavy area +3.0%** (22.89 -> 23.57%), **Ordon +3.0%** (31.46 -> 32.39%; jobs 1340-1347). Default is the owner's
+> call. Its own cost: 18.9 + 9.0 us a call (~2.4% of core 0).
 > **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a

@@ -2385,9 +2385,37 @@ done
 
   Pairs agree to 0.02-0.2%. The heavy area wins because it has the lights (`J3DMaterial::diff` is 9.1% of its core 0,
   Ordon's 5.5%); Ordon's speed is even (its fields stay locked to two a picture), its real frames a second read +1.1%.
-- **On by default since 2026-10-24** (James; `--port check` on the 2DS with it on, job 1323: 0 differed). The rest of `J3DMaterial::diff` (the tev, PE and texgen blocks'
-  `diff`, ~4.5% of the heavy area's core 0) is the next candidate by the same method: build the display-list words
-  natively and copy them once.
+- **On by default since 2026-10-24** (James; `--port check` on the 2DS with it on, job 1323: 0 differed). The whole of `J3DMaterial::diff` then followed
+  by the same method (next section: +3.0% in both scenes).
+
+### J3DMaterial::diff as one native port (`--port-hooks` bit 6, 119 with the defaults; jobs 1324-1347, 2026-10-24)
+
+- **What (commit 023e0c5, `port_j2d.c` `j3d_material_diff`):** the material's display-list diff (9.1% of the heavy area's
+  core 0 inclusive, Ordon's 5.5%: lights 4.4 / 2.5, TEV 1.6 / 1.0, PE fog 1.1 / 0.6, endDiff 0.8 / 0.5, texgen 0.6 /
+  0.5) in one context: beginDL (the buffer swap, interrupts off, GDInitGDLObj), every block's `diff` with their GD
+  writers, endDL (pad to 32, the length, `__GDCurrentDL` cleared), the bytes copied once, then DCFlushRange's dcbf per
+  line through the bus (page stamps) and its `sc` with the OS handler run by the interpreter (as `jit_sc_handler`
+  does). Fog follows J3DGDSetFog's single arithmetic (plain singles only), texture numbers loadTexNo's LOD floats
+  through `fctiwz`.
+- **Census first (`--port-hooks 119` with a counting-only hook, jobs 1324-1327):** one class per block in both scenes:
+  J3DColorBlockLightOn, J3DTexGenBlockPatched, J3DTevBlock2 / 4, J3DIndBlockFull, J3DPEBlockFull; flags used: ambient
+  colour (94% of calls), 8 lights (94%), TEV registers and fog (all), texture numbers (16-25%), texture matrices and
+  texgens (17%, 1.5% in Ordon), gen mode (17-38%), colour channels (5-12%); never TEV stages, indirect stages, texcoord
+  scale or blend. The post-texture-matrix flag varies between calls.
+- **Exact:** PC `PORT_CHECK`, TP 900 -> 1100: 10,000 calls compared, 0 differed (98% taken: 200 calls of another block
+  class give up); `PORT_CHECK=plant` reports every checked call. 2DS `--port check` (jobs 1338-1339): heavy area 2,899
+  and Ordon 1,347 calls per 10 s compared, 0 differed, all taken (1-2 with the FPU off). The two bugs check mode found
+  on the way: the texgen count is a u32 (its low byte, not the first), and check mode's interpreter stopped at
+  OSDisableInterrupts' `mtmsr` (`gekko_run_call` now runs through mtmsr / sc / rfi for port checks).
+- **Separate whole runs, interleaved, from 100 s (hooks 55 = all defaults, 119 = with the port):**
+
+  | Version (jobs) | Heavy area | Ordon walk |
+  |---|---|---|
+  | without texture numbers and texgens, 67-72% taken (1330-1337) | 22.90 -> 23.21% (+1.35%) | 31.42 -> 31.94% (+1.65%) |
+  | **all (1340-1347)** | **22.885 / 22.896 -> 23.573 / 23.571% (+3.0%)**, frames 6.871 -> 7.094 | **31.456 / 31.456 -> 32.440 / 32.349% (+3.0%)**, frames 9.415 -> 9.647 |
+
+- **Its own cost now (job 1341):** 18.9 us building, 9.0 us committing a call (~870 calls a second in the heavy area,
+  ~2.4% of core 0); the commit is mostly DCFlushRange's lines and the interpreted `sc` handler.
 
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 

@@ -66,7 +66,9 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   The flush prim is 48 guest instructions a call, too little to win back the port's set-up; the light port's
   byte-by-byte commit (8.7 us a call) leaves little of its saving, so it would need word stores to pay. **Done 2026-10-24: one copy
   per call, and it pays: heavy area +2.7%, Ordon even (jobs 1315-1322, MEASUREMENTS.md "The J3D light port with a
-  one-copy commit"; on by default since 2026-10-24, `--port-hooks 55`).** Measure ports
+  one-copy commit"; on by default since 2026-10-24, `--port-hooks 55`).** **Then all of J3DMaterial::diff as one port
+  (bit 6, `--port-hooks 119`): heavy area and Ordon +3.0% each, exact (MEASUREMENTS.md "J3DMaterial::diff as one native
+  port").** It confirms the rule: the whole subtree pays, the one leaf alone did not. Measure ports
   with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
