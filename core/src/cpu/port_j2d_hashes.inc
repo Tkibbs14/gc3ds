@@ -171,3 +171,9 @@
     { 0x8035C6E4, 0x80, 0x9AF375D8F0D17743ull },  // __GXSetDirtyState
     { 0x80339CF8, 0x8, 0x883A20CF38716C9Full },  // PPCSync
     { 0x803D2780, 0x3C, 0x3E356D825E45EC47ull },  // @224
+// the minimap's renderingDecoration (PORT_DECO) and its TEV helpers, line width, point size
+    { 0x8003D3C0, 0x2CC, 0xD090A74DB6DB423Bull },  // renderingDecoration__18dRenderingFDAmap_cFPCQ211dDrawPath_c10line_class
+    { 0x8003CF40, 0x16C, 0x6B55A7136BE118A8ull },  // setTevSettingIntensityTextureToCI__18dRenderingFDAmap_cCFv
+    { 0x8003CE78, 0xC8, 0xB67F5DC4341C6846ull },  // setTevSettingNonTextureDirectColor__18dRenderingFDAmap_cCFv
+    { 0x8035C8BC, 0x40, 0xC45A9020F1938067ull },  // GXSetLineWidth
+    { 0x8035C8FC, 0x40, 0x870FC2687D512B31ull },  // GXSetPointSize

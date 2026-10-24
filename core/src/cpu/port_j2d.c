@@ -1796,6 +1796,102 @@ static void j3d_reinit_gx(Pc* c, Gekko* g) {
     c->n += 200;
 }
 
+// ---- the minimap: dRenderingFDAmap_c::renderingDecoration 0x8003D3C0 (this, line): a line's border drawn point by point,
+// each point a short line and a point with the TEV set again around them (4.4% of the heavy area's core 0 inclusive,
+// job 1364). Its two game-logic leaves (the virtual line width and colour, which read the stage, the visited rooms and
+// the map's settings) run in the interpreter, as the guest code itself; the GX work around them is native. ----
+enum { A_DECO = 0x8003D3C0, A_MAP_TEXOBJAGG = 0x80424684 };
+static void gx_set_line_width(Pc* c, u32 w, u32 off) {  // GXSetLineWidth 0x8035C8BC
+    GX(124) = rlwimi(rlwimi(GX(124), w & 0xFF, 0, 24, 31), off, 16, 13, 15);
+    bp(c, GX(124));
+    bp_sent_not(c, 0);
+    c->n += 14;
+}
+static void gx_set_point_size(Pc* c, u32 w, u32 off) {  // GXSetPointSize 0x8035C8FC
+    GX(124) = rlwimi(rlwimi(GX(124), w & 0xFF, 8, 16, 23), off, 19, 10, 12);
+    bp(c, GX(124));
+    bp_sent_not(c, 0);
+    c->n += 14;
+}
+static void tev_stage0_op(Pc* c) {  // GXSetTevColorOp / AlphaOp(stage 0, ADD, ZERO, SCALE_1, clamp, PREV)
+    gx_set_tev_op(c, 304, 0, 0, 0, 0, 1, 0);
+}
+// A guest function run by the interpreter on the side (r3-r5 its arguments): the registers as they were afterwards, so only
+// its memory effects remain, the ones the guest code makes too. false: it did not return (the port gives up).
+static bool port_guest_call(Pc* c, Gekko* g, u32 fn, u32 a3, u32 a4, u32 a5, u32* ret) {
+    static Gekko saved;
+    saved = *g;
+    u32 sp = g->gpr[1] - 64, back = A_DECO;  // (below the caller's frame; returns "to" the hooked entry, never run)
+    g->gpr[1] = sp; g->gpr[3] = a3; g->gpr[4] = a4; g->gpr[5] = a5;
+    g->lr = back; g->pc = fn;
+    int why = 0;
+    u32 n = gekko_run_call(g, back, sp, 20000, &why, false);
+    *ret = g->gpr[3];
+    *g = saved;
+    c->n += n;
+    if (why) { give_up(c, 5); return false; }
+    return true;
+}
+static void map_deco(Pc* c, Gekko* g, u32 self, u32 line) {
+    if (!span(c, self, 4) || !span(c, line, 8)) return;
+    u32 vt = f32(self);
+    if (!span(c, vt + 96, 8)) return;
+    u32 fnW = f32(vt + 100), fnC = f32(vt + 96), w;
+    if (!port_guest_call(c, g, fnW, self, f8(line + 1), 0, &w)) return;
+    if ((s32)w <= 0) return;
+    u32 n = f8(line + 2), data = f32(line + 4), obj = f32(A_MAP_TEXOBJAGG + 24), z = sda2(c, -31736);
+    if ((n && !span(c, data, 2 * n)) || !span(c, obj, 32)) { give_up(c, 1); return; }
+    // setTevSettingIntensityTextureToCI 0x8003CF40
+    gx_set_num_tev_stages(c, 2); gx_set_num_chans(c, 1); gx_set_num_tex_gens(c, 1);
+    gx_set_tex_coord_gen2(c, 0, 1, 4, 60, 0, 125);
+    gx_set_tev_order(c, 0, 0, 0, 4); gx_set_tev_order(c, 1, 0, 0, 4);
+    gx_set_tev_color_in(c, 0, 15, 14, 8, 4); tev_stage0_op(c);
+    gx_set_tev_color_in(c, 1, 0, 6, 0, 15); gx_set_tev_op(c, 304, 1, 8, 0, 0, 1, 0);
+    gx_set_tev_alpha_in(c, 0, 7, 7, 7, 7); gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);
+    gx_set_tev_alpha_in(c, 1, 7, 7, 7, 4); gx_set_tev_op(c, 368, 1, 0, 0, 0, 1, 0);
+    gx_set_alpha_compare(c, 4, 0, 0, 7, 0);
+    gx_set_tev_ksel(c, 0, 6, false);
+    // the vertex format: indexed positions, direct texture coordinates
+    gx_clear_vtx_desc(c); gx_set_vtx_desc(c, 9, 3); gx_set_vtx_desc(c, 13, 1);
+    gx_set_vtx_attr_fmt(c, 0, 9, 0, 4, 0); gx_set_vtx_attr_fmt(c, 0, 13, 1, 4, 0);
+    gx_set_num_tev_stages(c, 1);
+    gx_load_tex_obj(c, obj, 0);
+    if (c->fail) return;
+    gx_set_line_width(c, w, 5); gx_set_point_size(c, w, 5);
+    u32 cp;
+    if (!port_guest_call(c, g, fnC, self, f8(line) & 0x3F, f8(line + 1), &cp)) return;
+    if (!span(c, cp, 4)) return;
+    u32 col = f32(cp);
+    gx_set_tev_color(c, 1, col);
+    gx_set_tev_color(c, 2, (col & 0x00FFFFFFu) | (((col >> 24) - 4) & 0xFF) << 24);  // (lineColor.r - 4, a byte)
+    for (u32 i = 0; i < n && !c->fail; i++) {
+        u32 d = data + 2 * i;
+        // (room for this point: each GXBegin after a BP write also sends __GXSendFlushPrim's strip, so a long line
+        // overran the 8 KB pipe buffer, which the writers do not bound: the heavy area crashed, job 1381)
+        if ((u32)(c->pp - c->pbase) + 2600 > c->pcap) { give_up(c, 1); return; }  // (two strips of up to 1,027 bytes)
+        if ((s32)i < (s32)n - 1) {  // the line to the next point
+            gx_set_tev_color_in(c, 0, 15, 15, 15, 2); tev_stage0_op(c);
+            gx_set_tev_alpha_in(c, 0, 7, 7, 7, 6); gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);
+            gx_begin(c, 176, 0, 2);
+            p16(c, f16(d)); p32(c, z); p32(c, z);
+            p16(c, f16(d + 2)); p32(c, z); p32(c, z);
+        }
+        gx_set_tev_color_in(c, 0, 15, 14, 8, 4); tev_stage0_op(c);
+        gx_set_tev_alpha_in(c, 0, 7, 7, 7, 4); gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);
+        gx_begin(c, 184, 0, 1);
+        p16(c, f16(d)); p32(c, z); p32(c, z);
+        c->n += 40;
+    }
+    // setTevSettingNonTextureDirectColor 0x8003CE78, then the plain indexed format back
+    gx_set_num_tev_stages(c, 1); gx_set_num_chans(c, 1); gx_set_num_tex_gens(c, 0);
+    gx_set_tev_order(c, 0, 255, 255, 4);
+    gx_set_tev_color_in(c, 0, 15, 15, 15, 2); tev_stage0_op(c);
+    gx_set_tev_alpha_in(c, 0, 7, 7, 7, 7); gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);
+    gx_set_alpha_compare(c, 7, 0, 1, 7, 0);
+    gx_clear_vtx_desc(c); gx_set_vtx_desc(c, 9, 3); gx_set_vtx_attr_fmt(c, 0, 9, 0, 4, 0);
+    c->n += 120;
+}
+
 // ---- entry ----
 static Pc g_pc;
 
@@ -1806,7 +1902,8 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
-    if (hook == PORT_PANEWALK) {  // the walk's buffers: linear memory on the 3DS (the heap is nearly full in gameplay)
+    if (hook == PORT_PANEWALK || hook == PORT_DECO) {  // the walk's buffers (and the minimap's long lines): linear memory on the
+        // 3DS (the heap is nearly full in gameplay)
         static u8* walkPipe;
         static u32 (*walkUndo)[3];
         if (!walkPipe) walkPipe = walk_alloc(WALK_PIPE);
@@ -1833,6 +1930,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { if (!c->fail) g_portFloatSite[4]++; give_up(c, 2); return false; }
     if (hook == PORT_MATDIFF) j3d_material_diff(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_REINITGX) j3d_reinit_gx(c, g);
+    else if (hook == PORT_DECO) map_deco(c, g, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_PANEWALK) pane_walk(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
@@ -1869,11 +1967,13 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
                                           "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
                                           "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
-                                          "J3DMaterial::diff", "J3DSys::reinitGX" };
+                                          "J3DMaterial::diff", "J3DSys::reinitGX",
+                                          "dRenderingFDAmap_c::renderingDecoration" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
-           pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX : -1;
+           pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX :
+           pc == 0x8003D3C0 ? PORT_DECO : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -2034,7 +2134,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 100 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
