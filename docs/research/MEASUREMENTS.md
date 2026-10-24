@@ -2385,7 +2385,7 @@ done
 
   Pairs agree to 0.02-0.2%. The heavy area wins because it has the lights (`J3DMaterial::diff` is 9.1% of its core 0,
   Ordon's 5.5%); Ordon's speed is even (its fields stay locked to two a picture), its real frames a second read +1.1%.
-- **Left off:** the default is the owner's call. The rest of `J3DMaterial::diff` (the tev, PE and texgen blocks'
+- **On by default since 2026-10-24** (James; `--port check` on the 2DS with it on, job 1323: 0 differed). The rest of `J3DMaterial::diff` (the tev, PE and texgen blocks'
   `diff`, ~4.5% of the heavy area's core 0) is the next candidate by the same method: build the display-list words
   natively and copy them once.
 

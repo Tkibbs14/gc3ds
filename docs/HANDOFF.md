@@ -5,10 +5,10 @@
 > stretch 24.05%, THP movie 13.29%.** (10-20, jobs 696-702: heavy 22.8%, Ordon 31.95%; the device moves ~2% between
 > days, so only runs of one session compare.) What follows is newest-first from the second paragraph on; the block
 > below is the 10-20 state.
-> **J3D light port (2026-10-24, `--port-hooks 55`, off):** its commit was a store per byte (8.7 us a call); one copy per
+> **J3D light port (2026-10-24, `--port-hooks 55`, on by default since 10-24, James):** its commit was a store per byte (8.7 us a call); one copy per
 > call makes it pay: **heavy area +2.7%** (22.24 -> 22.87%), Ordon even (31.39 / 31.36%), exact (PC hash identical to the
 > byte loop, `PORT_CHECK` 0 differed in 9,348 calls). Next: the rest of `J3DMaterial::diff` (9.1% of the heavy area's core 0, the
-> light part is 4.1% of it) the same way. Default is the owner's call.
+> light part is 4.1% of it) the same way. Device check with it on (job 1323): 0 differed.
 > **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
