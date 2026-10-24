@@ -1,8 +1,11 @@
-# gc3ds handoff (2026-10-10)
+# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-24)
 
-> **▶ Current state (2026-10-20, night).** All defaults (jobs 696-702): **heavy area ~22.8% (6.84 game frames a
-> second), Ordon walk ~31.95% (9.53 frames a second); title cutscene (25-150 s) 37.0%, its later Link / Epona stretch
-> 23.5% (~7.7 pictures a second), THP movie 13.4%.** Gameplay is locked to two VI fields a picture (frames a second =
+> **▶ Current state (2026-10-24).** All defaults (jobs 1280-1284, the baseline further down): **heavy area 22.32%,
+> Ordon walk 31.38%, Mario Party 4 14.87%, Wind Waker 20.30%; title cutscene (25-150 s) 36.73%, its later Link / Epona
+> stretch 24.05%, THP movie 13.29%.** (10-20, jobs 696-702: heavy 22.8%, Ordon 31.95%; the device moves ~2% between
+> days, so only runs of one session compare.) What follows is newest-first from the second paragraph on; the block
+> below is the 10-20 state.
+> **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
 > native stand-in (`--shdwtri`, C32b; later stretch +2.0-2.7%, heavy area +0.3%, Ordon +0.2%) and its fast form

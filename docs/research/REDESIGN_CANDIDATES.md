@@ -574,7 +574,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C33. A second tier of function-scope regions (X4 oracle)
 
-- **Status:** next (headroom measured 2026-10-20), compiler **not built**. [X4 results](MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20),
+- **Status:** **built as the region tier (`--tier`, on since 2026-10-22: Wind Waker +7.2%, TP heavy -0.9%, Ordon +0.2%); what is left
+  (leaves with branches, devirtualised bctrl, CR flags across labels) has no measured headroom in TP, the nursery was
+  rejected 2026-10-24 (below).** Original plan: [X4 results](MEASUREMENTS.md#x4-hand-compiled-function-regions-on-arm11-2026-10-20),
   device jobs 745-747; retains C13's words-only and C14's duplicated-trace rejections as distinct experiments.
 - **What:** function regions including loops, liveness allocation, dead CR fields kept in ARM flags and reached
   leaves inlined; current block JIT remains the fallback. X4 handwrote ARM, not a compiler.
@@ -677,8 +679,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C37. Textures re-checked by page stamps instead of a once-a-frame re-hash (2026-10-24)
 
-- **Status:** **built, measured as a gain, off** (`--texfast 2`; bit 1, a hint table in front of the texture table,
-  measured even; bit 4 the check). Default is the owner's call.
+- **Status:** **built, measured as a gain** (`--texfast 2`; bit 1, a hint table in front of the texture table,
+  measured even; bit 4 the check). **On by default since 2026-10-24 (b4436ae).**
 - **What:** pica.c `cached_texture` re-hashed (sampled, at most 4,096 words) every texture's RAM once per emulated frame
   to catch the CPU changing it. With bit 2 the hash runs only for textures whose RAM pages were stamped (cache
   flushes, DMA, EFB copies, pipe bursts held in RAM) since it was last hashed.
@@ -693,7 +695,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C38. EFB copies checked by page stamps, their RAM hashed only when reused (2026-10-24)
 
-- **Status:** **built, measured as a gain, off** (`--copystamp on|check`). Default is the owner's call.
+- **Status:** **built, measured as a gain, on by default since 2026-10-24** (5736668; `--copystamp on|off|check`).
 - **What:** a GPU-side EFB copy hashed its destination's RAM when made, so that a lookup in a later frame could tell
   whether the CPU had overwritten it. With it the copy notes the page stamp after its own and hashes late: at its first
   reuse in a later frame with clean stamps; a copy stamped before any reuse is dropped.

@@ -6,8 +6,8 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs the Ordon walk at ~28% of full speed and Ordon's heaviest area at ~20.6% (the title's cutscene
-~36%, its later Link / Epona stretch ~19%, the THP movie ~13%; 19 October 2026).
+test. Today it runs the Ordon walk at ~31% of full speed and Ordon's heaviest area at ~22.3% (the title's cutscene
+~36.7%, its later Link / Epona stretch ~24%, the THP movie ~13.3%; 24 October 2026).
 
 ## Rules
 
@@ -74,7 +74,9 @@ on the console.
 
 | Change | Checks |
 |---|---|
-| JIT (anything in `jit.c` / `arm_emit.h`) | `bash core/tests/jit/run_jit_fuzz.sh 20000 1` (default and chain mode, planted bugs must be caught); then with `JIT_FUZZ_OPT=7` and with `JIT_FUZZ_NOFAULT=1` for seeds 1 and 3. New code paths need new fuzzer cases (see the paired-single chains in `jit_fuzz.c`). Then the whole-game check below. |
+| JIT (anything in `jit.c` / `arm_emit.h`) | `bash core/tests/jit/run_jit_fuzz.sh 20000 1` (default and chain mode, planted bugs must be caught); then with `JIT_FUZZ_OPT=7` and with `JIT_FUZZ_NOFAULT=1` for seeds 1 and 3. New code paths need new fuzzer cases (see the paired-single chains in `jit_fuzz.c`); the script also runs the tier nursery
+  (`JIT_FUZZ_NURSERY`, a small one recycled often) and plant 29. Then the whole-game check below (qemu: set
+  `GC3DS_NOFAULTMEM=1`, as the qemu build runs fault mode by default and fault mode turns the nursery off). |
 | JIT, whole game | Under qemu from a save state, the JIT with and without the change must run **the same number of guest instructions and produce the same final frame** (`core/build-arm/gcemu "$GC3DS_ISO" --load-state S --frames N --jit --out DIR`, compare `last.png` and the `JIT: N instructions run` line). `--frames` counts fields from boot, not from the state. This caught a bug the fuzzer missed (HANDOFF, float lanes). |
 | Interpreter | `bash core/tests/cpu/run_tests.sh` |
 | Vertex path (`vfast.c`, `xform.c`) | `bash core/tools/vfast_check.sh 2` (all test DOLs, 0 draws over tolerance); deferred CPU lighting: `VFAST_CHECK=1 VFAST_DEFLIT_CHECK=1` on TP (0 differ) and `VFAST_DEFLIT_PLANT=1` / `=2` (must differ) |
@@ -130,15 +132,16 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (20 October 2026, night; jobs 696-702):** Ordon walk ~31.95% (9.53 game frames a second), the heavy
-  area ~22.8% (6.84); the title: cutscene (25-150 s) 37.0%, later stretch 23.5% (~7.7 pictures a second), movie
-  13.4% (the cutscene ends at ~150 s: windows must follow it). **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (24 October 2026, jobs 1280-1284):** Ordon walk 31.38%, the heavy area 22.32%, Mario Party 4 14.87%,
+  Wind Waker 20.30%; the title: cutscene (25-150 s) 36.73%, later stretch 24.05%, movie 13.29% (the cutscene ends at
+  ~150 s: windows must follow it). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
   walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay
   ~7% + path ~10-11% of core 0 there, plus the native callback; the cutscene's moving shadows cost under 0.2%.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
-  J2DPictureEx::drawSelf and J3DShapeMtxConcatView's matrix load, on by default (`--port-hooks 7`). Each is checked
+  J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load and the J2DPane::draw walk, on by default
+  (`--port-hooks 39`; bit 3 `__GXSendFlushPrim` and bit 4 the J3D lights are built and off). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
@@ -159,6 +162,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b) and its fast form (`trifast`, both
   chains in registers: later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%), the shadow callback natively, read
   stage by stage (`shdwcb`, later stretch +1.1%, Ordon +0.7%).
+- **Added 22-24 October (details in HANDOFF):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
+  +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
+  EFB copies hashed only when reused (`--copystamp`, on: TP +0.7-0.9%), the J2D pane walk (on: Ordon +2.2%). Built, off:
+  pre-decoded display lists (`--g2 on`, exact, no speed change: TP and Wind Waker are core-0-bound), `--nskeep`
+  (Mario Party 4 +1.9%, owner's call), fault mode (`--faultmem`, +2-5% but crashes the kernel in svc 0x94), and the
+  region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
+  tool).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
   __GXSendFlushPrim and J3D light ports (neutral, separate runs),
   the cXyz operator stand-ins (`psxyz`, heavy area -0.9%), and re-tested with separate runs on 10-19 and 10-20: crstub

@@ -42,3 +42,7 @@ relay-data/
 # Ahead-of-time translated game code (core/tools/aot/ppc2c.py): derived from the user's own disc, never committed
 core/src/aotgen/
 core/tools/qemu-plugins/*.so
+
+# Scratch scripts and bytecode from measuring sessions (the two tracked _*.sh files stay tracked)
+**/__pycache__/
+core/tools/_*
