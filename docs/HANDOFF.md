@@ -12,6 +12,10 @@
 > **J3DMaterial::diff as one port (2026-10-24, `--port-hooks 119`, bit 6, on by default since 10-24; commit 023e0c5):** every block's diff,
 > beginDL / endDL and DCFlushRange in one context. Exact (PC 10,000 calls and 2DS jobs 1338-1339, 0 differed); separate
 > runs **heavy area +3.0%** (22.89 -> 23.57%), **Ordon +3.0%** (31.46 -> 32.39%; jobs 1340-1347). Its own cost: 18.9 + 9.0 us a call (~2.4% of core 0).
+> **J3DSys::reinitGX as one port (2026-10-24, bit 7, on by default; commit 9444269):** fifteen more GX functions,
+> GXFlush's sc after the commit. Exact (PC 2,626 calls, 2DS jobs 1361-1362, 0 differed); **Ordon +3.9%** (32.33 ->
+> 33.58%, frames +4.6%), heavy area even (jobs 1363-1370). A memo cannot work (every call missed, jobs 1359-1360).
+> Next by the profile: the minimap (renderingAmap, 6-7%), joint animation (recursiveCalc, 12-13%), particles (5-8%).
 > **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a

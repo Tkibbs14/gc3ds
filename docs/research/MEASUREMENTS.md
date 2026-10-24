@@ -2417,6 +2417,24 @@ done
 - **Its own cost now (job 1341):** 18.9 us building, 9.0 us committing a call (~870 calls a second in the heavy area,
   ~2.4% of core 0); the commit is mostly DCFlushRange's lines and the interpreted `sc` handler.
 
+### J3DSys::reinitGX as one native port (`--port-hooks` bit 7, 247 with the defaults; jobs 1355-1370, 2026-10-24)
+
+- **What (commit 9444269):** the GX state J3D resets to before each pass, 5.3% of Ordon's core 0 inclusive (heavy area
+  4.0%), ~8,400 guest instructions and ~1,705 pipe bytes a call: reinitGenMode / Lighting / Transform / Texture /
+  TevStages / IndStages / PixelProc, then GXFlush (__GXSetDirtyState, 32 zero bytes, PPCSync). Every argument is a
+  constant; fifteen GX functions were added to the ports, GXInitTexObj builds the null texture in the guest's stack
+  frame through the store log (not committed: dead once the call returns), and PPCSync's `sc` runs after the commit
+  with the OS handler (`port_syscall`, which DCFlushRange's now shares).
+- **A memo first (`--memo 0x8031073C`, jobs 1355-1360):** every call missed: the SDK's read-modify-writes carry the
+  previous draws' `__GXData` (8.8-9.3 words differ a call) into the pipe bytes. The probe needed two fixes to say so:
+  it now follows `sc` / `rfi` (GXFlush) and keeps its 1.1 MB table in linear memory on the 3DS (calloc failed there,
+  so every call had been recorded and none compared).
+- **Exact:** PC `PORT_CHECK`, TP 900 -> 1100, all ports on: 2,626 calls, 0 differed; plant: every call differs. 2DS
+  `--port check` (jobs 1361-1362): 519 (heavy) and 500 (Ordon) calls per 10 s, 0 differed. Check mode found GXSetFog's
+  f31: `fdivs` writes both lanes and the epilogue's `lfd` restores ps0 only, so ps1 keeps C.
+- **Separate whole runs, interleaved, from 100 s (hooks 119 against 247):** heavy area 23.577 / 23.585 -> 23.569 /
+  23.585% (even); **Ordon 32.288 / 32.362 -> 33.591 / 33.561% (+3.9%), frames 9.607 -> 10.049 (+4.6%)**. On by default.
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**
