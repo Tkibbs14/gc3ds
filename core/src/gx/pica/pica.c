@@ -188,6 +188,15 @@ static u32 g_gpuDiag;
 void pica_set_gpudiag(u32 bits) { g_gpuDiagWant = bits; }
 u32 pica_gpudiag(void) { return g_gpuDiagWant; }
 u64 g_copyPix[4];  // EFB -> texture copies: target texels, source EFB pixels (scaled); XFB copies; copies not drawn
+u64 g_copyHash[4];  // EFB copies' RAM hashes: [0] at the copy, [1] their ticks, [2] once a frame at a lookup, [3] their ticks
+static u32 hash_words(const u8* p, u32 bytes);
+static u32 copy_hash(const u8* p, u32 bytes, int k) {
+    u64 t0 = svcGetSystemTick();
+    u32 h = hash_words(p, bytes);
+    g_copyHash[k]++;
+    g_copyHash[k + 1] += svcGetSystemTick() - t0;
+    return h;
+}
 // Textures in VRAM (--vramtex): the PICA samples linear FCRAM 2.5-3.6x slower, and its FCRAM texture reads double core
 // 0's memory latency (job 192). Each new texture goes to VRAM while more than VRAM_RESERVE stays free (EFB copies
 // allocate there too): tiled into a linear staging buffer, then DMA-copied in the GX queue ahead of the draws that use
@@ -1327,17 +1336,38 @@ static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; 
 // --texfast (pica_set_texfast) bits: TF_INDEX a hint table in front of the texture table's scan, TF_STAMPS the once-a-frame
 // re-hash only for textures whose pages were stamped since, TF_CHECK with TF_STAMPS: hashed anyway, misses counted.
 // g_texFastStats: [0] lookups, [1] the map's last texture, [2] hint hits, [3] scans, [4] re-hashes left out (clean
-// stamps), [5] re-hashes, [6] of them clean by stamps yet changed (what TF_STAMPS alone would miss).
+// stamps), [5] re-hashes, [6] of them clean by stamps yet changed (what TF_STAMPS alone would miss), [7] round-robin
+// checks (tex_verify), [8] of them changed with clean stamps (a write without a flush: decoded again).
 enum { TF_INDEX = 1, TF_STAMPS = 2, TF_CHECK = 4 };
 #define TEXIDX_BITS 10
 static volatile u32 g_texFast = TF_STAMPS;  // on by default since 2026-10-24: TP heavy +0.6-0.8%, Mario Party 4 +4.2% (jobs 1210-1228)
-u64 g_texFastStats[7];
+u64 g_texFastStats[9];
 static PTex* g_texIdx[1u << TEXIDX_BITS];
 void pica_set_texfast(u32 bits) { g_texFast = bits; }
 static bool tex_stale(u32 addr, u32 bytes, u32 stamp) {
     for (u32 pg = addr >> 12; pg <= (addr + bytes - 1) >> 12; pg++)
         if ((s32)(g_memStamps.page[pg] - stamp) > 0) return true;
     return false;
+}
+
+// With TF_STAMPS, a few live textures a picture are hashed whatever their stamps (as ns_verify does for converted shapes):
+// RAM changed without a flush shows within ~MAX_TEX / 4 pictures, and the texture is decoded again at its next use.
+static u32 g_texVerify;
+static void tex_verify(System* s) {
+    if (!(g_texFast & TF_STAMPS)) return;
+    for (u32 k = 0, found = 0; k < 16 && found < 4; k++) {
+        PTex* e = &g.tex[g_texVerify++ % MAX_TEX];
+        if (!e->live || !e->stamp) continue;
+        found++;
+        u32 bytes = 0;
+        for (u32 L = 0; L < e->levels; L++) bytes += gx_texture_size(e->fmt, e->w >> L, e->h >> L);
+        if (tex_stale(e->addr, bytes, e->stamp)) continue;  // stamped: hashed at its next use anyway
+        g_texFastStats[7]++;
+        if (hash_words(s->mem1 + e->addr, bytes) == e->dataHash) continue;
+        g_texFastStats[8]++;
+        e->stamp = 0;       // hashed (and found changed) at its next use
+        e->texVersion = 0;
+    }
 }
 
 // Linear RGBA8 (0xRRGGBBAA, rows top-down) into the PICA's tiled layout: 8x8 tiles in Z-order, tile rows stored
@@ -1551,7 +1581,7 @@ static PCopy* find_copy(System* s, const GXCore* gx, u32 addr, u32 w, u32 h) {
         if (!c->used || c->addr != addr || c->w != w || c->h != h) continue;
         // The CPU writing the destination afterwards means RAM holds a newer texture than the copy.
         if (c->texVersion != g.xfbSeq) {
-            if (hash_words(s->mem1 + addr, c->ramBytes) != c->ramHash) { c->used = false; return NULL; }
+            if (copy_hash(s->mem1 + addr, c->ramBytes, 2) != c->ramHash) { c->used = false; return NULL; }
             c->texVersion = g.xfbSeq;
         }
         return c;
@@ -3097,7 +3127,7 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
         u32 bpp = fmt == 0 ? 4 : fmt == 6 ? 32 : (fmt == 3 || fmt == 4 || fmt == 5 || fmt >= 11) ? 16 : 8;
         c->ramBytes = ow * oh * bpp / 8;
         if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
-        c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
+        c->ramHash = copy_hash(s->mem1 + dest, c->ramBytes, 0);
         c->texVersion = g.xfbSeq;
         return;
     }
@@ -3169,7 +3199,7 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
     // No RAM behind it: out of range, or (native mode) a copy Aurora's stream gave no destination (the 2DS read
     // address 0 here, job 221).
     if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
-    c->ramHash = hash_words(s->mem1 + dest, c->ramBytes);
+    c->ramHash = copy_hash(s->mem1 + dest, c->ramBytes, 0);
     c->texVersion = g.xfbSeq;
 }
 
@@ -4134,6 +4164,7 @@ static void ns_verify(void);
 bool pica_present(System* s, u32 xfbAddr) {
     pica_merge_flush(s, false);
     if (g.frame) ns_verify();
+    tex_verify(s);
     if (g_capState == 2) {  // the copy was queued with the previous present
         if (g_dbl) q_wait(g_capFence, 4);
         cap_write();

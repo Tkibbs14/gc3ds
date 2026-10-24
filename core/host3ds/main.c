@@ -1814,6 +1814,12 @@ static const char* run_body(const char* path) {
                     fprintf(g_perf, "# efb copies 10s: to texture %.0f kilotexels/s (source %.0f kilopixels/s), xfb %.1f/s, "
                             "not drawn %.1f/s (gpudiag %u)\n", (double)d[0] / 10000.0, (double)d[1] / 10000.0,
                             (double)d[2] / 10.0, (double)d[3] / 10.0, (unsigned)pica_gpudiag());
+                    extern u64 g_copyHash[4];
+                    static u64 lastCh[4];
+                    double ch[4];
+                    for (int q = 0; q < 4; q++) { ch[q] = (double)(g_copyHash[q] - lastCh[q]); lastCh[q] = g_copyHash[q]; }
+                    fprintf(g_perf, "# efb copy hashes 10s: at the copy %.0f (%.1f ms/s), at a lookup %.0f (%.1f ms/s)\n", ch[0],
+                            ch[1] * 100.0 / SYSCLOCK_ARM11, ch[2], ch[3] * 100.0 / SYSCLOCK_ARM11);
                     fprintf(g_perf, "# vram textures (all time): %llu put in VRAM (%llu KB), %llu left in FCRAM for want of room\n",
                             (unsigned long long)g_vramTexStats[0], (unsigned long long)(g_vramTexStats[1] >> 10),
                             (unsigned long long)g_vramTexStats[2]);
@@ -2169,14 +2175,15 @@ static const char* run_body(const char* path) {
                                         (unsigned long long)(g_nsOnceStats[0] - lastO[0]), (unsigned long long)(g_nsOnceStats[1] - lastO[1]),
                                         (unsigned long long)(g_nsOnceStats[2] - lastO[2]));
                             memcpy(lastO, g_nsOnceStats, sizeof lastO);
-                            extern u64 g_texFastStats[7];
-                            static u64 lastT[7];
-                            u64 tf[7];
-                            for (int k = 0; k < 7; k++) { tf[k] = g_texFastStats[k] - lastT[k]; lastT[k] = g_texFastStats[k]; }
+                            extern u64 g_texFastStats[9];
+                            static u64 lastT[9];
+                            u64 tf[9];
+                            for (int k = 0; k < 9; k++) { tf[k] = g_texFastStats[k] - lastT[k]; lastT[k] = g_texFastStats[k]; }
                             fprintf(g_perf, "# texfast 10s: lookups %llu, the map's last %llu, hint hits %llu, table scans %llu; re-hashes left "
-                                    "out %llu, done %llu, clean by stamps yet changed %llu\n",
+                                    "out %llu, done %llu, clean by stamps yet changed %llu; round-robin checks %llu, changed without a flush %llu\n",
                                     (unsigned long long)tf[0], (unsigned long long)tf[1], (unsigned long long)tf[2], (unsigned long long)tf[3],
-                                    (unsigned long long)tf[4], (unsigned long long)tf[5], (unsigned long long)tf[6]);
+                                    (unsigned long long)tf[4], (unsigned long long)tf[5], (unsigned long long)tf[6], (unsigned long long)tf[7],
+                                    (unsigned long long)tf[8]);
                             extern u64 g_drawOnceStats[3];
                             static u64 lastDo[3];
                             if (g_drawOnceStats[0] != lastDo[0])
