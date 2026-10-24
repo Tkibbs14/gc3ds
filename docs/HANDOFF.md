@@ -62,7 +62,8 @@
 > texfast + copystamp: ~22.08 / 30.85 / 14.37 / 20.13%).
 > **Region tier nursery (2026-10-24, `--tier-nursery`, off; MEASUREMENTS.md "Region tier nursery"):** pending blocks in a
 > recycled area so decided code packs together. Exact; fetch stalls -4% but every decided block is compiled twice
-> (compile +0.7-0.9% of core 0): heavy -0.8%, Ordon -1.8%. Next form: move decided blocks instead of recompiling.
+> (compile +0.7-0.9% of core 0): heavy -0.8%, Ordon -1.8%. Moving decided blocks instead (b9ba75c): exact, steady state
+> heavy +0.2%, Ordon -1.9%. **Rejected in both forms**; the relocation (reloc_move) stays as a tool.
 > **`--nskeep` (C39): stamped shapes whose sources hash the same over every byte are kept, not made again.** 60% of
 > Mario Party 4's stamps on shapes are false alarms: **Mario Party 4 +1.9%** (14.15 -> 14.43%, two pairs and a base
 > bracket; conversions after stamps 598 -> 144 a second), TP heavy, Ordon, Wind Waker even; check 0 differed in 106,264

@@ -2346,6 +2346,23 @@ done
   5,760 tenured), and compile time stays 0.7-0.9% of core 0 higher after warm-up. Off. Keeping the gain needs the
   decided block moved, not compiled again (relocation records for every branch leaving a block: hot / cold, stubs,
   linked exits).
+- **Moved instead of compiled again (commit b9ba75c, `reloc_move`):** every data word in block code goes through
+  `lit()`, a nursery block carries a relocation record, and a decided block's words are copied to the main area with
+  each branch re-aimed. Exact: fuzzer 0 fails (835 moved; plant 29, branches out of a moved block left unaimed,
+  detected), the PC / qemu builds trap on a moved block's old copy, TP under qemu 850 -> 900 identical with 6,791 and
+  5,146 blocks moved. Device (separate whole runs; from 50 s / **from 100 s**, the steady state: compile time is 2x for
+  the first 40 s with the nursery and back to baseline by 100 s):
+
+  | Version (jobs) | TP heavy | TP Ordon walk |
+  |---|---|---|
+  | compiled again (1295-1298) | -0.8% / **+0.2%** | -1.8% / **-2.4%** |
+  | moved, warm pending blocks moved at each recycle (1299-1308) | -2.4% / -1.9% | -3.5% / -4.1% |
+  | moved when decided, warm pending blocks compiled again if they run again (1309-1314) | -0.5% / **+0.2%** | -1.2% / **-1.9%** |
+
+  Moving everything warm at a recycle filled the main area with blocks that never ran again (fetch stalls 221 -> 228
+  M cycles/s); moving only decided blocks keeps the layout gain (stalls 220 -> 215) but the walk keeps reaching new
+  code, so recycles retire live blocks that are compiled again. **Verdict: the nursery does not pay in either form**
+  (heavy area even, Ordon -2%). Off; the relocation stays as a tool (`--nursery-move`).
 
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 

@@ -4801,7 +4801,8 @@ static void nursery_recycle(Jit* j) {
             if (!in_nursery(j, e->fn)) { link = &e->next; continue; }
             if (e->pc != 1 && e->pending && e->runs >= NUR_TENURE) {
                 j->stats.nurTenured++;
-                if (jit_nursery_move && reloc_move(j, e)) { j->stats.nurMoved++; link = &e->next; continue; }  // still pending
+                // (compiled again only if it runs again: moving all of them at once filled the main area with blocks that never
+                // ran again or became region members, jobs 1299-1308: heavy -2.4%, fetch stalls 221 -> 228 M cycles/s)
                 tenure_add(j, e->pc);
             }
             if (e->pc != 1) j->stats.nurRetired++;

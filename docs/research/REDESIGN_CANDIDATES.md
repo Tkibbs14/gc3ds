@@ -606,7 +606,8 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Nursery (2026-10-24, `--tier-nursery`, off):** pending blocks in a recycled area, decided code packed in the main
   area. Exact (fuzzer, qemu). Fetch stalls -4% (heavy 220 -> 212 M cycles/s), but every decided block compiled twice:
   compile time +0.7-0.9% of core 0, speed heavy -0.8%, Ordon -1.8% (jobs 1295-1298). Next form: move a decided block
-  instead of compiling it again.
+  instead of compiling it again. **Moved (b9ba75c, jobs 1299-1314):** exact; steady state (from 100 s) heavy +0.2%, Ordon
+  -1.9% (the walk keeps reaching new code; recycles retire live blocks). Rejected in both forms.
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.
