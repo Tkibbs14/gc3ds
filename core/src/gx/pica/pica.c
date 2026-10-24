@@ -94,6 +94,8 @@ typedef struct {         // a texture decoded from RAM
 
 typedef struct {         // a GPU-side EFB copy standing in for the texture the copy would have written to RAM
     u32 addr, w, h, ramHash, ramBytes, texVersion;
+    u32 stamp;  // g_memStamps.now after the copy's own stamp (--copystamp)
+    bool hashed;  // ramHash holds the copy's RAM (--copystamp takes it late, at the first lookup in a later frame)
     C3D_Tex tex;
     C3D_RenderTarget* rt;
     bool live, used;
@@ -1575,13 +1577,36 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
     return &e->tex;
 }
 
+// --copystamp (pica_set_copystamp): 1 an EFB copy notes the stamp after its own (fifo.c stamps the destination before
+// the backend copies) instead of hashing its destination's RAM, and a lookup in a later frame keeps the copy while no
+// page of it was stamped since (the copy-time hash cost 24-36 ms/s of TP's GX thread, jobs 1238-1239, and later-frame
+// lookups were 0). A copy reused in a later frame has its hash taken then (its RAM unchanged since the copy), so later
+// stamps are judged by the hash as without it; only a copy stamped before it was looked up again is dropped (TP, Wind
+// Waker: never, jobs 1257-1260). 2 check: hashed as without it and decided by the hash, the cases where
+// the two disagree counted. g_copyStampStats: [0] lookups in a later frame, [1] kept by clean stamps, [2] dropped on a
+// stamp, [3] check: clean stamps but the bytes changed, [4] check: stamped but the bytes the same.
+static volatile u32 g_copyStamp;
+u64 g_copyStampStats[5];
+void pica_set_copystamp(u32 mode) { g_copyStamp = mode; }
+
 static PCopy* find_copy(System* s, const GXCore* gx, u32 addr, u32 w, u32 h) {
     for (u32 i = 0; i < MAX_COPIES; i++) {
         PCopy* c = &g.copies[i];
         if (!c->used || c->addr != addr || c->w != w || c->h != h) continue;
         // The CPU writing the destination afterwards means RAM holds a newer texture than the copy.
         if (c->texVersion != g.xfbSeq) {
-            if (copy_hash(s->mem1 + addr, c->ramBytes, 2) != c->ramHash) { c->used = false; return NULL; }
+            u64* st = g_copyStampStats;
+            st[0]++;
+            bool clean = !c->ramBytes || !tex_stale(addr, c->ramBytes, c->stamp);
+            if (g_copyStamp == 1 && (clean || !c->hashed)) {
+                if (!clean) { st[2]++; c->used = false; return NULL; }  // stamped before its RAM was ever hashed
+                st[1]++;
+                if (!c->hashed) { c->ramHash = copy_hash(s->mem1 + addr, c->ramBytes, 2); c->hashed = true; }  // unchanged since the copy
+            } else {
+                bool same = copy_hash(s->mem1 + addr, c->ramBytes, 2) == c->ramHash;
+                if (g_copyStamp == 2) { st[3] += clean && !same; st[4] += !clean && same; }
+                if (!same) { c->used = false; return NULL; }
+            }
             c->texVersion = g.xfbSeq;
         }
         return c;
@@ -3127,7 +3152,9 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
         u32 bpp = fmt == 0 ? 4 : fmt == 6 ? 32 : (fmt == 3 || fmt == 4 || fmt == 5 || fmt >= 11) ? 16 : 8;
         c->ramBytes = ow * oh * bpp / 8;
         if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
-        c->ramHash = copy_hash(s->mem1 + dest, c->ramBytes, 0);
+        c->stamp = g_memStamps.now;
+        c->ramHash = g_copyStamp == 1 ? 0 : copy_hash(s->mem1 + dest, c->ramBytes, 0);
+    c->hashed = g_copyStamp != 1;
         c->texVersion = g.xfbSeq;
         return;
     }
@@ -3199,7 +3226,9 @@ static void copy_to_texture(System* s, GXCore* gx, u32 ctl, u32 x0, u32 y0, u32 
     // No RAM behind it: out of range, or (native mode) a copy Aurora's stream gave no destination (the 2DS read
     // address 0 here, job 221).
     if (!dest || dest < PA_MEM1_BEGIN || dest + c->ramBytes > PA_MEM1_END) c->ramBytes = 0;
-    c->ramHash = copy_hash(s->mem1 + dest, c->ramBytes, 0);
+    c->stamp = g_memStamps.now;
+    c->ramHash = g_copyStamp == 1 ? 0 : copy_hash(s->mem1 + dest, c->ramBytes, 0);
+    c->hashed = g_copyStamp != 1;
     c->texVersion = g.xfbSeq;
 }
 

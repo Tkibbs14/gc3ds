@@ -2612,6 +2612,14 @@ TEV + key 3.6, lighting 2.7; each converted draw call writes ~259 command words 
   87.0%); Mario Party 4 off 14.231%, hint 14.220%, stamps **14.825%**. **The stamps carry the whole gain; the hint
   table measures nothing** (the per-map last-texture check already takes 86% of TP's lookups). Candidate default:
   `--texfast 2` (owner's call).
+- **--copystamp (jobs 1238-1268):** EFB copies hashed their destination's RAM when made (sampled, up to 4,096 words of
+  ~150 KB, so nearly every load a miss): **621 / 855 / 256 hashes per 10 s costing 24 / 36 / 8 ms/s** of the GX thread
+  in TP heavy / Ordon / Wind Waker (1238-1240), to compare at a lookup in a later frame, of which there were **0** in
+  every scene (check runs 1257-1260, title included). With it the copy notes the stamp after its own (fifo.c now
+  stamps a copy's destination before the backend copies) and hashes late, only when reused in a later frame with clean
+  stamps. TP heavy 22.055 / 22.082 -> 22.213 / 22.229% (**+0.7%**, busy 87.4 / 87.2 -> 85.2 / 85.2%), Ordon 30.982 ->
+  31.261% (**+0.9%**), Wind Waker 20.180 -> 20.245% (+0.3%) (1261-1268): another RAM stream off the shared L2. PC: the
+  reorder leaves the state hash and frames unchanged (5000 -> 5200). Candidate default (owner's call).
 
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 

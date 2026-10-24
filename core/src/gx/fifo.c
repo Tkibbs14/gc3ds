@@ -349,12 +349,13 @@ static void bp_write(System* s, GXCore* gx, u32 reg, u32 val) {
         if (g_dlKey && (val & (1u << 14))) dlkey_picture();
         GXCENSUS_WORK({
         if (s->on_efb_copy) s->on_efb_copy(s, s->user, val);
-        efb_copy(s, gx, val);
-        {  // the copy wrote RAM (a bound: rows of h lines or tiles at the copy's stride, or 4 bytes a pixel unstrided)
+        {  // the copy writes RAM (a bound: rows of h lines or tiles at the copy's stride, or 4 bytes a pixel unstrided);
+           // stamped first, so a backend keeping the copy on the GPU can note a stamp that includes its own (pica.c)
             u32 wh = gx->bp[BP_EFB_WH], w = (wh & 0x3FF) + 1, h = ((wh >> 10) & 0x3FF) + 1;
             u32 stride = (gx->bp[BP_COPY_STRIDE] & 0x3FF) << 5, len = h * stride > w * h * 4 ? h * stride : w * h * 4;
             mem_dirty(gx_copy_dest(gx), len);
         }
+        efb_copy(s, gx, val);
         });
         break;
     }

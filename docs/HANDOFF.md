@@ -54,7 +54,10 @@
 > 4's shapes are converted again after stamps whose bytes did not change (~180 ms/s of its GX thread).
 > **Batch-state steps (2026-10-24, MEASUREMENTS.md):** `--nsonce`, `--drawonce` exact and even, `--nsraw` no gain;
 > **`--texfast 2` (textures re-checked by page stamps, C37): TP heavy +0.6-0.8%, Ordon +0.9%, Mario Party 4 +4.2%, Wind
-> Waker +0.4%**, check mode 0 misses. Off; the default is the owner's call.
+> Waker +0.4%**, check mode 0 misses. **On by default since 2026-10-24** (b4436ae), with 4 textures a picture re-hashed
+> round robin (2989e4e). **`--copystamp` (C38): EFB copies' RAM hashed only when reused: TP heavy +0.7%, Ordon +0.9%,
+> Wind Waker +0.3%** (the copy-time hash cost 8-36 ms/s and was never used). Off; default is the owner's call. Baseline
+> 2026-10-24 (1229-1232, texfast on): heavy 22.04%, Ordon 30.94%, Mario Party 4 14.83%, Wind Waker 20.16%.
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%).

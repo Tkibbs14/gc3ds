@@ -685,3 +685,16 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   same rule for vertex data.
 - **Re-evaluate when:** a game shows a stale texture with it on: then add a sampled verify (a few textures re-hashed a
   frame, round robin) as G1's ns_verify does.
+
+## C38. EFB copies checked by page stamps, their RAM hashed only when reused (2026-10-24)
+
+- **Status:** **built, measured as a gain, off** (`--copystamp on|check`). Default is the owner's call.
+- **What:** a GPU-side EFB copy hashed its destination's RAM when made, so that a lookup in a later frame could tell
+  whether the CPU had overwritten it. With it the copy notes the page stamp after its own and hashes late: at its first
+  reuse in a later frame with clean stamps; a copy stamped before any reuse is dropped.
+- **For (jobs 1238-1268):** the copy-time hash cost 8-36 ms/s of the GX thread and was never used (0 later-frame
+  lookups in TP heavy, Ordon, Wind Waker, the title); TP heavy +0.7%, Ordon +0.9%, Wind Waker +0.3%.
+- **Against:** a copy reused across frames whose 4 KB pages are written by the CPU (flushed) before its first reuse is
+  dropped where the hash might have kept it; the texture then comes from RAM, which a GPU-side copy never wrote.
+- **Re-evaluate when:** a game reuses copies across frames (`# efb copy hashes 10s`: lookups in a later frame, dropped
+  on a stamp).

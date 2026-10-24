@@ -652,6 +652,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--nsraw")) pica_set_ns_raw(!strcmp(v, "on"));
         else if (!strcmp(a, "--drawonce")) pica_set_draw_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
         else if (!strcmp(a, "--texfast")) pica_set_texfast((u32)strtoul(v, NULL, 10));
+        else if (!strcmp(a, "--copystamp")) pica_set_copystamp(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : 0);
         else if (!strcmp(a, "--g2")) {  // translated display lists (gx/g2.c); on, check (every 8th replay compared), plant
             g_g2 = !strcmp(v, "on") || !strcmp(v, "check") || !strcmp(v, "plant");
             g_g2Check = !strcmp(v, "check") ? 1 : !strcmp(v, "plant") ? 2 : 0;
@@ -1818,8 +1819,15 @@ static const char* run_body(const char* path) {
                     static u64 lastCh[4];
                     double ch[4];
                     for (int q = 0; q < 4; q++) { ch[q] = (double)(g_copyHash[q] - lastCh[q]); lastCh[q] = g_copyHash[q]; }
-                    fprintf(g_perf, "# efb copy hashes 10s: at the copy %.0f (%.1f ms/s), at a lookup %.0f (%.1f ms/s)\n", ch[0],
-                            ch[1] * 100.0 / SYSCLOCK_ARM11, ch[2], ch[3] * 100.0 / SYSCLOCK_ARM11);
+                    extern u64 g_copyStampStats[5];
+                    static u64 lastCs[5];
+                    u64 cs[5];
+                    for (int q = 0; q < 5; q++) { cs[q] = g_copyStampStats[q] - lastCs[q]; lastCs[q] = g_copyStampStats[q]; }
+                    fprintf(g_perf, "# efb copy hashes 10s: at the copy %.0f (%.1f ms/s), at a lookup %.0f (%.1f ms/s); lookups in a "
+                            "later frame %llu, kept by clean stamps %llu, dropped on a stamp %llu; check: clean but changed %llu, "
+                            "stamped but the same %llu\n", ch[0], ch[1] * 100.0 / SYSCLOCK_ARM11, ch[2], ch[3] * 100.0 / SYSCLOCK_ARM11,
+                            (unsigned long long)cs[0], (unsigned long long)cs[1], (unsigned long long)cs[2], (unsigned long long)cs[3],
+                            (unsigned long long)cs[4]);
                     fprintf(g_perf, "# vram textures (all time): %llu put in VRAM (%llu KB), %llu left in FCRAM for want of room\n",
                             (unsigned long long)g_vramTexStats[0], (unsigned long long)(g_vramTexStats[1] >> 10),
                             (unsigned long long)g_vramTexStats[2]);
