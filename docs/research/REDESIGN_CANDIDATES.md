@@ -727,3 +727,20 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   data skinned on the GPU or converted in place.
 - **Re-evaluate when:** a game shows many `made again after a stamp` with `# nskeep 10s` "unchanged" high (the
   switch's case), or the GX thread limits a scene that converts after stamps.
+
+## C40. The pipe's FIFO mirror in guest RAM without polluting core 0's caches (2026-10-24)
+
+- **Status:** parked (measured upper bound). `--fifomirror off` (hw/gx.c `g_gpMirror`) is MEASUREMENT ONLY: not exact.
+- **What:** every 32-byte pipe burst is copied into the CPU FIFO in guest RAM (`gp_burst`) as well as fed to the GX
+  thread. The FIFO is a large ring, always cache-cold: each line is a write-allocate miss that evicts core 0's data.
+  The ports pay it in their commits (PMU split, Ordon, jobs 1371-1374: the pane walk 43,800 cycles a commit for
+  2,221 bytes, reinitGX 34,200 for 1,705, mostly data stalls), and so does every JIT pipe store.
+- **Evidence (separate whole runs, from 100 s, jobs 1375-1380):** mirror off, Ordon 33.48 / 33.52 -> 34.08 / 34.03%
+  (+1.6%), heavy area 23.55 -> 23.68% (+0.5%). That is the most an exact version could get.
+- **Exact options and their risks:** writing the mirror through the uncached alias of the same physical memory (Luma
+  maps physical memory at VA | 0x80000000) needs the range cleaned and invalidated in L1 / L2 whenever the FIFO is set
+  and before any cached read of it (state save, a game reading its FIFO), or a stale dirty line evicted later would
+  overwrite the bursts; deferring the copy to the GX thread breaks if the game writes or reuses that memory before
+  the copy lands.
+- **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer
+  measurement shows uncached bursts at well under a miss's cost.

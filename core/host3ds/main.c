@@ -155,6 +155,7 @@ static bool g_psflushOn;  // on: heavy area +1.7%, Ordon +0.8% (separate runs, j
 // heavy area's core 0 between them (job 630). --psxyz on: heavy area -0.9%, Ordon even (jobs 660-663): off.
 static const char kPsXyz[] = "__pl,__mi,__ml";
 extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
+extern bool g_gpMirror;   // hw/gx.c: --fifomirror off (measurement only)
 extern bool g_ringBatch;  // gxthread.c: bursts batched into larger ring records
 extern bool g_feedDirect;  // gx/fifo.c: GX commands parsed in place
 extern int g_idleWaitUs;  // gxthread.c: the idle hook's wait for the GX thread (-1: a full sync)
@@ -671,6 +672,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--fifomirror")) g_gpMirror = strcmp(v, "off") != 0;  // (measurement only: not exact)
         else if (!strcmp(a, "--pmu-port-hooks")) g_portPmuHooks = (u32)strtoul(v, NULL, 0);  // (--pmu-split port: only these hooks)
         else if (!strcmp(a, "--port")) o->port = !strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0;
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }

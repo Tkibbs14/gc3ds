@@ -57,13 +57,14 @@ void pe_write16(System* s, u32 off, u16 v) {
 // One 32-byte burst reaches the FIFO: mirrored into the CPU-side FIFO in RAM, the write pointer advanced, and the
 // GP executes it. g_gpBulk (--gpbulk, --ab gpbulk): a burst that neither leaves MEM1 nor wraps the FIFO before its
 // last byte is mirrored with one copy, and gp_fifo_write moves whole runs of bytes (the same bytes as the loops).
+bool g_gpMirror = true;  // --fifomirror off: MEASUREMENT ONLY, not exact: the bursts not copied into the FIFO in RAM
 bool g_gpBulk = true;  // on: heavy area +3.2%, Ordon +4.5% (jobs 477-478); PC state hash unchanged over 400 fields
 u64 g_gpLinked, g_gpUnlinked;  // bursts fed to the GP, and held in RAM while the GP is not linked (reports)
 static void gp_burst(System* s, const u8* data) {
     PIState* pi = &s->pi;
     u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29), start = wp;
     if (g_gpBulk && !GC_SWAPRAM && wp + 32 <= PA_MEM1_END && (!pi->fifoEnd || wp + 32 <= pi->fifoEnd)) {
-        memcpy(s->mem1 + wp, data, 32);
+        if (g_gpMirror) memcpy(s->mem1 + wp, data, 32);
         wp += 32;
         if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
     } else {
