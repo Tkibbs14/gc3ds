@@ -56,8 +56,10 @@
 > **`--texfast 2` (textures re-checked by page stamps, C37): TP heavy +0.6-0.8%, Ordon +0.9%, Mario Party 4 +4.2%, Wind
 > Waker +0.4%**, check mode 0 misses. **On by default since 2026-10-24** (b4436ae), with 4 textures a picture re-hashed
 > round robin (2989e4e). **`--copystamp` (C38): EFB copies' RAM hashed only when reused: TP heavy +0.7%, Ordon +0.9%,
-> Wind Waker +0.3%** (the copy-time hash cost 8-36 ms/s and was never used). Off; default is the owner's call. Baseline
-> 2026-10-24 (1229-1232, texfast on): heavy 22.04%, Ordon 30.94%, Mario Party 4 14.83%, Wind Waker 20.16%.
+> Wind Waker +0.3%** (the copy-time hash cost 8-36 ms/s and was never used). **On by default since 2026-10-24**
+> (5736668). **Baseline 2026-10-24 (5736668, jobs 1280-1284, all defaults): heavy 22.32%, Ordon 31.38%, Mario Party 4
+> 14.87%, Wind Waker 20.30%; title cutscene 36.73%, later stretch 24.05%, movie 13.29%** (this session before
+> texfast + copystamp: ~22.08 / 30.85 / 14.37 / 20.13%).
 > **`--nskeep` (C39): stamped shapes whose sources hash the same over every byte are kept, not made again.** 60% of
 > Mario Party 4's stamps on shapes are false alarms: **Mario Party 4 +1.9%** (14.15 -> 14.43%, two pairs and a base
 > bracket; conversions after stamps 598 -> 144 a second), TP heavy, Ordon, Wind Waker even; check 0 differed in 106,264
