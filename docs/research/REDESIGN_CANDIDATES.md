@@ -698,3 +698,25 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   dropped where the hash might have kept it; the texture then comes from RAM, which a GPU-side copy never wrote.
 - **Re-evaluate when:** a game reuses copies across frames (`# efb copy hashes 10s`: lookups in a later frame, dropped
   on a stamp).
+
+## C39. Stamped converted shapes kept when their sources did not change (2026-10-24)
+
+- **Status:** **built, measured as a gain in Mario Party 4, off** (`--nskeep on|check|plant|count`; pica.c `ns_keep`).
+  Default is the owner's call.
+- **What:** a converted shape (G1, pica.c `ns_get`) whose source pages were stamped since it was made was always made
+  again, and after three times left on the old path as changing. With the switch, its sources are hashed over every
+  byte (`ns_xhash`, 64-bit, every word and a range's last partial word) and the shape is kept, its stamp moved to now,
+  when the hash matches the certified one. Certification happens only when a shape is made again with the same hash
+  before and after converting (a hash taken only after converting could describe bytes written meanwhile).
+  `ns_verify` hashes certified shapes the same way.
+- **For (jobs 1242-1256, 1269-1274, MEASUREMENTS.md "--nskeep"):** 60% of Mario Party 4's stamps on shapes are false
+  alarms (the game flushes unchanged data), 100% of TP heavy's few; Mario Party 4 **+1.9%** (two pairs, and against
+  the base build bracketing it: 14.159 / 14.150% -> 14.428%, off 14.180%), conversions
+  after stamps 5,976 -> 1,442 per 10 s; TP heavy, Ordon, Wind Waker even. Check 0 differed in 106,264 compared; the
+  plant is caught (ns_verify and the next stamp).
+- **Against:** each stamp on a kept shape costs a full hash of its sources (cheaper than converting it again, which
+  reads the same bytes); a 64-bit hash collision on a real change would keep a stale shape (one word changed is always
+  caught). CPU-deformed geometry (Mario Party 4's ~1,580 old-path draws a second) is untouched: that needs the vertex
+  data skinned on the GPU or converted in place.
+- **Re-evaluate when:** a game shows many `made again after a stamp` with `# nskeep 10s` "unchanged" high (the
+  switch's case), or the GX thread limits a scene that converts after stamps.

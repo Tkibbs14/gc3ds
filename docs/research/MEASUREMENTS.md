@@ -2621,6 +2621,44 @@ TEV + key 3.6, lighting 2.7; each converted draw call writes ~259 command words 
   31.261% (**+0.9%**), Wind Waker 20.180 -> 20.245% (+0.3%) (1261-1268): another RAM stream off the shared L2. PC: the
   reorder leaves the state hash and frames unchanged (5000 -> 5200). Candidate default (owner's call).
 
+### Stamped shapes kept when their sources did not change: --nskeep (jobs 1242-1256, 1269-1274, 2026-10-24, C39)
+
+Job 1129 found Mario Party 4 converting ~611 shapes a second again after page stamps on their sources (~161 ms/s of
+the GX thread), and a shape made again three times stays on the old path for good (`ns_dyn_note`). `--nskeep`
+hashes a stamped shape's sources over every byte (`ns_xhash`, 64-bit; `ns_sources_hash` goes through `hash_words`,
+which samples ranges past 16 KB and drops a range's last 1-3 bytes) and keeps the shape when the hash matches the one
+certified when it was made. A shape is certified only when made again with its sources hashed the same before and
+after converting, so the hash describes the very bytes the conversion read. Build b4436ae + the change, `--profile
+on`, no `--gxdiag`, separate whole runs, runs.py.
+
+- **Count (`--nskeep count`, made again as before, 1242-1243):** Mario Party 4 **3,625 of 6,052 stamped shapes per
+  10 s unchanged (60%)**; TP heavy **68 of 68 (100%)**, but only ~7 a second (its ~6,400 draws per 10 s "left as
+  changing" are shapes marked dynamic before they were ever hashed; with the switch on they stay, so those are real
+  CPU-deformed geometry). The sampled hash agreed with the exact one on every count.
+- **Check (`--nskeep check`, each kept shape converted again into a spare slot and compared stream by stream):** **0
+  differed** in 99,408 compared (Mario Party 4, 1244) and 6,856 (TP heavy, 1246). **Plant (1245):** the fresh
+  conversion with one byte altered differed in 33,772 of 33,772; of 4,221 kept shapes recorded as made from sources
+  whose last byte of a range then changed (the stamp path clean), **ns_verify caught 18 and the next stamp 4,199**;
+  none was kept again.
+- **Separate whole runs:**
+
+  | Scene | Speed off -> on | GX busy off -> on | Made again after a stamp / 10 s | ms converting / 10 s |
+  |---|---|---|---|---|
+  | Mario Party 4 board (two pairs, second in reverse order) | 14.101 / 14.178 -> 14.395 / 14.428% (**+1.9%**, 8.45 -> 8.60 frames a second) | 73.4 / 73.9 -> 75.5 / 75.7% | 5,976 -> 1,442 | 1,331 -> 874 |
+  | TP heavy (two pairs) | 22.233 / 22.102 -> 22.218 / 22.103% (even) | 86.8 / 86.2 -> 86.8 / 86.1% | 69 -> 0 | 10 -> 0 |
+  | TP Ordon walk | 30.981 -> 31.012% (+0.1%) | 81.2 -> 80.4% | 290 -> 0 | 34 -> 0 |
+  | Wind Waker, Outset | 20.156 -> 20.164% (even) | 35.8 -> 35.8% | 0 -> 0 | 0 |
+
+  Mario Party 4 keeps ~847 shapes a second that it made again before; its GX thread does more in all (busy +2 points)
+  because it draws more frames, and core 0's wait on the GX thread fell 8.8 -> 7.9%. Its draws left on the old path
+  as changing fell only 19,513 -> 15,767 per 10 s, and ~144 shapes a second are still made again: real changes (CPU-
+  skinned geometry), which this cannot help. TP and Wind Waker convert almost nothing after stamps, so they are even.
+  Candidate default (owner's call).
+- **The off path costs nothing (jobs 1271-1274, Mario Party 4, one session):** base build 8105c4a 14.159%, the change on 8105c4a
+  off 14.180%, on **14.428%**, base again 14.150%. Every Mario Party 4 run of 10-24 night reads ~14.15% off, against
+  14.83% for job 1231 earlier the same day on b4436ae: the device moved, not the build (TP heavy, Ordon and Wind Waker
+  read the same as jobs 1261-1268 there).
+
 ### PE reads no longer drain the GX thread (jobs 354-355, device)
 
 - **What:** every PE register read ran gxAsync->sync, waiting until the GX thread had executed everything fed

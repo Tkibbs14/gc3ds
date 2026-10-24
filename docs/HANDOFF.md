@@ -58,6 +58,11 @@
 > round robin (2989e4e). **`--copystamp` (C38): EFB copies' RAM hashed only when reused: TP heavy +0.7%, Ordon +0.9%,
 > Wind Waker +0.3%** (the copy-time hash cost 8-36 ms/s and was never used). Off; default is the owner's call. Baseline
 > 2026-10-24 (1229-1232, texfast on): heavy 22.04%, Ordon 30.94%, Mario Party 4 14.83%, Wind Waker 20.16%.
+> **`--nskeep` (C39): stamped shapes whose sources hash the same over every byte are kept, not made again.** 60% of
+> Mario Party 4's stamps on shapes are false alarms: **Mario Party 4 +1.9%** (14.15 -> 14.43%, two pairs and a base
+> bracket; conversions after stamps 598 -> 144 a second), TP heavy, Ordon, Wind Waker even; check 0 differed in 106,264
+> compared, plant caught (jobs 1242-1274). Off; default is the owner's call. (Mario Party 4 read ~14.15% off on every
+> build later that night: the device moved, not the code.)
 > **Fault mode (2026-10-23, jobs 1048-1074):** with 0bc59ff's two fixes (cold-overflow blocks compiled checked; the 2 MB
 > site table in linear memory, whose heap use had caused the "relay error" stops and the heavy area's loss) every scene
 > gains: WW +5.1%, Ordon +2.5%, TP heavy +2.3%, MP4 +0.9%, no stops. 600 s soaks clean (title 1075, heavy 1076: 22.47%).
