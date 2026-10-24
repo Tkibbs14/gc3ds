@@ -100,6 +100,7 @@ bool host_jit_enable(System* s) {
         jit_set_opt(g_hostJit, jit_opt(g_hostJit) | OPT_TIER);
         if (atoi(getenv("GC3DS_TIER")) > 1) jit_tier_threshold = (u32)atoi(getenv("GC3DS_TIER"));
     }
+    if (getenv("GC3DS_NURSERY")) jit_tier_nursery = true;  // --tier-nursery (with GC3DS_TIER)
     s->icbiCtx = g_hostJit;
     return true;
 }
@@ -112,6 +113,10 @@ void host_jit_report(void) {
         (unsigned long long)g_psFastCalls[0], (unsigned long long)g_psFastCalls[1],
         (unsigned long long)g_psFastCalls[2], (unsigned long long)g_psFastRefused[0],
         (unsigned long long)g_psFastRefused[1], (unsigned long long)g_psFastRefused[2]);
+    const JitStats* js = jit_stats(g_hostJit);
+    fprintf(stderr, "JIT tier: regions %llu, failed %llu; nursery recycles %llu, retired %llu, settled %llu\n",
+        (unsigned long long)js->tierUps, (unsigned long long)js->tierFails, (unsigned long long)js->nurRecycles,
+        (unsigned long long)js->nurRetired, (unsigned long long)js->nurSettled);
 }
 #else
 bool jit_host_fault_init(const u8* ram) { (void)ram; return false; }

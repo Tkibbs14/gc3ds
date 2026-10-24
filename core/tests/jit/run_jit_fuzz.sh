@@ -55,5 +55,15 @@ JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) JIT_FUZZ_RCOVER=12345 qemu-arm 
 grep -qE "^JIT FUZZ .*fails=0" "$out/rcover.txt" || { echo "REGION COVERAGE FUZZ RUN FAILED"; exit 4; }
 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain > "$out/tier.txt"
 grep -qE "^JIT FUZZ .*fails=0" "$out/tier.txt" || { echo "TIER CHAIN FUZZ RUN FAILED"; exit 4; }
+# The same with the nursery (--tier-nursery: pending blocks in a recycled area, decided ones compiled again; not with
+# fault mode): it must recycle and settle, and stay exact.
+JIT_FUZZ_NOFAULT=1 JIT_FUZZ_NURSERY=1 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain > "$out/nursery.txt"
+grep -qE "^JIT FUZZ .*fails=0" "$out/nursery.txt" || { echo "NURSERY TIER CHAIN FUZZ RUN FAILED"; exit 4; }
+grep -h "^nursery:" "$out/nursery.txt"
+# ... with a nursery just over one block's room (BLOCK_MAX_WORDS), recycled again and again (retired entries, link sites dropped).
+JIT_FUZZ_NOFAULT=1 JIT_FUZZ_NURSERY=1 JIT_FUZZ_NURSERYWORDS=4160 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain > "$out/nursery2.txt"
+grep -qE "^JIT FUZZ .*fails=0" "$out/nursery2.txt" || { echo "SMALL NURSERY FUZZ RUN FAILED"; exit 4; }
+grep -qE "^nursery: .*recycles [1-9]" "$out/nursery2.txt" || { echo "SMALL NURSERY FUZZ RUN NEVER RECYCLED"; exit 4; }
+grep -h "^nursery:" "$out/nursery2.txt"
 echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot, callee-saved cache retention, region give-back counts, region label write-back)"
 exit $status

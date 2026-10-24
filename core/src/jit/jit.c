@@ -110,6 +110,15 @@ bool jit_tier_loops_only;  // --tier-loops on: regions only where the head's fun
 // still being compiled and the blocks the regions replaced (OPT_TIER grew TP's hot footprint 15-20%, jobs 946-947).
 bool jit_region_zone;
 static u32 zone_start(const Jit* j);
+// --tier-nursery on (OPT_TIER): a block still pending compiles into the nursery, the top quarter of the hot and of the cold
+// area, recycled whole when full (nothing links to a pending block; its entry is retired). Decided code (regions, and
+// blocks decided plain, compiled again into the main area: nursery_settle) packs the main area below it, so the blocks
+// regions replace never sit between live code (the tier's TP loss is instruction fetch over the replaced blocks, C33;
+// --tier-relayout removed them by flushing, which cost more than it saved).
+bool jit_tier_nursery;
+u32 jit_debug_nursery_words;  // the fuzzer: the nursery's hot and cold areas this many words each (0: a quarter of each area)
+static bool g_forceDecided;      // compile: a block whose tier is decided (compiled into the main area, not pending)
+static u32 g_hotLim, g_coldLim;  // compile_block: the end of the hot / cold area this compile goes into (set by compile)
 u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
 static Entry* entry_find(Jit* j, u32 pc, u32 msrBits);
 static void stub_check(Jit* j, const char* what, u32 pc);
@@ -152,6 +161,7 @@ struct Jit {
     u32 coldStart, coldUsed;    // the cold region (to codeWords): each block's slow paths, kept apart so that hot code
                                 // packs into fewer cache lines and pages
     u32 zoneUsed;               // --region-zone: the regions' bump pointer in [zone_start, coldStart) (0: empty)
+    u32 nurHotStart, nurHot, nurColdStart, nurCold;  // --tier-nursery: the nursery's hot and cold areas and bump pointers
     Entry* table;          // pool of MAX_ENTRIES
     u32* buckets;          // DISPATCH_SIZE chain heads
     u32 nEntries;
@@ -4665,12 +4675,40 @@ static bool emit_gpr_inline(Cg* c, u32 target, u32 pa, const GprHelper* h) {
     return true;
 }
 
+static bool plain_has(Jit* j, u32 pc);
+// The block compile_block is about to make will be pending (OPT_TIER: its tier decided after jit_tier_threshold runs).
+static bool will_pend(Jit* j, u32 pc, bool noLink) {
+    return (j->opt & OPT_TIER) && !(j->opt & OPT_REGION) && !g_tierCompile && !noLink && !hle_is_hook(j->g, pc) && !jit_skip_on &&
+           !g_forceDecided && !(jit_tier_nursery && plain_has(j, pc));
+}
+// --tier-nursery applies: not with fault mode (its site table holds host addresses), the region zone, relayouts or
+// stage 1's regions.
+static bool nursery_on(const Jit* j) {
+    return jit_tier_nursery && (j->opt & OPT_TIER) && !(j->opt & OPT_REGION) && !j->faultMem && !jit_region_zone &&
+           !jit_tier_relayout_words;
+}
+static bool in_nursery(const Jit* j, BlockFn fn) {
+    u32 w = (u32)((const u32*)(const void*)fn - j->code);
+    return w >= j->nurHotStart && w < j->coldStart;
+}
+// The nursery is full: every entry in it is retired (pending blocks, which nothing links to; they compile again when
+// next looked up) and it starts over. The generation moves on, so a link site the dispatcher holds into it is dropped.
+static void nursery_recycle(Jit* j) {
+    for (u32 i = 0; i < j->nEntries; i++) {
+        Entry* e = &j->table[i];
+        if (e->pc != 1 && in_nursery(j, e->fn)) { e->pc = 1; j->stats.nurRetired++; }
+    }
+    j->nurHot = j->nurHotStart;
+    j->nurCold = j->nurColdStart;
+    j->stats.nurRecycles++;
+    j->gen++;
+}
+
 static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     Gekko* g = j->g;
     u32 pa;
     if (!gk_translate(g, pc, false, false, &pa, false) || pa >= j->ramSize) return NULL;
-    u32 hotLimit = jit_region_zone && j->codeUsed < zone_start(j) ? zone_start(j) : j->coldStart;  // blocks stop below the zone
-    if (hotLimit - j->codeUsed < BLOCK_MAX_WORDS || j->codeWords - j->coldUsed < BLOCK_MAX_WORDS) {
+    if (g_hotLim - j->codeUsed < BLOCK_MAX_WORDS || g_coldLim - j->coldUsed < BLOCK_MAX_WORDS) {  // (compile sets the limits)
         jit_invalidate_all(j);
         j->stats.flushes++;
     }
@@ -4711,7 +4749,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     if (!check) j->stats.blocksNoCheck++;
     // The sampling profiler's store, when asked for.
     if (j->profile) str_imm(e, PC, RG, OFF_HOSTPC);
-    g_lastPending = (j->opt & OPT_TIER) && !c->region && !noLink && !hle_is_hook(g, pc) && !jit_skip_on;
+    g_lastPending = !c->region && will_pend(j, pc, noLink);
     c->profCtr = g_lastPending;
 #ifndef __3DS__
     if (g_regStat) {  // this block's execution counter (register-cache statistics)
@@ -5146,10 +5184,21 @@ static u32 zone_start(const Jit* j) { return j->coldStart - j->coldStart / 4; }
 
 static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     u64 t0 = prof_begin();
-    u32 blocksUsed = j->codeUsed, gen = j->gen;
+    bool nurOn = nursery_on(j), nur = nurOn && will_pend(j, pc, noLink);
+    if (nur && (j->coldStart - j->nurHot < BLOCK_MAX_WORDS || j->codeWords - j->nurCold < BLOCK_MAX_WORDS)) nursery_recycle(j);
+    u32 blocksUsed = j->codeUsed, coldUsed = j->coldUsed, gen = j->gen;
+    if (nur) {  // compile_block emits at codeUsed / coldUsed: pointed into the nursery for this one
+        j->codeUsed = j->nurHot;
+        j->coldUsed = j->nurCold;
+        g_hotLim = j->coldStart;
+        g_coldLim = j->codeWords;
+    } else {
+        g_hotLim = nurOn ? j->nurHotStart : jit_region_zone && j->codeUsed < zone_start(j) ? zone_start(j) : j->coldStart;
+        g_coldLim = nurOn ? j->nurColdStart : j->codeWords;
+    }
     if (j->zoneUsed < zone_start(j)) j->zoneUsed = zone_start(j);
     bool zone = jit_region_zone && g_tierCompile && j->coldStart - j->zoneUsed >= BLOCK_MAX_WORDS;  // full: with the blocks
-    if (zone) j->codeUsed = j->zoneUsed;  // compile_block emits at codeUsed: point it into the zone for this one
+    if (zone) { j->codeUsed = j->zoneUsed; g_hotLim = j->coldStart; }  // compile_block emits at codeUsed: into the zone
     u64 coldFails = j->stats.compileFails[1];
     BlockFn fn = compile_block(j, pc, noLink);
     if (!fn && j->faultMem && j->stats.compileFails[1] != coldFails && j->gen == gen) {
@@ -5159,6 +5208,7 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
         if (fn) j->stats.faultChecked++;
     }
     if (zone && j->gen == gen) { j->zoneUsed = j->codeUsed; j->codeUsed = blocksUsed; }
+    if (nur && j->gen == gen) { j->nurHot = j->codeUsed; j->nurCold = j->coldUsed; j->codeUsed = blocksUsed; j->coldUsed = coldUsed; }
     prof_end(PROF_JITC, t0);
     return fn;
 }
@@ -6192,6 +6242,7 @@ static Relay* relay_find(Jit* j, u32 pc, u32 key) {
 }
 
 static u32* plain_slot(Jit* j, u32 pc) {
+    if (!j->plainSet && jit_tier_nursery) j->plainSet = calloc(16384, sizeof *j->plainSet);  // (--tier-nursery: decided blocks)
     if (!j->plainSet) return NULL;
     u32 h = (pc >> 2) * 2654435761u >> 18;
     for (u32 k = 0; k < 32; k++, h = (h + 1) & 16383)
@@ -6199,7 +6250,7 @@ static u32* plain_slot(Jit* j, u32 pc) {
     return NULL;  // full here: not remembered
 }
 static void plain_add(Jit* j, u32 pc) {
-    if (!jit_tier_relayout_words) return;
+    if (!jit_tier_relayout_words && !jit_tier_nursery) return;
     u32* s = plain_slot(j, pc);
     if (s) *s = pc;
 }
@@ -6382,7 +6433,10 @@ static void tier_block(Jit* j, u32 pc, u32 key) {
     for (u32 k = 1; k < g_tierN; k++) {
         if (!g_tierCov[k]) continue;
         Entry* m = entry_find(j, pc + 4 * k, key);
-        if (m) { m->member = true; m->pending = false; j->stats.tierWordsReplaced += m->words; replaced += m->words; plain_add(j, m->pc); }
+        if (m) {
+            m->member = true; m->pending = false; j->stats.tierWordsReplaced += m->words; replaced += m->words; plain_add(j, m->pc);
+            if (nursery_on(j) && in_nursery(j, m->fn)) m->pc = 1;  // compiled again into the main area if ever entered
+        }
     }
     if (!jit_tier_relayout_words) return;
     Relay* rl = relay_find(j, pc, key);
@@ -6544,6 +6598,16 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
             tier_block(j, pc, key);
             stub_check(j, "tier_block", pc);
             en = lookup(j, pc, key);
+            // --tier-nursery: a block decided plain is still in the nursery, where nothing may link to it: compiled again
+            // into the main area (a region was compiled there already)
+            if (en && !en->pending && nursery_on(j) && in_nursery(j, en->fn)) {
+                en->pc = 1;
+                plain_add(j, pc);
+                g_forceDecided = true;
+                en = lookup(j, pc, key);
+                g_forceDecided = false;
+                j->stats.nurSettled++;
+            }
             if (!en) break;
         }
         // Idle and polling-loop blocks are only ever entered from here; so are pending ones (OPT_TIER), until decided.
@@ -6639,6 +6703,8 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
 #endif
     j->codeWords = codeBytes / 4;
     j->coldStart = j->codeWords / 8 * 3;  // hot code: ~35% of TP's code since the block stubs and float stubs moved out (5.0 hot vs 9.3 cold words per instruction)
+    j->nurHotStart = j->nurHot = j->coldStart - (jit_debug_nursery_words ? jit_debug_nursery_words : j->coldStart / 4);  // --tier-nursery
+    j->nurColdStart = j->nurCold = j->codeWords - (jit_debug_nursery_words ? jit_debug_nursery_words : (j->codeWords - j->coldStart) / 4);
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
     j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
 #ifndef __3DS__
@@ -6925,6 +6991,8 @@ void jit_invalidate_all(Jit* j) {
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;
     j->zoneUsed = 0;
+    j->nurHotStart = j->nurHot = j->coldStart - (jit_debug_nursery_words ? jit_debug_nursery_words : j->coldStart / 4);
+    j->nurColdStart = j->nurCold = j->codeWords - (jit_debug_nursery_words ? jit_debug_nursery_words : (j->codeWords - j->coldStart) / 4);
     j->replacedSinceFlush = 0;
     j->insnsSinceFlush = 0;
     if (j->faultKey) { memset(j->faultKey, 0xFF, FAULT_SLOTS * sizeof(u32)); j->faultN = 0; }

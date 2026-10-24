@@ -36,6 +36,7 @@ typedef struct {
     u64 faultChecked;  // fault mode: blocks compiled again with checked accesses after their cold code overflowed
     u64 tierRelaid, tierRelayouts;  // --tier-relayout: regions compiled from their remembered profile; relayout flushes
     u64 tierWordsRegion, tierWordsReplaced;  // OPT_TIER: host words (hot + cold) of the regions, and of the head and member blocks they replaced
+    u64 nurRecycles, nurRetired, nurSettled;  // --tier-nursery: nursery recycles, entries retired by them, decided blocks compiled again into the main area
     u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)
@@ -204,6 +205,8 @@ extern u32 jit_tier_threshold;
 extern u32 jit_tier_relayout_words;  // --tier-relayout KB (as words): flush once regions have replaced this much code; 0 off
 extern bool jit_region_zone;  // --region-zone on: regions packed into the top quarter of the hot area
 extern bool jit_tier_loops_only;  // --tier-loops on: regions only for heads whose function loops      // OPT_TIER: block runs before its region (default 64)
+extern bool jit_tier_nursery;  // --tier-nursery on: blocks still pending (OPT_TIER) compile into a recycled nursery; decided code packs the main area
+extern u32 jit_debug_nursery_words;  // the fuzzer: the nursery's size (words, each area; 0: a quarter)
 extern u32 jit_debug_region_cover;  // OPT_REGION, the fuzzer: nonzero = pseudo-random coverage from this seed
 extern u32 jit_debug_plant;  // 1 = compiled single-precision results skip the rounding to single (the fuzzer's float self-test), 3 = fused compare-branches test the opposite condition, 4 = the register cache loses a write-back, 9 = a failed window check (OPT_HOIST) counts its instruction as run, 10 = a deferred byte swap is lost at a write-back, 11 = sc's handler (OPT_SYSCALL) counts one instruction short, 12 = quantized psq accesses to the locked cache land 4 bytes off
 u32 jit_run_one_block(Jit* j);
