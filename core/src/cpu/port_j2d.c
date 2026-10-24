@@ -1257,7 +1257,8 @@ static void port_commit(Pc* c) {
         if (c->gx[i] != c->gx0[i]) ram_wr32(g_pm, c->gxd - 0x80000000u + 4 * i, c->gx[i]);
     }
     for (u32 i = 0; i < c->nlog; i++) ram_wr32(g_pm, c->log[i][0] - 0x80000000u, c->log[i][1]);
-    for (u32 i = 0; i < c->gdN; i++) ram_wr8(g_pm, c->gdA - 0x80000000u + i, c->gd[i]);
+    // (one copy: byte by byte it took 8.7 us a call, job 553, as long as building the bytes)
+    if (c->gdN) ram_from_be(g_pm, c->gdA - 0x80000000u, c->gd, c->gdN);
     if (c->pn && g_ppipe) g_ppipe(g_pctx, c->pbase, c->pn);  // (the walk's stores are in memory already)
 }
 

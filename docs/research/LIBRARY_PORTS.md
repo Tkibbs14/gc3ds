@@ -64,7 +64,9 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   appended to `__GDCurrentDL`; the context now carries a run of GD display-list bytes, committed and checked byte by
   byte). Both exact on the PC and the device; no measured gain (separate runs: neutral and -0.2% in the heavy area).
   The flush prim is 48 guest instructions a call, too little to win back the port's set-up; the light port's
-  byte-by-byte commit (8.7 us a call) leaves little of its saving, so it would need word stores to pay. Measure ports
+  byte-by-byte commit (8.7 us a call) leaves little of its saving, so it would need word stores to pay. **Done 2026-10-24: one copy
+  per call, and it pays: heavy area +2.7%, Ordon even (jobs 1315-1322, MEASUREMENTS.md "The J3D light port with a
+  one-copy commit"; `--port-hooks 55`, off).** Measure ports
   with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw

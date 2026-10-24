@@ -2368,6 +2368,27 @@ done
   code, so recycles retire live blocks that are compiled again. **Verdict: the nursery does not pay in either form**
   (heavy area even, Ordon -2%). Off; the relocation stays as a tool (`--nursery-move`).
 
+### The J3D light port with a one-copy commit (`--port-hooks 55`, jobs 1315-1322, 2026-10-24)
+
+- **What:** `J3DColorBlockLightOn::diffLightObj`'s port (bit 4, built 10-19 and measured neutral, 6.338 / 6.344 against
+  6.349 / 6.344 frames a second) committed its display-list bytes to guest RAM with a `ram_wr8` per byte (8.7 us a
+  call, as long as building them). `port_commit` now copies them with one `ram_from_be`.
+- **Exact:** PC, TP 900 -> 1100, 9,348 light calls taken: the old byte-loop commit and the new copy end on the same
+  state hash (7111abdb2510a43e at cycle 8922970066) and last frame; `PORT_CHECK=1` with the hook on, 9,348 checked,
+  0 differed (check mode compares the port's bytes directly, so the hash comparison is what covers the commit).
+- **Separate whole runs, interleaved, scored from 100 s (`runs.py --skip 100`), hooks 39 (default) against 55:**
+
+  | Scene | speed, hooks 39 | speed, hooks 55 | frames a second 39 -> 55 |
+  |---|---|---|---|
+  | TP heavy area (1315/1317 against 1316/1318) | 22.244 / 22.245% | 22.853 / 22.895% (**+2.7%**) | 6.667 -> 6.853 (+2.8%) |
+  | TP Ordon walk (1319/1321 against 1320/1322) | 31.394 / 31.388% | 31.354 / 31.375% (-0.1%) | 9.309 -> 9.410 (+1.1%) |
+
+  Pairs agree to 0.02-0.2%. The heavy area wins because it has the lights (`J3DMaterial::diff` is 9.1% of its core 0,
+  Ordon's 5.5%); Ordon's speed is even (its fields stay locked to two a picture), its real frames a second read +1.1%.
+- **Left off:** the default is the owner's call. The rest of `J3DMaterial::diff` (the tev, PE and texgen blocks'
+  `diff`, ~4.5% of the heavy area's core 0) is the next candidate by the same method: build the display-list words
+  natively and copy them once.
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**

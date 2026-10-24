@@ -141,7 +141,8 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   ~7% + path ~10-11% of core 0 there, plus the native callback; the cutscene's moving shadows cost under 0.2%.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load and the J2DPane::draw walk, on by default
-  (`--port-hooks 39`; bit 3 `__GXSendFlushPrim` and bit 4 the J3D lights are built and off). Each is checked
+  (`--port-hooks 39`; bit 3 `__GXSendFlushPrim` is built and off; bit 4, the J3D lights with a one-copy commit, is built and off: heavy
+  area +2.7%, Ordon even; `--port-hooks 55`). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
