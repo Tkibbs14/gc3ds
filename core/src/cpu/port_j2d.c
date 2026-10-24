@@ -1608,7 +1608,8 @@ static inline int hook_of(u32 pc) {
 // until measured (--ab flushhook). diffLightObj (3.6% of the heavy area's core 0 inclusive, job 512): off until
 // measured (--ab lighthook); on since 2026-10-24 with its one-copy commit (heavy area +2.7%, jobs 1315-1322).
 // The pane walk (bit 5): Ordon +2.2%, heavy area +0.4%, exact in check mode (jobs 1080-1089; James 2026-10-23: on).
-u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP | 1u << PORT_LIGHTS | 1u << PORT_PANEWALK;
+u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP | 1u << PORT_LIGHTS | 1u << PORT_PANEWALK |
+                  1u << PORT_MATDIFF;  // (J3DMaterial::diff: heavy area and Ordon +3.0%, jobs 1340-1347; on 2026-10-24)
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
     return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);
