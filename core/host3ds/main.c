@@ -648,6 +648,10 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
+        else if (!strcmp(a, "--nsonce")) pica_set_ns_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
+        else if (!strcmp(a, "--nsraw")) pica_set_ns_raw(!strcmp(v, "on"));
+        else if (!strcmp(a, "--drawonce")) pica_set_draw_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
+        else if (!strcmp(a, "--texfast")) pica_set_texfast((u32)strtoul(v, NULL, 10));
         else if (!strcmp(a, "--g2")) {  // translated display lists (gx/g2.c); on, check (every 8th replay compared), plant
             g_g2 = !strcmp(v, "on") || !strcmp(v, "check") || !strcmp(v, "plant");
             g_g2Check = !strcmp(v, "check") ? 1 : !strcmp(v, "plant") ? 2 : 0;
@@ -2148,6 +2152,38 @@ static const char* run_body(const char* path) {
                                     "state %.1f, matrices and attributes %.1f, draw call %.1f (%.0f timed)\n",
                                     ph[0] * 100.0 / SYSCLOCK_ARM11, ph[1] * 100.0 / SYSCLOCK_ARM11, ph[2] * 100.0 / SYSCLOCK_ARM11,
                                     ph[3] * 100.0 / SYSCLOCK_ARM11, ph[4] * 100.0 / SYSCLOCK_ARM11, ph[5] * 100.0 / SYSCLOCK_ARM11, ph[6]);
+                            extern u64 g_nsState[5], g_nsDc[4];
+                            static u64 lastS[5], lastD[4];
+                            double sp[5], dc[4];
+                            for (int k = 0; k < 5; k++) { sp[k] = (double)(g_nsState[k] - lastS[k]); lastS[k] = g_nsState[k]; }
+                            for (int k = 0; k < 4; k++) { dc[k] = (double)(g_nsDc[k] - lastD[k]); lastD[k] = g_nsDc[k]; }
+                            fprintf(g_perf, "# shapes state 10s (ms/s): issue+split %.1f, TEV+key %.1f, textures %.1f, lighting %.1f, "
+                                    "fragment+binds+uniforms %.1f; draw call: %.0f words written, %.1f blocks dirty, %.1f uniform vectors\n",
+                                    sp[0] * 100.0 / SYSCLOCK_ARM11, sp[1] * 100.0 / SYSCLOCK_ARM11, sp[2] * 100.0 / SYSCLOCK_ARM11,
+                                    sp[3] * 100.0 / SYSCLOCK_ARM11, sp[4] * 100.0 / SYSCLOCK_ARM11, dc[0] > 0 ? dc[1] / dc[0] : 0.0,
+                                    dc[0] > 0 ? dc[2] / dc[0] : 0.0, dc[0] > 0 ? dc[3] / dc[0] : 0.0);
+                            extern u64 g_nsOnceStats[3];
+                            static u64 lastO[3];
+                            if (g_nsOnceStats[0] != lastO[0])
+                                fprintf(g_perf, "# nsonce 10s: batches with the check's key %llu, compared %llu, differed %llu\n",
+                                        (unsigned long long)(g_nsOnceStats[0] - lastO[0]), (unsigned long long)(g_nsOnceStats[1] - lastO[1]),
+                                        (unsigned long long)(g_nsOnceStats[2] - lastO[2]));
+                            memcpy(lastO, g_nsOnceStats, sizeof lastO);
+                            extern u64 g_texFastStats[7];
+                            static u64 lastT[7];
+                            u64 tf[7];
+                            for (int k = 0; k < 7; k++) { tf[k] = g_texFastStats[k] - lastT[k]; lastT[k] = g_texFastStats[k]; }
+                            fprintf(g_perf, "# texfast 10s: lookups %llu, the map's last %llu, hint hits %llu, table scans %llu; re-hashes left "
+                                    "out %llu, done %llu, clean by stamps yet changed %llu\n",
+                                    (unsigned long long)tf[0], (unsigned long long)tf[1], (unsigned long long)tf[2], (unsigned long long)tf[3],
+                                    (unsigned long long)tf[4], (unsigned long long)tf[5], (unsigned long long)tf[6]);
+                            extern u64 g_drawOnceStats[3];
+                            static u64 lastDo[3];
+                            if (g_drawOnceStats[0] != lastDo[0])
+                                fprintf(g_perf, "# drawonce 10s: batches with the check's key %llu, compared %llu, differed %llu\n",
+                                        (unsigned long long)(g_drawOnceStats[0] - lastDo[0]), (unsigned long long)(g_drawOnceStats[1] - lastDo[1]),
+                                        (unsigned long long)(g_drawOnceStats[2] - lastDo[2]));
+                            memcpy(lastDo, g_drawOnceStats, sizeof lastDo);
                             static u64 lastW[5];
                             fprintf(g_perf, "# shapes never made 10s: vertex layout %llu, run %llu, limits %llu, matrix row past 27 %llu, memory %llu\n",
                                     (unsigned long long)(g_nsWhy[0] - lastW[0]), (unsigned long long)(g_nsWhy[1] - lastW[1]),

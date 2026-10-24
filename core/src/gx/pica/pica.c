@@ -87,6 +87,7 @@ static gxCmdQueue_s* g_q;  // (citro3d's GX queue, found at the first splits: be
 typedef struct {         // a texture decoded from RAM
     u32 addr, fmt, w, h, tlutAddr, tlutFmt, dataHash, tlutHash, texVersion, tlutVersion, lastUse, bytes;
     u32 levels;  // mip levels decoded (1: level 0 only)
+    u32 stamp;   // g_memStamps.now when its RAM was last hashed (--texfast stamps; 0: unknown)
     C3D_Tex tex;
     bool live;
 } PTex;
@@ -641,6 +642,10 @@ static void raw_compare(u32 at, const u32* w, u32 n, const char* what) {
 // uniforms, a cube texture) goes through citro3d. The comparison draws (raw_draw) dry-run this and compare it too.
 #define C3DF_TEXSTATUS (1u << 14)
 #define RAWSTATE_FLAGS (C3DF_EFFECT | C3DF_TEXSTATUS | C3DF_TEXENVBUF | (7u << 23) | (0x3Fu << 26))
+#define C3DF_ATTRINFO (1u << 2)
+#define C3DF_BUFINFO (1u << 3)
+static volatile bool g_rawAttrWant;  // --nsraw (raw_binds)
+void pica_set_ns_raw(bool on) { g_rawAttrWant = on; }
 #define RAWSTATE_MAX 1024u  // words raw_state can write (uniforms: at most 96 vectors and their run headers)
 static volatile bool g_rawStateWant;
 u64 g_rawStateStats[3];  // draw calls whose state raw_state wrote, that went to citro3d, compared with it
@@ -676,6 +681,7 @@ static inline u32* cmd_inc(u32* o, u32 reg, const u32* p, u32 n) { return cmd_ad
 static bool raw_state_ok(void) {
     const C3dCtx* c = g_c3d;
     u32 f = c->flags & ~3u;
+    if (g_rawAttrWant) f &= ~(C3DF_ATTRINFO | C3DF_BUFINFO);  // (raw_binds)
     if ((f & ~RAWSTATE_FLAGS) || c->fixedAttribDirty || c->lightEnv || (c->texEnvBuf & 7) == GPU_GAS) return false;
     if (C3D_BoolUnifsDirty[0] || C3D_BoolUnifsDirty[1]) return false;  // also stands for the shader constants
     u32 w[C3D_FVUNIF_COUNT / 4], acc = 0, iv[2 * C3D_IVUNIF_COUNT / 4];
@@ -691,9 +697,31 @@ static bool raw_state_ok(void) {
 
 // Writes the dirty blocks from `o` as C3Di_UpdateContext would (raw_state_ok first); `apply` clears what it wrote as
 // citro3d does, false is a dry run (the comparison draws).
+// --nsraw: the attribute and buffer blocks too (converted shapes change both at every draw), written by citro3d's own
+// C3Di_AttrInfoBind / C3Di_BufInfoBind into `o` (the command buffer pointed there for the call): C3Di_UpdateContext
+// writes them right before the effect block, after frame buffer, viewport, scissor and program, which raw_state never
+// writes.
+void C3Di_AttrInfoBind(C3D_AttrInfo* info);
+void C3Di_BufInfoBind(C3D_BufInfo* info);
+static u32* raw_binds(u32* o, C3dCtx* c, u32 f, bool apply) {
+    u32 *sb = gpuCmdBuf, ss = gpuCmdBufSize, so = gpuCmdBufOffset;
+    gpuCmdBuf = o;
+    gpuCmdBufSize = 256;
+    gpuCmdBufOffset = 0;
+    if (f & C3DF_ATTRINFO) C3Di_AttrInfoBind(&c->attrInfo);
+    if (f & C3DF_BUFINFO) C3Di_BufInfoBind(&c->bufInfo);
+    o += gpuCmdBufOffset;
+    gpuCmdBuf = sb;
+    gpuCmdBufSize = ss;
+    gpuCmdBufOffset = so;
+    if (apply) c->flags &= ~(C3DF_ATTRINFO | C3DF_BUFINFO);
+    return o;
+}
+
 static u32* raw_state(u32* o, bool apply) {
     C3dCtx* c = g_c3d;
     u32 f = c->flags;
+    if (g_rawAttrWant && (f & (C3DF_ATTRINFO | C3DF_BUFINFO))) o = raw_binds(o, c, f, apply);
     if (f & C3DF_EFFECT) {
         const C3dEffect* e = &c->effect;
         o = cmd_w(o, GPUREG_DEPTHMAP_ENABLE, 0xF, e->zBuffer ? 1 : 0);
@@ -771,7 +799,7 @@ static u32* raw_state(u32* o, bool apply) {
 static u32 g_rawExp[RAWSTATE_MAX + 32];
 static bool g_rawPlant;  // pica_set_rawplant: the comparison's self-test (one expected state word altered; must differ)
 void pica_set_rawplant(bool on) { g_rawPlant = on; }
-static void raw_draw(const u32* w, u32 nw, const char* what, bool elements, u32 first, u32 n) {
+static void raw_draw(const u32* w, u32 nw, const char* what, bool elements, u32 first, u32 n, const void* idx) {
     bool dirty = c3d_dirty(), mine = dirty && g_rawStateWant && raw_state_ok();
     if (++g_rawN <= 256 || !(g_rawN & 4095)) {
         u32 k = 0;
@@ -780,7 +808,7 @@ static void raw_draw(const u32* w, u32 nw, const char* what, bool elements, u32 
         if (g_rawPlant && k) { g_rawExp[0] ^= 1; g_rawPlant = false; emu_log(LOG_GX, "pica: raw state check: planted a difference\n"); }
         memcpy(g_rawExp + k, w, nw * 4);
         u32 at = gpuCmdBufOffset;
-        if (elements) C3D_DrawElements(GPU_TRIANGLES, (int)n, C3D_UNSIGNED_SHORT, g.idx + first);
+        if (elements) C3D_DrawElements(GPU_TRIANGLES, (int)n, C3D_UNSIGNED_SHORT, idx);
         else C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)n);
         raw_compare(at, g_rawExp, k + nw, what);
         if (mine) g_rawStateStats[2]++;
@@ -808,7 +836,7 @@ static void draw_arrays(u32 first, u32 n) {
         memcpy(w, kRawArrays, sizeof w);
         w[6] = n;
         w[8] = first;
-        raw_draw(w, 22, "array", false, first, n);
+        raw_draw(w, 22, "array", false, first, n, NULL);
     } else {
         C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)n);
     }
@@ -828,7 +856,7 @@ static void draw_elements(u32 first, u32 n) {
         memcpy(w, kRawElements, sizeof w);
         w[4] = (pa - base) | 0x80000000u;  // C3D_UNSIGNED_SHORT << 31
         w[6] = n;
-        raw_draw(w, 30, "indexed", true, first, n);
+        raw_draw(w, 30, "indexed", true, first, n, g.idx + first);
     } else {
         C3D_DrawElements(GPU_TRIANGLES, (int)n, C3D_UNSIGNED_SHORT, g.idx + first);
     }
@@ -1296,6 +1324,22 @@ static u32 hash_words(const u8* p, u32 bytes) {
 
 static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; }
 
+// --texfast (pica_set_texfast) bits: TF_INDEX a hint table in front of the texture table's scan, TF_STAMPS the once-a-frame
+// re-hash only for textures whose pages were stamped since, TF_CHECK with TF_STAMPS: hashed anyway, misses counted.
+// g_texFastStats: [0] lookups, [1] the map's last texture, [2] hint hits, [3] scans, [4] re-hashes left out (clean
+// stamps), [5] re-hashes, [6] of them clean by stamps yet changed (what TF_STAMPS alone would miss).
+enum { TF_INDEX = 1, TF_STAMPS = 2, TF_CHECK = 4 };
+#define TEXIDX_BITS 10
+static volatile u32 g_texFast;
+u64 g_texFastStats[7];
+static PTex* g_texIdx[1u << TEXIDX_BITS];
+void pica_set_texfast(u32 bits) { g_texFast = bits; }
+static bool tex_stale(u32 addr, u32 bytes, u32 stamp) {
+    for (u32 pg = addr >> 12; pg <= (addr + bytes - 1) >> 12; pg++)
+        if ((s32)(g_memStamps.page[pg] - stamp) > 0) return true;
+    return false;
+}
+
 // Linear RGBA8 (0xRRGGBBAA, rows top-down) into the PICA's tiled layout: 8x8 tiles in Z-order, tile rows stored
 // bottom-up (the PICA samples t = 0 from the last stored row; checked with texturetest in Azahar), so GX texture
 // coordinates are used unchanged. Sizes that are not powers of two are resampled (nearest) up to one, which keeps
@@ -1422,9 +1466,24 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
     PTex* e = NULL;
     PTex* slot = NULL;
     PTex* last = g.lastHit[map];  // texture maps mostly keep their texture from one draw to the next
+    u32 fast = g_texFast;
+    g_texFastStats[0]++;
     if (last && last->live && last->addr == addr && last->fmt == fmt && last->w == w && last->h == h &&
-        last->tlutAddr == tlutAddr && last->tlutFmt == tlutFmt && last->levels == levels)
+        last->tlutAddr == tlutAddr && last->tlutFmt == tlutFmt && last->levels == levels) {
         e = last;
+        g_texFastStats[1]++;
+    }
+    u32 hk = ((addr >> 5) ^ (fmt << 20) ^ (w << 8) ^ (h << 16) ^ tlutAddr ^ (tlutFmt << 28) ^ (levels << 24)) * 2654435761u;
+    PTex** hint = &g_texIdx[hk >> (32 - TEXIDX_BITS)];
+    if (!e && (fast & TF_INDEX)) {  // a candidate only: taken when live and the whole key matches, else the scan decides
+        PTex* p = *hint;
+        if (p && p->live && p->addr == addr && p->fmt == fmt && p->w == w && p->h == h && p->tlutAddr == tlutAddr &&
+            p->tlutFmt == tlutFmt && p->levels == levels) {
+            e = p;
+            g_texFastStats[2]++;
+        }
+    }
+    if (!e) g_texFastStats[3]++;
     for (u32 i = 0; i < MAX_TEX && !e; i++) {
         PTex* p = &g.tex[i];
         if (!p->live) { if (!slot) slot = p; continue; }
@@ -1437,11 +1496,22 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
     if (e) {
         // RAM and palettes may have changed since the entry was checked: re-hash once per emulated frame (EFB copies
         // stay on the GPU here and never write RAM) and decode again only when the contents really differ.
+        // --texfast stamps: the hash only when a page of the texture was stamped since it was last hashed (flushes,
+        // DMA, copies: what G1's shapes rely on); check: hashed anyway, and a change the stamps missed counted.
         bool dirty = false;
         if (e->texVersion != g.xfbSeq) {
-            u32 dh = hash_words(s->mem1 + addr, bytes);
-            dirty |= dh != e->dataHash;
-            e->dataHash = dh;
+            bool clean = (fast & TF_STAMPS) && e->stamp && !tex_stale(addr, bytes, e->stamp);
+            if (clean && !(fast & TF_CHECK)) {
+                g_texFastStats[4]++;
+            } else {
+                u32 stamp = g_memStamps.now;
+                u32 dh = hash_words(s->mem1 + addr, bytes);
+                g_texFastStats[5]++;
+                if (clean && dh != e->dataHash) g_texFastStats[6]++;
+                dirty |= dh != e->dataHash;
+                e->dataHash = dh;
+                e->stamp = stamp;
+            }
             e->texVersion = g.xfbSeq;
         }
         if (pal && e->tlutVersion != gx->tlutVersion) {
@@ -1462,6 +1532,7 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
         }
         e = slot;
         e->addr = addr; e->fmt = fmt; e->w = w; e->h = h; e->tlutAddr = tlutAddr; e->tlutFmt = tlutFmt; e->levels = levels;
+        e->stamp = g_memStamps.now;  // (read before hashing: a change meanwhile shows as a stamp)
         e->dataHash = hash_words(s->mem1 + addr, bytes);
         e->tlutHash = pal ? hash_words(gx->tmem + (tlutAddr & 0xFFFFF), tlut_bytes(fmt)) : 0;
         e->texVersion = g.xfbSeq;
@@ -1470,6 +1541,7 @@ static C3D_Tex* cached_texture(System* s, const GXCore* gx, u32 map, u32 addr, u
     }
     e->lastUse = g.frameNo;
     g.lastHit[map] = e;
+    *hint = e;
     return &e->tex;
 }
 
@@ -1568,6 +1640,7 @@ static void apply_tev(const PicaTev* t, const C3D_TexEnv* env) {
 #define TEVC_BITS 9
 typedef struct { u32 n, key[72]; PicaTev tev; bool envReady; C3D_TexEnv env[PICA_STAGES]; } TevSlot;
 static TevSlot* g_tevCache;
+static u32 g_tevGen;  // slots replaced so far (tev_install)
 // --tevenv on (--ab tevenv): each cached program keeps its stages as citro3d holds them (build_env once), so a change
 // of program copies them instead of building them through citro3d's setters again (7,500 changes a second in the heavy
 // area, 48 ms/s in update_tev: job 501).
@@ -1588,6 +1661,7 @@ static const PicaTev* tev_lookup(const GXCore* gx, const u32* k, u32 n, PicaTev*
     g_picaStats.tevCompiles++;
     if (tmp->approx) note_approx(tmp->approx);
     if (!slot) return tmp;
+    g_tevGen++;  // a slot replaced: lookups made before may point at another program now
     slot->n = n;
     memcpy(slot->key, k, n * 4);
     slot->tev = *tmp;
@@ -1602,21 +1676,21 @@ void pica_set_tevver(bool on) { g_tevVerWant = on; }
 bool pica_tevver(void) { return g_tevVerWant; }
 static u32 g_tevVerSeen, g_tevFmtsSeen;
 
-static void update_tev(const GXCore* gx) {
-    // Nothing the key reads changed since it was built (no TEV register write that changed a value, the same texture
-    // formats): the program stands. (The formats come from TX_SETIMAGE0, which changes with every texture.)
+static u32 tev_fmts(const GXCore* gx) {
     u32 fmts = 0;
     for (u8 map = 0; map < 8; map++) fmts |= ((gx->bp[0x88 + (map & 3) + (map >= 4 ? 0x20 : 0)] >> 20) & 15u) << (4 * map);
-    if (g_tevVerWant && g.tevValid && g_tevVerSeen == g_gxTevVersion && g_tevFmtsSeen == fmts) return;
-    g_tevVerSeen = g_gxTevVersion;
-    g_tevFmtsSeen = fmts;
-    u32 k[72], n = tev_key(gx, k);
+    return fmts;
+}
+
+// The program of key (k, n) made current. `t` / `slot`: its lookup done already while the cache's generation was
+// `gen` (ns_draw's batch check, --nsonce), or NULL to look it up here.
+static void tev_install(const GXCore* gx, const u32* k, u32 n, const PicaTev* t, TevSlot* slot, u32 gen) {
     if (g.tevValid && !memcmp(k, g.tevKey, n * 4)) return;
     memcpy(g.tevKey, k, n * 4);
     g_picaStats.tevChanges++;
     PicaTev tmp;
-    TevSlot* slot = NULL;
-    g.tev = *tev_lookup(gx, k, n, &tmp, &slot);
+    if (!t || gen != g_tevGen) t = tev_lookup(gx, k, n, &tmp, &slot);
+    g.tev = *t;
     const C3D_TexEnv* env = NULL;
     if (g_tevEnvWant && slot) {
         if (!slot->envReady) { build_env(&slot->tev, slot->env); slot->envReady = true; }
@@ -1626,6 +1700,28 @@ static void update_tev(const GXCore* gx) {
     g.sel = (VSel){ g.tev.rasChan, g.tev.numTex, { g.tev.texCoord[0], g.tev.texCoord[1], g.tev.texCoord[2] } };
     g.tevValid = true;
 }
+
+// Nothing the key reads changed since it was built (no TEV register write that changed a value, the same texture
+// formats): the program stands. (The formats come from TX_SETIMAGE0, which changes with every texture.)
+static bool tev_unchanged(const GXCore* gx) {
+    u32 fmts = tev_fmts(gx);
+    if (g_tevVerWant && g.tevValid && g_tevVerSeen == g_gxTevVersion && g_tevFmtsSeen == fmts) return true;
+    g_tevVerSeen = g_gxTevVersion;
+    g_tevFmtsSeen = fmts;
+    return false;
+}
+
+static void update_tev(const GXCore* gx) {
+    if (tev_unchanged(gx)) return;
+    u32 k[72], n = tev_key(gx, k);
+    tev_install(gx, k, n, NULL, NULL, 0);
+}
+
+// --drawonce (pica_set_draw_once): pica_draw's batch check keeps its key for the state step (as --nsonce in ns_draw); 1 on,
+// 2 check, 3 plant. g_drawOnceStats: [0] batches that reused the key, [1] compared, [2] differed.
+static volatile u32 g_drawOnce;
+u64 g_drawOnceStats[3];
+void pica_set_draw_once(u32 mode) { g_drawOnce = mode; }
 
 // Depth, alpha test, blending / logic op, write masks and scissor (BP 0x40, 0x41, 0x43, 0xF3, 0x20/0x21).
 static void apply_frag(const GXCore* gx) {
@@ -1824,14 +1920,15 @@ static void assemble(const GXCore* gx, const VFold* f, u32 prim, u32 count) {
 
 // Everything a draw's GPU state depends on: TEV, fragment state, the used texture maps' registers, and what decides
 // whether a texture is re-read from RAM. Draws with equal keys share a batch.
-static u32 batch_key(const GXCore* gx, u32* k) {
-    u32 n = tev_key(gx, k);
+// (batch_key_rest: the words after the TEV key's n, which batch_key builds first.)
+static u32 batch_key_rest(const GXCore* gx, u32* k, u32 n) {
     k[n++] = gx->bp[0x40]; k[n++] = gx->bp[0x41]; k[n++] = gx->bp[0x43] & 7; k[n++] = gx->bp[0xF3];
     k[n++] = gx->bp[0x20]; k[n++] = gx->bp[0x21];
     k[n++] = g.xfbSeq; k[n++] = gx->tlutVersion;
     k[n++] = gx->xfLightVersion;  // the shader lighting uniforms
     return n;
 }
+static u32 batch_key(const GXCore* gx, u32* k) { return batch_key_rest(gx, k, tev_key(gx, k)); }
 
 // Shader lighting state for the batch being opened: whether the shader lights it (lon.z, tested with cmp in the
 // shader; a bool uniform set with C3D_BoolUnifSet never reached it in Azahar), and its uniforms.
@@ -2540,15 +2637,17 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
     // compared once the TEV is known to be the same.
     // Fast path: nothing the key is made of has changed since the open batch's draw (no BP write that changed a
     // value, same palettes, lights, XFB copies and class), so it is the same batch without building the key.
-    u32 key[96], kn = 0;
+    u32 key[96], kn = 0, kbase = 0, tn = 0;
+    bool keyed = false;  // --drawonce: key[0, kbase) built here is what the state step below would build again
     bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
                 gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && cls == g.batchCls;
     if (same) {
         kn = 0;  // the open batch keeps its key (g.batchKey): not copied
         g_picaDrawPaths[0]++;
     } else {
-        kn = batch_key(gx, key);
+        if (g_drawOnce) { tn = tev_key(gx, key); kn = batch_key_rest(gx, key, tn); keyed = true; } else kn = batch_key(gx, key);
         key[kn++] = cls;
+        kbase = kn;
         same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
         if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
         g_picaDrawPaths[same ? 1 : 2]++;
@@ -2569,11 +2668,27 @@ static void draw_job(System* s, u32 prim, u32 vat, const u8* raw, u32 count, u32
         split_early();
         SPROF_END(1, ts); ts = SPROF_BEGIN();
         g_gxWhere = GW_TEVUPD;
-        update_tev(gx);
+        if (keyed) {
+            if (!tev_unchanged(gx)) tev_install(gx, key, tn, NULL, NULL, 0);
+        } else {
+            update_tev(gx);
+        }
         SPROF_END(2, ts); ts = SPROF_BEGIN();
         g_gxWhere = GW_BATCHKEY;
-        kn = batch_key(gx, key);
-        key[kn++] = cls;
+        if (keyed) {
+            kn = kbase;
+            g_drawOnceStats[0]++;
+            if (g_drawOnce >= 2) {  // check: built again, as without --drawonce (plant: one word altered, must differ)
+                u32 k2[96], n2 = batch_key(gx, k2);
+                k2[n2++] = cls;
+                if (g_drawOnce == 3) k2[0] ^= 1;
+                g_drawOnceStats[1]++;
+                if (n2 != kbase || memcmp(k2, key, n2 * 4) || (g.tevValid && memcmp(g.tevKey, key, tn * 4))) g_drawOnceStats[2]++;
+            }
+        } else {
+            kn = batch_key(gx, key);
+            key[kn++] = cls;
+        }
         tex_key(gx, key, &kn);
         SPROF_END(3, ts);
         u64 t0 = dprof_begin();
@@ -3162,6 +3277,16 @@ u64 g_nsStats[16];
 // support), [2] the shape lookup, [3] the batch's state (flush, TEV, textures, fragment state, lights), [4] projection,
 // matrix rows, attributes and texture rows, [5] the draw call; [6] calls timed.
 u64 g_nsPhase[7];
+// The batch state step (phase 3) split, same timing: [0] the previous batch issued and split_early, [1] the TEV program and
+// the batch key, [2] texture keys and lookups, [3] the lighting set-up, [4] fragment state, texture binds, light uniforms,
+// cull. g_nsDc, at the draw call of timed draws: [0] calls, [1] command words the call wrote, [2] citro3d blocks dirty,
+// [3] dirty vertex-shader float uniform vectors.
+u64 g_nsState[5], g_nsDc[4];
+// --nsonce (pica_set_ns_once): 1 on, 2 check (each reused key and lighting set-up also built again and compared), 3
+// plant (the comparison's self-test). g_nsOnceStats: [0] batches that reused the check's key, [1] compared, [2] differed.
+static volatile u32 g_nsOnce;
+u64 g_nsOnceStats[3];
+void pica_set_ns_once(u32 mode) { g_nsOnce = mode; }
 void pica_set_native_shapes(bool on) { g_nsWant = on; }
 bool pica_native_shapes(void) { return g_nsWant; }
 u32 pica_native_bytes(u32* live) { if (live) *live = g_nsLiveN; return g_nsBytes; }
@@ -3596,7 +3721,8 @@ static void ns_light_uniforms(const VLightUniforms* u, u32 n, bool lit) {
     unif_set(g.uOn, u->on[0], u->on[1], lit ? 1.0f : 0.0f, 0);
 }
 
-static struct { VLightUniforms lu; u32 n; bool lit; } g_nl;  // the open native batch's colour
+typedef struct { VLightUniforms lu; u32 n; bool lit; } NsLight;
+static NsLight g_nl;  // the open native batch's colour
 
 // Options (gxopt letters, for bisection on the 2DS): NSO_NOFIXED inputs a shape lacks come from constant buffers
 // instead of the PICA's fixed attributes; NSO_NOLIGHT lit draws stay on the old path.
@@ -3619,18 +3745,16 @@ static void ns_const(C3D_AttrInfo* ai, C3D_BufInfo* bi, int reg, bool white) {
 
 // What the native path supports of the current state (t: its TEV program): texgen of the regular kind only, and a
 // colour channel vfast_native_light takes.
-static bool ns_state_ok(const GXCore* gx, const PicaTev* t, bool fill) {
+static bool ns_state_ok(const GXCore* gx, const PicaTev* t, NsLight* o) {
     VSel sel = { t->rasChan, t->numTex, { t->texCoord[0], t->texCoord[1], t->texCoord[2] } };
     u32 numGens = gx->xf[0x103F] & 15;
     for (u32 u = 0; u < sel.numTex && u < 3; u++) {
         u32 gi = sel.texCoord[u] & 7;
         if (gi < numGens && ((gx->xf[0x1040 + gi] >> 4) & 7) != 0) return false;
     }
-    VLightUniforms lu;
-    u32 n, colSrc;
-    bool lit;
-    if (!vfast_native_light(gx, &sel, 0, fill ? &g_nl.lu : &lu, fill ? &g_nl.n : &n, &colSrc, fill ? &g_nl.lit : &lit)) return false;
-    if ((g_nsOpt & NSO_NOLIGHT) && (fill ? g_nl.lit : lit)) return false;
+    u32 colSrc;
+    if (!vfast_native_light(gx, &sel, 0, &o->lu, &o->n, &colSrc, &o->lit)) return false;
+    if ((g_nsOpt & NSO_NOLIGHT) && o->lit) return false;
     return true;
 }
 
@@ -3661,18 +3785,38 @@ static bool ns_draw(System* s, const NsReq* q) {
     const u32 cls = 8;
     bool same = g.batchOpen && gx->bpVersion == g.batchBpVer && gx->tlutVersion == g.batchTlutVer &&
                 gx->xfLightVersion == g.batchLightVer && g.xfbSeq == g.batchXfbSeq && cls == g.batchCls;
-    u32 key[96], kn = 0;
+    u32 key[96], kn = 0, kbase = 0, tn = 0;
+    bool once = g_nsOnce != 0, keyed = false;
+    u32 xfbAtKey = g.xfbSeq;
     if (!same) {
-        kn = batch_key(gx, key);
+        if (once) { tn = tev_key(gx, key); kn = batch_key_rest(gx, key, tn); } else kn = batch_key(gx, key);
         key[kn++] = cls;
+        kbase = kn;
+        keyed = once;
         same = g.batchOpen && kn <= g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4);
         if (same) { tex_key(gx, key, &kn); same = kn == g.batchKeyLen && !memcmp(key, g.batchKey, kn * 4); }
     }
+    // --nsonce: what this check finds (the batch key, the TEV program's lookup, the lighting set-up) is what the state
+    // step below would build again; it takes them from here instead.
+    PicaTev chkTmp;
+    const PicaTev* chkTev = NULL;
+    TevSlot* chkSlot = NULL;
+    u32 chkGen = 0;
+    NsLight chkLight;
+    bool lightReady = false;
     if (!same) {  // a native batch opens: its state must be one the native path supports
-        u32 tk[72], tn = tev_key(gx, tk);
-        PicaTev tmp;
-        const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, tk, tn, &tmp, NULL);
-        if (!ns_state_ok(gx, t, false)) { g_nsStats[3]++; return false; }
+        if (once) {
+            chkTev = g.tevValid && !memcmp(key, g.tevKey, tn * 4) ? &g.tev : tev_lookup(gx, key, tn, &chkTmp, &chkSlot);
+            chkGen = g_tevGen;
+            if (!ns_state_ok(gx, chkTev, &chkLight)) { g_nsStats[3]++; return false; }
+            lightReady = true;
+        } else {
+            u32 tk[72], tkn = tev_key(gx, tk);
+            PicaTev tmp;
+            NsLight lt;
+            const PicaTev* t = g.tevValid && !memcmp(tk, g.tevKey, tkn * 4) ? &g.tev : tev_lookup(gx, tk, tkn, &tmp, NULL);
+            if (!ns_state_ok(gx, t, &lt)) { g_nsStats[3]++; return false; }
+        }
     }
     NS_PH(1);
     u32 frameBefore = g.frameNo;
@@ -3680,22 +3824,53 @@ static bool ns_draw(System* s, const NsReq* q) {
     if (!e) return false;
     NS_PH(2);
     if (g.frameNo != frameBefore) same = false;  // a retired shape ended the frame: state is applied again
+    u64 st = pt;
+#define NS_SP(k) do { if (ph) { u64 t_ = g_profClock(); g_nsState[k] += (t_ - st) * 16; st = t_; } } while (0)
     for (int attempt = 0; !same && attempt < 3; attempt++) {
         frameBefore = g.frameNo;
         flush_batch();
         split_early();
-        update_tev(gx);
-        kn = batch_key(gx, key);
-        key[kn++] = cls;
+        NS_SP(0);
+        if (keyed && attempt == 0 && g.xfbSeq == xfbAtKey) {  // --nsonce: the check's key and lookup
+            if (!tev_unchanged(gx)) tev_install(gx, key, tn, chkTev, chkSlot, chkGen);
+            kn = kbase;
+            if (g_nsOnce >= 2) {  // check: built again, as without --nsonce (plant: one word altered, must differ)
+                u32 k2[96], n2 = batch_key(gx, k2);
+                k2[n2++] = cls;
+                if (g_nsOnce == 3) k2[0] ^= 1;
+                g_nsOnceStats[1]++;
+                if (n2 != kbase || memcmp(k2, key, n2 * 4) || (g.tevValid && memcmp(g.tevKey, key, tn * 4))) g_nsOnceStats[2]++;
+            }
+            g_nsOnceStats[0]++;
+        } else {
+            update_tev(gx);
+            kn = batch_key(gx, key);
+            key[kn++] = cls;
+        }
+        NS_SP(1);
         tex_key(gx, key, &kn);
         C3D_Tex* tex[PICA_TEXUNITS] = { NULL, NULL, NULL };
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) tex[i] = fetch_texture(s, gx, g.tev.texMap[i] & 7);
+        NS_SP(2);
         if (g.frameNo != frameBefore) continue;  // a texture ended the frame: once more in the new one
-        ns_state_ok(gx, &g.tev, true);
+        if (lightReady) {
+            if (g_nsOnce >= 2) {
+                NsLight l2;
+                memset(&l2, 0, sizeof l2);  // (padding: compared whole)
+                ns_state_ok(gx, &g.tev, &l2);
+                g_nsOnceStats[1]++;
+                if (l2.n != chkLight.n || l2.lit != chkLight.lit || memcmp(&l2.lu, &chkLight.lu, sizeof l2.lu)) g_nsOnceStats[2]++;
+            }
+            g_nl = chkLight;
+        } else {
+            ns_state_ok(gx, &g.tev, &g_nl);
+        }
+        NS_SP(3);
         apply_frag(gx);
         for (u32 i = 0; i < g.tev.numTex && i < PICA_TEXUNITS; i++) bind_tex((int)i, tex[i] ? tex[i] : &g.white);
         ns_light_uniforms(&g_nl.lu, g_nl.n, g_nl.lit);
         cull_face(kCull[cull]);
+        NS_SP(4);
         g.batchGpuLight = false;
         g.batchGpuPos = true;
         g.batchCull = kCull[cull];
@@ -3709,6 +3884,7 @@ static bool ns_draw(System* s, const NsReq* q) {
         g.batchKeyLen = kn;
         same = true;
     }
+#undef NS_SP
     if (!same) return false;
     g.batchBpVer = gx->bpVersion; g.batchTlutVer = gx->tlutVersion; g.batchLightVer = gx->xfLightVersion;
     g.batchXfbSeq = g.xfbSeq; g.batchCls = cls;
@@ -3802,7 +3978,26 @@ static bool ns_draw(System* s, const NsReq* q) {
     if (!g.natAttr) { C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uNat, 1, 0, 0, 0); g.natAttr = true; }
     NS_PH(4);
     g_gxWhere = GW_SHAPES;
-    C3D_DrawElements(GPU_TRIANGLES, (int)e->ni, C3D_UNSIGNED_SHORT, m + e->off[NO_IDX]);
+    u32 dcAt = gpuCmdBufOffset;
+    if (ph && g_c3d) {
+        g_nsDc[0]++;
+        g_nsDc[2] += (u32)__builtin_popcount(g_c3d->flags & ~3u);
+        for (int i = 0; i < C3D_FVUNIF_COUNT; i++) g_nsDc[3] += C3D_FVUnifDirty[GPU_VERTEX_SHADER][i];
+    }
+    const u8* idx = m + e->off[NO_IDX];
+    if (g_rawAttrWant && g_rawWant && g_c3d && !g_rawBad) {  // --nsraw: C25's raw draw, its state with the binds
+        u32 pa = osConvertVirtToPhys(idx), base = g_c3d->bufInfo.base_paddr;
+        if (pa >= base) {  // (as citro3d: indices below the vertex buffer are not drawn)
+            u32 w[30];
+            memcpy(w, kRawElements, sizeof w);
+            w[4] = (pa - base) | 0x80000000u;  // C3D_UNSIGNED_SHORT << 31
+            w[6] = e->ni;
+            raw_draw(w, 30, "shape", true, 0, e->ni, idx);
+        }
+    } else {
+        C3D_DrawElements(GPU_TRIANGLES, (int)e->ni, C3D_UNSIGNED_SHORT, idx);
+    }
+    if (ph && gpuCmdBufOffset >= dcAt) g_nsDc[1] += gpuCmdBufOffset - dcAt;
     NS_PH(5);
     if (ph) g_nsPhase[6]++;
 #undef NS_PH

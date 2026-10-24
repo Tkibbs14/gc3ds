@@ -154,6 +154,10 @@ void pica_native_store(const void* p, u32 len);
 // g_nsStats: the counters described in pica.c. pica_native_bytes: linear memory in use.
 void pica_set_native_shapes(bool on);
 void pica_set_native_opts(u32 opts);  // bisection: 1 no PICA fixed attributes, 2 lit draws on the old path (pica.c NSO_*)
+void pica_set_ns_once(u32 mode);  // --nsonce: ns_draw's batch check feeds its state step (0 off, 1 on, 2 check, 3 plant)
+void pica_set_ns_raw(bool on);   // --nsraw: converted draws through the raw draw call, attribute / buffer blocks in raw state
+void pica_set_draw_once(u32 mode);  // --drawonce: pica_draw's batch check feeds its state step (0 off, 1 on, 2 check, 3 plant)
+void pica_set_texfast(u32 bits);   // --texfast: 1 texture-table hint, 2 re-hash by page stamps, 4 check (with 2)
 bool pica_native_shapes(void);
 u32 pica_native_bytes(u32* live);
 extern u64 g_nsStats[16];
