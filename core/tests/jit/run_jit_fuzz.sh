@@ -64,6 +64,11 @@ grep -h "^nursery:" "$out/nursery.txt"
 JIT_FUZZ_NOFAULT=1 JIT_FUZZ_NURSERY=1 JIT_FUZZ_NURSERYWORDS=4160 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain > "$out/nursery2.txt"
 grep -qE "^JIT FUZZ .*fails=0" "$out/nursery2.txt" || { echo "SMALL NURSERY FUZZ RUN FAILED"; exit 4; }
 grep -qE "^nursery: .*recycles [1-9]" "$out/nursery2.txt" || { echo "SMALL NURSERY FUZZ RUN NEVER RECYCLED"; exit 4; }
+grep -qE "^nursery: .*moved [1-9]" "$out/nursery2.txt" || { echo "SMALL NURSERY FUZZ RUN NEVER MOVED A BLOCK (FAILED)"; exit 4; }
 grep -h "^nursery:" "$out/nursery2.txt"
+# Plant 29: a moved block's branches out of it (stubs, the blocks its exits are linked to) keep their old offsets
+# (reloc_move): the run must differ, or (code reached that is no longer there) crash: either is the detection.
+JIT_FUZZ_PLANT=29 JIT_FUZZ_NOFAULT=1 JIT_FUZZ_NURSERY=1 JIT_FUZZ_NURSERYWORDS=4160 JIT_FUZZ_NOTRACES=1 JIT_FUZZ_TIER=2 JIT_FUZZ_RCOVER=999 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 8388608 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 chain > "$out/plant29.txt" 2>&1
+if grep -qE "^JIT FUZZ .*fails=0" "$out/plant29.txt"; then echo "SELF-TEST FAILED: planted bug 29 not detected"; exit 3; fi
 echo "self-test: planted corruption detected (GPR, float rounding, fused compare-branch, lost register-cache write, followed branch, side-exit count, register-use table, dispatcher entry count, page stamps for the vertex cache, sc handler count, X3 helper slot, callee-saved cache retention, region give-back counts, region label write-back)"
 exit $status

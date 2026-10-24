@@ -774,12 +774,12 @@ static u32 chain_run(const St* st, const u32* prog, u32 words, int plant) {
     g_unkA = A.unknownMmioCount; g_unkB = B.unknownMmioCount;
     s64 b1 = 1 + rnd() % 300, b2 = 1 + rnd() % 300;
     bool show = getenv("JIT_FUZZ_CASE") && (u32)atol(getenv("JIT_FUZZ_CASE")) == g_case;
-    jit_debug_plant = plant == 11 ? 11 : 0;  // a compile-time plant: both runs
+    jit_debug_plant = plant == 11 || plant == 29 ? (u32)plant : 0;  // compile-time plants (29: the nursery's moves): both runs
     int n1 = (int)jit_run(jit, b1);
     if (show) printf("  run 1: jit ran %d to %08x, pipe %u\n", n1, A.cpu.pc, A.gx.wgpLen);
     interp_steps(n1);
     if (show) printf("  interp: to %08x, pipe %u\n", B.cpu.pc, B.gx.wgpLen);
-    jit_debug_plant = plant == 8 ? 8 : plant == 11 ? 11 : 0;
+    jit_debug_plant = plant == 8 || plant == 11 || plant == 29 ? (u32)plant : 0;
     int n2 = (int)jit_run(jit, b2);
     jit_debug_plant = 0;
     if (show) printf("  run 2: jit ran %d to %08x, pipe %u\n", n2, A.cpu.pc, A.gx.wgpLen);
@@ -1245,9 +1245,9 @@ int main(int argc, char** argv) {
     printf("pipe stores compiled at a known address (OPT_PIPEK): %llu\n", (unsigned long long)jit_stats(jit)->pipeKnown);
     printf("JIT FUZZ cases=%u (float %u) fails=%u%s\n", cases, floats, fails, plant ? " (planted)" : "");
     // Leave the process as it was (gc3ds goes on to start normally after an on-device run).
-    if (getenv("JIT_FUZZ_NURSERY")) printf("nursery: tier-ups %llu, recycles %llu, retired %llu, settled %llu\n", (unsigned long long)jit_stats(jit)->tierUps,
+    if (getenv("JIT_FUZZ_NURSERY")) printf("nursery: tier-ups %llu, recycles %llu, retired %llu, settled %llu, moved %llu\n", (unsigned long long)jit_stats(jit)->tierUps,
                                           (unsigned long long)jit_stats(jit)->nurRecycles, (unsigned long long)jit_stats(jit)->nurRetired,
-                                          (unsigned long long)jit_stats(jit)->nurSettled);
+                                          (unsigned long long)jit_stats(jit)->nurSettled, (unsigned long long)jit_stats(jit)->nurMoved);
     if (getenv("JIT_FUZZ_RELAYOUT")) printf("relayout: tier-ups %llu, relayouts %llu, regions from profile %llu\n", (unsigned long long)jit_stats(jit)->tierUps,
                                            (unsigned long long)jit_stats(jit)->tierRelayouts, (unsigned long long)jit_stats(jit)->tierRelaid);
     jit_destroy(jit);

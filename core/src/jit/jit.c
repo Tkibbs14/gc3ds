@@ -117,6 +117,7 @@ static u32 zone_start(const Jit* j);
 // --tier-relayout removed them by flushing, which cost more than it saved).
 bool jit_tier_nursery;
 u32 jit_debug_nursery_words;  // the fuzzer: the nursery's hot and cold areas this many words each (0: a quarter of each area)
+bool jit_nursery_move = true;  // --nursery-move off: decided nursery blocks compiled again instead of moved (reloc_move)
 static bool g_forceDecided;      // compile: a block whose tier is decided (compiled into the main area, not pending)
 static u32 g_hotLim, g_coldLim;  // compile_block: the end of the hot / cold area this compile goes into (set by compile)
 u32 jit_debug_region_cover;  // the fuzzer (OPT_REGION): nonzero = a pseudo-random coverage map from this seed
@@ -1719,12 +1720,23 @@ static void fault_site(Cg* c, u32 hotAt) {
 // Calls a shared slow-path stub (ST_LOADSLOW / ST_STORESLOW / ST_STOREPIPE) with its literal after the call; the
 // stub returns past it with the status in r3 (1 exception, 2 finish and leave), r0 (the address) preserved. Five words
 // per site instead of about 25: no 32-bit constants (the PC is the literal) and the helper call is shared.
+// Literal words in a block's code, as emitted (bit 0: a host address inside the block, the link stubs' sites): what
+// --tier-nursery's move (reloc_move) must not read as instructions. Every data word in block code goes through lit().
+#define LIT_MAX 1024
+static u32 g_lit[LIT_MAX], g_nLit;
+static bool g_litOver;
+static void lit(Emit* e, u32 v, bool host) {
+    if (g_nLit < LIT_MAX) g_lit[g_nLit++] = (u32)(uintptr_t)(e->buf + e->n) | (host ? 1u : 0u);
+    else g_litOver = true;
+    word(e, v);
+}
+
 static void call_slow_stub(Cg* c, int jf, u32 literal) {
     Emit* e = &c->e;
     emit_time(c);
     ldr_imm(e, R12, RG, OFF_JITFN(jf));
     blx_reg(e, R12);
-    word(e, literal);
+    lit(e, literal, false);
 }
 static void stub_status(Cg* c) {
     dp_imm(&c->e, CMP, 1, 0, R3, 1);
@@ -1946,10 +1958,10 @@ static void emit_fallback(Cg* c, u32 inst) {
         dp_imm(e, CMP, 1, 0, R0, 0);
     } else {  // the shared stub: 4 words instead of about 20
         branch_abs(e, C_AL, true, stub(c, ST_INTERP));
-        word(e, c->pc);
-        word(e, inst);
+        lit(e, c->pc, false);
+        lit(e, inst, false);
         tfix_add(c, true);  // (instructions before this one) - (instructions in the block), patched at the block's end
-        word(e, 0);
+        lit(e, 0, false);
     }
     exit_snap(c, C_NE, false, 0, &clean);
     rc_after_interp(c);
@@ -2136,7 +2148,7 @@ static u32 lr_set(Cg* c) {
 static void lr_literal(Cg* c, u32 at) {
     Emit* e = &c->e;
     e->buf[at] |= (e->n - (at + 2)) * 4;  // PC reads 8 bytes ahead
-    word(e, c->pc + 4);
+    lit(e, c->pc + 4, false);
 }
 
 static bool compile_branch(Cg* c, u32 inst) {
@@ -4697,6 +4709,87 @@ static bool in_nursery(const Jit* j, BlockFn fn) {
 }
 // The nursery is full: every entry in it is retired (pending blocks, which nothing links to; they compile again when
 // next looked up) and it starts over. The generation moves on, so a link site the dispatcher holds into it is dropped.
+// A nursery block's relocation record, written after its cold code: hot length, cold start, cold length, the literal
+// count and each literal's offset (bit 31: in the cold code, bit 30: a host address inside the block). Its index goes
+// in the word before the block's hot code (0: the block cannot be moved).
+#define REC_MAX (4 + LIT_MAX)
+static u32 reloc_record(Jit* j, u32* fn, u32 coldStart) {
+    u32 hotLen = (u32)(j->code + j->codeUsed - fn), coldLen = j->coldUsed - coldStart;
+    if (g_litOver || j->codeWords - j->coldUsed < 4 + g_nLit) return 0;
+    u32 at = j->coldUsed, *r = j->code + at, *cold = j->code + coldStart;
+    r[0] = hotLen; r[1] = coldStart; r[2] = coldLen; r[3] = g_nLit;
+    for (u32 k = 0; k < g_nLit; k++) {
+        u32* p = (u32*)(uintptr_t)(g_lit[k] & ~1u);
+        u32 host = (g_lit[k] & 1u) << 30;
+        if (p >= fn && p < fn + hotLen) r[4 + k] = (u32)(p - fn) | host;
+        else if (p >= cold && p < cold + coldLen) r[4 + k] = (u32)(p - cold) | host | (1u << 31);
+        else return 0;
+    }
+    j->coldUsed += 4 + g_nLit;
+    return at;
+}
+
+// Moves a nursery block's code to the main area instead of compiling it again (compiling every decided block twice cost
+// 0.7-0.9% of core 0, jobs 1295-1298): its hot and cold words copied, each branch re-aimed (into its own hot or cold
+// code: the same place in the copy; anywhere else: the same address), the link stubs' site literals likewise, the other
+// literals left as they are. False when it has no record or the main area has no room (then it is compiled again).
+static u8 g_litMark[2 * BLOCK_MAX_WORDS];
+static u32 g_relocToCold;  // (the move log: hot branches into the block's cold code)
+static bool reloc_move(Jit* j, Entry* en) {
+    u32* oh = (u32*)(void*)en->fn, rec = oh[-1];
+    if (rec < j->nurColdStart || rec + 4 > j->codeWords) return false;
+    const u32* r = j->code + rec;
+    u32 hotLen = r[0], coldLen = r[2], n = r[3];
+    u32* oc = j->code + r[1];
+    if (hotLen > BLOCK_MAX_WORDS || coldLen > BLOCK_MAX_WORDS || r[1] + coldLen != rec) return false;
+    if (j->nurHotStart - j->codeUsed < hotLen || j->nurColdStart - j->coldUsed < coldLen) return false;
+    u32 *nh = j->code + j->codeUsed, *nc = j->code + j->coldUsed;
+    memset(g_litMark, 0, hotLen + coldLen);
+    for (u32 k = 0; k < n; k++) {
+        u32 o = r[4 + k] & 0x3FFFFFFFu, at = (r[4 + k] >> 31) ? hotLen + o : o;
+        if (at >= hotLen + coldLen) return false;
+        g_litMark[at] = (r[4 + k] >> 30) & 1 ? 2 : 1;
+    }
+    for (u32 i = 0; i < hotLen + coldLen; i++) {
+        u32* from = i < hotLen ? oh + i : oc + (i - hotLen);
+        u32* to = i < hotLen ? nh + i : nc + (i - hotLen);
+        u32 w = *from;
+        bool plant29 = jit_debug_plant == 29;  // plant 29: branches out of the block (stubs, linked blocks) not re-aimed
+        if (g_litMark[i] == 2) {  // a host address inside the block
+            u32* t = (u32*)(uintptr_t)w;
+            if (t >= oh && t < oh + hotLen) t = nh + (t - oh);
+            else if (t >= oc && t < oc + coldLen) t = nc + (t - oc);
+            w = (u32)(uintptr_t)t;
+        } else if (!g_litMark[i] && (w >> 28) != 0xF && (w & 0x0E000000u) == 0x0A000000u) {  // B / BL
+            u32* t = from + 2 + (((s32)(w << 8)) >> 8);
+            if (t >= oh && t < oh + hotLen) t = nh + (t - oh);
+            else if (t >= oc && t < oc + coldLen) { t = nc + (t - oc); if (i < hotLen) g_relocToCold++; }
+            s32 off = plant29 && (t < nh || t >= nh + hotLen) && (t < nc || t >= nc + coldLen) ? (s32)(t - (from + 2)) : (s32)(t - (to + 2));
+            if (off < -0x800000 || off >= 0x800000) return false;  // (the buffer is far smaller than B's 32 MB)
+            w = (w & 0xFF000000u) | ((u32)off & 0xFFFFFFu);
+        }
+        *to = w;
+    }
+#ifndef __3DS__
+    if (getenv("JIT_RELOCLOG")) fprintf(stderr, "reloc pc %08x hot %u cold %u lits %u tocold %u\n", en->pc, hotLen, coldLen, n, g_relocToCold);
+    g_relocToCold = 0;
+#endif
+    jit_host_sync_icache(nh, hotLen * 4);
+    if (coldLen) jit_host_sync_icache(nc, coldLen * 4);
+#ifndef __3DS__
+    // The fuzzer and qemu: the old copy becomes undefined instructions, so a branch the move did not re-aim traps at once
+    // instead of running the old code until a recycle overwrites it (nothing may reach it any more).
+    for (u32 i = 0; i < hotLen; i++) oh[i] = 0xE7F000F0u;
+    for (u32 i = 0; i < coldLen; i++) oc[i] = 0xE7F000F0u;
+    jit_host_sync_icache(oh, hotLen * 4);
+    if (coldLen) jit_host_sync_icache(oc, coldLen * 4);
+#endif
+    j->codeUsed += hotLen;
+    j->coldUsed += coldLen;
+    en->fn = (BlockFn)(void*)nh;
+    return true;
+}
+
 // Their entries leave the hash chains and go on the free list (a pool full of retired entries flushed the whole cache:
 // TP under qemu retired 387,000 in 50 fields against MAX_ENTRIES 65,536).
 static void nursery_recycle(Jit* j) {
@@ -4706,7 +4799,11 @@ static void nursery_recycle(Jit* j) {
             u32 idx = *link;
             Entry* e = &j->table[idx];
             if (!in_nursery(j, e->fn)) { link = &e->next; continue; }
-            if (e->pc != 1 && e->pending && e->runs >= NUR_TENURE) { tenure_add(j, e->pc); j->stats.nurTenured++; }
+            if (e->pc != 1 && e->pending && e->runs >= NUR_TENURE) {
+                j->stats.nurTenured++;
+                if (jit_nursery_move && reloc_move(j, e)) { j->stats.nurMoved++; link = &e->next; continue; }  // still pending
+                tenure_add(j, e->pc);
+            }
             if (e->pc != 1) j->stats.nurRetired++;
             *link = e->next;
             e->pc = 1;
@@ -4731,6 +4828,8 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     static Cg cg;
     Cg* c = &cg;
     memset(c, 0, sizeof *c);
+    g_nLit = 0;
+    g_litOver = false;
     c->e = (Emit){ j->code + j->codeUsed, 0, BLOCK_MAX_WORDS, false };
     c->alt = (Emit){ j->code + j->coldUsed, 0, BLOCK_MAX_WORDS, false };  // cold code is emitted where it stays
     c->flagsAt = NO_BRANCH;
@@ -5109,7 +5208,7 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
         if (c->exits[k].setPc) { load_const(e, R1, c->exits[k].pc); str_imm(e, R1, RG, OFF_PC); }
         if (c->exits[k].kind == EXIT_DEOPT) {  // ST_DEOPT with the block's PC
             branch_abs(e, C_AL, true, stub(c, ST_DEOPT));
-            word(e, pc);
+            lit(e, pc, false);
             continue;
         }
         branch_abs(e, C_AL, false, stub(c, ST_DYN));
@@ -5118,15 +5217,15 @@ static BlockFn compile_block(Jit* j, u32 pc, bool noLink) {
     for (u32 k = 0; k < c->nLinks; k++) {
         patch_to(c->links[k].site, e->buf + e->n);
         branch_abs(e, C_AL, true, stub(c, ST_LINK));
-        word(e, c->links[k].target);
-        word(e, (u32)(uintptr_t)c->links[k].site);
+        lit(e, c->links[k].target, false);
+        lit(e, (u32)(uintptr_t)c->links[k].site, true);
     }
     // No budget left at the entry: give the block's count back and leave with g->pc = the block.
     if (check) {
         patch_to(hotBuf + budgetBr, e->buf + e->n);
         if (total) dp_imm(e, ADD, 0, RDC, RDC, total);
         branch_abs(e, C_AL, true, stub(c, ST_BUDGET));
-        word(e, pc);
+        lit(e, pc, false);
     }
     u32 exitWords = e->n - coldBefore;
     swap_emit(c);
@@ -5201,10 +5300,13 @@ static u32 zone_start(const Jit* j) { return j->coldStart - j->coldStart / 4; }
 static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     u64 t0 = prof_begin();
     bool nurOn = nursery_on(j), nur = nurOn && will_pend(j, pc, noLink) && !tenure_has(j, pc);
-    if (nur && (j->coldStart - j->nurHot < BLOCK_MAX_WORDS || j->codeWords - j->nurCold < BLOCK_MAX_WORDS)) nursery_recycle(j);
-    u32 blocksUsed = j->codeUsed, coldUsed = j->coldUsed, gen = j->gen;
-    if (nur) {  // compile_block emits at codeUsed / coldUsed: pointed into the nursery for this one
-        j->codeUsed = j->nurHot;
+    if (nur && (j->coldStart - j->nurHot < BLOCK_MAX_WORDS + 1 || j->codeWords - j->nurCold < BLOCK_MAX_WORDS + REC_MAX))
+        nursery_recycle(j);
+    u32 blocksUsed = j->codeUsed, coldUsed = j->coldUsed, gen = j->gen, hdrAt = 0;
+    if (nur) {  // compile_block emits at codeUsed / coldUsed: pointed into the nursery for this one, after its header word
+        hdrAt = j->nurHot;
+        j->code[hdrAt] = 0;
+        j->codeUsed = hdrAt + 1;
         j->coldUsed = j->nurCold;
         g_hotLim = j->coldStart;
         g_coldLim = j->codeWords;
@@ -5224,7 +5326,10 @@ static BlockFn compile(Jit* j, u32 pc, bool noLink) {
         if (fn) j->stats.faultChecked++;
     }
     if (zone && j->gen == gen) { j->zoneUsed = j->codeUsed; j->codeUsed = blocksUsed; }
-    if (nur && j->gen == gen) { j->nurHot = j->codeUsed; j->nurCold = j->coldUsed; j->codeUsed = blocksUsed; j->coldUsed = coldUsed; }
+    if (nur && j->gen == gen) {
+        if (fn) j->code[hdrAt] = reloc_record(j, (u32*)(void*)fn, j->nurCold);
+        j->nurHot = j->codeUsed; j->nurCold = j->coldUsed; j->codeUsed = blocksUsed; j->coldUsed = coldUsed;
+    }
     prof_end(PROF_JITC, t0);
     return fn;
 }
@@ -6630,13 +6735,16 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         // --tier-nursery: a decided block still in the nursery (decided plain just now) may not be linked or put in the
         // indirect table, which a recycle would leave pointing into reused code: compiled again into the main area.
         if (!en->pending && nursery_on(j) && in_nursery(j, en->fn)) {
-            en->pc = 1;
             plain_add(j, pc);
-            g_forceDecided = true;
-            en = lookup(j, pc, key);
-            g_forceDecided = false;
             j->stats.nurSettled++;
-            if (!en) break;
+            if (jit_nursery_move && reloc_move(j, en)) j->stats.nurMoved++;  // moved, not compiled again
+            else {
+                en->pc = 1;
+                g_forceDecided = true;
+                en = lookup(j, pc, key);
+                g_forceDecided = false;
+                if (!en) break;
+            }
         }
         // Idle and polling-loop blocks are only ever entered from here; so are pending ones (OPT_TIER), until decided.
         bool plain = !en->idle && !en->poll && !en->pending;

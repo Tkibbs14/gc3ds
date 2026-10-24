@@ -118,10 +118,10 @@ void host_jit_report(void) {
         (unsigned long long)g_psFastCalls[2], (unsigned long long)g_psFastRefused[0],
         (unsigned long long)g_psFastRefused[1], (unsigned long long)g_psFastRefused[2]);
     const JitStats* js = jit_stats(g_hostJit);
-    fprintf(stderr, "JIT tier: regions %llu, failed %llu, flushes %llu, blocks compiled %llu; nursery recycles %llu, retired %llu, settled %llu, tenured %llu\n",
+    fprintf(stderr, "JIT tier: regions %llu, failed %llu, flushes %llu, blocks compiled %llu; nursery recycles %llu, retired %llu, settled %llu, tenured %llu, moved %llu\n",
         (unsigned long long)js->tierUps, (unsigned long long)js->tierFails, (unsigned long long)js->flushes,
         (unsigned long long)js->blocksCompiled, (unsigned long long)js->nurRecycles,
-        (unsigned long long)js->nurRetired, (unsigned long long)js->nurSettled, (unsigned long long)js->nurTenured);
+        (unsigned long long)js->nurRetired, (unsigned long long)js->nurSettled, (unsigned long long)js->nurTenured, (unsigned long long)js->nurMoved);
 }
 #else
 bool jit_host_fault_init(const u8* ram) { (void)ram; return false; }
