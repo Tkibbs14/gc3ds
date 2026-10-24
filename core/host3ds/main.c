@@ -649,6 +649,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
         else if (!strcmp(a, "--nsonce")) pica_set_ns_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
+        else if (!strcmp(a, "--nskeep"))
+            pica_set_ns_keep(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : !strcmp(v, "count") ? 4 : 0);
         else if (!strcmp(a, "--nsraw")) pica_set_ns_raw(!strcmp(v, "on"));
         else if (!strcmp(a, "--drawonce")) pica_set_draw_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
         else if (!strcmp(a, "--texfast")) pica_set_texfast((u32)strtoul(v, NULL, 10));
@@ -2146,18 +2148,31 @@ static const char* run_body(const char* path) {
                             u64 ns[16];
                             memcpy(ns, g_nsStats, sizeof ns);
                             u32 live, kb = pica_native_bytes(&live) >> 10;
+                            static u64 lastK[11];
+                            u64 kp[11];
+                            for (int k = 0; k < 11; k++) { kp[k] = g_nsKeepStats[k] - lastK[k]; lastK[k] = g_nsKeepStats[k]; }
                             fprintf(g_perf, "# shapes 10s: %s; drawn converted %llu, conversions %llu (%llu vertices); old path for "
-                                    "state %llu, layout %llu, memory %llu; made again after a stamp %llu, left as changing %llu; "
+                                    "state %llu, layout %llu, memory %llu; made again after a stamp %llu, stamped with sources "
+                                    "unchanged %llu of %llu hashed, left as changing %llu; "
                                     "hash checks %llu, changed %llu; evictions %llu; ms converting %.0f, drawing %.0f; %lu shapes, %lu KB\n",
                                     pica_native_shapes() ? "on" : "off",
                                     (unsigned long long)(ns[0] - lastN[0]), (unsigned long long)(ns[1] - lastN[1]),
                                     (unsigned long long)(ns[2] - lastN[2]), (unsigned long long)(ns[3] - lastN[3]),
                                     (unsigned long long)(ns[4] - lastN[4]), (unsigned long long)(ns[5] - lastN[5]),
-                                    (unsigned long long)(ns[6] - lastN[6]), (unsigned long long)(ns[10] - lastN[10]),
+                                    (unsigned long long)(ns[6] - lastN[6]), (unsigned long long)kp[1], (unsigned long long)kp[0],
+                                    (unsigned long long)(ns[10] - lastN[10]),
                                     (unsigned long long)(ns[7] - lastN[7]), (unsigned long long)(ns[8] - lastN[8]),
                                     (unsigned long long)(ns[9] - lastN[9]), (double)(ns[11] - lastN[11]) * 1000.0 / SYSCLOCK_ARM11,
                                     (double)(ns[12] - lastN[12]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long)live, (unsigned long)kb);
                             memcpy(lastN, ns, sizeof ns);
+                            if (kp[0])  // --nskeep (pica.c g_nsKeepStats)
+                                fprintf(g_perf, "# nskeep 10s: stamped shapes hashed %llu, unchanged %llu, not yet keepable %llu, "
+                                        "unchanged by the sampled hash %llu; rebuilds certified %llu, changed while converting %llu; "
+                                        "compared %llu, differed %llu; planted %llu, caught by ns_verify %llu, at a stamp %llu\n",
+                                        (unsigned long long)kp[0], (unsigned long long)kp[1], (unsigned long long)kp[2],
+                                        (unsigned long long)kp[3], (unsigned long long)kp[4], (unsigned long long)kp[5],
+                                        (unsigned long long)kp[6], (unsigned long long)kp[7], (unsigned long long)kp[8],
+                                        (unsigned long long)kp[9], (unsigned long long)kp[10]);
                             extern u64 g_nsPhase[7];
                             static u64 lastP[7];
                             double ph[7];

@@ -155,6 +155,9 @@ void pica_native_store(const void* p, u32 len);
 void pica_set_native_shapes(bool on);
 void pica_set_native_opts(u32 opts);  // bisection: 1 no PICA fixed attributes, 2 lit draws on the old path (pica.c NSO_*)
 void pica_set_ns_once(u32 mode);  // --nsonce: ns_draw's batch check feeds its state step (0 off, 1 on, 2 check, 3 plant)
+void pica_set_ns_keep(u32 mode);  // --nskeep: stamped shapes whose sources hash the same are kept (0 off, 1 on, 2 check,
+                                  // 3 plant, 4 count)
+extern u64 g_nsKeepStats[11];
 void pica_set_ns_raw(bool on);   // --nsraw: converted draws through the raw draw call, attribute / buffer blocks in raw state
 void pica_set_draw_once(u32 mode);  // --drawonce: pica_draw's batch check feeds its state step (0 off, 1 on, 2 check, 3 plant)
 void pica_set_texfast(u32 bits);   // --texfast: 1 texture-table hint, 2 re-hash by page stamps (default), 4 check (with 2); 0 off

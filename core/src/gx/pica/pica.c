@@ -3314,7 +3314,7 @@ typedef struct {
     u32 off[NO_N];
     float origin[3];                 // subtracted from every position; folded into the matrices' translations
     bool pnDirect;
-    u8 nr;
+    u8 nr, xflags;                   // xflags: NSX_* (--nskeep)
     u32 r0[NS_RANGES], r1[NS_RANGES], lo, hi;  // the bytes it was made from, [r0, r1), and their hull (emulator: guest
                                                // physical addresses)
     u32 stamp;                       // emulator: g_memStamps.now when it was made
@@ -3346,6 +3346,20 @@ u64 g_nsState[5], g_nsDc[4];
 static volatile u32 g_nsOnce;
 u64 g_nsOnceStats[3];
 void pica_set_ns_once(u32 mode) { g_nsOnce = mode; }
+// --nskeep (pica_set_ns_keep): a shape whose pages were stamped since it was made, yet whose sources hash the same over
+// every byte (ns_xhash), is kept instead of made again (Mario Party 4 converted ~611 shapes a second after stamps and
+// left ~1,750 draws a second on the old path as changing, job 1129). 1 on, 2 check (each kept shape also converted
+// again and compared stream by stream), 3 plant (the self-tests: the fresh conversion with one byte altered must
+// differ; one kept shape in 8 recorded as made from sources with the last byte of a range changed, which ns_verify must
+// catch), 4 count (hashed and counted, made again as without it). g_nsKeepStats: [0] stale shapes hashed, [1] of them
+// unchanged since certified (kept, except in mode 4), [2] not keepable yet (no certified hash: made in a free slot, or
+// not yet made again with the hash before and after), [3] mode 4: unchanged by ns_sources_hash, [4] rebuilds certified, [5] rebuilds whose sources changed while converting, [6] compared, [7]
+// differed, [8] planted, [9] planted shapes caught by ns_verify, [10] caught at a stamp.
+static volatile u32 g_nsKeep;
+u64 g_nsKeepStats[11];
+void pica_set_ns_keep(u32 mode) { g_nsKeep = mode; }
+static u64* g_nsXh;  // per slot: the certified ns_xhash of the sources (NShape.xflags NSX_OK)
+enum { NSX_OK = 1, NSX_PLANT = 2 };
 void pica_set_native_shapes(bool on) { g_nsWant = on; }
 bool pica_native_shapes(void) { return g_nsWant; }
 u32 pica_native_bytes(u32* live) { if (live) *live = g_nsLiveN; return g_nsBytes; }
@@ -3486,12 +3500,40 @@ static u32 ns_sources_hash(const NShape* e) {
     return h;
 }
 
-// Two shapes a present: their sources hashed again (what the flushes would have missed).
+// What --nskeep keeps a stamped shape on: every word of every source range, a range's last partial word included
+// (ns_sources_hash goes through hash_words, which samples ranges past 16 KB and drops a range's last 1-3 bytes). 64
+// bits; each step is invertible in h, so a change in any one word always changes the result. Plant mode hashes the
+// sources as if the byte at offset flipAt of range flipR (from the range's first word) had changed; ~0u: none.
+static u64 ns_xwords(u64 h, const u32* w, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        h = (h ^ w[i]) * 0x100000001B3ull;
+        h ^= h >> 31;
+    }
+    return h;
+}
+static u64 ns_xhash(const NShape* e, u32 flipR, u32 flipAt) {
+    u64 h = 0xCBF29CE484222325ull;
+    for (u32 r = 0; r < e->nr; r++) {
+        u32 lo = e->r0[r] & ~3u, n = (e->r1[r] - lo + 3) / 4;
+        const u32* w = (const u32*)(const void*)ns_host(lo);
+        if (r != flipR) { h = ns_xwords(h, w, n); continue; }
+        u32 fw = flipAt / 4, v = w[fw] ^ (0xFFu << (8 * (flipAt & 3)));
+        h = ns_xwords(h, w, fw);
+        h = ns_xwords(h, &v, 1);
+        h = ns_xwords(h, w + fw + 1, n - fw - 1);
+    }
+    return h;
+}
+
+// Two shapes a present: their sources hashed again (what the flushes would have missed). A shape --nskeep may keep is
+// hashed as the keep decision hashes it, every byte.
 static void ns_verify(void) {
     for (int k = 0; k < 2 && g_nsLiveN; k++) {
         NShape* e = &g_ns[g_nsLive[g_nsVerify++ % g_nsLiveN]];
         g_nsStats[7]++;
-        if (ns_sources_hash(e) == e->hash) continue;
+        bool x = g_nsXh && (e->xflags & NSX_OK);
+        if (x ? ns_xhash(e, ~0u, 0) == g_nsXh[e - g_ns] : ns_sources_hash(e) == e->hash) continue;
+        if (e->xflags & NSX_PLANT) g_nsKeepStats[9]++;
         g_nsStats[8]++;
         ns_dyn_note(e->cmd);
         ns_kill(e);
@@ -3612,7 +3654,14 @@ static void ns_list_fill(const GXCore* gx, const NsReq* q, VNatInfo* inf, float 
     }
 }
 
-static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape* e) {
+// --nskeep: a stale shape's sources as they were hashed before it is made again from them (stamp: g_memStamps.now read
+// before the hash). The new shape is certified (keepable at its next stamp) only if it was made from the same ranges
+// and they hash the same after converting: then nothing changed them while it was converted, and the hash describes
+// the very bytes the conversion read (a hash taken only after converting could describe bytes written meanwhile).
+typedef struct { u32 stamp, nr, r0[NS_RANGES], r1[NS_RANGES]; u64 h; } NsPre;
+static const u8 kNsSize[NO_IDX] = { 16, 12, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8 };  // bytes a vertex, by stream
+
+static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape* e, const NsPre* pre) {
     VNatInfo inf;
     u32 vat = q->vat, nv = q->nv, ni = q->ni;
     const u8* cmd = q->cmd;
@@ -3621,12 +3670,11 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     if (q->list && !ns_list_count(q, &nv, &ni)) { g_nsStats[4]++; ns_never(cmd, 1); return NULL; }
     if (!nv || nv > 0xFFFF || ni < 3) { g_nsStats[4]++; ns_never(cmd, 2); return NULL; }
     u32 off[NO_N], at = 0;
-    static const u8 kSize[NO_IDX] = { 16, 12, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8 };
     for (u32 k = 0; k < NO_IDX; k++) {
         bool has = k == NO_POS || (inf.present & (k == NO_NRM ? VN_NRM : k == NO_COL0 ? VN_COL0 : k == NO_COL1 ? VN_COL1
                                                  : VN_TEX0 << (k - NO_TEX0)));
         off[k] = has ? at : ~0u;
-        if (has) at = (at + kSize[k] * nv + 15) & ~15u;
+        if (has) at = (at + kNsSize[k] * nv + 15) & ~15u;
     }
     off[NO_IDX] = at;
     at += ni * 2;
@@ -3691,6 +3739,12 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     memcpy(e->off, off, sizeof off);
     memcpy(e->origin, o, sizeof o);
     e->hash = ns_sources_hash(e);
+    e->xflags = 0;
+    if (pre && g_nsXh) {
+        bool same = pre->nr == e->nr && !memcmp(pre->r0, e->r0, e->nr * 4) && !memcmp(pre->r1, e->r1, e->nr * 4);
+        if (same && ns_xhash(e, ~0u, 0) == pre->h) { g_nsXh[e - g_ns] = pre->h; e->xflags = NSX_OK; g_nsKeepStats[4]++; }
+        else if (same) g_nsKeepStats[5]++;
+    }
 #ifdef GC3DS_NATIVE
     for (u32 r = 0; r < e->nr; r++)
         for (u32 i = (e->r0[r] - NW_BASE) >> NW_SHIFT; i <= (e->r1[r] - 1 - NW_BASE) >> NW_SHIFT; i++)
@@ -3707,6 +3761,65 @@ static NShape* ns_build(const GXCore* gx, const NsReq* q, const u32* key, NShape
     return e;
 }
 
+#ifndef GC3DS_NATIVE
+// Two conversions of one command differ (what the GPU would read: the streams, indices, origin, matrix rows).
+static bool ns_differs(const NShape* a, const NShape* b) {
+    if (a->nv != b->nv || a->ni != b->ni || a->present != b->present || a->rows != b->rows || a->pnDirect != b->pnDirect ||
+        memcmp(a->origin, b->origin, sizeof a->origin) || memcmp(a->off, b->off, sizeof a->off))
+        return true;
+    for (u32 k = 0; k < NO_IDX; k++)
+        if (a->off[k] != ~0u && memcmp(a->mem + a->off[k], b->mem + b->off[k], kNsSize[k] * a->nv)) return true;
+    return memcmp(a->mem + a->off[NO_IDX], b->mem + b->off[NO_IDX], a->ni * 2) != 0;
+}
+
+// --nskeep check / plant: a kept shape converted again into the spare slot past the table and compared with it (plant:
+// the fresh conversion's first position byte altered, which must count as differing). The conversion counters stay as
+// they were.
+static void ns_keep_check(const GXCore* gx, const NsReq* q, const u32* key, NShape* e) {
+    NShape* f = &g_ns[NS_SLOTS];
+    if (f->cmd) return;
+    u64 c1 = g_nsStats[1], c2 = g_nsStats[2], c11 = g_nsStats[11];
+    e->lastFrame = g.frameNo;  // (ns_alloc evicts only shapes not drawn this frame or the last)
+    NShape* r = ns_build(gx, q, key, f, NULL);
+    g_nsStats[1] = c1; g_nsStats[2] = c2; g_nsStats[11] = c11;
+    if (!r) return;
+    if (g_nsKeep == 3) f->mem[f->off[NO_POS]] ^= 1;
+    g_nsKeepStats[6]++;
+    if (ns_differs(e, f)) g_nsKeepStats[7]++;
+    ns_kill(f);
+}
+
+// --nskeep at a stamp on e's pages: true when e is kept (its sources hash as they did when it was certified; e's stamp
+// moves to now). Otherwise pre holds the sources' hash for the conversion that follows.
+static bool ns_keep(const GXCore* gx, const NsReq* q, const u32* key, NShape* e, NsPre* pre) {
+    if (!g_nsXh) {
+        g_nsXh = linearAlloc((NS_SLOTS + 1) * sizeof *g_nsXh);
+        if (!g_nsXh) { g_nsKeep = 0; return false; }
+    }
+    pre->stamp = g_memStamps.now;  // read first: a change during the hash stamps the shape stale again
+    pre->nr = e->nr;
+    memcpy(pre->r0, e->r0, sizeof pre->r0);
+    memcpy(pre->r1, e->r1, sizeof pre->r1);
+    pre->h = ns_xhash(e, ~0u, 0);
+    g_nsKeepStats[0]++;
+    if (g_nsKeep == 4 && ns_sources_hash(e) == e->hash) g_nsKeepStats[3]++;
+    if (!(e->xflags & NSX_OK)) { g_nsKeepStats[2]++; return false; }
+    if (pre->h != g_nsXh[e - g_ns]) { if (e->xflags & NSX_PLANT) g_nsKeepStats[10]++; return false; }
+    g_nsKeepStats[1]++;
+    if (g_nsKeep == 4) return false;
+    e->stamp = pre->stamp;
+    if (g_nsKeep >= 2) ns_keep_check(gx, q, key, e);
+    static u32 nplant;
+    if (g_nsKeep == 3 && !(++nplant & 7)) {  // recorded as made from sources whose last byte of a range then changed
+        u32 r = (nplant >> 3) % e->nr;
+        g_nsXh[e - g_ns] = ns_xhash(e, r, e->r1[r] - 1 - (e->r0[r] & ~3u));
+        e->xflags |= NSX_PLANT;
+        g_nsKeepStats[8]++;
+    }
+    return true;
+}
+#endif
+
 // The shape for this command and key, converted if it is not yet; NULL: the old path draws it.
 static NShape* ns_get(const GXCore* gx, const NsReq* q) {
     u32 key[NS_KEY];
@@ -3722,11 +3835,14 @@ static NShape* ns_get(const GXCore* gx, const NsReq* q) {
         if (e->cmd == cmd && e->len == len && !memcmp(e->key, key, sizeof key)) {
 #ifndef GC3DS_NATIVE
             if (ns_stale(e)) {  // made from memory the guest has changed since: made again (or left to the old path)
+                NsPre pre;
+                bool hashed = g_nsKeep != 0;
+                if (hashed && ns_keep(gx, q, key, e, &pre)) return e;
                 ns_dyn_note(cmd);
                 ns_kill(e);
                 g_nsStats[6]++;
                 if (ns_dynamic(cmd)) { g_nsStats[10]++; return NULL; }
-                return ns_build(gx, q, key, e);
+                return ns_build(gx, q, key, e, hashed && g_nsKeep ? &pre : NULL);
             }
 #endif
             return e;
@@ -3739,7 +3855,7 @@ static NShape* ns_get(const GXCore* gx, const NsReq* q) {
         g_nsStats[9]++;
         freeSlot = oldest;
     }
-    return ns_build(gx, q, key, freeSlot);
+    return ns_build(gx, q, key, freeSlot, NULL);
 }
 
 // Palette rows dst..dst+2 = XF rows src..src+2 (a 3x4 matrix) with `o` folded into the translation; uploaded only when
@@ -4304,8 +4420,8 @@ bool pica_attach(System* s) {
                 g.uProj, g.uPal);
         g.uNat = shaderInstanceGetUniformLocation(vs, "nat");
         g.uLcount = shaderInstanceGetUniformLocation(vs, "lcount");
-        g_ns = calloc(NS_SLOTS, sizeof *g_ns);
-        g_nsLive = calloc(NS_SLOTS, sizeof *g_nsLive);
+        g_ns = calloc(NS_SLOTS + 1, sizeof *g_ns);  // (the last: --nskeep check's spare, never in the table)
+        g_nsLive = calloc(NS_SLOTS + 1, sizeof *g_nsLive);
         if (!g_ns || !g_nsLive) { free(g_ns); free(g_nsLive); g_ns = NULL; g_nsLive = NULL; }
         g_nsZero = linearAlloc(65536 * 4);
         g_nsWhite = linearAlloc(65536 * 4);
