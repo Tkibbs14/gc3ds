@@ -143,3 +143,31 @@
     { 0x8030E438, 0x19C, 0x0DF3B72A726B7CF9ull },  // J3DGDSetTexLookupMode__F11_GXTexMapID14_GXTexWrapMode14_GXTexWrapMode12_GXTexFilter12_GXTexFilterfffUcUc13_GXAnisotropy
     { 0x8030E7E0, 0x98, 0x26E9E11FDC587CDBull },  // J3DGDSetTexTlut__F11_GXTexMapIDUl10_GXTlutFmt
     { 0x8030E878, 0x2B8, 0x526C9455FF82FADCull },  // J3DGDLoadTlut__FPvUl11_GXTlutSize
+// J3DSys::reinitGX (PORT_REINITGX): its seven parts, the GX functions not already above, GXInitTexObj's format table
+    { 0x8031073C, 0x60, 0x99D97EFE06BD2E93ull },  // reinitGX__6J3DSysFv
+    { 0x8031079C, 0x4C, 0xD064D02BA2AD1179ull },  // reinitGenMode__6J3DSysFv
+    { 0x803107E8, 0xAC, 0x9F7C51C308383EAAull },  // reinitLighting__6J3DSysFv
+    { 0x80310894, 0x104, 0xE9819A393946795Cull },  // reinitTransform__6J3DSysFv
+    { 0x80310998, 0xA4, 0x9C63B70529560C36ull },  // reinitTexture__6J3DSysFv
+    { 0x80310A3C, 0x308, 0x41D7EF51BD9A9778ull },  // reinitTevStages__6J3DSysFv
+    { 0x80310D44, 0xF8, 0xF3673D756DAD22CCull },  // reinitIndStages__6J3DSysFv
+    { 0x80310E3C, 0x94, 0x3F11A0C057355016ull },  // reinitPixelProc__6J3DSysFv
+    { 0x8035C9AC, 0x34, 0xCB7F042686E32C4Bull },  // GXSetCoPlanar
+    { 0x8035D960, 0xE8, 0x4CF41306198CDDEBull },  // GXSetChanAmbColor
+    { 0x803602EC, 0x34, 0xA960ED51A8EEAC3Eull },  // GXSetCurrentMtx
+    { 0x8035DE40, 0x24C, 0x1FDC8F7254F09FA3ull },  // GXInitTexObj
+    { 0x8035F37C, 0x60, 0x0835B92DF2719D3Eull },  // GXSetTevColor
+    { 0x8035F0F8, 0x48, 0x1E3B77EA24BBB086ull },  // GXSetTevDirect
+    { 0x8035EFE8, 0xEC, 0xDB52D379498F955Eull },  // GXSetIndTexOrder
+    { 0x8035EEA4, 0x144, 0xB118CE4E725436D5ull },  // GXSetIndTexCoordScale
+    { 0x8035ED2C, 0x178, 0xA3970130BFC63A42ull },  // GXSetIndTexMtx
+    { 0x8035FC44, 0x2C, 0xEFEF5C9C6AB6529Bull },  // GXSetColorUpdate
+    { 0x8035FC70, 0x2C, 0x7988A1A91C50EE55ull },  // GXSetAlphaUpdate
+    { 0x8035FC9C, 0x34, 0x12CE2BEFD5C5BA23ull },  // GXSetZMode
+    { 0x8035FCD0, 0x34, 0x9B596537678B55BFull },  // GXSetZCompLoc
+    { 0x8035BECC, 0x5C, 0xA0AA56F5A377EDC4ull },  // GXFlush
+    { 0x8035FACC, 0x124, 0x906AC1D9B4ACFCBFull },  // GXSetFogRangeAdj
+    { 0x8035F8B8, 0x214, 0x8201831ECE6BD221ull },  // GXSetFog
+    { 0x8035C6E4, 0x80, 0x9AF375D8F0D17743ull },  // __GXSetDirtyState
+    { 0x80339CF8, 0x8, 0x883A20CF38716C9Full },  // PPCSync
+    { 0x803D2780, 0x3C, 0x3E356D825E45EC47ull },  // @224

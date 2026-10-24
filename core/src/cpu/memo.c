@@ -152,7 +152,7 @@ u32 memo_probe(Gekko* g) {
     g_sp = g->gpr[1];
     g_memoRec = (void*)1;
     int why = 0;
-    u32 n = gekko_run_call(g, ret, g_sp, 4000000u, &why, false);
+    u32 n = gekko_run_call(g, ret, g_sp, 4000000u, &why, true);  // (through sc / rfi: GXFlush, DCFlushRange)
     g_memoRec = NULL;
     for (u32 i = 0; i < g_nSeenUsed; i++) g_seen[g_seenUsed[i]].state = 0;
     g_nSeenUsed = 0;
@@ -170,7 +170,16 @@ u32 memo_probe(Gekko* g) {
     for (int r = 1; r <= 10; r++) regs[r - 1] = entryRegs[r];
     regs[10] = entryRegs[13];
     regs[11] = (u32)(keyOther ^ (keyOther >> 32));
-    if (!g_prev) g_prev = calloc(KEEP, sizeof *g_prev);
+    if (!g_prev) {  // (1.1 MB: linear memory on the 3DS, whose heap is nearly full in gameplay; calloc failed there and
+        // every call was recorded but none compared, job 1357)
+#ifdef __3DS__
+        extern void* linearAlloc(size_t size);
+        g_prev = linearAlloc(KEEP * sizeof *g_prev);
+        if (g_prev) memset(g_prev, 0, KEEP * sizeof *g_prev);
+#else
+        g_prev = calloc(KEEP, sizeof *g_prev);
+#endif
+    }
     if (!g_prev) return n;
     Prev* p = NULL;
     u32 slot = (r3 >> 2) * 2654435761u % KEEP;

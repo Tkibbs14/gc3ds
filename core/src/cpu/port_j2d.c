@@ -55,7 +55,7 @@ enum {
     A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
     A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
-    A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0, A_J3D_MATDIFF = 0x803167D8,
+    A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0, A_J3D_MATDIFF = 0x803167D8, A_J3D_REINITGX = 0x8031073C,
     A_GDCURRENTDL = 0x80451980,  // (__GDCurrentDL: the GDLObj J3D's display-list writers append to)
     A_PANE_DRAW = 0x802F67E0, A_PANE_DRAWSELF = 0x802F83C8, A_PANE_REWRITEALPHA = 0x802F83CC,
     A_PICEX_REWRITEALPHA = 0x80306A0C, A_GRAFTYPE_ORTHO = 0x802E9C88, A_GRAFTYPE_CONTEXT = 0x802E9664,
@@ -117,9 +117,12 @@ typedef struct {
     // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
     bool leak;
     float l14, l15, l31;
+    bool leak31;           // GXSetFog computes C into f31 (both lanes) and restores it with lfd: its ps1 keeps C
+    float c31;
     u32 gdA, gdN, gdRoom;  // bytes written at a GD display list's write pointer (J3D's writers), from gdA; its room
     u8 gd[2048];
     u32 flushA, flushLen;  // J3DMaterial::diff: the buffer DCFlushRange flushes after the commit (md_flush)
+    u32 scAt;              // an sc the guest code ends with (DCFlushRange, PPCSync): run after the commit (port_syscall)
     // The pane walk (PORT_PANEWALK): its stores go straight to guest memory (children read what their parent just
     // wrote), each with the word it replaced, so a walk that gives up puts everything back (walk_undo); its pipe bytes
     // go to a larger buffer. pbase: where this call's pipe bytes start (pipe, or the walk's buffer).
@@ -469,7 +472,7 @@ static void gx_set_dither(Pc* c, u32 d) {  // 0x8035FDD8
 }
 // GXLoadTexObj with the SDK's default region callbacks.
 static u32 gx_default_tex_region(Pc* c, u32 obj, u32 id) {  // 0x8035921C
-    u32 fmt = f32(obj + 20), mip = f8(obj + 31) & 1, i8 = id & 7;
+    u32 fmt = rd32(c, obj + 20), mip = rd8(c, obj + 31) & 1, i8 = id & 7;  // (rd: the object may be the port's own)
     u32 base;
     if (fmt == 6) base = mip ? 776 : 648;
     else if (fmt >= 8 && fmt <= 10) base = 520;
@@ -493,9 +496,9 @@ static void gx_load_tex_obj(Pc* c, u32 obj, u32 id) {  // GXLoadTexObj 0x8035E41
     wr32(c, obj + 12, rlwimi(rd32(c, obj + 12), t[5], 24, 0, 7));
     bp(c, rd32(c, obj + 0)); bp(c, rd32(c, obj + 4)); bp(c, rd32(c, obj + 8));
     bp(c, rd32(c, reg + 0)); bp(c, rd32(c, reg + 4)); bp(c, rd32(c, obj + 12));
-    if (!(f8(obj + 31) & 2)) {  // a palette: the default TLUT region
+    if (!(rd8(c, obj + 31) & 2)) {  // a palette: the default TLUT region
         if (GX(1228) != A_GXDEFAULT_TLUTREGION) { give_up(c, 4); return; }
-        u32 tl = f32(obj + 24);
+        u32 tl = rd32(c, obj + 24);
         if (tl >= 20) { give_up(c, 4); return; }  // (the guest would use a NULL region)
         u32 tr = c->gxd + 904 + tl * 16;
         u32 t6 = f8(r13 + (u32)(-31424) + id);
@@ -1528,11 +1531,11 @@ static void j3d_material_diff(Pc* c, u32 m, u32 flags) {
     wr32(c, sda - 27648u, 0);
     c->flushA = buf;
     c->flushLen = len;
+    if (len) c->scAt = A_MD_FLUSH_SC;  // (DCFlushRange returns before its sc when the length is 0)
     c->n += 60 + (len ? ((buf & 31) + len + 31) / 32 * 3 + 12 : 0);
 }
-// After a taken J3DMaterial::diff: DCFlushRange's dcbf per line (page stamps, as the interpreter's cache op does) and its
-// sc with the OS's handler, run by the interpreter as the JIT does (jit_sc_handler), so SRR0 / SRR1, HID0 and the
-// handler's registers end as the guest code leaves them.
+// After a taken J3DMaterial::diff: DCFlushRange's dcbf per line (page stamps, as the interpreter's cache op does); its sc
+// follows (port_syscall).
 static void md_flush(Pc* c, Gekko* g) {
     u32 a = c->flushA, len = c->flushLen;
     if (!len) return;
@@ -1543,14 +1546,254 @@ static void md_flush(Pc* c, Gekko* g) {
         g->bus->cache_op(g->bus->ctx, CACHE_DCBF, pg);
         if ((pg & ~0xFFFu) >= (last & ~0xFFFu)) break;
     }
+}
+// The sc a taken call's guest code ends with, and the OS's handler after it, run by the interpreter as the JIT does
+// (jit_sc_handler), so SRR0 / SRR1, HID0 and the handler's registers end as the guest code leaves them.
+static void port_syscall(Gekko* g, u32 at) {
     bool stop;
-    u32 npc = gekko_interp_one(g, A_MD_FLUSH_SC, 0x44000002u, &stop);
-    for (u32 k = 0; k < 32 && npc != A_MD_FLUSH_SC + 4; k++) {
+    u32 npc = gekko_interp_one(g, at, 0x44000002u, &stop);
+    for (u32 k = 0; k < 32 && npc != at + 4; k++) {
         u32 pa, w = 0;
         if (gk_translate(g, npc, false, false, &pa, false) && pa + 4 <= g_psz) w = ram_rd32(g_pm, pa);
         npc = gekko_interp_one(g, npc, w, &stop);
     }
-    if (npc != A_MD_FLUSH_SC + 4) g_portStats.mdWhy[MDW_OTHER] += 1000000;  // (cannot happen with the OS's handler: shows loudly)
+    if (npc != at + 4) g_portStats.mdWhy[MDW_OTHER] += 1000000;  // (cannot happen with the OS's handler: shows loudly)
+}
+
+// ---- J3D: J3DSys::reinitGX 0x8031073C: the GX state J3D starts each pass from (genmode, lighting, transform, textures,
+// TEV and indirect stages, pixel processing, then GXFlush), every argument a constant; its pipe bytes depend on __GXData
+// through the SDK's read-modify-writes, so a memo does not repeat (jobs 1359-1360: every call missed) but a port does. ----
+enum {
+    A_REINITGX = 0x8031073C, A_PPCSYNC_SC = 0x80339CF8,  // (GXFlush's PPCSync: its sc runs after the port, port_syscall)
+    A_GX_TEXOBJ_TBL = 0x803D2780,  // GXInitTexObj's format jump table
+    A_GX_NULLTEX = 0x803CD8A0, A_J3D_INDMTX = 0x803CD8E0,  // (J3DSys's NullTexData and IndMtx)
+};
+static void gx_set_co_planar(Pc* c, u32 v) {  // 0x8035C9AC
+    GX(516) = rlwimi(GX(516), v, 19, 12, 12);
+    bp(c, 0xFE080000u);
+    bp(c, GX(516));
+    c->n += 13;
+}
+static void gx_set_chan_amb_color(Pc* c, u32 chan, u32 color) {  // 0x8035D960 (color: the GXColor word)
+    u32 r5, r7;
+    switch (chan) {
+    case 0: r5 = 0; r7 = rlwimi(GX(168), color, 0, 0, 23); break;
+    case 1: r5 = 1; r7 = rlwimi(GX(172), color, 0, 0, 23); break;
+    case 2: r5 = 0; r7 = rlwimi(GX(168), color & 0xFF, 0, 24, 31); break;
+    case 3: r5 = 1; r7 = rlwimi(GX(172), color & 0xFF, 0, 24, 31); break;
+    case 4: r5 = 0; r7 = color; break;
+    case 5: r5 = 1; r7 = color; break;
+    default: return;
+    }
+    xf(c, 4106 + r5, r7);
+    bp_sent_not(c, 1);
+    GX(168 + 4 * r5) = r7;
+    c->n += 20;
+}
+static void gx_set_tev_color(Pc* c, u32 id, u32 col) {  // GXSetTevColor 0x8035F37C (col: the GXColor word)
+    u32 ra = rlwimi(rlwimi((id * 2 + 224) << 24, col, 8, 24, 31), col, 12, 12, 19);
+    u32 bg = rlwimi(rlwimi((id * 2 + 225) << 24, col, 24, 24, 31), col, 28, 12, 19);
+    bp(c, ra); bp(c, bg); bp(c, bg); bp(c, bg);
+    bp_sent_not(c, 0);
+    c->n += 24;
+}
+static void gx_set_ind_tex_order(Pc* c, u32 st, u32 coord, u32 map) {  // 0x8035EFE8
+    if (map == 255) map = 0;
+    if (coord == 255) coord = 0;
+    static const u8 kSh[4][4] = { { 0, 29, 3, 26 }, { 6, 23, 9, 20 }, { 12, 17, 15, 14 }, { 18, 11, 21, 8 } };
+    if (st < 4) {
+        GX(288) = rlwimi(GX(288), map, kSh[st][0], kSh[st][1], kSh[st][1] + 2);
+        GX(288) = rlwimi(GX(288), coord, kSh[st][2], kSh[st][3], kSh[st][3] + 2);
+    }
+    bp(c, GX(288));
+    c->dirty |= 3;
+    bp_sent_not(c, 0);
+    c->n += 20;
+}
+static void gx_set_ind_tex_coord_scale(Pc* c, u32 st, u32 s, u32 t) {  // 0x8035EEA4
+    if (st < 4) {
+        u32 off = st < 2 ? 296 : 300, hi = st & 1;
+        u32 w = rlwimi(GX(off), s, hi ? 8 : 0, hi ? 20 : 28, hi ? 23 : 31);
+        w = rlwimi(w, t, hi ? 12 : 4, hi ? 16 : 24, hi ? 19 : 27);
+        w = rlwimi(w, st < 2 ? 37 : 38, 24, 0, 7);
+        GX(off) = w;
+        bp(c, w);
+    }
+    bp_sent_not(c, 0);
+    c->n += 20;
+}
+// GXSetIndTexMtx 0x8035ED2C (matrix id, its 2x3 floats at m, scale exponent): each element times sda2(-13296), fctiwz.
+static void gx_set_ind_tex_mtx(Pc* c, u32 id, u32 m, s32 sc) {
+    u32 k = (id >= 1 && id <= 3) ? id - 1 : (id >= 5 && id <= 7) ? id - 5 : (id >= 9 && id <= 11) ? id - 9 : 0;
+    if (!span(c, m, 24)) return;
+    u32 s = sda2(c, -13296), e = (u32)(s32)(s8)(sc + 17);
+    u32 sh[3] = { e, rlwinm(e, 30, 30, 31), rlwinm(e, 28, 30, 31) };
+    for (u32 col = 0; col < 3; col++) {
+        u32 a = fctiwz(FMUL(s, f32(m + 4 * col))), b = fctiwz(FMUL(s, f32(m + 12 + 4 * col)));
+        u32 w = rlwimi(rlwimi(rlwimi(0, a, 0, 21, 31), b, 11, 10, 20), sh[col], 22, 8, 9);
+        bp(c, rlwimi(w, k * 3 + 6 + col, 24, 0, 7));
+    }
+    bp_sent_not(c, 0);
+    c->n += 70;
+}
+static void gx_set_color_update(Pc* c, u32 v) {  // 0x8035FC44
+    GX(464) = rlwimi(GX(464), v, 3, 28, 28);
+    bp(c, GX(464));
+    bp_sent_not(c, 0);
+    c->n += 11;
+}
+static void gx_set_alpha_update(Pc* c, u32 v) {  // 0x8035FC70
+    GX(464) = rlwimi(GX(464), v, 4, 27, 27);
+    bp(c, GX(464));
+    bp_sent_not(c, 0);
+    c->n += 11;
+}
+static void gx_set_z_mode(Pc* c, u32 en, u32 fn, u32 upd) {  // 0x8035FC9C
+    GX(472) = rlwimi(rlwimi(rlwimi(GX(472), en, 0, 31, 31), fn, 1, 28, 30), upd, 4, 27, 27);
+    bp(c, GX(472));
+    bp_sent_not(c, 0);
+    c->n += 13;
+}
+static void gx_set_z_comp_loc(Pc* c, u32 v) {  // 0x8035FCD0
+    GX(476) = rlwimi(GX(476), v & 0xFF, 6, 25, 25);
+    bp(c, GX(476));
+    bp_sent_not(c, 0);
+    c->n += 13;
+}
+// GXSetFog 0x8035F8B8 for a perspective fog type (bit 3 clear; an orthographic one gives up), as J3DGDSetFog but with its own
+// constants (sda2 -13288 0.0f, -13280 0.5f, -13272 1.0, -13256 0.5, -13264 2.0f, -13248 8388638.0f, -13240 the magic).
+static void gx_set_fog(Pc* c, u32 type, u32 sz, u32 ez, u32 nz, u32 fz, u32 color) {
+    if ((type >> 3) & 1) { give_up(c, 2); return; }
+    if (!sda_is(c, -13288, 0) || !sda_is(c, -13280, 0x3F000000u) || !sda_is_d(c, -13272, 0x3FF00000u, 0) ||
+        !sda_is_d(c, -13256, 0x3FE00000u, 0) || !sda_is(c, -13264, 0x40000000u) || !sda_is(c, -13248, 0x4B00001Eu) ||
+        !sda_is_d(c, -13240, 0x43300000u, 0x80000000u))
+        return;
+    if (!plain(c, sz) || !plain(c, ez) || !plain(c, nz) || !plain(c, fz)) return;
+    u32 A, B, C;
+    if (fbits(fz) == fbits(nz) || fbits(ez) == fbits(sz)) { A = 0; B = 0x3F000000u; C = 0; }
+    else {
+        u32 d = FSUB(fz, nz), e = FSUB(ez, sz), fn = FMUL(fz, nz);
+        B = FDIV(fz, d);
+        C = FDIV(sz, e);
+        A = FDIV(fn, FMUL(d, e));
+        c->leak31 = true;  // (fdivs f31: ps1 too; the equal case's fmr leaves ps1 as it was)
+        c->c31 = fbits(C);
+    }
+    if (c->fail) return;
+    s32 x = 0;
+    for (u32 k = 0; fbits(B) > 1.0f && k < 300 && !c->fail; k++) { B = FMUL(B, 0x3F000000u); x++; }
+    for (u32 k = 0; fbits(B) > 0.0f && fbits(B) < 0.5f && k < 300 && !c->fail; k++) { B = FMUL(B, 0x40000000u); x--; }
+    u32 expn = (u32)(x + 1), sh = expn & 63, p = sh < 32 ? 1u << sh : 0;
+    if (!p || c->fail) { give_up(c, 2); return; }
+    u32 Af = FDIV(A, bitsf((float)(s32)p));
+    u32 bm = cvt_fp2unsigned(c, FMUL(0x4B00001Eu, B));
+    if (c->fail) return;
+    bp(c, rlwinm(Af, 20, 12, 31) | 0xEE000000u);
+    bp(c, rlwimi(0, bm, 0, 8, 31) | 0xEF000000u);
+    bp(c, rlwimi(0, expn, 0, 27, 31) | 0xF0000000u);
+    bp(c, rlwimi(rlwinm(C, 20, 12, 31), type & 7, 21, 8, 10) | 0xF1000000u);
+    bp(c, rlwimi(0, color, 24, 8, 31) | 0xF2000000u);
+    bp_sent_not(c, 0);
+    c->n += 140;
+}
+static void gx_set_fog_range_adj_off(Pc* c, u32 center) {  // GXSetFogRangeAdj 0x8035FACC with enable 0 (no table)
+    bp(c, rlwimi(0, (center & 0xFFFF) + 342, 0, 22, 31) | 0xE8000000u);
+    bp_sent_not(c, 0);
+    c->n += 12;
+}
+static void gx_dirty_state(Pc* c) {  // __GXSetDirtyState 0x8035C6E4 (__GXUpdateBPMask, bit 2, is empty)
+    u32 d = GX(DIRTY);
+    if (d & 1) gx_set_su_tex_regs(c);
+    if (d & 4) { bp(c, GX(516)); bp_sent_not(c, 0); c->n += 9; }  // __GXSetGenMode
+    if (d & 8) gx_set_vcd(c);
+    if (d & 16) gx_set_vat(c);
+    if (d & 24) gx_calculate_vlim(c);
+    GX(DIRTY) = 0;
+    gx_sync(c);
+}
+// GXInitTexObj 0x8035DE40 with J3DSys::reinitTexture's arguments (NullTexData, 4 x 4, GX_TF_IA8, clamp, clamp, no mipmap):
+// the 32-byte object, built where the guest builds it (its stack frame), through the store log.
+static void gx_init_tex_obj_null(Pc* c, u32 obj) {
+    u32 w = 4, h = 4, fmt = 3, tgt = f32(A_GX_TEXOBJ_TBL + 4 * fmt);
+    u32 cls, sx, sy;
+    switch (tgt) {  // (the jump table's cases: the class byte and the tile shifts)
+    case 0x8035DFC0: cls = 1; sx = 3; sy = 3; break;
+    case 0x8035DFD4: cls = 2; sx = 3; sy = 2; break;
+    case 0x8035DFE8: cls = 2; sx = 2; sy = 2; break;
+    case 0x8035DFFC: cls = 3; sx = 2; sy = 2; break;
+    case 0x8035E010: cls = 0; sx = 3; sy = 3; break;
+    case 0x8035E024: cls = 2; sx = 2; sy = 2; break;
+    default: give_up(c, 5); return;
+    }
+    u32 tiles = (((w + (1u << sx) - 1) >> sx) * ((h + (1u << sy) - 1) >> sy)) & 0x7FFF;
+    wr32(c, obj + 0, 0x90);  // (wrap S / T clamp, bit 4, no mipmap: filter 4)
+    wr32(c, obj + 4, 0);
+    wr32(c, obj + 8, (w - 1) | (h - 1) << 10 | fmt << 20);
+    wr32(c, obj + 12, rlwinm(A_GX_NULLTEX, 27, 11, 31));
+    wr32(c, obj + 16, 0);
+    wr32(c, obj + 20, fmt);
+    wr32(c, obj + 24, 0);
+    wr32(c, obj + 28, tiles << 16 | cls << 8 | 2);
+    c->n += 120;
+}
+static void j3d_reinit_gx(Pc* c, Gekko* g) {
+    u32 sda = g->gpr[13], black = 0, white = 0;
+    if (!span(c, sda - 31792u, 8)) return;
+    black = f32(sda - 31792u); white = f32(sda - 31788u);
+    // reinitGenMode
+    gx_set_num_chans(c, 0); gx_set_num_tex_gens(c, 1); gx_set_num_tev_stages(c, 1); gx_set_num_ind_stages(c, 0);
+    gx_set_cull_mode(c, 2); gx_set_co_planar(c, 0);
+    // reinitLighting
+    gx_set_chan_ctrl(c, 4, 0, 0, 1, 0, 0, 2); gx_set_chan_ctrl(c, 5, 0, 0, 1, 0, 0, 2);
+    gx_set_chan_amb_color(c, 4, black); gx_set_chan_amb_color(c, 5, black);
+    gx_set_chan_mat_color(c, 4, white); gx_set_chan_mat_color(c, 5, white);
+    // reinitTransform: GXSetCurrentMtx(GX_PNMTX0), then the eight texgens
+    GX(128) = rlwimi(GX(128), 0, 0, 26, 31);
+    gx_set_matrix_index(c, 0);
+    for (u32 i = 0; i < 8; i++) gx_set_tex_coord_gen2(c, i, 1, 4 + i, 60, 0, 125);
+    // reinitTexture: the null texture object in its frame (reinitGX's 16 bytes, reinitTexture's 48, at +8) on all eight maps
+    u32 obj = g->gpr[1] - 16 - 48 + 8;
+    gx_init_tex_obj_null(c, obj);
+    for (u32 i = 0; i < 8 && !c->fail; i++) gx_load_tex_obj(c, obj, i);
+    if (c->fail) return;
+    {  // (the object's stores are below the caller's stack pointer, dead once reinitGX returns: not committed)
+        u32 k = 0;
+        for (u32 i = 0; i < c->nlog; i++)
+            if (c->log[i][0] >= g->gpr[1]) { c->log[k][0] = c->log[i][0]; c->log[k][1] = c->log[i][1]; k++; }
+        c->nlog = k;
+    }
+    // reinitTevStages
+    for (u32 i = 0; i < 16; i++) gx_set_tev_order(c, i, 255, 255, 255);
+    for (u32 i = 1; i <= 3; i++) gx_set_tev_color(c, i, white);
+    for (u32 i = 0; i < 4; i++) gx_set_tev_kcolor(c, i, white);
+    for (u32 i = 0; i < 16; i++) {
+        gx_set_tev_color_in(c, i, 10, 15, 15, 15);
+        gx_set_tev_op(c, 304, i, 0, 0, 0, 1, 0);
+        gx_set_tev_alpha_in(c, i, 5, 7, 7, 7);
+        gx_set_tev_op(c, 368, i, 0, 0, 0, 1, 0);
+        gx_set_tev_ksel(c, i, 6, false);
+        gx_set_tev_ksel(c, i, 0, true);
+        gx_set_tev_swap_mode(c, i, 0, 0);
+    }
+    gx_set_tev_swap_mode_table(c, 0, 0, 1, 2, 3); gx_set_tev_swap_mode_table(c, 1, 0, 0, 0, 3);
+    gx_set_tev_swap_mode_table(c, 2, 1, 1, 1, 3); gx_set_tev_swap_mode_table(c, 3, 2, 2, 2, 3);
+    gx_set_alpha_compare(c, 7, 0, 0, 7, 0);
+    // reinitIndStages
+    for (u32 i = 0; i < 16; i++) gx_set_tev_indirect(c, i, 0, 0, 0, 0, 0, 0, 0, 0, 0);  // GXSetTevDirect
+    for (u32 i = 0; i < 4; i++) gx_set_ind_tex_order(c, i, i, i);
+    for (u32 i = 0; i < 4; i++) gx_set_ind_tex_coord_scale(c, i, 0, 0);
+    for (u32 i = 1; i <= 3 && !c->fail; i++) gx_set_ind_tex_mtx(c, i, A_J3D_INDMTX, 1);
+    // reinitPixelProc
+    gx_set_blend_mode(c, 0, 4, 5, 0); gx_set_color_update(c, 1); gx_set_alpha_update(c, 0); gx_set_dither(c, 1);
+    gx_set_fog(c, 0, sda2(c, -13976), sda2(c, -13972), sda2(c, -13968), sda2(c, -13972), black);
+    gx_set_fog_range_adj_off(c, 0);
+    gx_set_z_mode(c, 1, 3, 1); gx_set_z_comp_loc(c, 1);
+    // GXFlush: the dirty state, 32 zero bytes, PPCSync (its sc after the commit)
+    gx_sync(c);
+    if (GX(DIRTY)) gx_dirty_state(c);
+    for (u32 i = 0; i < 8; i++) p32(c, 0);
+    c->scAt = A_PPCSYNC_SC;
+    c->n += 200;
 }
 
 // ---- entry ----
@@ -1559,7 +1802,7 @@ static Pc g_pc;
 // Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
 static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = c->flushLen = 0;
+    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = c->flushLen = c->scAt = 0;
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
@@ -1578,6 +1821,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->bpsn = ~0u;
     c->fail = 0;
     c->leak = false;
+    c->leak31 = false;
     if (!in_mem1(A_GXDATA_PTR, 4)) return false;
     c->gxd = ram_rd32(g_pm, A_GXDATA_PTR - 0x80000000u);
     if (c->gxd != ram_rd32(g_pm, g->gpr[2] - 13440u - 0x80000000u) || !in_mem1(c->gxd, GXD_BYTES) || (c->gxd & 3)) return false;
@@ -1588,6 +1832,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     // guest code raises at its first float instruction: the float ports are not taken then.)
     if (hook != PORT_MATERIAL && hook != PORT_FLUSHPRIM && !(g->msr & MSR_FP)) { if (!c->fail) g_portFloatSite[4]++; give_up(c, 2); return false; }
     if (hook == PORT_MATDIFF) j3d_material_diff(c, g->gpr[3], g->gpr[4]);
+    else if (hook == PORT_REINITGX) j3d_reinit_gx(c, g);
     else if (hook == PORT_PANEWALK) pane_walk(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
@@ -1614,6 +1859,7 @@ static void port_commit(Pc* c) {
 
 // The registers the guest code would leave other than the ABI promises (PSMTXConcat's leaked lanes, Pc.leak).
 static void port_regs(Pc* c, Gekko* g, u32 hook) {
+    if (c->leak31) g->fpr[31].ps1 = c->c31;
     if (!c->leak) return;
     g->fpr[14].ps1 = c->l14;
     g->fpr[15].ps1 = c->l15;
@@ -1623,11 +1869,11 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
                                           "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
                                           "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
-                                          "J3DMaterial::diff" };
+                                          "J3DMaterial::diff", "J3DSys::reinitGX" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
-           pc == A_J3D_MATDIFF ? PORT_MATDIFF : -1;
+           pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -1787,7 +2033,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
@@ -1812,6 +2058,7 @@ u32 port_run_hook(Gekko* g) {
     port_commit(c);
     port_regs(c, g, (u32)hook);
     if (hook == PORT_MATDIFF) md_flush(c, g);
+    if (c->scAt) port_syscall(g, c->scAt);
     if (g_portCommitEnd && pmu) g_portCommitEnd();
     if (t0) {
         hs->timed++;
