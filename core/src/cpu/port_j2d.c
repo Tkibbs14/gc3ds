@@ -40,6 +40,7 @@ void port_set_memory(u8* mem1, u32 size) {
 void port_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx) { g_ppipe = write; g_pctx = ctx; }
 PortStats g_portStats;
 void (*g_portPmuBegin)(void), (*g_portPmuEnd)(void), (*g_portCommitBegin)(void), (*g_portCommitEnd)(void);
+u32 g_portPmuHooks = ~0u;
 
 // ---- the guest functions (GZ2E01) ----
 enum {
@@ -1173,14 +1174,31 @@ static void j3d_load_mtx_concat_view_pngp(Pc* c, u32 self, u32 slot, u32 idx) {
 // Each light set appends four XF loads to __GDCurrentDL: position, attenuation (cos then distance), colour, direction
 // (72 bytes, J3DGDSetLight* 0x8030D364-0x8030DB04). The guest code checks for room once per light and calls GDOverflowed
 // when there is none: the port is not taken then.
+// (each loads the cursor once: c->gd is bytes, so a store through it may alias c->gdN and byte by byte the compiler
+// reloaded it after every byte, ~20 instructions a word, 2DS job 1350)
 static inline void gd8(Pc* c, u32 v) { c->gd[c->gdN++] = (u8)v; }
-static inline void gd16(Pc* c, u32 v) { gd8(c, v >> 8); gd8(c, v); }
-static inline void gd32(Pc* c, u32 v) { gd16(c, v >> 16); gd16(c, v); }
+static inline void gd16(Pc* c, u32 v) {
+    u32 n = c->gdN;
+    u8* p = c->gd + n;
+    p[0] = (u8)(v >> 8); p[1] = (u8)v;
+    c->gdN = n + 2;
+}
+static inline void gd32(Pc* c, u32 v) {
+    u32 n = c->gdN;
+    u8* p = c->gd + n;
+    p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v;
+    c->gdN = n + 4;
+}
 static void gd_xf(Pc* c, u32 addr, u32 n, u32 src) {  // J3DGDWriteXFCmdHdr and n words (the floats' bits as stored)
-    gd8(c, 0x10);
-    gd16(c, n - 1);
-    gd16(c, addr);
-    for (u32 i = 0; i < n; i++) gd32(c, f32(src + 4 * i));
+    u32 k = c->gdN;
+    u8* p = c->gd + k;
+    p[0] = 0x10; p[1] = (u8)((n - 1) >> 8); p[2] = (u8)(n - 1); p[3] = (u8)(addr >> 8); p[4] = (u8)addr;
+    p += 5;
+    for (u32 i = 0; i < n; i++, p += 4) {
+        u32 v = f32(src + 4 * i);
+        p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v;
+    }
+    c->gdN = k + 5 + 4 * n;
 }
 // J3DLightObj::load 0x80323590 for each light of the block (n of them): the GD bytes after c->gdN.
 static void light_bytes(Pc* c, u32 blk, u32 n) {
@@ -1241,7 +1259,12 @@ static inline bool gd_room(Pc* c, u32 size) {
     if (c->gdN + size > c->gdRoom || c->gdN + size > sizeof c->gd) { md_why(c, MDW_ROOM); return false; }
     return true;
 }
-static void bp_word(Pc* c, u32 w) { gd8(c, 0x61); gd32(c, w); }  // J3DGDWriteBPCmd
+static inline void bp_word(Pc* c, u32 w) {  // J3DGDWriteBPCmd
+    u32 n = c->gdN;
+    u8* p = c->gd + n;
+    p[0] = 0x61; p[1] = (u8)(w >> 24); p[2] = (u8)(w >> 16); p[3] = (u8)(w >> 8); p[4] = (u8)w;
+    c->gdN = n + 5;
+}
 // J3DGDSetTevColorS10 0x8030F3FC (reg 1-3, the colour's s16 fields at a): RA once, BG three times.
 static void md_tev_color_s10(Pc* c, u32 id, u32 a) {
     u32 r = (u32)(s32)(s16)f16(a), g = (u32)(s32)(s16)f16(a + 2), b = (u32)(s32)(s16)f16(a + 4), al = (u32)(s32)(s16)f16(a + 6);
@@ -1513,9 +1536,13 @@ static void j3d_material_diff(Pc* c, u32 m, u32 flags) {
 static void md_flush(Pc* c, Gekko* g) {
     u32 a = c->flushA, len = c->flushLen;
     if (!len) return;
-    u32 lines = ((a & 31) + len + 31) >> 5;
-    for (u32 i = 0; i < lines; i++)
-        if (g->bus->cache_op) g->bus->cache_op(g->bus->ctx, CACHE_DCBF, ((a & ~31u) + 32 * i) - 0x80000000u);
+    // (one cache op per 4 KB page, not per line: the bus stamps the line's page, so the pages end stamped alike; a call
+    // per line was most of the commit's 2,400 instructions, 2DS job 1348)
+    u32 first = (a & ~31u) - 0x80000000u, last = ((a & ~31u) + ((((a & 31) + len + 31) >> 5) - 1) * 32) - 0x80000000u;
+    for (u32 pg = first; g->bus->cache_op; pg = (pg & ~0xFFFu) + 0x1000) {
+        g->bus->cache_op(g->bus->ctx, CACHE_DCBF, pg);
+        if ((pg & ~0xFFFu) >= (last & ~0xFFFu)) break;
+    }
     bool stop;
     u32 npc = gekko_interp_one(g, A_MD_FLUSH_SC, 0x44000002u, &stop);
     for (u32 k = 0; k < 32 && npc != A_MD_FLUSH_SC + 4; k++) {
@@ -1774,17 +1801,18 @@ u32 port_run_hook(Gekko* g) {
     u64 t0 = prof_begin();
     g_tOn = t0 && g_portParts && hook == PORT_MATERIAL;
     g_tm = t0;
-    if (g_portPmuBegin) g_portPmuBegin();
+    bool pmu = g_portPmuHooks >> hook & 1;
+    if (g_portPmuBegin && pmu) g_portPmuBegin();
     bool took = port_run(c, g, (u32)hook);
-    if (g_portPmuEnd) g_portPmuEnd();
+    if (g_portPmuEnd && pmu) g_portPmuEnd();
     g_tOn = false;
     if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }
     u64 t1 = t0 ? g_profClock() : 0;
-    if (g_portCommitBegin) g_portCommitBegin();
+    if (g_portCommitBegin && pmu) g_portCommitBegin();
     port_commit(c);
     port_regs(c, g, (u32)hook);
     if (hook == PORT_MATDIFF) md_flush(c, g);
-    if (g_portCommitEnd) g_portCommitEnd();
+    if (g_portCommitEnd && pmu) g_portCommitEnd();
     if (t0) {
         hs->timed++;
         hs->tRun += t1 - t0;

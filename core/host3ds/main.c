@@ -671,6 +671,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--pmu-port-hooks")) g_portPmuHooks = (u32)strtoul(v, NULL, 0);  // (--pmu-split port: only these hooks)
         else if (!strcmp(a, "--port")) o->port = !strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0;
         else if (!strcmp(a, "--gfskip")) { g_gfskipAddr = (u32)strtoul(v, NULL, 16); g_gfskipOn = true; }
         else if (!strcmp(a, "--gfskip-guard")) {
