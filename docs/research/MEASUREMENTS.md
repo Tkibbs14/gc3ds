@@ -2319,6 +2319,34 @@ done
   more work removed per region (float lanes and CR flags across labels, extents past 64 instructions, leaf and
   devirtualised calls inlined). Grouping regions apart was measured and loses (row above).
 
+### Region tier nursery: pending blocks in a recycled area (`--tier-nursery`, jobs 1285-1298, 2026-10-24)
+
+- **What (commit 7332fb9 and the fixes after it):** C33's TP loss is instruction fetch over the blocks regions replace,
+  which stay between live code. With the nursery, a block still pending (nothing links to it) compiles into the top
+  quarter of the hot and cold areas, recycled whole when full; a block decided plain is compiled again into the main
+  area (settled), regions go there directly, and a pending block that ran 4+ times by a recycle is tenured (compiled
+  into the main area from then on, still pending). Retired entries go on a free list (a pool full of them flushed the
+  cache).
+- **Checks:** JIT fuzzer, every mode and plant, 0 fails, with a nursery run (835 settled) and a nursery just over one
+  block's room (874 recycles); TP under qemu with fault mode off (as on the 2DS; the nursery is off with fault mode)
+  850 -> 900, tier on: nursery off / on 78,626,764 instructions both, same frame, same state hash; a 16K-word nursery
+  (1,837 recycles) the same frame, 8 instructions off (timing). The first device round (1285-1294) hung TP and Wind
+  Waker: a deoptimised decided block was compiled again into the nursery while its links reached it through a patched
+  branch (fixed: a decided block's recompile stays decided); the qemu check had missed it because qemu ran with fault
+  mode, which turns the nursery off and check hoisting (the deopts) with it.
+- **Device, nursery off -> on (1295-1298), from 50 s:**
+
+  | Scene | Speed | Fetch stall cycles (M/s) | I-cache misses (k/s) | JIT compile (% of core 0) |
+  |---|---|---|---|---|
+  | TP heavy | 22.290 -> 22.105% (-0.8%) | 220.3 -> 211.6 | 8,434 -> 8,141 | 1.39 -> 2.08 |
+  | TP Ordon walk | 31.390 -> 30.840% (-1.8%) | 234.2 -> 226.4 | 8,594 -> 8,449 | 1.77 -> 2.64 |
+
+- **Reading:** the layout works: instruction-fetch stalls fall ~4% (~1% of core 0, about the tier's TP loss), I-cache
+  misses ~3%. The cost is compiling twice: 10,000-17,000 blocks settled or tenured per run (heavy 10,246 settled +
+  5,760 tenured), and compile time stays 0.7-0.9% of core 0 higher after warm-up. Off. Keeping the gain needs the
+  decided block moved, not compiled again (relocation records for every branch leaving a block: hot / cold, stubs,
+  linked exits).
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**

@@ -36,7 +36,7 @@ typedef struct {
     u64 faultChecked;  // fault mode: blocks compiled again with checked accesses after their cold code overflowed
     u64 tierRelaid, tierRelayouts;  // --tier-relayout: regions compiled from their remembered profile; relayout flushes
     u64 tierWordsRegion, tierWordsReplaced;  // OPT_TIER: host words (hot + cold) of the regions, and of the head and member blocks they replaced
-    u64 nurRecycles, nurRetired, nurSettled;  // --tier-nursery: nursery recycles, entries retired by them, decided blocks compiled again into the main area
+    u64 nurRecycles, nurRetired, nurSettled, nurTenured;  // --tier-nursery: nursery recycles, entries retired by them, decided blocks compiled again into the main area, warm pending blocks moved to it
     u64 tierInlines;  // OPT_TIER: leaves compiled in place of a bl inside regions
     u64 slowMirror;  // slow-path loads / stores whose address is in MEM1's uncached mirror (0xC0000000)  // ... / slot held another target / slot empty / other key  // indirect-table misses whose target is a polling-loop or idle block / was never dispatched
     u64 fastSwitches;  // indirect tables reassigned to a new block key (each clears 16 KB)

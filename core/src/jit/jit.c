@@ -165,6 +165,7 @@ struct Jit {
     Entry* table;          // pool of MAX_ENTRIES
     u32* buckets;          // DISPATCH_SIZE chain heads
     u32 nEntries;
+    u32 freeHead;          // --tier-nursery: entries a recycle retired, chained by next (NO_ENTRY: none), reused before nEntries grows
     bool fastmem;          // standard BATs: 0x80000000 and 0xC0000000 both map physical 0
     bool fastmemUser;      // ... in problem state (MSR[PR]) too
     bool lcMapped, lcMappedUser;  // 0xE0000000-0xE0003FFF map the locked cache (supervisor / problem state)
@@ -4676,6 +4677,9 @@ static bool emit_gpr_inline(Cg* c, u32 target, u32 pa, const GprHelper* h) {
 }
 
 static bool plain_has(Jit* j, u32 pc);
+static void tenure_add(Jit* j, u32 pc);
+static bool tenure_has(Jit* j, u32 pc);
+#define NUR_TENURE 4  // runs that make a pending block warm at a recycle (tenure_add)
 // The block compile_block is about to make will be pending (OPT_TIER: its tier decided after jit_tier_threshold runs).
 static bool will_pend(Jit* j, u32 pc, bool noLink) {
     return (j->opt & OPT_TIER) && !(j->opt & OPT_REGION) && !g_tierCompile && !noLink && !hle_is_hook(j->g, pc) && !jit_skip_on &&
@@ -4693,10 +4697,22 @@ static bool in_nursery(const Jit* j, BlockFn fn) {
 }
 // The nursery is full: every entry in it is retired (pending blocks, which nothing links to; they compile again when
 // next looked up) and it starts over. The generation moves on, so a link site the dispatcher holds into it is dropped.
+// Their entries leave the hash chains and go on the free list (a pool full of retired entries flushed the whole cache:
+// TP under qemu retired 387,000 in 50 fields against MAX_ENTRIES 65,536).
 static void nursery_recycle(Jit* j) {
-    for (u32 i = 0; i < j->nEntries; i++) {
-        Entry* e = &j->table[i];
-        if (e->pc != 1 && in_nursery(j, e->fn)) { e->pc = 1; j->stats.nurRetired++; }
+    for (u32 b = 0; b < DISPATCH_SIZE; b++) {
+        u32* link = &j->buckets[b];
+        while (*link != NO_ENTRY) {
+            u32 idx = *link;
+            Entry* e = &j->table[idx];
+            if (!in_nursery(j, e->fn)) { link = &e->next; continue; }
+            if (e->pc != 1 && e->pending && e->runs >= NUR_TENURE) { tenure_add(j, e->pc); j->stats.nurTenured++; }
+            if (e->pc != 1) j->stats.nurRetired++;
+            *link = e->next;
+            e->pc = 1;
+            e->next = j->freeHead;
+            j->freeHead = idx;
+        }
     }
     j->nurHot = j->nurHotStart;
     j->nurCold = j->nurColdStart;
@@ -5184,7 +5200,7 @@ static u32 zone_start(const Jit* j) { return j->coldStart - j->coldStart / 4; }
 
 static BlockFn compile(Jit* j, u32 pc, bool noLink) {
     u64 t0 = prof_begin();
-    bool nurOn = nursery_on(j), nur = nurOn && will_pend(j, pc, noLink);
+    bool nurOn = nursery_on(j), nur = nurOn && will_pend(j, pc, noLink) && !tenure_has(j, pc);
     if (nur && (j->coldStart - j->nurHot < BLOCK_MAX_WORDS || j->codeWords - j->nurCold < BLOCK_MAX_WORDS)) nursery_recycle(j);
     u32 blocksUsed = j->codeUsed, coldUsed = j->coldUsed, gen = j->gen;
     if (nur) {  // compile_block emits at codeUsed / coldUsed: pointed into the nursery for this one
@@ -6246,7 +6262,7 @@ static u32* plain_slot(Jit* j, u32 pc) {
     if (!j->plainSet) return NULL;
     u32 h = (pc >> 2) * 2654435761u >> 18;
     for (u32 k = 0; k < 32; k++, h = (h + 1) & 16383)
-        if (j->plainSet[h] == pc || !j->plainSet[h]) return &j->plainSet[h];
+        if ((j->plainSet[h] & ~3u) == pc || !j->plainSet[h]) return &j->plainSet[h];  // (pc | 1: tenured, tenure_add)
     return NULL;  // full here: not remembered
 }
 static void plain_add(Jit* j, u32 pc) {
@@ -6255,13 +6271,18 @@ static void plain_add(Jit* j, u32 pc) {
     if (s) *s = pc;
 }
 static bool plain_has(Jit* j, u32 pc) { u32* s = plain_slot(j, pc); return s && *s == pc; }
+// --tier-nursery: a pending block a recycle found warm (it ran at least NUR_TENURE times) is compiled into the main area
+// from then on, still pending: retired and compiled again at every recycle it never reached its decision (TP under qemu
+// compiled 412,000 blocks in 50 fields against 25,000 without the nursery, and got a quarter of the regions).
+static void tenure_add(Jit* j, u32 pc) { u32* s = plain_slot(j, pc); if (s && *s != pc) *s = pc | 1; }
+static bool tenure_has(Jit* j, u32 pc) { u32* s = plain_slot(j, pc); return s && *s == (pc | 1); }
 
 // Finds the block for (pc, msrBits), compiling it on first use; NULL when it cannot be compiled.
 static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     u32* head = &j->buckets[bucket_of(pc, msrBits)];
     for (u32 i = *head; i != NO_ENTRY; i = j->table[i].next)
         if (j->table[i].pc == pc && j->table[i].msrBits == msrBits) return &j->table[i];
-    if (j->nEntries == MAX_ENTRIES) { jit_invalidate_all(j); j->stats.flushes++; }
+    if (j->nEntries == MAX_ENTRIES && j->freeHead == NO_ENTRY) { jit_invalidate_all(j); j->stats.flushes++; }
     Gekko* g = j->g;
     {  // statistics: a block compiled again at a PC compiled since the last flush means a lookup missed it
         u32 w = (pc & 0x01FFFFFFu) >> 2;
@@ -6291,7 +6312,9 @@ static Entry* lookup(Jit* j, u32 pc, u32 msrBits) {
     if (!fn) return NULL;
     // compile() may have flushed the whole cache (code space full), which also emptied the chains.
     head = &j->buckets[bucket_of(pc, msrBits)];
-    u32 pa, idx = j->nEntries++;
+    u32 pa, idx;
+    if (j->freeHead != NO_ENTRY) { idx = j->freeHead; j->freeHead = j->table[idx].next; }  // (a slot a recycle freed)
+    else idx = j->nEntries++;
     Entry* en = &j->table[idx];
     en->pc = pc; en->msrBits = msrBits; en->fn = fn;
     en->idle = gk_translate(g, pc, false, false, &pa, false) && pa + 4 <= j->ramSize &&
@@ -6327,7 +6350,11 @@ static void deopt_block(Jit* j, u32 pc, u32 key) {
     u32* oldFn = (u32*)(void*)old->fn;
     u32 gen = j->gen;
     old->pc = 1;  // never a guest PC: lookup compiles the block again
+    // A decided block stays decided: its links reach the new block through the B below, so with --tier-nursery it must
+    // not land in the nursery (a recycle would leave them jumping into reused code: 2DS jobs 1286-1292 hung).
+    g_forceDecided = !old->pending;
     Entry* en = lookup(j, pc, key);
+    g_forceDecided = false;
     if (!en || j->gen != gen) return;
     s32 off = (s32)((const u32*)(void*)en->fn - (oldFn + 2));
     *oldFn = 0xEA000000u | ((u32)off & 0xFFFFFF);  // B new block
@@ -6598,16 +6625,17 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
             tier_block(j, pc, key);
             stub_check(j, "tier_block", pc);
             en = lookup(j, pc, key);
-            // --tier-nursery: a block decided plain is still in the nursery, where nothing may link to it: compiled again
-            // into the main area (a region was compiled there already)
-            if (en && !en->pending && nursery_on(j) && in_nursery(j, en->fn)) {
-                en->pc = 1;
-                plain_add(j, pc);
-                g_forceDecided = true;
-                en = lookup(j, pc, key);
-                g_forceDecided = false;
-                j->stats.nurSettled++;
-            }
+            if (!en) break;
+        }
+        // --tier-nursery: a decided block still in the nursery (decided plain just now) may not be linked or put in the
+        // indirect table, which a recycle would leave pointing into reused code: compiled again into the main area.
+        if (!en->pending && nursery_on(j) && in_nursery(j, en->fn)) {
+            en->pc = 1;
+            plain_add(j, pc);
+            g_forceDecided = true;
+            en = lookup(j, pc, key);
+            g_forceDecided = false;
+            j->stats.nurSettled++;
             if (!en) break;
         }
         // Idle and polling-loop blocks are only ever entered from here; so are pending ones (OPT_TIER), until decided.
@@ -6706,6 +6734,7 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     j->nurHotStart = j->nurHot = j->coldStart - (jit_debug_nursery_words ? jit_debug_nursery_words : j->coldStart / 4);  // --tier-nursery
     j->nurColdStart = j->nurCold = j->codeWords - (jit_debug_nursery_words ? jit_debug_nursery_words : (j->codeWords - j->coldStart) / 4);
     j->table = calloc(MAX_ENTRIES, sizeof(Entry));
+    j->freeHead = NO_ENTRY;
     j->compiledPc = calloc(1, (24u << 20) / 32);  // 768 KB; NULL just disables the statistic
 #ifndef __3DS__
     if (getenv("JIT_REGSTAT")) {
@@ -6987,6 +7016,7 @@ void jit_invalidate_all(Jit* j) {
 #endif
     memset(j->buckets, 0xFF, DISPATCH_SIZE * sizeof(u32));
     j->nEntries = 0;
+    j->freeHead = NO_ENTRY;
     memset(j->codePages, 0, sizeof j->codePages);
     j->codeUsed = j->stubWords;
     j->coldUsed = j->coldStart;

@@ -603,6 +603,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   Not micro-TLB (aligned buffer: misses /9, speed unchanged). Region zone and relayout (flush + recompile from
   remembered profiles) measured and not kept. Re-evaluate trigger: a way to reuse the replaced blocks' space without a
   flush, or a scene where the tier's stalls are not paid.
+- **Nursery (2026-10-24, `--tier-nursery`, off):** pending blocks in a recycled area, decided code packed in the main
+  area. Exact (fuzzer, qemu). Fetch stalls -4% (heavy 220 -> 212 M cycles/s), but every decided block compiled twice:
+  compile time +0.7-0.9% of core 0, speed heavy -0.8%, Ordon -1.8% (jobs 1295-1298). Next form: move a decided block
+  instead of compiling it again.
 - **Re-evaluate when:** a prototype demonstrates coverage and exact event/fault semantics without code growth
   consuming the gain. The selected profile subset is only 4.84%; +15-30% core 0 is conditional on roughly 35-61%
   coverage at the derived 1.609x subset gain, not a measured gameplay result.
