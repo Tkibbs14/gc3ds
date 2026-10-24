@@ -101,6 +101,7 @@ bool host_jit_enable(System* s) {
         if (atoi(getenv("GC3DS_TIER")) > 1) jit_tier_threshold = (u32)atoi(getenv("GC3DS_TIER"));
     }
     if (getenv("GC3DS_NURSERY")) jit_tier_nursery = true;  // --tier-nursery (with GC3DS_TIER)
+    if (getenv("GC3DS_NURSERYMOVE")) jit_nursery_move = atoi(getenv("GC3DS_NURSERYMOVE")) != 0;  // --nursery-move
     if (getenv("GC3DS_NURSERYWORDS")) {  // a small nursery (words), so a whole-game check recycles it often
         jit_debug_nursery_words = (u32)atoi(getenv("GC3DS_NURSERYWORDS"));
         jit_invalidate_all(g_hostJit);  // (the bounds are set at a flush)

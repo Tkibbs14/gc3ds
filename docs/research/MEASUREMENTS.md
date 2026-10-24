@@ -2350,7 +2350,11 @@ done
   `lit()`, a nursery block carries a relocation record, and a decided block's words are copied to the main area with
   each branch re-aimed. Exact: fuzzer 0 fails (835 moved; plant 29, branches out of a moved block left unaimed,
   detected), the PC / qemu builds trap on a moved block's old copy, TP under qemu 850 -> 900 identical with 6,791 and
-  5,146 blocks moved. Device (separate whole runs; from 50 s / **from 100 s**, the steady state: compile time is 2x for
+  5,146 blocks moved. (The final version with a 16,384- or 20,000-word nursery ends 8 guest instructions early at
+  fields 900, 905 and 912 alike, with the same last frame and interpreted count, moves on or off
+  (`GC3DS_NURSERYMOVE=0`): `--frames` stops at the next block exit, and its regions differ there. A run that stops
+  at another instruction is not a divergence by itself; one that does not come back identical at a later field is.)
+  Device (separate whole runs; from 50 s / **from 100 s**, the steady state: compile time is 2x for
   the first 40 s with the nursery and back to baseline by 100 s):
 
   | Version (jobs) | TP heavy | TP Ordon walk |
