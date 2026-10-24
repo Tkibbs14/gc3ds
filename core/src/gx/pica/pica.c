@@ -1330,7 +1330,7 @@ static u32 tlut_bytes(u32 fmt) { return fmt == 8 ? 32 : fmt == 9 ? 512 : 32768; 
 // stamps), [5] re-hashes, [6] of them clean by stamps yet changed (what TF_STAMPS alone would miss).
 enum { TF_INDEX = 1, TF_STAMPS = 2, TF_CHECK = 4 };
 #define TEXIDX_BITS 10
-static volatile u32 g_texFast;
+static volatile u32 g_texFast = TF_STAMPS;  // on by default since 2026-10-24: TP heavy +0.6-0.8%, Mario Party 4 +4.2% (jobs 1210-1228)
 u64 g_texFastStats[7];
 static PTex* g_texIdx[1u << TEXIDX_BITS];
 void pica_set_texfast(u32 bits) { g_texFast = bits; }
