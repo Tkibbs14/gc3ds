@@ -19,6 +19,9 @@
 > **The minimap's renderingDecoration as a port (2026-10-24, bit 8, on; commit 3426f0a + the stream):** native GX
 > work, its two game-logic leaves in the interpreter. Exact (2DS checks, 0 differed); **Ordon +3.1%**, heavy area
 > -0.4% (the GX thread limits the decoration's tiny draws there; jobs 1399-1404). Ordon now ~34.1%.
+> **Ports and the timeline (2026-10-25, C41):** the HUD text port (bit 10) is exact and cuts ~3% of Ordon's core 0 but
+> reads -4.3%; its cycle charge at 100 / 165 / 330 gives 30.9 / 32.7 / 27.9% against 34.1% off. A port's timing can move
+> speed more than its work; the multi-matrix load (bit 9, -2.9%) likely too. Both off. Next: find the mechanism.
 > **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a

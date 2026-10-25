@@ -744,3 +744,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   the copy lands.
 - **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer
   measurement shows uncached bursts at well under a miss's cost.
+
+## C41. Ports change the emulated timeline, and the timeline moves speed more than the work (2026-10-25)
+
+- **Status:** open (finding). Affects how every port and stand-in is judged.
+- **Evidence:** the HUD text port (bit 10) is exact and removes ~3% of Ordon's core 0, yet Ordon reads -4.3%; with its
+  cycle charge (kInsScale) at 100 / 165 / 330 Ordon reads 30.89 / 32.70 / 27.90% against 34.10% off, each repeatable
+  to ~0.1% (MEASUREMENTS.md "HUD text as a port, and the ports' cycle charge"). Core 0's busy share is unchanged; the
+  game does more work per frame. The multi-matrix load port's -2.9% fits the same pattern.
+- **Hypothesis:** TP's time-based logic (timebase reads: animation steps, camera, audio frames per emulated second) does
+  more per frame when a frame's emulated time shifts; a port's charge is an estimate of the guest instruction count,
+  so every port moves the timeline a little, and some placements cross a threshold.
+- **Next:** instrument per emulated second what the game does (game frames, audio updates, actor executes) with a port
+  on and off; compare the JIT's own charge for a function with the interpreter's count (the calibration reference);
+  consider charging ports by the guest path's exact count where it can be had (check mode gives it per call).
+- **Re-evaluate when:** a port or stand-in measures a loss its own cost does not explain.

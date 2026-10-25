@@ -2474,6 +2474,31 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### HUD text as a port, and the ports' cycle charge (`--port-hooks` bit 10, off; jobs 1415-1432, 2026-10-24/25)
+
+- **What (commit e90ac53):** J2DTextBoxEx::drawSelf with J2DPrint (construction, printReturn, both parse passes:
+  widths, wrap, bindings) and JUTResFont (code map, widths, page loads with GXInitTexObj / GXInitTexObjLOD, the
+  character quads), natively. Census first (jobs 1415-1416): every HUD string plain ASCII, ~4 characters, one font class.
+- **Exact:** 2DS `--port check` (jobs 1421-1422): Ordon 300 and heavy area 200 calls per 10 s, all taken, 0 differed,
+  ~600 font page changes per 10 s among them.
+- **Speed (separate whole runs, from 100 s):** heavy area even (23.23 / 23.26%); **Ordon 34.09 -> 32.63% (-4.3%)**
+  (jobs 1423-1426), although core 0's guest HUD work fell (J2DPane::draw inclusive 21.0 -> 14.5%, the text subtree's
+  5.2% replaced by 2.1% native) and core 0 stayed busy the same share of the time (joint states ~88% running).
+- **The ports' cycle charge decides more than their work (Ordon, port on, the text port's kInsScale):**
+
+  | Charge (jobs) | Ordon |
+  |---|---|
+  | port off (1423, 1425, 1429) | 34.10 / 34.08 / 34.10% |
+  | 100 (1431) | 30.89% |
+  | 165, calibrated to the interpreter's count (1424, 1426, 1432) | 32.64 / 32.63 / 32.70% |
+  | 330 (1430) | 27.90% |
+
+  Each setting repeats to ~0.1%, but the response is not monotonic and far larger than the ~1.3% of emulated
+  instructions the text calls are: the emulated timeline a port produces changes how much work the game does per
+  frame (inclusive shares outside the HUD grew ~1% each with the port on). Likely the game's own time-based logic
+  (it reads the timebase); not pinned down. **Consequence for every port:** a measured loss or gain can come from the
+  timeline, not the work; the multi-matrix load's -2.9% (above) is probably the same effect. Kept off; REDESIGN C41.
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**
