@@ -12,7 +12,7 @@ games. This file records what the measurements say, what is built in which order
   0 ~11% faster** (core 0 speed 21.2 -> 23.6%) and the speed column could not show it. The HANDOFF's earlier lesson
   ("removing ~7 executed instructions per memory access did not move speed, because core 0 is bound by stalls") was a
   misreading of the same data.
-- **Judge JIT work by core 0's own speed**, `speed / (1 - gxwait)`, which `tools/perf_heavy.py` now prints, within one
+- **Judge JIT work by core 0's own speed**, `speed / (1 - gxwait)`, which `core/tools/perf_heavy.py` now prints, within one
   run (`--ab`). TP's speed itself will rise only to where the GX thread saturates (~21% now -> roughly 25-26%); the rest
   of a core-0 gain becomes headroom that pays off once core 2 is cheaper, and on scenes and games with less GX work.
 - **Where core 0's modelled cycles go** (`tools/arm11_sched.py --cycles` over a `JIT_SCHEDDUMP` of TP's cutscene, 40

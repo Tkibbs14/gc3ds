@@ -6,8 +6,8 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs the Ordon walk at ~31% of full speed and Ordon's heaviest area at ~22.3% (the title's cutscene
-~36.7%, its later Link / Epona stretch ~24%, the THP movie ~13.3%; 24 October 2026).
+test. Today it runs the Ordon walk at ~34% of full speed and Ordon's heaviest area at ~23.5% (25 October 2026; the title's
+cutscene ~36.7%, its later Link / Epona stretch ~24%, the THP movie ~13.3%, last measured 24 October).
 
 ## Rules
 
@@ -28,7 +28,7 @@ test. Today it runs the Ordon walk at ~31% of full speed and Ordon's heaviest ar
    update its status. A rejected idea keeps the measurement that rejected it, so nobody re-runs it blind.
 5. **Off by default until measured.** New optimizations come behind a switch (`jit_set_opt` bits, `--name on|off`,
    `--ab name`), off by default, and become default only after a hardware A/B shows a gain and the checks pass (the
-   owner, 2026-10-24: a measured, exact gain is turned on without asking; crash risks and trade-offs still go to him).
+   owner, 2026-10-24: a measured, exact gain is turned on without asking; crash risks and trade-offs still go to the owner).
 6. **Small, reviewable changes.** One idea per pull request, with its checks and its measurement in the description.
 
 ## Repository map
@@ -86,6 +86,7 @@ on the console.
 | TEV / combiners | `bash core/tests/tev/run_tev_tests.sh` |
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
+| Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings |
 
 Every check that compares has a planted-bug self-test; a check whose self-test cannot fail proves nothing (the first
@@ -133,18 +134,19 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (24 October 2026, jobs 1280-1284):** Ordon walk 31.38%, the heavy area 22.32%, Mario Party 4 14.87%,
-  Wind Waker 20.30%; the title: cutscene (25-150 s) 36.73%, later stretch 24.05%, movie 13.29% (the cutscene ends at
-  ~150 s: windows must follow it). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (25 October 2026):** Ordon walk 34.10% (jobs 1423 / 1425 / 1429), the heavy area ~23.5% (jobs
+  1393-1401). Last measured on 24 October (jobs 1280-1284, before that day's ports): Mario Party 4 14.87%, Wind Waker
+  20.30%; the title: cutscene (25-150 s) 36.73%, later stretch 24.05%, movie 13.29% (the cutscene ends at ~150 s:
+  windows must follow it). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
   walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay
   ~7% + path ~10-11% of core 0 there, plus the native callback; the cutscene's moving shadows cost under 0.2%.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
-  J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, on since 2026-10-24: heavy
-  area +2.7%), the J2DPane::draw walk all of J3DMaterial::diff (on since 2026-10-24: heavy area and Ordon +3.0%) and J3DSys::reinitGX (on since 2026-10-24:
-  Ordon +3.9%) and the minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks
-  503`; bit 3 `__GXSendFlushPrim` is built and off). Each is checked
+  J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7%), the
+  J2DPane::draw walk, all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%) and the
+  minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 503`); bits 3
+  (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off. Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
@@ -165,6 +167,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b) and its fast form (`trifast`, both
   chains in registers: later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%), the shadow callback natively, read
   stage by stage (`shdwcb`, later stretch +1.1%, Ordon +0.7%).
+- **Added 24-25 October (MEASUREMENTS.md, HANDOFF):** ports, on: the J3D lights with a one-copy commit (heavy area
+  +2.7%), all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%), the minimap's
+  renderingDecoration (Ordon +3.1%, heavy area -0.4%: GX-thread bound there). Built, exact, off: the skinned-shape
+  matrix load (bit 9, Ordon -2.9%) and HUD text with J2DPrint / JUTResFont (bit 10, Ordon -4.3%). **A port's cycle
+  charge can move speed more than its work** (REDESIGN_CANDIDATES C41: the text port's charge at 100 / 165 / 330 reads
+  30.9 / 32.7 / 27.9% against 34.1% off), so judge every port with separate whole runs, never by its own cost. The
+  FIFO mirror in guest RAM costs Ordon up to 1.6% (C40, parked: no exact way yet).
 - **Added 22-24 October (details in HANDOFF):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
   +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
   EFB copies hashed only when reused (`--copystamp`, on: TP +0.7-0.9%), the J2D pane walk (on: Ordon +2.2%). Built, off:
@@ -173,7 +182,7 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
   tool).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
-  __GXSendFlushPrim and J3D light ports (neutral, separate runs),
+  __GXSendFlushPrim port (neutral, separate runs; the J3D light port turned positive with its one-copy commit),
   the cXyz operator stand-ins (`psxyz`, heavy area -0.9%), and re-tested with separate runs on 10-19 and 10-20: crstub
   (-1.0%), befloat (-0.8%), calls (-1.2%), fastfloat (-0.6%), relayout (-7.6%), traces (-5.1%), vw2 (-2.3%), steal,
   sched off, dlcache, vwmem 256 (-0.65 to -0.75%), pipeps, icbi, qbig, feeddirect, cmdpld (even),
@@ -186,10 +195,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions (HANDOFF.md's current state orders them):** the library ports' own cost (Ordon: building their
-  context 7-8% of core 0, committing 4-5%); larger ports where a whole subtree is replaced (J2DPane::draw, text, other
-  TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`), since small functions lose as entry-hook
-  stand-ins; the ShdwDraw stand-in's code footprint (C32b); core 0: less hot code per guest instruction, longer blocks;
+- **Open directions (HANDOFF.md's current state orders them):** C41 first, why a port's cycle charge moves speed
+  more than its work (it decides how every later port is judged, and may turn the text and multi-matrix ports
+  positive); the library ports' own cost (Ordon: building their context 7-8% of core 0, committing 4-5%); larger
+  ports where a whole subtree is replaced (other TEV block types, J3D packet draw;
+  `docs/research/LIBRARY_PORTS.md`), since small functions lose as entry-hook stand-ins; the ShdwDraw stand-in's code footprint (C32b); core 0: less hot code per guest instruction, longer blocks;
   GPU-resident vertex data for repeated display lists (C1); frame skip as a user option (guards for fades in place;
   game frames +50-60%).
 

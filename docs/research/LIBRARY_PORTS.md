@@ -50,12 +50,12 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
 4. Then J3D's packet draw (J3DDrawBuffer, J3DShapePacket::draw, J3DMaterial) and the matrix work, and the same JSystem
    libraries in other EAD games (GAMES.md: Wind Waker, Sunshine, Pikmin share JSystem).
 
-## Status (2026-10-18)
+## Status (2026-10-25; default `--port-hooks 503` = bits 0-2, 4-8)
 
 - **Ported** (core/src/cpu/port_j2d.c; MEASUREMENTS.md, "The first library port"), each checked exact on the device
   (`--port check` runs on the 2DS as well as the PC; `--port plant` proves it reports a difference):
   J2DMaterial::setGX (Ordon +3.6-5.9%), J2DPictureEx::drawSelf (Ordon +4.5% more), J3DShapeMtxConcatView's matrix
-  load (Ordon +5.8%; the title neutral), all on by default (`--port-hooks 7`; `--ab port|pichook|j3dhook`). Their
+  load (Ordon +5.8%; the title neutral), all on by default (bits 0-2; `--ab port|pichook|j3dhook`). Their
   heavy-area A/Bs read -0.5 to -0.7%, but separate runs give the three together +2.0% there (ports off 20.71%
   against 21.13%, jobs 539-541). Not yet:
   J2DTevBlock1/4/8/16 (the title screen uses 16), indirect stages.
@@ -71,9 +71,11 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   port").** It confirms the rule: the whole subtree pays, the one leaf alone did not. **J3DSys::reinitGX then too (bit 7,
   on by default): Ordon +3.9%, heavy area even (MEASUREMENTS.md "J3DSys::reinitGX as one native port").** The minimap's
   renderingDecoration (bit 8, on: Ordon +3.1%, heavy area -0.4%). **J3DShapeMtxMultiConcatView::load (bit 9) lost
-  Ordon 2.9% although the ports' own time fell (cause not established): off.** Measure ports
-  with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
-- **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
+  Ordon 2.9% although the ports' own time fell: off.** **HUD text, J2DTextBoxEx::drawSelf with J2DPrint and
+  JUTResFont (bit 10, 2026-10-25): exact, Ordon -4.3%, off;** its cycle charge alone moves Ordon between 27.9% and
+  32.7% (REDESIGN_CANDIDATES C41, MEASUREMENTS.md "HUD text as a port, and the ports' cycle charge"), which likely
+  explains bit 9 too. Measure ports with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
+- **Next candidates** (jobs 503-504 profiles; J2DPane::draw and text since done, above): first C41, then the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
   stand-in (~38%) is the lever, not a new port.
 - **The J2D pane walk, scoped (2026-10-20; jobs 630-631 profiles, 683-684 `--panestat on`):** J2DPane::draw is 25.4% of
@@ -135,7 +137,7 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
     frames 9.26 -> 9.46 a second), heavy area 22.39 / 22.40 -> 22.49 / 22.49% (+0.4%: the GX thread is its limit).
     ~3,070 walks per 10 s in Ordon at ~189 us each. **On by default** (James, 2026-10-23); `--port-hooks 7` without.
   - **Next in J2D:** J2DTextBoxEx (J2DPrint, JUTResFont) so subtrees with text are walked too (~1,800 walks a 10 s
-    in Ordon are refused, most for a text box or a root).
+    in Ordon are refused, most for a text box or a root). Built 2026-10-25 as bit 10, off until C41 is understood.
 - **Guest effects a port must copy, found by the check:** registers the ABI does not promise but the guest code leaves
   changed (PSMTXConcat's stfd / lfd keep ps0 only, so ps1 of f14, f15, f31 change), and exceptions the guest code
   would take (MSR.FP off: the OS's lazy FP switch).
