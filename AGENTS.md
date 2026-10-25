@@ -143,7 +143,8 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, on since 2026-10-24: heavy
   area +2.7%), the J2DPane::draw walk all of J3DMaterial::diff (on since 2026-10-24: heavy area and Ordon +3.0%) and J3DSys::reinitGX (on since 2026-10-24:
-  Ordon +3.9%), on by default (`--port-hooks 247`; bit 3 `__GXSendFlushPrim` is built and off). Each is checked
+  Ordon +3.9%) and the minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks
+  503`; bit 3 `__GXSendFlushPrim` is built and off). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1

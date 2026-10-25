@@ -108,6 +108,7 @@ typedef struct {
     u8 pipe[PIPE_CAP];
     u8* pp;                // the next pipe byte
     u32 pn;                // bytes (when the call has run)
+    u32 pnSent;            // bytes already sent while it ran (the minimap decoration streams them)
     u32 bpsn, dirty;       // bpSentNot's last value (~0: not set) and the dirty bits set
     u32 log[LOG_MAX][2];   // other stores: address, value (in order; reads see the newest)
     u32 nlog;
@@ -1869,6 +1870,16 @@ static void map_deco(Pc* c, Gekko* g, u32 self, u32 line) {
         // (room for this point: each GXBegin after a BP write also sends __GXSendFlushPrim's strip, so a long line
         // overran the 8 KB pipe buffer, which the writers do not bound: the heavy area crashed, job 1381)
         if ((u32)(c->pp - c->pbase) + 2600 > c->pcap) { give_up(c, 1); return; }  // (two strips of up to 1,027 bytes)
+        // Streamed: once the first point went through, every later one repeats its state changes and cannot give up,
+        // so the pipe bytes go out as they are made (not in check mode, which sends nothing). Sent whole at the commit,
+        // ~9 KB a call in the heavy area filled the GX thread's ring at once: core 0 waited for it 2.6 -> 4.4% of its
+        // time and the scene lost 0.6% (jobs 1393-1396) while Ordon gained.
+        if (i > 0 && g_portMode == 1 && g_ppipe && (u32)(c->pp - c->pbase) >= 1024) {
+            u32 k = (u32)(c->pp - c->pbase);
+            g_ppipe(g_pctx, c->pbase, k);
+            c->pnSent += k;
+            c->pp = c->pbase;
+        }
         if ((s32)i < (s32)n - 1) {  // the line to the next point
             gx_set_tev_color_in(c, 0, 15, 15, 15, 2); tev_stage0_op(c);
             gx_set_tev_alpha_in(c, 0, 7, 7, 7, 6); gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);
@@ -1898,7 +1909,7 @@ static Pc g_pc;
 // Runs the hooked function's port into a fresh context (nothing written to the guest). false: not taken (c->fail).
 static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->g = g;
-    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = c->flushLen = c->scAt = 0;
+    c->pn = c->nlog = c->n = c->dirty = c->gdN = c->nundo = c->flushLen = c->scAt = c->pnSent = 0;
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
@@ -1982,8 +1993,9 @@ static inline int hook_of(u32 pc) {
 // measured (--ab lighthook); on since 2026-10-24 with its one-copy commit (heavy area +2.7%, jobs 1315-1322).
 // The pane walk (bit 5): Ordon +2.2%, heavy area +0.4%, exact in check mode (jobs 1080-1089; James 2026-10-23: on).
 u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP | 1u << PORT_LIGHTS | 1u << PORT_PANEWALK |
-                  1u << PORT_MATDIFF | 1u << PORT_REINITGX;  // (J3DMaterial::diff: heavy area and Ordon +3.0%, jobs
-                  // 1340-1347; J3DSys::reinitGX: Ordon +3.9%, heavy area even, jobs 1363-1370; both on 2026-10-24)
+                  1u << PORT_MATDIFF | 1u << PORT_REINITGX | 1u << PORT_DECO;  // (J3DMaterial::diff: heavy area and Ordon
+                  // +3.0%, jobs 1340-1347; J3DSys::reinitGX: Ordon +3.9%, heavy area even, jobs 1363-1370; the minimap
+                  // decoration: Ordon +3.1%, heavy area -0.4%, GX-thread bound there, jobs 1399-1404; all on 2026-10-24)
 bool port_is_hook(u32 pc) {
     int h = hook_of(pc);
     return g_portMode && g_pm && h >= 0 && (g_portHooks >> h & 1);
@@ -2134,7 +2146,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 100 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
@@ -2167,7 +2179,7 @@ u32 port_run_hook(Gekko* g) {
         hs->tCommit += g_profClock() - t1;
     }
     hs->calls++;
-    hs->pipe += c->pn;
+    hs->pipe += c->pn + c->pnSent;
     g->pc = g->lr;
     return c->n ? c->n * kInsScale[hook] / 100 : 1;
 }

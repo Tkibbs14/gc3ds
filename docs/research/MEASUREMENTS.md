@@ -2435,6 +2435,31 @@ done
 - **Separate whole runs, interleaved, from 100 s (hooks 119 against 247):** heavy area 23.577 / 23.585 -> 23.569 /
   23.585% (even); **Ordon 32.288 / 32.362 -> 33.591 / 33.561% (+3.9%), frames 9.607 -> 10.049 (+4.6%)**. On by default.
 
+### The minimap's renderingDecoration as a port (`--port-hooks` bit 8, 503 with the defaults; jobs 1381-1404, 2026-10-24)
+
+- **What (commit 3426f0a):** dRenderingFDAmap_c::renderingDecoration (4.4% of the heavy area's core 0 inclusive) draws a
+  map line's border point by point, each point a line and a point with the TEV set again around them (~16,400 guest
+  instructions and ~9 KB of pipe bytes a call in the heavy area, ~7,300 and 3.5 KB in Ordon). The GX work is native;
+  its two virtual leaves (line width and colour: the stage's display type, the visited rooms, the map's settings) run
+  in the interpreter on the side (`port_guest_call`).
+- **Exact:** 2DS `--port check`: Ordon 240 calls per 10 s (job 1382), heavy area 160 and then 239 with the larger buffer
+  (jobs 1383-1384), 0 differed. The first heavy-area check crashed the 2DS (job 1381, it restarted itself): every
+  GXBegin after a BP write also sends __GXSendFlushPrim's strip, and long lines overran the 8 KB pipe buffer, which the
+  writers do not bound. Now a room check per point, the pane walk's 64 KB buffer, and the bytes streamed once the
+  first point went through (no give-up can follow it).
+- **Separate whole runs, from 100 s (hooks 247 against 503):**
+
+  | Version (jobs) | Heavy area | Ordon walk |
+  |---|---|---|
+  | first (1385-1392) | 23.49 -> 23.41% (-0.4%) | 33.37 -> 33.97% (+1.8%) |
+  | timing scale 115 (1393-1398) | 23.51 -> 23.37% (-0.6%) | 33.33 -> 34.11% (+2.3%) |
+  | **streamed (1399-1404)** | **23.566 -> 23.475% (-0.4%)** | **33.13 -> 34.16% (+3.1%)** |
+
+  In the heavy area core 0 waits for the GX thread 2.2 -> 4.0% of its time with the port, streamed or not: the
+  minimap's thousands of tiny line and point draws make the GX thread the limit there, so a faster core 0 only waits.
+  On by default (net gain, largest in the walk); the heavy area's -0.4% is a GX-thread cost (the decoration's draws),
+  which is where to look next for it.
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**

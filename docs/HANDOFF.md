@@ -16,6 +16,9 @@
 > GXFlush's sc after the commit. Exact (PC 2,626 calls, 2DS jobs 1361-1362, 0 differed); **Ordon +3.9%** (32.33 ->
 > 33.58%, frames +4.6%), heavy area even (jobs 1363-1370). A memo cannot work (every call missed, jobs 1359-1360).
 > Next by the profile: the minimap (renderingAmap, 6-7%), joint animation (recursiveCalc, 12-13%), particles (5-8%).
+> **The minimap's renderingDecoration as a port (2026-10-24, bit 8, on; commit 3426f0a + the stream):** native GX
+> work, its two game-logic leaves in the interpreter. Exact (2DS checks, 0 differed); **Ordon +3.1%**, heavy area
+> -0.4% (the GX thread limits the decoration's tiny draws there; jobs 1399-1404). Ordon now ~34.1%.
 > **10-20 state.** Gameplay is locked to two VI fields a picture (frames a second =
 > fields_s / 2); the later stretch mixes two- and three-field pictures. New defaults on 10-20 (separate whole runs):
 > the __GXSendFlushPrim stand-in (`--psflush`; heavy area +1.7%, Ordon +0.8%) and the ShdwDraw triangle path as a
