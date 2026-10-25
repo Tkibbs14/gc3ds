@@ -1908,7 +1908,7 @@ static void map_deco(Pc* c, Gekko* g, u32 self, u32 line) {
 // set, GXSetArray(GX_POS_MTX_ARRAY) and the concat-view load through the pipeline's member pointer, which was the PNGP
 // port hooked once per matrix (~7,000 calls a second in the heavy area, each paying a hook's entry and commit). The LOD
 // path and any pipeline function other than loadMtxConcatView_PNGP give up. Off: Ordon -2.9% although the ports' own
-// time fell (jobs 1407-1414): the dispatcher's share rose, most likely the region tier no longer inlining it. ----
+// time fell (jobs 1407-1414; cause not established, MEASUREMENTS.md). ----
 enum { A_J3D_MULTILOAD = 0x80313FA4, A_J3D_LOADPIPE = 0x803CDA20 };
 static void gx_set_array(Pc* c, u32 attr, u32 base, u32 stride) {  // GXSetArray 0x8035BB28
     if (attr == 25) attr = 10;

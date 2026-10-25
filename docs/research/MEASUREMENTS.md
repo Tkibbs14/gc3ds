@@ -2469,11 +2469,10 @@ done
   33.17% (-2.9%)**, frames 10.22 -> 9.94.
 - **Why it loses although the ports' own time fell:** Ordon's port time went from ~53 ms/s (PNGP 7,357 calls at 7.26
   us) to ~43 ms/s (1,051 multi-loads at 36.3 us plus 519 PNGP calls), but time in the dispatcher rose 6.1 -> 7.4% of
-  core 0 and core 0 waited for the GX thread 2.3 -> 3.0%. Most likely the region tier: J3DShapePacket::drawFast's
-  loop no longer reaches load's code inline once its entry is a hook. Not chased further; off.
-- **Lesson:** a hook at a function the region tier was compiling into its caller can cost more than the work it
-  removes; measure a port at a callee of hot loops with the dispatcher's share (`# core0 outside compiled code`) next
-  to speed.
+  core 0 and core 0 waited for the GX thread 2.3 -> 3.0%. Cause not established: the dispatcher's share probably
+  counts the hooks' own C code too (dispatches a second were unchanged, ~12,000), and the region tier no longer
+  inlining load is one candidate. Not chased further; off.
+- **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 

@@ -71,8 +71,7 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   port").** It confirms the rule: the whole subtree pays, the one leaf alone did not. **J3DSys::reinitGX then too (bit 7,
   on by default): Ordon +3.9%, heavy area even (MEASUREMENTS.md "J3DSys::reinitGX as one native port").** The minimap's
   renderingDecoration (bit 8, on: Ordon +3.1%, heavy area -0.4%). **J3DShapeMtxMultiConcatView::load (bit 9) lost
-  Ordon 2.9% although the ports' own time fell (the dispatcher's share rose): off; a hook at a callee the region tier
-  compiled inline can cost more than it saves.** Measure ports
+  Ordon 2.9% although the ports' own time fell (cause not established): off.** Measure ports
   with separate runs, not A/Bs (MEASUREMENTS.md "The frame-rate line was broken").
 - **Next candidates** (jobs 503-504 profiles): J2DPane::draw (~1.2% of Ordon's core 0), the J3D paths still calling
   GXLoadPosMtxImm (1.4%) and __GXSendFlushPrim (1.1%), JUTResFont::drawChar_scale; for the title's later stretch, the ShdwDraw
