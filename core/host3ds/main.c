@@ -2755,6 +2755,27 @@ static void remote_mode(const char* selfPath) {
             }
             continue;
         }
+        // --switch PATH: start another program (N643DS, the N64 emulator: sdmc:/3ds/n643ds.3dsx), which takes its own
+        // relay jobs ("@n643ds" ones) and has the same job to come back (relay.sh switch sdmc:/3ds/gc3ds.3dsx there).
+        const char* sw = strstr(job.args, "--switch ");
+        if (sw) {
+            char path[160], note[200];
+            sscanf(sw + 9, "%159s", path);
+            FILE* pf = fopen(path, "rb");
+            bool ok = pf != NULL;
+            if (pf) fclose(pf);
+            ok = ok && relaunch_into(path);
+            snprintf(note, sizeof note, ok ? "relay: starting %s" : "relay: cannot start %s", path);
+            relay_note(note);
+            relay_job_end(ok ? "done" : "failed");
+            if (ok) {
+                printf("Starting %s...\n", path);
+                for (int i = 0; i < 60 && aptMainLoop(); i++) gspWaitForVBlank();
+                g_quitApp = true;
+                return;
+            }
+            continue;
+        }
         // Native mode runs (relay.sh native N [PRESS]): the 2DS goes to native mode's .3dsx with --seconds N, --return
         // (this build) and --press, and comes back here by itself, where the kept job posts native mode's logs. A run
         // that crashes stops at Luma's exception screen: after a restart by hand the logs are posted the same way.
