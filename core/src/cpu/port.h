@@ -3,10 +3,11 @@
 #include "../common.h"
 
 typedef struct Gekko Gekko;
-enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_N };  // the hooked guest functions:
+enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_J3DMULTI, PORT_N };  // the hooked guest functions:
 // J2DMaterial::setGX, J2DPictureEx::drawSelf, J3DShapeMtxConcatView::loadMtxConcatView_PNGP, __GXSendFlushPrim,
 // J3DColorBlockLightOn::diffLightObj, J2DPane::draw (the pane walk over a subtree), J3DMaterial::diff (the material's
-// display-list diff, every block), J3DSys::reinitGX, the minimap's renderingDecoration
+// display-list diff, every block), J3DSys::reinitGX, the minimap's renderingDecoration,
+// J3DShapeMtxMultiConcatView::load (a skinned shape's matrices)
 typedef struct {
     u64 calls, refused, pipe, checked;
     u64 refusedBy[8];     // by reason (port_j2d.c give_up)

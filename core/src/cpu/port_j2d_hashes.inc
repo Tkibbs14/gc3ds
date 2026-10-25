@@ -177,3 +177,7 @@
     { 0x8003CE78, 0xC8, 0xB67F5DC4341C6846ull },  // setTevSettingNonTextureDirectColor__18dRenderingFDAmap_cCFv
     { 0x8035C8BC, 0x40, 0xC45A9020F1938067ull },  // GXSetLineWidth
     { 0x8035C8FC, 0x40, 0x870FC2687D512B31ull },  // GXSetPointSize
+// J3DShapeMtxMultiConcatView::load (PORT_J3DMULTI), GXSetArray, __ptmf_scall (its pipeline table is filled at run time: the port checks the entry it uses)
+    { 0x80313FA4, 0x1F8, 0x7A8C2B815781347Full },  // load__26J3DShapeMtxMultiConcatViewCFv
+    { 0x8035BB28, 0x44, 0x9B9D4896F1FE3136ull },  // GXSetArray
+    { 0x80362084, 0x28, 0xCD9CEFA59963F0A7ull },  // __ptmf_scall

@@ -165,6 +165,7 @@ static void wr32(Pc* c, u32 a, u32 v) {
         ram_wr32(g_pm, a - 0x80000000u, v);
         return;
     }
+    for (u32 i = c->nlog; i-- > 0;) if (c->log[i][0] == a) { c->log[i][1] = v; return; }  // (the same word again: in place)
     if ((a & 3) || !in_mem1(a, 4) || c->nlog >= LOG_MAX) { give_up(c, 1); return; }
     c->log[c->nlog][0] = a;
     c->log[c->nlog][1] = v;
@@ -1163,7 +1164,7 @@ static void j3d_load_mtx_concat_view_pngp(Pc* c, u32 self, u32 slot, u32 idx) {
     u32 m0 = f32(sys + 64);
     if (!span(c, m0 + 48, 4)) return;
     u32 m[12], n3[9];
-    psmtx_concat(c, f32(m0 + 48), f32(sys + 260) + (idx & 0xFFFF) * 48, m);
+    psmtx_concat(c, f32(m0 + 48), rd32(c, sys + 260) + (idx & 0xFFFF) * 48, m);  // (rd: the multi-matrix load sets it)
     if (c->fail) return;
     j3d_load_pos_mtx(c, m, slot * 3);
     u32 aff = f32(r13 - 28628u);
@@ -1903,6 +1904,48 @@ static void map_deco(Pc* c, Gekko* g, u32 self, u32 line) {
     c->n += 120;
 }
 
+// ---- J3D: J3DShapeMtxMultiConcatView::load 0x80313FA4 (a skinned shape's matrices): per used matrix, j3dSys's draw matrix
+// set, GXSetArray(GX_POS_MTX_ARRAY) and the concat-view load through the pipeline's member pointer, which was the PNGP
+// port hooked once per matrix (~7,000 calls a second in the heavy area, each paying a hook's entry and commit). The LOD
+// path and any pipeline function other than loadMtxConcatView_PNGP give up. ----
+enum { A_J3D_MULTILOAD = 0x80313FA4, A_J3D_LOADPIPE = 0x803CDA20 };
+static void gx_set_array(Pc* c, u32 attr, u32 base, u32 stride) {  // GXSetArray 0x8035BB28
+    if (attr == 25) attr = 10;
+    u32 a = attr - 9;
+    p8(c, 0x08); p8(c, a | 0xA0); p32(c, base & 0x3FFFFFFF);
+    p8(c, 0x08); p8(c, a | 0xB0); p32(c, stride & 0xFF);
+    c->n += 17;
+}
+static void j3d_multi_concat_load(Pc* c, u32 self) {
+    u32 sda = c->g->gpr[13], sys = A_J3DSYS;
+    if (!span(c, sys, 264) || !span(c, self, 16) || !span(c, sda - 28632u, 24)) return;
+    u32 model = f32(sys + 56);
+    if (!span(c, model, 136) || !span(c, f32(model + 132), 56) || !span(c, f32(model + 4), 80)) return;
+    u32 mb = f32(model + 132), md = f32(model + 4);
+    u32 t0 = f32(mb + 52), t1 = f32(mb + 16);
+    wr32(c, sda - 28616u, t0);  // sMtxPtrTbl
+    wr32(c, sda - 28612u, t1);
+    if (f8(sda - 28623u)) { give_up(c, 5); return; }  // (sLODFlag: the LOD path)
+    u32 pipe = A_J3D_LOADPIPE + 12 * f32(sda - 28632u);
+    if (!span(c, pipe, 12) || f32(pipe) != 0 || (s32)f32(pipe + 4) >= 0 || f32(pipe + 8) != A_J3D_PNGP) { give_up(c, 5); return; }
+    u32 n = f16(self + 8), tbl = f32(self + 12), dmi = f32(md + 76), dmf = f32(md + 72);
+    if (n && !span(c, tbl, 2 * n)) return;
+    c->n += 40;
+    for (u32 i = 0; i < n && !c->fail; i++) {
+        u32 k = f16(tbl + 2 * i);
+        c->n += 6;
+        if (k == 0xFFFF) continue;
+        if (!span(c, dmi + 2 * k, 2) || !span(c, dmf + k, 1)) return;
+        u32 idx = f16(dmi + 2 * k), ptr = (f8(dmf + k) & 0xFF) ? t1 : t0;
+        if (f8(dmf + k) > 1) { give_up(c, 5); return; }  // (sMtxPtrTbl has two entries)
+        wr32(c, sys + 260, ptr);
+        gx_set_array(c, 21, ptr, 48);
+        if ((u32)(c->pp - c->pbase) + 256 > c->pcap) { give_up(c, 1); return; }
+        j3d_load_mtx_concat_view_pngp(c, self, i, idx);
+        c->n += 30;
+    }
+}
+
 // ---- entry ----
 static Pc g_pc;
 
@@ -1942,6 +1985,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     if (hook == PORT_MATDIFF) j3d_material_diff(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_REINITGX) j3d_reinit_gx(c, g);
     else if (hook == PORT_DECO) map_deco(c, g, g->gpr[3], g->gpr[4]);
+    else if (hook == PORT_J3DMULTI) j3d_multi_concat_load(c, g->gpr[3]);
     else if (hook == PORT_PANEWALK) pane_walk(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
@@ -1979,12 +2023,13 @@ const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::d
                                           "J3DShapeMtxConcatView::loadMtxConcatView_PNGP", "__GXSendFlushPrim",
                                           "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
                                           "J3DMaterial::diff", "J3DSys::reinitGX",
-                                          "dRenderingFDAmap_c::renderingDecoration" };
+                                          "dRenderingFDAmap_c::renderingDecoration",
+                                          "J3DShapeMtxMultiConcatView::load" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
            pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX :
-           pc == 0x8003D3C0 ? PORT_DECO : -1;
+           pc == 0x8003D3C0 ? PORT_DECO : pc == 0x80313FA4 ? PORT_J3DMULTI : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -2146,7 +2191,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
