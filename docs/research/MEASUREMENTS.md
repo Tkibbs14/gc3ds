@@ -2460,6 +2460,21 @@ done
   On by default (net gain, largest in the walk); the heavy area's -0.4% is a GX-thread cost (the decoration's draws),
   which is where to look next for it.
 
+### J3DShapeMtxMultiConcatView::load as one port call (`--port-hooks` bit 9, off: Ordon -2.9%; jobs 1405-1414, 2026-10-24)
+
+- **What (commit 5a98cf5):** a skinned shape's matrices in one call instead of the PNGP port hooked once per matrix
+  (~7,400 calls a second in Ordon at 4.4 + 2.9 us each). Exact: PC 10,036 calls and 2DS (jobs 1405-1406, ~2,600
+  calls per 10 s) 0 differed; plant caught.
+- **Separate whole runs, from 100 s (hooks 503 against 1015):** heavy area 23.41 -> 23.42% (even); **Ordon 34.16 ->
+  33.17% (-2.9%)**, frames 10.22 -> 9.94.
+- **Why it loses although the ports' own time fell:** Ordon's port time went from ~53 ms/s (PNGP 7,357 calls at 7.26
+  us) to ~43 ms/s (1,051 multi-loads at 36.3 us plus 519 PNGP calls), but time in the dispatcher rose 6.1 -> 7.4% of
+  core 0 and core 0 waited for the GX thread 2.3 -> 3.0%. Most likely the region tier: J3DShapePacket::drawFast's
+  loop no longer reaches load's code inline once its entry is a hook. Not chased further; off.
+- **Lesson:** a hook at a function the region tier was compiling into its caller can cost more than the work it
+  removes; measure a port at a callee of hot loops with the dispatcher's share (`# core0 outside compiled code`) next
+  to speed.
+
 ### Region tier across scenes, and what its loss is (jobs 948-1014, 2026-10-22, `--profile on`)
 
 - **Per scene, tier off -> on (runs.py; one off/on pair per build, builds differ only outside the measured path):**
