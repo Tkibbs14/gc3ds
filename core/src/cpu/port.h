@@ -3,7 +3,7 @@
 #include "../common.h"
 
 typedef struct Gekko Gekko;
-enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_J3DMULTI, PORT_N };  // the hooked guest functions:
+enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_J3DMULTI, PORT_TEXT, PORT_N };  // the hooked guest functions:
 // J2DMaterial::setGX, J2DPictureEx::drawSelf, J3DShapeMtxConcatView::loadMtxConcatView_PNGP, __GXSendFlushPrim,
 // J3DColorBlockLightOn::diffLightObj, J2DPane::draw (the pane walk over a subtree), J3DMaterial::diff (the material's
 // display-list diff, every block), J3DSys::reinitGX, the minimap's renderingDecoration,
@@ -22,6 +22,7 @@ typedef struct {
     u32 otherTev;  // the last TEV block setGX not ported
     u64 tSub[8];   // the timed calls' building by part: set-up, colour, texgens, TEV textures, TEV stages, indirect + PE
     u64 mdWhy[8];  // J3DMaterial::diff not taken: texture numbers, texgens, PE blend, TEV stages, block class, room, floats, other
+    u64 txWhy[4];  // J2DTextBoxEx::drawSelf not taken: font class or encoding, a byte outside ASCII text, font page change, gradient
 } PortStats;
 extern PortStats g_portStats;
 extern const char* const g_portNames[PORT_N];

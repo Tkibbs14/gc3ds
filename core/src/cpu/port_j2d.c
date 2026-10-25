@@ -1713,10 +1713,9 @@ static void gx_dirty_state(Pc* c) {  // __GXSetDirtyState 0x8035C6E4 (__GXUpdate
     GX(DIRTY) = 0;
     gx_sync(c);
 }
-// GXInitTexObj 0x8035DE40 with J3DSys::reinitTexture's arguments (NullTexData, 4 x 4, GX_TF_IA8, clamp, clamp, no mipmap):
-// the 32-byte object, built where the guest builds it (its stack frame), through the store log.
-static void gx_init_tex_obj_null(Pc* c, u32 obj) {
-    u32 w = 4, h = 4, fmt = 3, tgt = f32(A_GX_TEXOBJ_TBL + 4 * fmt);
+// GXInitTexObj 0x8035DE40 without a mipmap (the only form the ports use): the 32-byte object, through the store log.
+static void gx_init_tex_obj(Pc* c, u32 obj, u32 img, u32 w, u32 h, u32 fmt, u32 wrapS, u32 wrapT) {
+    u32 f4 = fmt & 15, tgt = f4 <= 14 ? f32(A_GX_TEXOBJ_TBL + 4 * f4) : 0x8035E024u;
     u32 cls, sx, sy;
     switch (tgt) {  // (the jump table's cases: the class byte and the tile shifts)
     case 0x8035DFC0: cls = 1; sx = 3; sy = 3; break;
@@ -1727,16 +1726,41 @@ static void gx_init_tex_obj_null(Pc* c, u32 obj) {
     case 0x8035E024: cls = 2; sx = 2; sy = 2; break;
     default: give_up(c, 5); return;
     }
-    u32 tiles = (((w + (1u << sx) - 1) >> sx) * ((h + (1u << sy) - 1) >> sy)) & 0x7FFF;
-    wr32(c, obj + 0, 0x90);  // (wrap S / T clamp, bit 4, no mipmap: filter 4)
+    w &= 0xFFFF; h &= 0xFFFF;
+    u32 tiles = ((u32)(((s32)(w + (1u << sx) - 1) >> sx) * ((s32)(h + (1u << sy) - 1) >> sy))) & 0x7FFF;
+    wr32(c, obj + 0, (wrapS & 3) | (wrapT & 3) << 2 | 0x10 | 0x80);  // (no mipmap: filter 4)
     wr32(c, obj + 4, 0);
-    wr32(c, obj + 8, (w - 1) | (h - 1) << 10 | fmt << 20);
-    wr32(c, obj + 12, rlwinm(A_GX_NULLTEX, 27, 11, 31));
+    wr32(c, obj + 8, rlwimi(rlwimi((w - 1) & 0x3FF, h - 1, 10, 12, 21), fmt, 20, 8, 11));
+    wr32(c, obj + 12, rlwinm(img, 27, 11, 31));
     wr32(c, obj + 16, 0);
     wr32(c, obj + 20, fmt);
     wr32(c, obj + 24, 0);
     wr32(c, obj + 28, tiles << 16 | cls << 8 | 2);
     c->n += 120;
+}
+static void gx_init_tex_obj_null(Pc* c, u32 obj) { gx_init_tex_obj(c, obj, A_GX_NULLTEX, 4, 4, 3, 0, 0); }  // (J3DSys::reinitTexture's)
+// GXInitTexObjLOD 0x8035E0D4 (the floats clamped against its constants, scaled, fctiwz).
+static void gx_init_tex_obj_lod(Pc* c, u32 obj, u32 minF, u32 magF, u32 minL, u32 maxL, u32 bias, u32 clamp, u32 edge, u32 aniso) {
+    u32 lo = sda2(c, -13320), hi = sda2(c, -13316), top = sda2(c, -13312), k32 = sda2(c, -13308);
+    u32 l0 = sda2(c, -13304), l1 = sda2(c, -13300), k16 = sda2(c, -13336);
+    if (!plain(c, bias) || !plain(c, minL) || !plain(c, maxL)) return;
+    if (fbits(bias) < fbits(lo)) bias = lo;
+    else if (fbits(bias) >= fbits(hi)) bias = top;
+    u32 w0 = rd32(c, obj);
+    w0 = rlwimi(w0, fctiwz(FMUL(k32, bias)), 9, 15, 22);
+    w0 = rlwimi(w0, magF == 1, 4, 27, 27);
+    w0 = rlwimi(w0, f8(c->g->gpr[13] - 31416u + minF), 5, 24, 26);
+    w0 = rlwimi(w0, (edge & 0xFF) ? 0 : 1, 8, 23, 23);
+    w0 = rlwimi(rlwimi(w0, 0, 17, 14, 14), 0, 18, 13, 13);
+    w0 = rlwimi(rlwimi(w0, aniso, 19, 11, 12), clamp, 21, 10, 10);
+    wr32(c, obj, w0);
+    if (fbits(minL) < fbits(l0)) minL = l0;
+    else if (fbits(minL) > fbits(l1)) minL = l1;
+    if (fbits(maxL) < fbits(l0)) maxL = l0;
+    else if (fbits(maxL) > fbits(l1)) maxL = l1;
+    u32 w1 = rlwimi(rd32(c, obj + 4), fctiwz(FMUL(k16, minL)), 0, 24, 31);
+    wr32(c, obj + 4, rlwimi(w1, fctiwz(FMUL(k16, maxL)), 8, 16, 23));
+    c->n += 70;
 }
 static void j3d_reinit_gx(Pc* c, Gekko* g) {
     u32 sda = g->gpr[13], black = 0, white = 0;
@@ -1947,6 +1971,305 @@ static void j3d_multi_concat_load(Pc* c, u32 self) {
     }
 }
 
+// ---- J2D text: J2DTextBoxEx::drawSelf 0x803075AC with J2DPrint (printReturn, parse) and JUTResFont (the font's code map,
+// widths, page and character quads). Census (jobs 1415-1416): every HUD string in Ordon and the heavy area is plain
+// ASCII (no escape codes, control characters or lead bytes), ~4 characters, with JUTResFont; a string with any byte
+// below 0x20 or from 0x80, another font class, a code map that converts Shift-JIS or a font page change gives up. ----
+enum {
+    A_TEXT_DRAWSELF = 0x803075AC, A_JUTRESFONT_VT = 0x803CC5A0, A_LEAD_1BYTE = 0x802E0108, A_LEAD_SJIS = 0x802E0118,
+    A_FONT_CODETBL = 0x8039D35C, A_GX_TEVOP_TBL = 0x803D27C0,
+};
+static inline u32 i2f(s32 v) { return bitsf((float)v); }  // (the int-to-double trick, then fsubs: exact here)
+static inline u32 u2f(u32 v) { return bitsf((float)v); }
+static inline bool fgt(u32 a, u32 b) { return fbits(a) > fbits(b); }  // (plain singles only: fcmpo)
+// J2DPrint's fields (the guest keeps it on the stack: dead after the call, so it lives here)
+typedef struct {
+    u32 font, col8, col12, sp16, sp20, scx, scy, org36, org40, curH, curV, adv52;
+    s32 tab32;
+    u32 grad34, black, white, ccol, gcol, cs72, ls76, fsx, fsy;
+    s32 tab88;
+    u32 b90;
+} J2P;
+static void gx_set_tev_op_mode(Pc* c, u32 stage, u32 mode) {  // GXSetTevOp 0x8035F198
+    u32 t = A_GX_TEVOP_TBL + 4 * mode, cw = f32(stage == 0 ? t : t + 20), aw = f32(stage == 0 ? t + 40 : t + 60);
+    u32 col = (GX(304 + 4 * stage) & 0xFF000000u) | (cw & 0x00FFFFFFu);
+    bp(c, col);
+    GX(304 + 4 * stage) = col;
+    u32 al = (GX(368 + 4 * stage) & 0xFF00000Fu) | (aw & 0x00FFFFF0u);
+    bp(c, al);
+    GX(368 + 4 * stage) = al;
+    bp_sent_not(c, 0);
+    c->n += 30;
+}
+static void gx_set_vtx_attr_fmt_clr0(Pc* c, u32 fmt, u32 cnt, u32 type) {  // GXSetVtxAttrFmt's GX_VA_CLR0 case
+    u32 a = 28 + 4 * fmt;
+    GX(a) = rlwimi(rlwimi(GX(a), cnt, 13, 18, 18), type, 14, 15, 17);
+    c->dirty |= 16;
+    gxb_set(c, 1451, gxb(c, 1451) | ((1u << fmt) & 0xFF));
+    c->n += 20;
+}
+// JUTResFont's getters (font + 76: the ResFONT header; + 88 glyph blocks, + 84 width blocks, + 92 map blocks)
+static inline u32 rf_inf(u32 f) { return f32(f + 76); }
+static u32 rf_cell_w(u32 f) { u32 b = f32(f + 88), b0 = b ? f32(b) : 0; return b0 ? f16(b0 + 12) : f16(rf_inf(f) + 14); }
+static u32 rf_height(u32 f) { return f16(rf_inf(f) + 10) + f16(rf_inf(f) + 12); }  // getAscent + getDescent
+static u32 rf_cell_h(u32 f) { u32 b = f32(f + 88), b0 = b ? f32(b) : 0; return b0 ? f16(b0 + 14) : rf_height(f); }
+static u32 rf_code(Pc* c, u32 f, u32 ch) {  // getFontCode 0x802DFDD8
+    u32 inf = rf_inf(f), code = f16(inf + 18);
+    if (f16(inf + 8) == 2 && f16(f + 104) >= 0x8000 && (s32)ch >= 32 && ch < 127) ch = f16(A_FONT_CODETBL + 2 * ch);
+    u32 n = f16(f + 100), arr = f32(f + 92);
+    for (u32 i = 0; i < n; i++) {
+        u32 b = f32(arr + 4 * i), lo = f16(b + 10);
+        if ((s32)lo > (s32)ch || (s32)ch > (s32)f16(b + 12)) continue;
+        u32 type = f16(b + 8);
+        if (type == 0) code = ch - lo;
+        else if (type == 2) code = f16(b + 16 + 2 * (ch - lo));
+        else if (type == 3) {
+            s32 l = 0, h = (s32)f16(b + 14) - 1;
+            while (h >= l) {
+                s32 m = (l + h) / 2;
+                u32 k = f16(b + 16 + 4 * (u32)m);
+                if ((s32)ch < (s32)k) h = m - 1;
+                else if ((s32)ch > (s32)k) l = m + 1;
+                else { code = f16(b + 18 + 4 * (u32)m); break; }
+            }
+        } else if (type == 1) give_up(c, 5);  // (convertSjis)
+        break;
+    }
+    c->n += 40;
+    return code;
+}
+static void rf_width(Pc* c, u32 f, u32 ch, u32* w0, u32* w1) {  // getWidthEntry 0x802DFC64
+    u32 code = rf_code(c, f, ch);
+    *w0 = 0;
+    *w1 = f16(rf_inf(f) + 14) & 0xFF;
+    u32 n = f16(f + 96), arr = f32(f + 84);
+    for (u32 i = 0; i < n; i++) {
+        u32 b = f32(arr + 4 * i), lo = f16(b + 8);
+        if ((s32)lo > (s32)code || (s32)code > (s32)f16(b + 10)) continue;
+        u32 e = b + 12 + 2 * (code - lo);
+        *w0 = f8(e); *w1 = f8(e + 1);
+        break;
+    }
+    c->n += 30;
+}
+static void rf_load_image(Pc* c, u32 f, u32 code) {  // loadImage 0x802DFF60 (texture map 0); a page change gives up
+    u32 n = f16(f + 98), arr = f32(f + 88), i = 0;
+    for (; i < n; i++) {
+        u32 b = f32(arr + 4 * i);
+        if ((s32)f16(b + 8) <= (s32)code && (s32)code <= (s32)f16(b + 10)) { code -= f16(b + 8); break; }
+    }
+    if (i == n) return;
+    u32 b = f32(arr + 4 * i), rows = f16(b + 22), cells = rows * f16(b + 24);
+    if (!cells || !rows) { give_up(c, 5); return; }
+    s32 page = (s32)code / (s32)cells, cell = (s32)code - page * (s32)cells, row = cell / (s32)rows, col = cell - row * (s32)rows;
+    wr32(c, f + 28, (u32)col * f16(b + 12));
+    wr32(c, f + 32, (u32)row * f16(b + 14));
+    if ((u32)page != rd32(c, f + 68) || i != (rd32(c, f + 100) & 0xFFFF)) {  // a new page: GXInitTexObj + GXInitTexObjLOD
+        u32 z = sda2(c, -14864);
+        gx_init_tex_obj(c, f + 36, b + 32 + (u32)page * f32(b + 16), f16(b + 26), f16(b + 28), f16(b + 20), 0, 0);
+        gx_init_tex_obj_lod(c, f + 36, 1, 1, z, z, z, 0, 0, 0);
+        wr32(c, f + 68, (u32)page);
+        wr32(c, f + 100, (rd32(c, f + 100) & 0xFFFF0000u) | (i & 0xFFFF));
+        g_portStats.txWhy[2]++;  // (counted: page changes taken)
+    }
+    gx_load_tex_obj(c, f + 36, 0);
+    c->n += 60;
+}
+// drawChar_scale 0x802DF7C4 with flag 1 (its return value is not used by parse)
+static void rf_draw_char(Pc* c, u32 f, u32 x, u32 y, u32 sx, u32 sy, u32 ch) {
+    u32 w0, w1;
+    rf_width(c, f, ch, &w0, &w1);  // (loadFont: getWidthEntry, getFontCode, loadImage)
+    rf_load_image(c, f, rf_code(c, f, ch));
+    if (c->fail) return;
+    u32 x1 = f8(f + 5) ? x : FSUB(x, FMUL(u2f(w0), FDIV(sx, i2f((s32)rf_cell_w(f)))));
+    u32 x2 = FADD(x1, sx);
+    u32 h = i2f((s32)rf_height(f));
+    u32 y1 = FSUB(y, FMUL(i2f((s32)f16(rf_inf(f) + 10)), FDIV(sy, h)));
+    u32 y2 = FADD(y, FMUL(i2f((s32)f16(rf_inf(f) + 12)), FDIV(sy, h)));
+    u32 blk = f32(f32(f + 88) + 4 * (rd32(c, f + 100) & 0xFFFF));
+    s32 tw = (s32)f16(blk + 26), th = (s32)f16(blk + 28), mw = (s32)rd32(c, f + 28), mh = (s32)rd32(c, f + 32);
+    if (!tw || !th) { give_up(c, 5); return; }
+    u32 u1 = (u32)((mw << 15) / tw), v1 = (u32)((mh << 15) / th);
+    u32 u2 = (u32)(((mw + (s32)f16(blk + 12)) << 15) / tw), v2 = (u32)(((mh + (s32)f16(blk + 14)) << 15) / th);
+    if (c->fail) return;
+    u32 z = sda2(c, -14864);
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 4, 0);
+    gx_begin(c, 128, 0, 4);
+    p32(c, x1); p32(c, y1); p32(c, z); p32(c, rd32(c, f + 12)); p16(c, u1); p16(c, v1);
+    p32(c, x2); p32(c, y1); p32(c, z); p32(c, rd32(c, f + 16)); p16(c, u2); p16(c, v1);
+    p32(c, x2); p32(c, y2); p32(c, z); p32(c, rd32(c, f + 24)); p16(c, u2); p16(c, v2);
+    p32(c, x1); p32(c, y2); p32(c, z); p32(c, rd32(c, f + 20)); p16(c, u1); p16(c, v2);
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 3, 0);
+    c->n += 230;
+}
+static void j2p_set_grad(Pc* c, J2P* p, u32 alpha) {  // the colours with alpha scaled, then JUTFont::setGradColor
+    u32 c1 = p->col8, c2 = p->col12;
+    c1 = (c1 & ~0xFFu) | (u32)((s32)((c1 & 0xFF) * alpha) / 255 & 0xFF);
+    c2 = (c2 & ~0xFFu) | (u32)((s32)((c2 & 0xFF) * alpha) / 255 & 0xFF);
+    u32 g2 = p->grad34 ? c2 : c1;
+    wr32(c, p->font + 12, c1); wr32(c, p->font + 16, c1); wr32(c, p->font + 20, g2); wr32(c, p->font + 24, g2);
+    c->n += 40;
+}
+// J2DPrint::parse 0x802F4B4C for plain characters (checked before): returns the height used, fills tbl's line offsets
+static u32 j2p_parse(Pc* c, J2P* p, u32 str, u32 len, s32 width, u16* tbl, u32* sw, u32* sh, u32 alpha, bool draw) {
+    u32 f = p->font, prevH = p->curH, prevV = p->curV, lw = prevH, maxV = prevV, maxH = p->curH, minH = p->curH;
+    u32 maxV2 = p->curV, minV = p->curV, idx = 0, at = 0;
+    j2p_set_grad(c, p, alpha);
+    u32 ten4 = sda2(c, -14360), half = sda2(c, -14376), zero = sda2(c, -14392);
+    for (;;) {
+        u32 ch = f8(str + at++);
+        if (!ch || at > len) {
+            if (!draw && tbl) tbl[idx] = (u16)fctiwz(FADD(half, lw));
+            idx++;
+            break;
+        }
+        u32 startH = p->curH;
+        bool adv = true;
+        p->adv52 = f8(f + 5) ? i2f((s32)f32(f + 8)) : 0;
+        if (!f8(f + 5)) { u32 w0, w1; rf_width(c, f, ch, &w0, &w1); p->adv52 = u2f(w1); }
+        u32 r = FDIV(p->scx, i2f((s32)rf_cell_w(f)));
+        p->adv52 = FMUL(p->adv52, r);
+        u32 over = FDIV(i2f((s32)fctiwz(FMUL(ten4, FSUB(FADD(p->curH, p->adv52), p->org36)))), ten4);
+        if (c->fail) return 0;
+        if (fgt(over, i2f(width)) && fgt(p->curH, prevH)) {  // wrapped: the character again on the next line
+            at--;
+            p->curV = FADD(p->curV, p->sp20);
+            if (!draw && tbl) tbl[idx] = (u16)fctiwz(FADD(half, lw));
+            if (++idx == 256) break;
+            p->curH = p->org36;
+            lw = zero;
+            adv = false;
+        } else {
+            if (draw) {
+                u32 x = tbl ? FADD(p->curH, i2f((s16)tbl[idx])) : p->curH;
+                if ((u32)(c->pp - c->pbase) + 2600 > c->pcap) { give_up(c, 1); return 0; }
+                rf_draw_char(c, f, x, p->curV, i2f((s32)fctiwz(p->scx)), i2f((s32)fctiwz(p->scy)), ch);
+                if (c->fail) return 0;
+            }
+            p->curH = FADD(p->curH, p->adv52);
+        }
+        if (adv) {
+            u32 d = FSUB(p->curH, prevH);
+            if (fgt(d, lw)) lw = d;
+            p->curH = FADD(p->curH, p->sp16);
+            p->adv52 = FADD(p->adv52, p->sp16);
+            u32 desc = i2f((s32)f16(rf_inf(f) + 12));
+            u32 below = FADD(p->curV, FMUL(FDIV(p->scy, i2f((s32)rf_height(f))), desc));
+            if (!(fbits(maxV) >= fbits(below))) maxV = below;
+            if (fgt(p->curH, maxH)) maxH = p->curH;
+            if (!(fbits(p->curH) >= fbits(minH))) minH = p->curH;
+            if (!(fbits(startH) >= fbits(minH))) minH = startH;
+            if (fgt(p->curV, maxV2)) maxV2 = p->curV;
+            if (!(fbits(p->curV) >= fbits(minV))) minV = p->curV;
+        }
+        c->n += 60;
+        if (c->fail) return 0;
+    }
+    if (tbl) tbl[idx] = 0xFFFF;
+    *sw = FSUB(maxH, minH);
+    *sh = FADD(FSUB(maxV2, minV), i2f((s32)f16(rf_inf(f) + 16)));
+    if (!draw) { p->curH = prevH; p->curV = prevV; }
+    return FSUB(maxV, prevV);
+}
+static void j2p_initchar(J2P* p) {
+    p->col8 = p->ccol; p->col12 = p->gcol; p->sp16 = p->cs72; p->sp20 = p->ls76; p->grad34 = p->b90; p->tab32 = p->tab88;
+    p->scx = p->fsx; p->scy = p->fsy;
+}
+// J2DPrint::printReturn 0x802F4828
+static void j2p_print_return(Pc* c, J2P* p, u32 str, u32 len, u32 wid, u32 hgt, u32 hb, u32 vb, u32 ox, u32 oy, u32 alpha) {
+    j2p_initchar(p);
+    p->org36 = p->curH; p->org40 = p->curV;
+    u16 tbl[260];
+    u32 sw, sh;
+    s32 w = (s32)fctiwz(wid);
+    u32 used = j2p_parse(c, p, str, len, w, tbl, &sw, &sh, alpha, false);
+    if (c->fail) return;
+    u32 asc = FMUL(i2f((s32)f16(rf_inf(p->font) + 10)), FDIV(p->fsy, i2f((s32)rf_cell_h(p->font))));
+    u32 tot = FADD(used, asc), half = sda2(c, -14376);
+    if (vb == 1) oy = FADD(oy, i2f((s32)fctiwz(FSUB(FSUB(hgt, tot), half))));
+    else if (vb == 0) oy = FADD(oy, i2f((s32)fctiwz(FSUB(FSUB(hgt, tot), half)) / 2));
+    for (u32 i = 0; tbl[i] != 0xFFFF && i < 259; i++) {
+        if (hb == 1) tbl[i] = (u16)fctiwz(FSUB(wid, u2f(tbl[i])));
+        else if (hb == 0) tbl[i] = (u16)fctiwz(FMUL(FSUB(wid, u2f(tbl[i])), half));
+        else if (hb == 2) tbl[i] = 0;
+    }
+    j2p_initchar(p);
+    p->curH = FADD(p->curH, ox);
+    p->curV = FADD(p->curV, FADD(oy, asc));
+    p->org36 = p->curH; p->org40 = p->curV;
+    j2p_parse(c, p, str, len, w, tbl, &sw, &sh, alpha, true);
+}
+static void text_draw_self(Pc* c, u32 tb, u32 px, u32 py, u32 mtx) {
+    u32 sda = c->g->gpr[13];
+    if (!span(c, tb, 312) || !span(c, sda - 28672u, 16)) return;
+    u32 mat = f32(tb + 312), str = f32(tb + 292);
+    if (!mat || !span(c, mat, 120)) { give_up(c, 5); return; }
+    u32 tev = f32(mat + 112), font = 0;
+    if (tev) {  // getFont: every TEV block's is `lwz r3, d(r3); blr`
+        u32 fn = vfn(tev, 168);
+        if (!fn || !in_mem1(fn, 8) || (f32(fn) & 0xFFFF0000u) != 0x80630000u || f32(fn + 4) != 0x4E800020u) { give_up(c, 5); return; }
+        font = f32(tev + (u32)(s32)(s16)(f32(fn) & 0xFFFF));
+    }
+    if (!font || !span(c, font, 108) || f32(font) != A_JUTRESFONT_VT) { g_portStats.txWhy[0]++; give_up(c, 5); return; }
+    u32 lp = f32(font + 108), lead = in_mem1(lp, 4) ? f32(lp) : 0;  // (isLeadByte calls through a pointer to the function)
+    if (lead != A_LEAD_1BYTE && lead != A_LEAD_SJIS) { g_portStats.txWhy[0]++; give_up(c, 5); return; }
+    if (!f32(sda - 28672u)) { give_up(c, 5); return; }  // (J2DPrint's buffer not made yet: setBuffer)
+    u32 len = 0;
+    if (str) {
+        for (; len < 1024 && in_mem1(str + len, 1); len++) {
+            u32 ch = f8(str + len);
+            if (!ch) break;
+            if (ch < 0x20 || ch >= 0x80) { g_portStats.txWhy[1]++; give_up(c, 5); return; }
+        }
+        if (len >= f32(sda - 28664u) || len >= 1024) { give_up(c, 5); return; }
+    }
+    // J2DPrint(font, (int)charSpacing, (int)lineSpacing, colours) with private_initiate and setFontSize
+    J2P p;
+    memset(&p, 0, sizeof p);
+    p.font = font;
+    p.cs72 = i2f((s32)fctiwz(f32(tb + 276)));
+    p.ls76 = i2f((s32)fctiwz(f32(tb + 280)));
+    p.b90 = 1;
+    p.org36 = p.org40 = p.curH = p.curV = p.adv52 = sda2(c, -14392);
+    p.ccol = f32(tb + 260); p.gcol = f32(tb + 264); p.black = f32(tb + 300); p.white = f32(tb + 296);
+    p.tab88 = (s32)(s16)(f16(rf_inf(font) + 14) << 2);
+    p.fsx = i2f((s32)rf_cell_w(font)); p.fsy = i2f((s32)rf_cell_h(font));
+    if (p.black != 0 || p.white != 0xFFFFFFFFu) { g_portStats.txWhy[3]++; give_up(c, 5); return; }  // (setGX's gradient form)
+    // JUTResFont::setGX 0x802DF48C
+    gx_set_num_chans(c, 1); gx_set_num_tev_stages(c, 1); gx_set_num_tex_gens(c, 1);
+    gx_set_tev_order(c, 0, 0, 0, 4);
+    gx_set_chan_ctrl(c, 4, 0, 0, 1, 0, 0, 2);
+    gx_set_tev_op_mode(c, 0, 0);
+    gx_set_blend_mode(c, 1, 4, 5, 15);
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 3, 0); gx_set_vtx_attr_fmt_clr0(c, 0, 1, 5); gx_set_vtx_attr_fmt(c, 0, 13, 1, 2, 15);
+    gx_clear_vtx_desc(c); gx_set_vtx_desc(c, 9, 1); gx_set_vtx_desc(c, 11, 1); gx_set_vtx_desc(c, 13, 1);
+    j2p_initchar(&p);
+    // print.setFontSize((int)mFontSizeX, (int)mFontSizeY): each at least 0
+    u32 zero = sda2(c, -14120), fx = i2f((s32)fctiwz(f32(tb + 284))), fy = i2f((s32)fctiwz(f32(tb + 288)));
+    p.fsx = fgt(fx, zero) ? fx : zero;
+    p.fsy = fgt(fy, zero) ? fy : zero;
+    material_set_gx(c, mat);
+    if (c->fail) return;
+    u32 m[12];
+    psmtx_concat(c, mtx, tb + 128, m);
+    if (c->fail) return;
+    gx_load_pos_mtx_imm(c, m, 0);
+    gx_clear_vtx_desc(c); gx_set_vtx_desc(c, 9, 1); gx_set_vtx_desc(c, 11, 1); gx_set_vtx_desc(c, 13, 1);
+    p.org36 = p.curH = FADD(px, f32(tb + 32));
+    p.org40 = p.curV = FADD(py, f32(tb + 36));
+    p.adv52 = sda2(c, -14392);
+    if (!f8(mat + 14) || !str) { c->n += 80; return; }
+    u32 alpha = 255;
+    if ((f16(mat + 28) & 1) == 1) { if (f8(mat + 15) == 1) alpha = f8(tb + 179); }
+    else if (f8(tb + 180)) gx_set_chan_mat_color(c, 2, f8(tb + 179));
+    u32 wid = i2f((s32)fctiwz(FADD(sda2(c, -14096), FSUB(f32(tb + 40), f32(tb + 32)))));
+    u32 hgt = i2f((s32)fctiwz(FSUB(f32(tb + 44), f32(tb + 36))));
+    u32 b = f8(tb + 304);
+    if (c->fail) return;
+    j2p_print_return(c, &p, str, len, wid, hgt, (b >> 2) & 3, b & 3, f32(tb + 268), f32(tb + 272), alpha);
+    c->n += 120;
+}
+
 // ---- entry ----
 static Pc g_pc;
 
@@ -1957,7 +2280,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
-    if (hook == PORT_PANEWALK || hook == PORT_DECO) {  // the walk's buffers (and the minimap's long lines): linear memory on the
+    if (hook == PORT_PANEWALK || hook == PORT_DECO || hook == PORT_TEXT) {  // the walk's buffers (and the minimap's long lines): linear memory on the
         // 3DS (the heap is nearly full in gameplay)
         static u8* walkPipe;
         static u32 (*walkUndo)[3];
@@ -1987,6 +2310,11 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     else if (hook == PORT_REINITGX) j3d_reinit_gx(c, g);
     else if (hook == PORT_DECO) map_deco(c, g, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_J3DMULTI) j3d_multi_concat_load(c, g->gpr[3]);
+    else if (hook == PORT_TEXT) {  // (the two float arguments: singles in the FPRs' double form)
+        float px = (float)g->fpr[1].ps0, py = (float)g->fpr[2].ps0;
+        if ((double)px != g->fpr[1].ps0 || (double)py != g->fpr[2].ps0) give_up(c, 2);
+        else text_draw_self(c, g->gpr[3], bitsf(px), bitsf(py), g->gpr[4]);
+    }
     else if (hook == PORT_PANEWALK) pane_walk(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
@@ -2017,7 +2345,7 @@ static void port_regs(Pc* c, Gekko* g, u32 hook) {
     if (!c->leak) return;
     g->fpr[14].ps1 = c->l14;
     g->fpr[15].ps1 = c->l15;
-    if (hook != PORT_PICTUREEX && hook != PORT_PANEWALK) g->fpr[31].ps1 = c->l31;  // (drawTexCoord and J2DPane::draw save f31 whole)
+    if (hook != PORT_PICTUREEX && hook != PORT_PANEWALK && hook != PORT_TEXT) g->fpr[31].ps1 = c->l31;  // (drawTexCoord and J2DPane::draw save f31 whole)
 }
 
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
@@ -2025,12 +2353,13 @@ const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::d
                                           "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
                                           "J3DMaterial::diff", "J3DSys::reinitGX",
                                           "dRenderingFDAmap_c::renderingDecoration",
-                                          "J3DShapeMtxMultiConcatView::load" };
+                                          "J3DShapeMtxMultiConcatView::load", "J2DTextBoxEx::drawSelf" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
            pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX :
-           pc == 0x8003D3C0 ? PORT_DECO : pc == 0x80313FA4 ? PORT_J3DMULTI : -1;
+           pc == 0x8003D3C0 ? PORT_DECO : pc == 0x80313FA4 ? PORT_J3DMULTI :
+           pc == 0x803075AC ? PORT_TEXT : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -2192,7 +2521,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;

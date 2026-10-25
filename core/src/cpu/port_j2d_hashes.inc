@@ -181,3 +181,34 @@
     { 0x80313FA4, 0x1F8, 0x7A8C2B815781347Full },  // load__26J3DShapeMtxMultiConcatViewCFv
     { 0x8035BB28, 0x44, 0x9B9D4896F1FE3136ull },  // GXSetArray
     { 0x80362084, 0x28, 0xCD9CEFA59963F0A7ull },  // __ptmf_scall
+// J2DTextBoxEx::drawSelf (PORT_TEXT): J2DPrint's construction, printReturn, parse; JUTResFont's setGX, drawChar_scale, loadFont, widths, code map, page, getters; JUTFont::setGradColor and the lead-byte tests; GXSetTevOp
+    { 0x803075AC, 0x300, 0x4B648043F7DA4B6Dull },  // drawSelf__12J2DTextBoxExFffPA3_A4_f
+    { 0x802F4394, 0x8C, 0x9DEC0804316D1D34ull },  // __ct__8J2DPrintFP7JUTFontffQ28JUtility6TColorQ28JUtility6TColorQ28JUtility6TColorQ28JUtility6TColor
+    { 0x802F4468, 0x1F0, 0x31F24FEAD219702Cull },  // private_initiate__8J2DPrintFP7JUTFontffQ28JUtility6TColorQ28JUtility6TColorQ28JUtility6TColorQ28JUtility6TColorb
+    { 0x802F46C4, 0x98, 0x62ABEB9B412FAADFull },  // setFontSize__8J2DPrintFv
+    { 0x802F475C, 0x1C, 0x008F0D5C53914CFBull },  // locate__8J2DPrintFff
+    { 0x802F4828, 0x324, 0x9E0DE829E62E33A7ull },  // printReturn__8J2DPrintFPCcff18J2DTextBoxHBinding18J2DTextBoxVBindingffUc
+    { 0x802F4B4C, 0x79C, 0x2D3EAA8D7AAA2A04ull },  // parse__8J2DPrintFPCUciiPUsRQ28J2DPrint5TSizeUcb
+    { 0x802F594C, 0x74, 0x6FB54EC086437F37ull },  // initchar__8J2DPrintFv
+    { 0x802F4420, 0x48, 0x638EE5AC6C812FE9ull },  // __dt__8J2DPrintFv
+    { 0x802DF48C, 0xF8, 0xB5863F7A23C7CF6Full },  // setGX__10JUTResFontFv
+    { 0x802DF584, 0x240, 0x63EFD03B2D7FE4A0ull },  // setGX__10JUTResFontFQ28JUtility6TColorQ28JUtility6TColor
+    { 0x802DF7C4, 0x424, 0xD72F1362A4ABFABDull },  // drawChar_scale__10JUTResFontFffffib
+    { 0x802DFBE8, 0x7C, 0x8F76AC68F8DE11B6ull },  // loadFont__10JUTResFontFi11_GXTexMapIDPQ27JUTFont6TWidth
+    { 0x802DFC64, 0xA8, 0x5C4216424AF822C1ull },  // getWidthEntry__10JUTResFontCFiPQ27JUTFont6TWidth
+    { 0x802DFD0C, 0x4C, 0x4E1D6ECA9048E952ull },  // getCellWidth__10JUTResFontCFv
+    { 0x802DFD58, 0x4C, 0x9EEA4682D1C40498ull },  // getCellHeight__10JUTResFontCFv
+    { 0x802DFDA4, 0x34, 0x16D96E91C44892AAull },  // isLeadByte__10JUTResFontCFi
+    { 0x802DFDD8, 0x188, 0x75CD8A1D16D3CC8Cull },  // getFontCode__10JUTResFontCFi
+    { 0x802DFF60, 0x164, 0xD132E45A0E564BB9ull },  // loadImage__10JUTResFontFi11_GXTexMapID
+    { 0x802DDFEC, 0xC, 0x1715ECC7ACB73E13ull },  // getLeading__10JUTResFontCFv
+    { 0x802DE004, 0xC, 0x16BD90C7AC6C2BE9ull },  // getAscent__10JUTResFontCFv
+    { 0x802DE010, 0xC, 0x16D1F4C7AC7D7EDFull },  // getDescent__10JUTResFontCFv
+    { 0x802DE01C, 0x5C, 0xE57FED3498F26C4Bull },  // getHeight__10JUTResFontCFv
+    { 0x802DDFF8, 0xC, 0x16CB28C7AC77B88Dull },  // getWidth__10JUTResFontCFv
+    { 0x802DDFE0, 0xC, 0x16C41CC7AC71857Bull },  // getFontType__10JUTResFontCFv
+    { 0x802DEDC4, 0x64, 0xEC498A101BF42EA7ull },  // setGradColor__7JUTFontFQ28JUtility6TColorQ28JUtility6TColor
+    { 0x802E0108, 0x8, 0x483349B35D8BA64Dull },  // isLeadByte_1Byte__7JUTFontFi
+    { 0x802E0118, 0x30, 0x5F65246D8270ED6Cull },  // isLeadByte_ShiftJIS__7JUTFontFi
+    { 0x8035F198, 0x8C, 0x127577893DEE095Cull },  // GXSetTevOp
+    { 0x8035E0D4, 0x164, 0x361E82B32D39FD9Dull },  // GXInitTexObjLOD

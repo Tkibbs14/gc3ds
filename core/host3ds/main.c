@@ -1725,6 +1725,10 @@ static const char* run_body(const char* path) {
                                         "interpreter %08lx port %08lx, pipe bytes port %lu interpreter %lu",
                                         (unsigned long)p.badMat, (unsigned long)p.badWhat, (unsigned long)p.badAddr, (unsigned long)p.badWant,
                                         (unsigned long)p.badMine, (unsigned long)p.badPipe[0], (unsigned long)p.badPipe[1]);
+                            if (k == PORT_TEXT) {
+                                fprintf(g_perf, "; not taken because of (font, text bytes, page change, gradient):");
+                                for (int q = 0; q < 4; q++) fprintf(g_perf, " %llu", (unsigned long long)(p.txWhy[q] - lastP.txWhy[q]));
+                            }
                             if (k == PORT_MATDIFF) {
                                 fprintf(g_perf, "; not taken because of (texture numbers, texgens, blend, TEV stages, block class, room, floats, other):");
                                 for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(p.mdWhy[q] - lastP.mdWhy[q]));
