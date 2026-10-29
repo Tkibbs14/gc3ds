@@ -2474,6 +2474,47 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### What the emulated clock is made of, and why the charge sweep read what it did (C41 answered; jobs 1480-1488, 2026-10-29)
+
+- **Instruments (build fa1505fa264916fd, branch of a05f91d):** `# clock 10s` splits every cycle the clock advances
+  into instructions really run, a stand-in's charge, a port's charge and the fills that jump an idle (`b .`) or
+  polling loop to the next event, and records per VI field how much of it was fill ("field slack", tenths).
+  `--port-charge PCT` scales every port's charge at run time. Read with `core/tools/clock_split.py`.
+- **Ordon at defaults (job 1480, from 100 s): the clock is mostly the game waiting.** 1,810 M cycles a window:
+  **poll fills 79.0%**, instructions really run **13.2%**, ports **7.6%**, stand-ins 0.2%, idle (`b .`) fills 0.0%
+  (TP's idle thread polls, it does not spin on `b .`). Mean field slack **7.4 tenths, and 0.0% of fields with no
+  slack left**. So the game uses about a fifth of its emulated budget: a port's charge of ~45 k cycles in a 16.2 M
+  cycle picture is absorbed by a smaller fill, cannot be read as speed, and cannot push a picture past its deadline.
+  (Anchor speed on this build: Ordon 35.68%, 10.708 frames a second — the instruments cost nothing measurable, and
+  the device reads ~4.5% faster today than on 10-25.)
+- **So where did 30.89 / 32.64 / 27.90% come from? The scripted walk takes a different path in each arm.** Draws per
+  picture (`draws_s / (fields_s / 2)`) at matched *emulated* seconds, from the logs of the old sweep:
+
+  | arm | 252 | 258 | 264 | 270 | 276 | 282 | 288 | 294 |
+  |---|---|---|---|---|---|---|---|---|
+  | port off (1423) | 13701 | 11398 | 11840 | 10767 | 10481 | 10065 | 10447 | 10344 |
+  | port off (1425) | 13700 | 11401 | 10858 | 10722 | 10170 | 10069 | 10062 | 10348 |
+  | port off (1429) | 13702 | 11399 | 11838 | 10766 | 10482 | 10064 | 10446 | 10349 |
+  | charge 165 (1424) | 12954 | 10843 | 13014 | 10380 | 12236 | 11299 | 12167 | 11237 |
+  | charge 165 (1432) | 12952 | 10856 | 13017 | 11086 | 11563 | 10745 | 12178 | 11228 |
+  | charge 100 (1431) | 13718 | 11274 | 9984 | 10017 | 10446 | 12722 | 11201 | 15142 |
+  | charge 330 (1430) | 12937 | 12509 | 14771 | 14771 | 14767 | 14842 | 15634 | 14771 |
+
+  Three runs of one setting agree to a draw or two; the arms differ **from the first sample, 4 s into the run**, and
+  the 330 arm settles on a static, heavier view (~14,800-15,600 draws a picture) by 264 s, where Link has evidently
+  stopped somewhere else. Per picture the render structure is identical in every arm (EFB copies 9.0, clears 3.0 a
+  picture, off and 330 alike) while the geometry differs by up to 50% (draws a picture +38%, vertices +38% in 1430),
+  i.e. **the arms rendered different scenes, not the same scene at a different cost**.
+- **The mechanism:** `--press` is applied when the guest polls the pad, and the charge moves the clock, so the poll
+  lands in a different field; a different stick sample sends Link down a different path, and in Ordon the paths differ
+  in cost by tens of percent. The charge really does change the measured speed, but what it changes is *which scene
+  is drawn*, not what a scene costs.
+- **Consequence for how ports are judged:** the scripted Ordon walk cannot settle any change that shifts the guest's
+  timeline (a port's or stand-in's charge, event timing). Use a state that takes no input - the heavy area
+  (tp_area2, no `--press`) - or verify that the arms drew the same scene (draws and vertices a picture at matched
+  emulated seconds) before believing a walk comparison. The text port's heavy-area reading was already even
+  (23.23 / 23.26%, jobs 1423-1426), which is what this predicts; its Ordon -4.3% was the walk diverging.
+
 ### HUD text as a port, and the ports' cycle charge (`--port-hooks` bit 10, off; jobs 1415-1432, 2026-10-24/25)
 
 - **What (commit e90ac53):** J2DTextBoxEx::drawSelf with J2DPrint (construction, printReturn, both parse passes:

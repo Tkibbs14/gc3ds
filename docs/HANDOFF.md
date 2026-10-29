@@ -1,7 +1,21 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-29)
 
-> **▶ 2026-10-29: C41's instruments built, nothing measured yet (this session's container had no devkitARM and no
-> relay settings, so no device run was possible).** What the emulated clock is made of, read off the code: `speed_pct`
+> **▶ 2026-10-29: C41 answered — a port's charge diverts the scripted walk; it does not make a scene cost more.**
+> With the instruments on the device (build fa1505fa264916fd, jobs 1480-1488): in Ordon at defaults the emulated clock
+> is **79% poll fill** (the game waiting), 13% instructions really run, 7.6% port charges, 0.2% stand-ins, mean field
+> slack 7.4 tenths and **no field ever tight**. A charge is absorbed by a smaller fill, so it can neither be read as
+> speed nor push a picture past its deadline. The sweep's 30.89 / 32.64 / 27.90% came from the **walk diverging**:
+> `--press` is applied when the guest polls the pad, the charge moves the clock, the poll lands in another field, and
+> Link walks a different path — three runs of one setting agree to a draw or two in draws a picture at matched
+> emulated seconds, the arms differ 4 s into the run, and the 330 arm ends up parked in a static view ~40% heavier,
+> with the render structure per picture identical (EFB copies, clears) but the geometry not. **So no port or stand-in
+> may be judged on the scripted walk** (AGENTS.md "Measuring" now says so): use the heavy area, which takes no input,
+> or check the arms drew the same scene. The text port read even in the heavy area and -4.3% on the walk; the heavy
+> area was the honest number, and the multi-matrix port's -2.9% needs the same re-reading. Today's anchor on this
+> build: Ordon 35.68%, 10.708 frames a second (the device reads ~4.5% faster than on 10-25; the instruments cost
+> nothing measurable). The heavy-area sweep at charge 1 / 100 / 330 (jobs 1485-1488) is the confirmation still to read.
+> **Earlier the same day (the container had no devkitARM and no relay settings until a local session supplied a build
+> and the relay token):** What the emulated clock is made of, read off the code: `speed_pct`
 > is `cycles / real s / 486 MHz` with one guest instruction one cycle, and every cycle comes from an instruction really
 > run, a stand-in's charge, a port's charge, or a **fill** — the interpreter and the JIT dispatcher jump an idle (`b .`)
 > or polling loop to the next scheduled event (gekko.c, jit.c). So in a frame where the game waits, the fill tops the

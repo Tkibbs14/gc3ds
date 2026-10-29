@@ -113,7 +113,10 @@ the tp850 state. `core/tools/perf_heavy.py --by <column>` gives means and standa
 ab_phases.py drops each phase's first 12 s (a switch that flushes compiled code stalls); A/Bs that flush compiled code
 still read ~2% low for the on arm in the heavy area, so compare those builds with separate whole runs instead: in the
 heavy area (no `--press`) two runs of one build agree to ~0.1% (jobs 548-555). The scripted Ordon walk repeats
-exactly, so its runs compare too.
+exactly for one setting, so its runs compare too — **but not across a change that shifts the guest's timeline** (a
+port's or stand-in's charge, event timing): the presses are applied when the guest polls the pad, so a moved clock
+diverts the walk and the arms render different scenes (C41). For those, use the heavy area or verify the scene
+(`draws_s / (fields_s / 2)` at matched `emu_s`).
 
 ## Save states
 

@@ -107,6 +107,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   from the run's start). New gameplay states are made by steering a run live: `relay.sh cmd JOB "press A 6"`,
   `"stick X Y N"`, `"save sdmc:/gc3ds/states/NAME.state"`, with `"shot"` and `relay.sh frames JOB` to see where it is.
 - **Heavy gameplay state:** `--state sdmc:/gc3ds/states/tp_area2.state` (Ordon's heaviest area; no `--press` needed).
+- **The walk cannot judge a change that shifts the guest's timeline** (a port's or stand-in's cycle charge, event
+  timing): `--press` is applied when the guest polls the pad, so a moved clock lands the poll in another field, Link
+  walks a different path, and the scenes differ by tens of percent in draws a picture (C41, jobs 1423-1432: three runs
+  of one setting agree to a draw or two, the arms diverge 4 s in). Use the heavy area, which takes no input, or check
+  that the arms drew the same scene (`draws_s / (fields_s / 2)` at matched `emu_s`) before believing a walk.
 - **Separate whole runs decide defaults:** `python3 core/tools/runs.py core/out/relay_<job>.csv ...` (gameplay: settled
   speed, fields and real frames a second, VI fields per picture) and `python3 core/tools/title_sections.py ...` (tp850:
   cutscene, later stretch, movie). Queue the change's run and a baseline on the same build.

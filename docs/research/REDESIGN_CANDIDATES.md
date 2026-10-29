@@ -745,9 +745,22 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer
   measurement shows uncached bursts at well under a miss's cost.
 
-## C41. Ports change the emulated timeline, and the timeline moves speed more than the work (2026-10-25)
+## C41. A port's charge diverts the scripted walk; it does not make a scene cost more (2026-10-25, answered 2026-10-29)
 
-- **Status:** open (finding). Affects how every port and stand-in is judged.
+- **Status:** answered (finding). Changes how every port and stand-in is judged: not on the scripted walk.
+- **Answer (jobs 1480-1488, MEASUREMENTS.md "What the emulated clock is made of"):** in Ordon at defaults the
+  emulated clock is **79% poll fill** (the game waiting), 13% instructions really run, 7.6% port charges, 0.2%
+  stand-ins, with mean field slack 7.4 tenths and no field ever tight. A charge is therefore absorbed by a smaller
+  fill: it cannot be read as speed and cannot push a picture past its deadline. The sweep's 30.89 / 32.64 / 27.90%
+  came from the **scripted walk diverging**: `--press` is applied when the guest polls the pad, the charge moves the
+  clock, the poll lands in a different field, and Link walks a different path. Three runs of one setting agree to a
+  draw or two in draws a picture at matched emulated seconds; the arms differ 4 s into the run, and the 330 arm ends
+  up parked in a static view ~40% heavier. The render structure per picture is identical (EFB copies, clears) while
+  the geometry is not, so the arms drew **different scenes**.
+- **What to do instead:** judge a port or any timeline-shifting change on a state that takes no input (the heavy area,
+  tp_area2, no `--press`), or check that the arms drew the same scene (draws and vertices a picture at matched
+  emulated seconds) before believing a walk. The text port read even in the heavy area while reading -4.3% on the
+  walk; the heavy area was the honest number. The multi-matrix port's Ordon -2.9% needs the same re-reading.
 - **Evidence:** the HUD text port (bit 10) is exact and removes ~3% of Ordon's core 0, yet Ordon reads -4.3%; with its
   cycle charge (kInsScale) at 100 / 165 / 330 Ordon reads 30.89 / 32.70 / 27.90% against 34.10% off, each repeatable
   to ~0.1% (MEASUREMENTS.md "HUD text as a port, and the ports' cycle charge"). Core 0's busy share is unchanged; the
