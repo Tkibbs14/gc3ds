@@ -757,10 +757,16 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   draw or two in draws a picture at matched emulated seconds; the arms differ 4 s into the run, and the 330 arm ends
   up parked in a static view ~40% heavier. The render structure per picture is identical (EFB copies, clears) while
   the geometry is not, so the arms drew **different scenes**.
+- **Proof that the charge itself does nothing (jobs 1484-1487):** in the heavy area, taking the charge away
+  (`--port-charge 1`) moves 12 points of the clock from ports to fills and leaves cycles a window, speed and frames
+  alone (23.91 / 23.72 / 23.88% at off / 1 / 100); and flipping 100 against 330 inside one run (`--ab portcharge`,
+  nothing recompiled) gives 9.84 against 9.92 frames a second. A 3.3x charge is worth nothing when the scene is held
+  still.
 - **What to do instead:** judge a port or any timeline-shifting change on a state that takes no input (the heavy area,
   tp_area2, no `--press`), or check that the arms drew the same scene (draws and vertices a picture at matched
-  emulated seconds) before believing a walk. The text port read even in the heavy area while reading -4.3% on the
-  walk; the heavy area was the honest number. The multi-matrix port's Ordon -2.9% needs the same re-reading.
+  emulated seconds) before believing a walk. **The HUD text port (bit 10) is neutral, not a 4.3% loss** (heavy area
+  -0.1% frames): it stays off for want of a gain, not because it costs. The multi-matrix port's Ordon -2.9% is being
+  re-read the same way (job 1489).
 - **Evidence:** the HUD text port (bit 10) is exact and removes ~3% of Ordon's core 0, yet Ordon reads -4.3%; with its
   cycle charge (kInsScale) at 100 / 165 / 330 Ordon reads 30.89 / 32.70 / 27.90% against 34.10% off, each repeatable
   to ~0.1% (MEASUREMENTS.md "HUD text as a port, and the ports' cycle charge"). Core 0's busy share is unchanged; the

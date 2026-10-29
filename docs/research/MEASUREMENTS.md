@@ -2509,6 +2509,24 @@ done
   lands in a different field; a different stick sample sends Link down a different path, and in Ordon the paths differ
   in cost by tens of percent. The charge really does change the measured speed, but what it changes is *which scene
   is drawn*, not what a scene costs.
+- **The charge is absorbed by the fill, 1:1 (jobs 1485-1487, the heavy area, which takes no input).** Text port on,
+  `--port-charge` 1 / 100, against the port off:
+
+  | run | clock: run | ports | fills | M cycles a window | speed | frames a second |
+  |---|---|---|---|---|---|---|
+  | 1485 port off | 21.01% | 11.66% | 66.62% | 1273.1 | 23.907 | 7.171 |
+  | 1486 charge 1 | 20.45% | 0.12% | 78.73% | 1269.0 | 23.716 | 7.113 |
+  | 1487 charge 100 | 20.45% | 12.23% | 66.63% | 1275.3 | 23.882 | 7.164 |
+
+  Taking the charge away moves 12 points of the clock from ports to fills and leaves the cycles a window, the speed
+  and the frame rate alone: **the text port is neutral in a scene that cannot diverge** (-0.1% frames at charge 100,
+  -0.8% at charge 1), so its recorded Ordon -4.3% was the walk, not the port.
+- **Flipping the charge inside one run (job 1484, `--ab portcharge 330` on the walk) moves nothing.** Scored by arm:
+  charge 100 ports 8.87% of the clock, fills 76.50%, 9.84 frames a second; charge 330 ports 29.33%, fills 56.12%,
+  **9.92 frames a second** (+0.8%, i.e. noise). The A/B recompiles nothing and changes no state, so both arms sample
+  the same trajectory: a 3.3x charge is worth nothing when the scene is held still. The walk's separate runs at
+  charge 1 / 100 / 330 (jobs 1481-1483) read 8.608 / 10.204 / 10.275 frames a second against 10.708 off - swings of
+  up to 20%, in a different order from the 10-25 sweep: the walk's outcome is a lottery that the timing seeds.
 - **Consequence for how ports are judged:** the scripted Ordon walk cannot settle any change that shifts the guest's
   timeline (a port's or stand-in's charge, event timing). Use a state that takes no input - the heavy area
   (tp_area2, no `--press`) - or verify that the arms drew the same scene (draws and vertices a picture at matched
