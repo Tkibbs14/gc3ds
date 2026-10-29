@@ -2544,6 +2544,22 @@ done
   200 and 190 text calls checked per 10 s, **0 differed**). So the two are a +1.2% / -0.4% trade-off, not a pure gain:
   they pay where the HUD and skinned shapes are hot and cost a little where the GX thread is the limit. Owner's call
   (rule 5); off until then.
+- **The default ports re-measured one at a time on the static scene (jobs 1503-1507, tp_ordon with no `--press`,
+  against 10.367 / 10.367 frames a second with all defaults).** Each run turns one bit off:
+
+  | run | frames a second | that port is worth | its credit from the walk |
+  |---|---|---|---|
+  | all ports off (`--port-hooks 0`, 1503) | 9.374 | **the set: +10.6%** | - |
+  | minus bit 8, the minimap decoration (1504) | 10.361 | **+0.06%** | +3.1% |
+  | minus bit 7, J3DSys::reinitGX (1505) | 10.275 | **+0.9%** | +3.9% |
+  | minus bit 6, J3DMaterial::diff (1506) | 10.141 | **+2.2%** | +3.0% |
+  | minus bit 5, the J2DPane::draw walk (1507) | 10.280 | **+0.9%** | +2.2% |
+
+  The set is a large, real win, and the four bits above account for 3.9 of its 10.6 points - the rest is bits 0-2 and
+  4 (setGX, drawSelf, the PNGP matrix load at 98,000 calls per 10 s, the lights), measured separately in 1516-1519.
+  But **every individual credit from the walk was inflated**, by 1.4x (the material diff) to the whole of it (the
+  decoration port, which is break-even here although it runs 1,296 calls per 10 s at ~212 us each). The decoration
+  port also read -0.4% in the heavy area, so on today's evidence it earns nothing anywhere: a candidate to turn off.
 - **Consequence for how ports are judged:** the scripted Ordon walk cannot settle any change that shifts the guest's
   timeline (a port's or stand-in's charge, event timing). Use a state that takes no input - the heavy area
   (tp_area2, no `--press`) - or verify that the arms drew the same scene (draws and vertices a picture at matched

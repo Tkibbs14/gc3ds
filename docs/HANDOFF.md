@@ -21,6 +21,12 @@
 > (7.131 against 7.162 / 7.156), each alone -0.1%: they pay where the HUD and skinned shapes are hot and cost a
 > little where the GX thread is the limit. Exact with both on (`--port check`, jobs 1501-1502, 0 differed in both
 > scenes over thousands of calls). Off until the owner rules on the trade-off (rule 5).
+> **The default ports, re-measured one at a time (jobs 1503-1507, static Ordon):** the set is worth **+10.6%** (all
+> off: 9.374 against 10.367 frames a second), but each bit's own credit from the walk was inflated - the minimap
+> decoration **+0.06%** (walk +3.1%), J3DSys::reinitGX **+0.9%** (+3.9%), J3DMaterial::diff **+2.2%** (+3.0%), the
+> J2DPane::draw walk **+0.9%** (+2.2%). Bits 0-2 and 4 hold the remaining ~6.7% (1516-1519 measure them). The
+> decoration port is break-even here and -0.4% in the heavy area although it runs 1,296 calls per 10 s: on this
+> evidence it earns nothing, and turning it off is a candidate for the owner.
 > **ARM codegen (the owner's direction, 2026-10-29).** `core/tools/jitbench.py` benches the JIT's ARM output with no
 > disc image: hand-written PowerPC loops (`core/tests/jit/bench/*.S`, shaped like list walking, a float chain,
 > PSMTXConcat-style paired singles and CodeWarrior calls) are wrapped into a DOL and run through the real ARM build
