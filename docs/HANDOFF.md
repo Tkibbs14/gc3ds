@@ -14,9 +14,13 @@
 > area was the honest number, and the multi-matrix port's -2.9% needs the same re-reading. Today's anchor on this
 > build: Ordon 35.68%, 10.708 frames a second (the device reads ~4.5% faster than on 10-25; the instruments cost
 > nothing measurable). The heavy-area sweep at charge 1 / 100 / 330 (jobs 1485-1488) is the confirmation still to read.
-> **Ports re-judged on a static scene (jobs 1491-1493):** with the Ordon walk state run *without* `--press` (Link
-> stands in the village, HUD up), the HUD text port reads **+0.8%** and the multi-matrix load port **+1.0%** on frames
-> a second, where the walk had them at -4.3% and -2.9%. Repeats are queued (1494-1496) before either goes on.
+> **Ports re-judged on a static scene (jobs 1491-1502): a +1.2% / -0.4% trade-off, so the owner decides.** With the
+> Ordon walk state run *without* `--press` (Link stands in the village, HUD up): off 10.367 / 10.367 frames a second,
+> the HUD text port (bit 10) 10.452 / 10.461, the skinned-shape matrix port (bit 9) 10.473 / 10.463, both 10.498 /
+> 10.491 (**+1.2%**) - where the walk had them at -4.3% and -2.9%. In the heavy area both together read **-0.4%**
+> (7.131 against 7.162 / 7.156), each alone -0.1%: they pay where the HUD and skinned shapes are hot and cost a
+> little where the GX thread is the limit. Exact with both on (`--port check`, jobs 1501-1502, 0 differed in both
+> scenes over thousands of calls). Off until the owner rules on the trade-off (rule 5).
 > **ARM codegen (the owner's direction, 2026-10-29).** `core/tools/jitbench.py` benches the JIT's ARM output with no
 > disc image: hand-written PowerPC loops (`core/tests/jit/bench/*.S`, shaped like list walking, a float chain,
 > PSMTXConcat-style paired singles and CodeWarrior calls) are wrapped into a DOL and run through the real ARM build

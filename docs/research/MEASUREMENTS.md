@@ -2533,6 +2533,17 @@ done
   1015) **10.473 (+1.0%)**. Both read as small gains where the walk had them at -4.3% and -2.9%. The clock split
   shows the substitution plainly: ports 8.04 -> 8.60% of the clock with the text port on, instructions really run
   13.34 -> 12.79%, fills unchanged at 77.96%. Repeats queued (1494-1496) before either becomes a default.
+- **Ports 9 and 10, the full picture (jobs 1485-1502, build fa1505fa264916fd).** Frames a second, repeats where given:
+
+  | scene | port off | bit 10 (HUD text) | bit 9 (skinned matrices) | both (2039) |
+  |---|---|---|---|---|
+  | static Ordon (tp_ordon, no `--press`) | 10.367, 10.367 | 10.452, 10.461 (+0.8 / +0.9%) | 10.473, 10.463 (+1.0 / +0.9%) | 10.498, 10.491 (**+1.2%**) |
+  | heavy area (tp_area2) | 7.162, 7.156 | 7.164 (-0.1%) | 7.162 (-0.1%) | 7.131 (**-0.4%**) |
+
+  Exact on the device in both scenes with both bits on (`--port check`, jobs 1501-1502: 2,639 and 2,451 matrix calls,
+  200 and 190 text calls checked per 10 s, **0 differed**). So the two are a +1.2% / -0.4% trade-off, not a pure gain:
+  they pay where the HUD and skinned shapes are hot and cost a little where the GX thread is the limit. Owner's call
+  (rule 5); off until then.
 - **Consequence for how ports are judged:** the scripted Ordon walk cannot settle any change that shifts the guest's
   timeline (a port's or stand-in's charge, event timing). Use a state that takes no input - the heavy area
   (tp_area2, no `--press`) - or verify that the arms drew the same scene (draws and vertices a picture at matched
