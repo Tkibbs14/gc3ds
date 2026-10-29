@@ -10,7 +10,8 @@ of the JIT (core/tools/arm_build.sh), and reported as:
     ~10 cycles a guest instruction and linked blocks cost 13 ns while the hot code fits in L1 but 53-62 ns from 32 KB
     (docs/FINDINGS.md). Smaller is better even when the instruction count does not change.
   * **modelled stall cycles** (`--cycles`, JIT_SCHEDDUMP + arm11_sched.py): the ARM11 interlock model's view.
-  * `--dump` prints each big block's dump line (JIT_DUMP=big). `--opt MASK` overrides the device's mask.
+  * `--dump` prints each big block's dump line (JIT_DUMP=big); `--disasm` disassembles the block compiled for the
+    case's `loop:` label, which is what to read when looking for waste. `--opt MASK` overrides the device's mask.
 
 What it is for: ranking a codegen idea before spending console time. What it is not: the game's instruction mix. A
 case here is a loop shaped like hot game code, not the game; the model's blind spot is instruction fetch, so a change
@@ -51,6 +52,39 @@ def build_dol(src, out_dir):
 # SYSCALL | HLELINK | ROTMASK | NATIVE2 | IND2 | LATCH | PIPEK | GPRINLINE | TIER. The JIT's own default is 0, so a
 # bench that does not set this measures an unoptimized JIT and tells you nothing about the console.
 DEVICE_OPT = 8722295
+
+
+def loop_addr(out_dir):
+    """The address of the case's `loop:` label, so its block can be dumped without counting instructions by hand."""
+    p = subprocess.run(['powerpc-linux-gnu-nm', os.path.join(out_dir, 'case.elf')], capture_output=True, text=True)
+    for line in p.stdout.splitlines():
+        f = line.split()
+        if len(f) == 3 and f[2] == 'loop':
+            return int(f[0], 16)
+    return 0
+
+
+def disasm(dol, out_dir, opt, seconds):
+    """The ARM words of the block compiled for `loop:`, through objdump."""
+    at = loop_addr(out_dir)
+    if not at:
+        return '    (no `loop:` label in this case: nothing to disassemble)'
+    env = dict(os.environ, JIT_DUMP='%08x' % at, GC3DS_NOFAULTMEM='1',
+               GC3DS_OPT=str(DEVICE_OPT if opt is None else opt))
+    cmd = ['qemu-arm', '-L', '/usr/arm-linux-gnueabihf', '-cpu', 'cortex-a7', os.path.join(CORE, 'build-arm', 'gcemu'),
+           dol, '--seconds', str(seconds), '--jit']
+    out = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=CORE)
+    text = out.stdout + out.stderr
+    words = [l.split()[1] for l in text.splitlines() if l.startswith('JIT_HOT')]
+    head = [l for l in text.splitlines() if l.startswith('JIT_DUMP')]
+    if not words:
+        return '    (the block at %08x was never compiled)' % at
+    bin_ = os.path.join(out_dir, 'hot.bin')
+    open(bin_, 'wb').write(b''.join(int(w, 16).to_bytes(4, 'little') for w in words))
+    p = subprocess.run(['arm-linux-gnueabihf-objdump', '-b', 'binary', '-m', 'arm', '-D', bin_],
+                       capture_output=True, text=True)
+    body = [l.strip() for l in p.stdout.splitlines() if ':\t' in l]
+    return '\n'.join(['    ' + h for h in head] + ['    ' + l for l in body])
 
 
 def run(dol, seconds, opt, sched_path, dump):
@@ -101,6 +135,7 @@ def sched_report(path, top):
 def main():
     args = sys.argv[1:]
     seconds, opt, cycles, dump, top = 2, None, False, False, 12  # opt None: the device's mask (DEVICE_OPT)
+    want_dis = False
     cases = []
     i = 0
     while i < len(args):
@@ -115,6 +150,8 @@ def main():
             cycles = True; i += 1
         elif a == '--dump':
             dump = True; i += 1
+        elif a == '--disasm':
+            want_dis = True; i += 1
         elif a.startswith('--'):
             print(__doc__); return
         else:
@@ -142,6 +179,8 @@ def main():
                 for line in out.splitlines():
                     if line.startswith('JIT_DUMP'):
                         print('    ' + line)
+            if want_dis:
+                print(disasm(dol, d, opt, seconds))
 
 
 if __name__ == '__main__':
