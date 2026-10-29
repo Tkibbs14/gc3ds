@@ -815,3 +815,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   `--port-charge PCT` scales every port's charge at run time, with `--ab portcharge` flipping 100 against PCT in
   20 s phases; it recompiles nothing and changes no state, so both phases read from their first second.
 - **Re-evaluate when:** a port or stand-in measures a loss its own cost does not explain.
+
+## C42. Float results written straight into their lane register (OPT_FDIRECT, 2026-10-29)
+
+- **Status:** built, off (`--fdirect on`, `--ab fdirect`); awaiting a device A/B.
+- **What:** the float-lane path computed every result into a scratch single register and then moved it into frD's
+  lane register - a word a lane on every float arithmetic instruction. With OPT_FDIRECT the arithmetic, or the
+  rounding that ends the double path, writes the lane register itself, except where that register is a source the
+  other lane still has to read.
+- **Evidence (core/tools/jitbench.py, the device's opt mask, no disc image needed):** hot ARM words per guest
+  instruction psloop 8.89 -> 8.00 (-10%), floatloop 6.46 -> 6.00 (-7%), intloop and callloop unchanged. Hot code size
+  is the console's first-class cost (13 ns a linked block while the hot code fits in L1, 53-62 ns from 32 KB), and
+  OPT_RETSTUB's 1.8% fewer static hot words bought +1-1.6%, so a few percent of the float code is worth an A/B.
+- **Cost:** ~30 lines in compile_fc. Exact: the fuzzer passes with FCACHE|FDIRECT, and removing the aliasing guard
+  fails 1 case in 4,000 (seed 1, mask 7|FDIRECT) where keeping it passes - the guard is exercised, not decoration.
+- **Re-evaluate when:** the device A/B is run (gameplay states that take no input, per C41).

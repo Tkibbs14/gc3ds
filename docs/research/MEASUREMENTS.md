@@ -2527,6 +2527,12 @@ done
   the same trajectory: a 3.3x charge is worth nothing when the scene is held still. The walk's separate runs at
   charge 1 / 100 / 330 (jobs 1481-1483) read 8.608 / 10.204 / 10.275 frames a second against 10.708 off - swings of
   up to 20%, in a different order from the 10-25 sweep: the walk's outcome is a lottery that the timing seeds.
+- **The two "losing" ports judged on a scene that cannot diverge (jobs 1491-1493, the Ordon walk state with no
+  `--press`, so Link stands in the village with the HUD up; 240 s, scored from 80 s).** Port off 10.367 frames a
+  second; the HUD text port (bit 10, `--port-hooks 1527`) **10.452 (+0.8%)**; the multi-matrix load port (bit 9,
+  1015) **10.473 (+1.0%)**. Both read as small gains where the walk had them at -4.3% and -2.9%. The clock split
+  shows the substitution plainly: ports 8.04 -> 8.60% of the clock with the text port on, instructions really run
+  13.34 -> 12.79%, fills unchanged at 77.96%. Repeats queued (1494-1496) before either becomes a default.
 - **Consequence for how ports are judged:** the scripted Ordon walk cannot settle any change that shifts the guest's
   timeline (a port's or stand-in's charge, event timing). Use a state that takes no input - the heavy area
   (tp_area2, no `--press`) - or verify that the arms drew the same scene (draws and vertices a picture at matched

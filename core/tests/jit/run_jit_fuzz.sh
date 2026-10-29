@@ -22,6 +22,10 @@ grep -qE "^JIT FUZZ .*fails=0" "$out/main.txt" || { echo "FUZZ RUN FAILED (crash
 # a known trace-mode bug, HANDOFF 2026-10-12).
 JIT_FUZZ_NOTRACES=1 qemu-arm -cpu cortex-a7 "$out/jit_fuzz" "${1:-20000}" "${2:-1}" chain | grep -v '^\[' | tee "$out/chain.txt"
 grep -qE "^JIT FUZZ .*fails=0" "$out/chain.txt" || { echo "CHAIN FUZZ RUN FAILED (crashed, or found differences)"; exit 4; }
+# (2026-10-29) These fire with the gate's own masks (0 and JIT_FUZZ_OPT=7). They do not all fire under the 2DS's
+# shipping mask: with OPT_TIER in it, plant 5 - a followed branch that skips an instruction - is not detected at all
+# (8,000 cases, seed 7: fails=10 without OPT_TIER, fails=0 with it), because tiered regions replace the trace path.
+# A change that touches traces must therefore be gated with a mask that has no OPT_TIER, not with the device's.
 for plant in 1 2 3 4 5 6 7 9 12 13 14 17 18 19; do
     JIT_FUZZ_PLANT=$plant qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
     if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi

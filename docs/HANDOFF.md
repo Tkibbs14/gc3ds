@@ -14,6 +14,23 @@
 > area was the honest number, and the multi-matrix port's -2.9% needs the same re-reading. Today's anchor on this
 > build: Ordon 35.68%, 10.708 frames a second (the device reads ~4.5% faster than on 10-25; the instruments cost
 > nothing measurable). The heavy-area sweep at charge 1 / 100 / 330 (jobs 1485-1488) is the confirmation still to read.
+> **Ports re-judged on a static scene (jobs 1491-1493):** with the Ordon walk state run *without* `--press` (Link
+> stands in the village, HUD up), the HUD text port reads **+0.8%** and the multi-matrix load port **+1.0%** on frames
+> a second, where the walk had them at -4.3% and -2.9%. Repeats are queued (1494-1496) before either goes on.
+> **ARM codegen (the owner's direction, 2026-10-29).** `core/tools/jitbench.py` benches the JIT's ARM output with no
+> disc image: hand-written PowerPC loops (`core/tests/jit/bench/*.S`, shaped like list walking, a float chain,
+> PSMTXConcat-style paired singles and CodeWarrior calls) are wrapped into a DOL and run through the real ARM build
+> under qemu, reported as hot words per guest instruction and modelled ARM11 stalls. **It defaults to the 2DS's opt
+> mask (8722295): the JIT's own default is 0, so a bench that does not set it measures an unoptimized JIT.** Reading
+> the ARM for the paired-single loop showed a wasted word a lane on every float arithmetic instruction (result into a
+> scratch register, then a vmov into the lane register). **OPT_FDIRECT** (`--fdirect`, off, C42) writes the lane
+> register directly: psloop 8.89 -> 8.00 hot words a guest instruction, floatloop 6.46 -> 6.00. Exact (fuzzer with
+> FCACHE|FDIRECT), and its aliasing guard is exercised: removing it fails 1 case in 4,000 where keeping it passes.
+> Still owed before it can be judged: the whole-game qemu comparison (needs the disc image) and a device A/B.
+> **Gate gap found (2026-10-29):** under the 2DS's shipping mask, plant 5 (a followed branch that skips an
+> instruction) is **not detected** - 8,000 cases, seed 7: fails=10 without OPT_TIER, fails=0 with it, because tiered
+> regions replace the trace path. A JIT change that touches traces must be gated without OPT_TIER; run_jit_fuzz.sh
+> says so now.
 > **Earlier the same day (the container had no devkitARM and no relay settings until a local session supplied a build
 > and the relay token):** What the emulated clock is made of, read off the code: `speed_pct`
 > is `cycles / real s / 486 MHz` with one guest instruction one cycle, and every cycle comes from an instruction really
