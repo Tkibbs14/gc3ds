@@ -2493,6 +2493,21 @@ done
   | 165, calibrated to the interpreter's count (1424, 1426, 1432) | 32.64 / 32.63 / 32.70% |
   | 330 (1430) | 27.90% |
 
+- **The game really is slower: frames a second move with speed (2026-10-29, the same jobs re-scored).** `runs.py
+  --skip 100` over the logs of 1423-1432, reading the real frame rate rather than `speed_pct`:
+
+  | Arm | speed | frames a second | against port off | fields a picture |
+  |---|---|---|---|---|
+  | port off (1423 / 1425 / 1429) | 34.103 | 10.191 | - | 2:714, 1:28 |
+  | charge 100 (1431) | 30.886 | 9.344 | **-8.3%** | 2:661, 1:27 |
+  | charge 165 (1424 / 1426 / 1432) | 32.656 | 9.770 | **-4.1%** | 2:689, 1:27 |
+  | charge 330 (1430) | 27.898 | 8.375 | **-17.8%** | 2:666, 1:37 |
+
+  Speed divided by frames is 3.346 / 3.305 / 3.342 / 3.331 — the picture stays locked to two fields in every arm, so
+  this is not `speed_pct` accounting: the port with its charge makes the game deliver fewer pictures a second, by as
+  much as 18%. That rules out the first explanation C41 offered itself (that a charge change unlocks the pacing
+  behind speed_pct) and leaves the charge changing the real work per picture, which the `# clock 10s` instrument
+  (2026-10-29) is there to find.
   Each setting repeats to ~0.1%, but the response is not monotonic and far larger than the ~1.3% of emulated
   instructions the text calls are: the emulated timeline a port produces changes how much work the game does per
   frame (inclusive shares outside the HUD grew ~1% each with the port on). Likely the game's own time-based logic

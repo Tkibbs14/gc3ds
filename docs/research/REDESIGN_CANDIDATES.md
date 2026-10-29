@@ -778,13 +778,18 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   fields a picture the clock per picture is fixed anyway, so the charge cannot be read directly as speed: it has to be
   changing what the game does, or how the picture is paced (two fields against three), which the `# new frames hist`
   field-gap histogram records in every run already taken.
-- **Next, in this order:** (1) **re-read the logs of jobs 1423-1432** (they are on the relay) for `# new frames 10s`
-  and the field-gap histogram: if the real frame rate did not move with the charge, most of C41 is `speed_pct`
-  accounting and the lesson is that a charge change unlocks the two-fields-a-picture assumption behind it. (2) With the
-  new instruments below, one run each at `--port-charge 1 / 100 / 330` with the text port on, scored on frames a
-  second: charge ~0 is the case the old sweep never tried, and in the slack regime it is where the port shows the work
-  it really saves. (3) Only then look for the game's own time-based logic (audio frames, actor executes per emulated
-  second).
+- **Step 1 done (2026-10-29): it is not a measurement artifact — the game really is slower.** Re-scored jobs
+  1423-1432 on the real frame rate (MEASUREMENTS.md table): port off 10.191 frames a second, charge 100 9.344
+  (-8.3%), 165 9.770 (-4.1%), 330 8.375 (**-17.8%**), with speed / frames constant at 3.31-3.35 and the picture
+  locked to two fields in every arm. So the charge does not merely move `speed_pct`'s clock: it costs the game up to
+  18% of its pictures. Both of this candidate's own regime predictions are therefore wrong as stated — a charge of
+  ~45 k cycles in a 16.2 M-cycle picture is changing something structural, not the bookkeeping.
+- **Next, in this order:** (2) with the new instruments, one run each at `--port-charge 1 / 100 / 330` and the text
+  port on (`bash core/tools/c41_jobs.sh queue`), read with `clock_split.py`: if the fills shrink by the charge and
+  nothing else moves, the cost is in what the fill was doing; if the field slack collapses into bin 0, the picture is
+  being pushed past its deadline after all. Charge ~0 is the case the old sweep never tried. (3) Then the game's own
+  time-based logic (it reads the timebase ~1 k times a second): audio frames and actor executes per emulated second
+  with the port on and off.
 - **Instruments built for it (2026-10-29, not yet run on the device):** `# clock 10s` in perf.csv and the same line at
   the end of a PC run name the four clock sources and, per VI field, how much of the field was fill ("field slack",
   tenths; bin 0 = the game filled the field with work, so a charge that grows pushes the picture past its deadline).
