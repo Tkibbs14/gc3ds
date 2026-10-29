@@ -39,7 +39,9 @@ push() {
 
 queue() {
     local id args
-    id="$(push)"
+    # RELAY_BUILD_ID: a build already on the relay (what `push` printed), for a machine that cannot build the 3dsx
+    # itself - a cloud session without devkitPro queues against a build another machine uploaded.
+    id="${RELAY_BUILD_ID:-$(push)}"
     [ -n "$id" ] || { echo "build upload failed: no job queued" >&2; exit 1; }
     args="$*"
     printf '{"args": %s, "build": "%s"}' "$(printf '%s' "$args" | sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/')" "$id" |

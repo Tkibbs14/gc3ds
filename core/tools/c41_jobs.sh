@@ -3,6 +3,7 @@
 #
 #   bash core/tools/c41_jobs.sh press            print the scripted Ordon walk's --press list (REMOTE_RUNS.md)
 #   bash core/tools/c41_jobs.sh queue            queue the five runs below (prints a job id a line)
+#        RELAY_BUILD_ID=<id> ... queue            against a build already on the relay (no devkitPro needed here)
 #   bash core/tools/c41_jobs.sh score JOB...     fetch those jobs' logs and score them
 #
 # The runs, all the Ordon walk (tp_ordon.state, 300 s, the same press list, scored from 100 s):

@@ -50,6 +50,9 @@ bash core/tools/relay.sh cmd <job> "set opt 1"     # a live command for the runn
 bash core/tools/relay.sh frames <job>              # the job's top-screen frames (BMP, PNG when ImageMagick is there)
 ```
 
+`RELAY_BUILD_ID=<id>` queues against a build already on the relay (the id `push` printed) instead of uploading one, so
+a machine without devkitPro — a cloud session, say — can run jobs for a build another machine built.
+
 `run` / `queue` upload the current `gc3ds.3dsx` if the relay does not have it (builds are named by the first 16 hex
 digits of their sha256) and tie the job to it; `queue` refuses to queue when the upload failed.
 
