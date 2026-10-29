@@ -4358,6 +4358,29 @@ static int fc_compile(Cg* c, u32 inst) {
                     sc[l] = mul ? fc_src(c, fcr, cl[l]) : 0;
                     if (sa[l] < 0 || sb[l] < 0 || sc[l] < 0) return -1;
                 }
+                // OPT_FDIRECT: straight into frD's lane register instead of a scratch one and a vmov after it, which
+                // is a word per lane of every float arithmetic instruction (psloop.S in tests/jit/bench: 82 -> 74 hot
+                // words). Only where the lane is not a source either lane still has to read: the sources are pinned,
+                // so fc_dst cannot take one of them, but frD's own lane may already hold one of this instruction's
+                // sources, and lane 1 reads its sources after lane 0 has been written.
+                if (c->j->opt & OPT_FDIRECT) {
+                    int dl[2] = { fc_dst(c, fd, 0), lanes == 2 ? fc_dst(c, fd, 1) : -1 };
+                    if (dl[0] >= 0 && (lanes == 1 || dl[1] >= 0)) {
+                        bool clash = false;
+                        for (u32 l = 0; l < lanes; l++)
+                            for (u32 q = 0; q < lanes; q++)
+                                if (dl[l] == sa[q] || (plain && dl[l] == sb[q]) || (mul && dl[l] == sc[q])) clash = true;
+                        if (!clash) {
+                            for (u32 l = 0; l < lanes; l++) {
+                                if (plain) vfp_s(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, 16 + dl[l], 16 + sa[l], 16 + sb[l]);
+                                else vfp_s(e, VF_MUL, 16 + dl[l], 16 + sa[l], 16 + sc[l]);
+                            }
+                            if (lanes == 1) vmov_s(e, 16 + fc_dst(c, fd, 1), 16 + dl[0]);
+                            fc_set(c, fd, dl[0], lanes == 2 ? dl[1] : fc_find(&c->rc, fd, 1));
+                            return 1;
+                        }
+                    }
+                }
                 for (u32 l = 0; l < lanes; l++) {
                     if (plain) vfp_s(e, xo5 == 18 ? VF_DIV : xo5 == 20 ? VF_SUB : VF_ADD, (int)l, 16 + sa[l], 16 + sb[l]);
                     else vfp_s(e, VF_MUL, (int)l, 16 + sa[l], 16 + sc[l]);
@@ -4392,6 +4415,17 @@ static int fc_compile(Cg* c, u32 inst) {
                     else if (!madd) vfp_d(e, VF_MUL, d, d, d + 1);
                     else vfp_d(e, (xo5 == 28 || xo5 == 30) ? VF_NMLS : VF_MLA, d + 2, d, d + 1);
                     if (madd && xo5 >= 30) vneg_d(e, res[l], res[l]);
+                }
+                // OPT_FDIRECT: the rounding writes frD's lane register (every source is in d0-d7 by now, and the
+                // lane registers are d8-d15, so nothing this instruction still reads can be overwritten).
+                if (c->j->opt & OPT_FDIRECT) {
+                    int dl[2] = { fc_dst(c, fd, 0), fc_dst(c, fd, 1) };
+                    if (dl[0] >= 0 && dl[1] >= 0) {
+                        for (u32 l = 0; l < lanes; l++) vcvt_f32_f64(e, 16 + dl[l], res[l]);
+                        if (lanes == 1) vmov_s(e, 16 + dl[1], 16 + dl[0]);
+                        fc_set(c, fd, dl[0], dl[1]);
+                        return 1;
+                    }
                 }
                 for (u32 l = 0; l < lanes; l++) vcvt_f32_f64(e, 2 + (int)l, res[l]);
             }
