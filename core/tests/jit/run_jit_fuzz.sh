@@ -44,9 +44,11 @@ if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant24.txt"; then echo "SELF-TEST
 JIT_FUZZ_PLANT=26 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant26.txt"
 if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant26.txt"; then echo "SELF-TEST FAILED: planted bug 26 not detected (or the run crashed)"; exit 3; fi
 # Plants 25, 27, 28: an inlined call writes the wrong return address, its bctrl skips the CTR check, a return the LR check
-# (regions inline calls with the pseudo-random coverage map on).
+# (regions inline calls with the pseudo-random coverage map on). Always with fault mode, whatever the gate's outer
+# JIT_FUZZ_NOFAULT: with fault mode off these 8,000 cases never diverge on plant 28, so the self-test proved nothing
+# (2026-10-29: fails=0 under JIT_FUZZ_NOFAULT=1 on 37282ee and on today's branch alike, detected in both with it on).
 for plant in 25 27 28; do
-    JIT_FUZZ_PLANT=$plant JIT_FUZZ_RCOVER=12345 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
+    env -u JIT_FUZZ_NOFAULT JIT_FUZZ_PLANT=$plant JIT_FUZZ_RCOVER=12345 JIT_FUZZ_OPT=$(( ${JIT_FUZZ_OPT:-0} | 4194304 )) qemu-arm -cpu cortex-a7 "$out/jit_fuzz" 8000 7 > "$out/plant$plant.txt"
     if ! grep -qE "^JIT FUZZ .*fails=[1-9]" "$out/plant$plant.txt"; then echo "SELF-TEST FAILED: planted bug $plant not detected (or the run crashed)"; exit 3; fi
 done
 # Region tier with a pseudo-random coverage map (OPT_TIER's never-run sides), and OPT_TIER through the dispatcher with

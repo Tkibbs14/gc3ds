@@ -18,6 +18,10 @@
 > the stand-in and port A/Bs both phases read from their first second. Checks run: PC build clean, the interpreter's
 > directed tests (420 pass), the JIT fuzzer's full gate. Not run (no toolchain, no disc image here): the 3DS build and
 > the qemu whole-game comparison; the change is counters and one option, with no codegen or state effect.
+> **Gate finding (2026-10-29):** in the gate's `JIT_FUZZ_NOFAULT=1` variant, self-test plant 28 (a region's inlined
+> call keeps no LR check) is **not detected** — and not because of this branch: 37282ee and the branch give identical
+> runs (`fails=0`, float 4291). With fault mode off those 8,000 cases never diverge, so that self-test proved nothing
+> there. run_jit_fuzz.sh now runs plants 25 / 27 / 28 with fault mode whatever the outer setting (`env -u`).
 > **First thing to do with a relay again:** `relay.sh log` on jobs 1423-1432 and read `# new frames 10s` and the
 > field-gap histogram. If the real frame rate did not move with the charge, most of C41 is `speed_pct` accounting (a
 > charge change unlocks the two-fields-a-picture assumption that makes speed the frame rate) rather than the game
