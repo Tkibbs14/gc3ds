@@ -151,7 +151,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7%), the
   J2DPane::draw walk, all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%) and the
   minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 503`); bits 3
-  (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off. Each is checked
+  (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off; **9 and 10
+  measure +0.9-1.0% and +0.8-0.9% each, +1.3% together, on a gameplay scene that takes no input** (jobs 1491-1497;
+  their old Ordon losses were the walk diverging, C41). Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
@@ -175,9 +177,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 - **Added 24-25 October (MEASUREMENTS.md, HANDOFF):** ports, on: the J3D lights with a one-copy commit (heavy area
   +2.7%), all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%), the minimap's
   renderingDecoration (Ordon +3.1%, heavy area -0.4%: GX-thread bound there). Built, exact, off: the skinned-shape
-  matrix load (bit 9, Ordon -2.9%) and HUD text with J2DPrint / JUTResFont (bit 10, Ordon -4.3%). **A port's cycle
-  charge can move speed more than its work** (REDESIGN_CANDIDATES C41: the text port's charge at 100 / 165 / 330 reads
-  30.9 / 32.7 / 27.9% against 34.1% off), so judge every port with separate whole runs, never by its own cost. The
+  matrix load (bit 9, Ordon -2.9%) and HUD text with J2DPrint / JUTResFont (bit 10, Ordon -4.3%). **A port's charge diverts the
+  scripted walk rather than making a scene cost more** (C41, answered 2026-10-29: in Ordon the emulated clock is 79%
+  poll fill, so a charge is absorbed by a smaller fill; flipping it 100 against 330 inside one run moves frames a
+  second by 0.8%, while separate walk runs swing up to 20% because the presses land in another field and Link walks
+  elsewhere). Judge a port on a scene that takes no input, never on the walk. The
   FIFO mirror in guest RAM costs Ordon up to 1.6% (C40, parked: no exact way yet).
 - **Added 22-24 October (details in HANDOFF):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
   +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
@@ -200,9 +204,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions (HANDOFF.md's current state orders them):** C41 first, why a port's cycle charge moves speed
-  more than its work (it decides how every later port is judged, and may turn the text and multi-matrix ports
-  positive); the library ports' own cost (Ordon: building their context 7-8% of core 0, committing 4-5%); larger
+- **Open directions (HANDOFF.md's current state orders them):** ARM code quality on core 0 (the owner's direction,
+  2026-10-29: `core/tools/jitbench.py` benches the JIT's output with no disc image; OPT_FDIRECT is the first item from
+  it, C42); the library ports' own cost (Ordon: building their context 7-8% of core 0, committing 4-5%); larger
   ports where a whole subtree is replaced (other TEV block types, J3D packet draw;
   `docs/research/LIBRARY_PORTS.md`), since small functions lose as entry-hook stand-ins; the ShdwDraw stand-in's code footprint (C32b); core 0: less hot code per guest instruction, longer blocks;
   GPU-resident vertex data for repeated display lists (C1); frame skip as a user option (guards for fades in place;
