@@ -1905,7 +1905,18 @@ static __attribute__((unused)) void tri_bench(Gekko* g) {
     g_triBenchDone = true;
 }
 
+// The one funnel for every charge a native stand-in or a library port puts on the emulated clock, so the clock
+// accounting (gekko.h, C41) can split them: the port site below counts its own charge, the rest is a stand-in's.
+static u32 hle_run_body(Gekko* g, u32 budget);
+
 u32 hle_run(Gekko* g, u32 budget) {
+    u64 ports = g_clkN[CLK_PORT];
+    u32 n = hle_run_body(g, budget);
+    if (n && g_clkN[CLK_PORT] == ports) { g_clkCyc[CLK_HLE] += n; g_clkN[CLK_HLE]++; }
+    return n;
+}
+
+static u32 hle_run_body(Gekko* g, u32 budget) {
 #ifndef __3DS__
     bs_hook(g);
     if (g_bsOn > 0 && (g->pc == PC_BODY || g->pc == PC_CBK)) return 0;  // (observed only: guest code runs)
@@ -1918,7 +1929,10 @@ u32 hle_run(Gekko* g, u32 budget) {
     }
     if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
     if (g_paneStat && g->pc == 0x802F67E0u) { pane_note(g); return 0; }  // (counted; the guest code runs)
-    if (port_is_hook(g->pc)) { u32 n = port_run_hook(g); if (n) return n; }  // (not taken: the guest code runs)
+    if (port_is_hook(g->pc)) {  // (not taken: the guest code runs)
+        u32 n = port_run_hook(g);
+        if (n) { g_clkCyc[CLK_PORT] += n; g_clkN[CLK_PORT]++; return n; }
+    }
     if (!g_on) return 0;
     if (g->pc != PC_ENTRY && g->pc != PC_NEXT && g->pc != PC_LOOP) {
         u32 n = hle_ps_run(g);  // (first: on the PC it checks the generated GD writers before hle_gd.c's own)

@@ -755,7 +755,39 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Hypothesis:** TP's time-based logic (timebase reads: animation steps, camera, audio frames per emulated second) does
   more per frame when a frame's emulated time shifts; a port's charge is an estimate of the guest instruction count,
   so every port moves the timeline a little, and some placements cross a threshold.
-- **Next:** instrument per emulated second what the game does (game frames, audio updates, actor executes) with a port
-  on and off; compare the JIT's own charge for a function with the interpreter's count (the calibration reference);
-  consider charging ports by the guest path's exact count where it can be had (check mode gives it per call).
+- **What the clock is made of (2026-10-29, read from the code; nothing measured yet).** `speed_pct` is
+  `cycles / real seconds / 486 MHz` (main.c), and one guest instruction is one cycle, so every cycle the clock advances
+  comes from one of four places: an instruction the JIT or the interpreter really ran, a charge for a native stand-in,
+  a charge for a library port, or a **fill** — the interpreter and the dispatcher jump an idle loop (`b .`) or a
+  polling loop straight to the next scheduled event (gekko.c, jit.c; the VI schedules one per line). That gives two
+  regimes, and they predict opposite things:
+  - **Slack** (the game reaches a wait before its deadline): the fill tops the clock up to the same event whatever the
+    charges inside the frame were, so a charge is absorbed by a smaller fill and cannot move speed at all. Speed is
+    then pictures a second, and a port gains exactly the real work it removes.
+  - **Saturated** (no wait in the frame): a charge adds emulated time for nothing. Speed *rises* with the charge while
+    the game gets less done per emulated second — its per-second logic, animation and audio run against a clock that
+    advanced for free.
+  Neither regime makes a bigger charge read *slower*, so the measured 330 -> 27.90% needs the game to do something
+  different: either a frame that overran changes what it renders (it reads the timebase), or the picture is no longer
+  locked to two fields and `speed_pct` and the real frame rate have parted company.
+- **The charge is far too small to move the clock by accounting (2026-10-29, arithmetic from the numbers already
+  measured).** A picture in Ordon is two fields, 16.2 M emulated cycles (`486e6 * 100 / 5994` a field). The text port
+  runs ~3 calls a picture of ~10.8 k guest instructions each (300 calls per 10 s in check mode, jobs 1421-1422):
+  ~32 k cycles, 0.2% of the picture's budget, and going from charge 100 to 330 moves the clock by ~45 k cycles a
+  picture — **0.28%**, against a measured gap of 30.89 vs 27.90% (~10%, 35x larger). With the game locked to two
+  fields a picture the clock per picture is fixed anyway, so the charge cannot be read directly as speed: it has to be
+  changing what the game does, or how the picture is paced (two fields against three), which the `# new frames hist`
+  field-gap histogram records in every run already taken.
+- **Next, in this order:** (1) **re-read the logs of jobs 1423-1432** (they are on the relay) for `# new frames 10s`
+  and the field-gap histogram: if the real frame rate did not move with the charge, most of C41 is `speed_pct`
+  accounting and the lesson is that a charge change unlocks the two-fields-a-picture assumption behind it. (2) With the
+  new instruments below, one run each at `--port-charge 1 / 100 / 330` with the text port on, scored on frames a
+  second: charge ~0 is the case the old sweep never tried, and in the slack regime it is where the port shows the work
+  it really saves. (3) Only then look for the game's own time-based logic (audio frames, actor executes per emulated
+  second).
+- **Instruments built for it (2026-10-29, not yet run on the device):** `# clock 10s` in perf.csv and the same line at
+  the end of a PC run name the four clock sources and, per VI field, how much of the field was fill ("field slack",
+  tenths; bin 0 = the game filled the field with work, so a charge that grows pushes the picture past its deadline).
+  `--port-charge PCT` scales every port's charge at run time, with `--ab portcharge` flipping 100 against PCT in
+  20 s phases; it recompiles nothing and changes no state, so both phases read from their first second.
 - **Re-evaluate when:** a port or stand-in measures a loss its own cost does not explain.

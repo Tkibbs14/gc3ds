@@ -1,4 +1,27 @@
-# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-25)
+# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-29)
+
+> **▶ 2026-10-29: C41's instruments built, nothing measured yet (this session's container had no devkitARM and no
+> relay settings, so no device run was possible).** What the emulated clock is made of, read off the code: `speed_pct`
+> is `cycles / real s / 486 MHz` with one guest instruction one cycle, and every cycle comes from an instruction really
+> run, a stand-in's charge, a port's charge, or a **fill** — the interpreter and the JIT dispatcher jump an idle (`b .`)
+> or polling loop to the next scheduled event (gekko.c, jit.c). So in a frame where the game waits, the fill tops the
+> clock up to the same event whatever the charges in it were: a charge is absorbed and cannot move speed; in a frame
+> that never waits a charge adds emulated time for nothing and speed *rises*. Neither predicts the charge sweep's
+> 330 -> 27.90%. **And the charge is far too small to be read as speed directly:** a picture in Ordon is two fields,
+> 16.2 M emulated cycles, while the text port's three calls a picture are ~32 k (0.2%) and the 100 -> 330 step moves
+> the clock ~45 k, 0.28% against a measured ~10% gap. So the charge changes what the game does, or how the picture is
+> paced (two fields against three) — the next step is to separate the metric from the mechanism (C41's ordered plan).
+> **Built (needs a device run):** `# clock 10s` in perf.csv and the same line at the end of a PC run give the four
+> clock sources and, per VI field, how much of it was fill (field slack in tenths; bin 0 = no slack left, so a growing
+> charge pushes the picture past its deadline). `--port-charge PCT` scales every port's charge at run time, with
+> `--ab portcharge` flipping 100 against PCT in 20 s phases — it recompiles nothing and changes no state, so unlike
+> the stand-in and port A/Bs both phases read from their first second. Checks run: PC build clean, the interpreter's
+> directed tests (420 pass), the JIT fuzzer's full gate. Not run (no toolchain, no disc image here): the 3DS build and
+> the qemu whole-game comparison; the change is counters and one option, with no codegen or state effect.
+> **First thing to do with a relay again:** `relay.sh log` on jobs 1423-1432 and read `# new frames 10s` and the
+> field-gap histogram. If the real frame rate did not move with the charge, most of C41 is `speed_pct` accounting (a
+> charge change unlocks the two-fields-a-picture assumption that makes speed the frame rate) rather than the game
+> doing more work; then one run each at `--port-charge 1 / 100 / 330` with the text port on, scored on frames a second.
 
 > **▶ Current state (2026-10-25).** All defaults (`--port-hooks 503`): **Ordon walk 34.10% (10.19 frames a second; jobs
 > 1423 / 1425 / 1429), heavy area ~23.5% (jobs 1393-1401).** On 10-24 before that day's ports (jobs 1280-1284): heavy

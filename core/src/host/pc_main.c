@@ -530,6 +530,21 @@ int main(int argc, char** argv) {
     gekko_poll_stats(&sys.cpu, &skips, &skipped);
     if (skips) fprintf(stderr, "polling-loop skips: %llu, %.1f%% of emulated time\n", (unsigned long long)skips,
                        100.0 * (double)skipped / (double)sys.cpu.cycles);
+    {  // where the emulated clock's cycles came from (gekko.h, C41)
+        static const char* kN[CLK_N] = { "stand-ins", "ports", "idle fills", "poll fills" };
+        double c = sys.cpu.cycles ? (double)sys.cpu.cycles : 1.0, charged = 0;
+        fprintf(stderr, "clock sources:");
+        for (int k = 0; k < CLK_N; k++) {
+            charged += (double)g_clkCyc[k];
+            fprintf(stderr, " %s %.2f%% (%llu)", kN[k], 100.0 * (double)g_clkCyc[k] / c, (unsigned long long)g_clkN[k]);
+        }
+        fprintf(stderr, ", guest instructions run %.2f%%\n", 100.0 * (c - charged) / c);
+        if (g_clkFields) {
+            fprintf(stderr, "field slack (tenths of a field filled, %llu fields):", (unsigned long long)g_clkFields);
+            for (int b = 0; b <= 10; b++) if (g_clkSlack[b]) fprintf(stderr, " %d:%u", b, g_clkSlack[b]);
+            fputc('\n', stderr);
+        }
+    }
     sys_free(&sys);
     if (isDisc || discPath) disc_close(&disc);
     free(dol);

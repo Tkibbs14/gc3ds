@@ -2521,6 +2521,7 @@ static void port_report(void) {
 // 470; drawSelf: 2,739 against 2,203, jobs 490-491; J3D PNGP: 209 against 224, jobs 494-495; flush prim: 29.0 against
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
+u32 g_portCharge = 100;
 static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
@@ -2556,5 +2557,7 @@ u32 port_run_hook(Gekko* g) {
     hs->calls++;
     hs->pipe += c->pn + c->pnSent;
     g->pc = g->lr;
-    return c->n ? c->n * kInsScale[hook] / 100 : 1;
+    if (!c->n) return 1;
+    u64 n = (u64)c->n * kInsScale[hook] * g_portCharge / 10000;  // --port-charge: 100 leaves the calibrated estimate
+    return n ? (u32)n : 1;
 }

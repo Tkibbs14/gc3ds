@@ -6765,7 +6765,10 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (en->idle && (g->msr & MSR_EE)) {
             // Back to gekko_run without skipping, which takes the interrupt that may now be pending.
             if (gekko_idle_hook(g)) { GKP(g)->brk = true; total += 1; break; }
-            total += (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1);
+            u32 fill = (u32)(budget - (s64)total > 0 ? budget - (s64)total : 1);
+            total += fill;
+            g_clkCyc[CLK_IDLE] += fill;
+            g_clkN[CLK_IDLE]++;
             break;
         }
         FastEntry* ft = fast_select(j, key);
@@ -6810,7 +6813,8 @@ static u32 jit_entry(Gekko* g, s64 budget, void* ctx) {
         if (en->poll && g->pc == pc && (g->msr & MSR_EE) && gekko_poll_loop_ram(g, pc, en->poll, j->ramSize)) {
             if (gekko_idle_hook(g)) { GKP(g)->brk = true; break; }
             j->stats.pollSkips++;
-            if ((s64)total < budget) total = (u32)budget;
+            if ((s64)total < budget) { g_clkCyc[CLK_POLL] += (u64)(budget - (s64)total); total = (u32)budget; }
+            g_clkN[CLK_POLL]++;
             break;
         }
         GkPriv* p = GKP(g);

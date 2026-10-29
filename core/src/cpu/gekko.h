@@ -109,6 +109,19 @@ bool gekko_poll_loop_ram(Gekko* g, u32 start, u32 len, u32 ramSize);
 // Enables polling-loop skips in the interpreter for loops whose loads read RAM below ramSize (0 turns them off).
 void gekko_set_poll_ram(Gekko* g, u32 ramSize);
 void gekko_poll_stats(Gekko* g, u64* skips, u64* cycles);  // interpreter polling-loop skips so far
+// Where the emulated clock's cycles come from (REDESIGN_CANDIDATES C41: a port's cycle charge moves speed more than
+// its work). Every cycle Gekko.cycles advances is one of: an instruction the JIT or the interpreter really ran, a
+// charge for a native stand-in (CLK_HLE) or a library port (CLK_PORT), or a fill that jumps an idle loop ("b .") or a
+// polling loop to the next event (CLK_IDLE, CLK_POLL). Only the charges and the fills are counted, so the
+// per-instruction path is untouched; what the guest really ran is Gekko.cycles minus these.
+enum { CLK_HLE, CLK_PORT, CLK_IDLE, CLK_POLL, CLK_N };
+extern u64 g_clkCyc[CLK_N];  // cycles from each source
+extern u64 g_clkN[CLK_N];    // charges / fills from each source
+// Per VI field, how much of the field's cycles were fills, in tenths: bin 0 means the game filled the whole field with
+// work (no slack left, so a charge that grows pushes the picture past its deadline), bin 10 that it was idle all field.
+extern u32 g_clkSlack[11];
+extern u64 g_clkFields;
+void gekko_clock_field(u64 cycles);  // called by the VI at each field boundary (vi.c)
 // Optional JIT: called by gekko_run before each instruction it would interpret. It runs compiled code from g->pc
 // for up to about `budget` cycles, leaves g->pc at the next instruction, and returns the number of instructions it
 // executed (0 = let the interpreter execute the instruction at g->pc). Interrupts are taken between calls.

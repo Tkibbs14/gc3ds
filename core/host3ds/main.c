@@ -516,6 +516,8 @@ typedef struct {
     u32 tribench;  // --tribench N (measurement): time the triangle path's pieces at its Nth run (hle_tp.c tri_bench)
     bool shdwcb;  // --shdwcb on|off (on): with --shdwtri, its shadow callback natively too (hle_tp.c)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (on), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
+    u32 portCharge;     // --port-charge PCT (100): the library ports' charge on the emulated clock, scaled (C41; pcharge column)
+    bool abPortcharge;  // --ab portcharge: 100 against --port-charge PCT, nothing else changed (no recompile: clean phases)
     bool shdwmemo, abShdwmemo;  // --shdwmemo on|off (on), --ab shdwmemo: the ShdwDraw walk memo (hle_tp.c; shdwmemo column)
     bool dblframe, abDblframe;  // --dblframe on|off (on: heavy area +1.9%, jobs 548-560), --ab dblframe: overlapped GPU frames, C30 (pica.c)
     bool feeddirect, abFeeddirect;  // --feeddirect on|off (off), --ab feeddirect: GX commands parsed in place (gx/fifo.c g_feedDirect)
@@ -597,6 +599,7 @@ static void opts_default(RunOpts* o) {
     o->shdwcb = true;   // the shadow callback natively, read stage by stage: title later stretch +1.1% (+3.8% pictures), heavy area +0.22%, Ordon +0.7% (jobs 696-702)
     o->trifast = true;  // the triangle path's fast form: title later stretch +3.8% (+7.7% pictures), heavy area +0.24%, Ordon +0.4% (jobs 685-691)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
+    o->portCharge = 100;  // the ports' calibrated estimate (port_j2d.c kInsScale); --port-charge sweeps it (C41)
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)
@@ -617,7 +620,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); o->abShdwmemo = !strcmp(v, "shdwmemo"); o->abShdwtri = !strcmp(v, "shdwtri"); }
+        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); o->abShdwmemo = !strcmp(v, "shdwmemo"); o->abShdwtri = !strcmp(v, "shdwtri"); o->abPortcharge = !strcmp(v, "portcharge"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -672,6 +675,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
+        else if (!strcmp(a, "--port-charge")) o->portCharge = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--fifomirror")) g_gpMirror = strcmp(v, "off") != 0;  // (measurement only: not exact)
         else if (!strcmp(a, "--pmu-port-hooks")) g_portPmuHooks = (u32)strtoul(v, NULL, 0);  // (--pmu-split port: only these hooks)
         else if (!strcmp(a, "--port")) o->port = !strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0;
@@ -822,7 +826,7 @@ static void perf_open(const char* path) {
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
                     ",compiles_s,polls_s,jitcode_pct,icbi_flushes,gxbytes_k,discbytes_k"
                     ",gpu_calls_s,gpu_submits_s,gpu_splits_s,texdec_s,texdec_kb,efbcopy_s,xfbcopy_s,clears_s"
-                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch,idlewait,feeddirect,tevenv,dblframe,shdwmemo,shdwtri");
+                    ",c3d_cpu_ms,c3d_gpu_ms,heap_free_mb,linear_free_mb,vram_free_kb,jit_link,links_s,vworker,earlyq,gpupos,esplit,indexed,memstub,pipefast,hle,traces,merge,vwmem,splitopen,pld,faultmem,faults,sched,opt,deopts,vtrim,dlcache,vw2,fskip,aot,steal,relayout,vin,shapes,voices,lean,rawdraw,cmdpld,rawstate,psgx,skipfn,gfskip,texdiv,mips,smalltex,tevver,gpudiag,deflit,shlight,vscache,blacklit,vramtex,gxdiag,profclock,splitverts,l2pf,qbig,cmdbuf,psflush,gpbulk,ringbatch,idlewait,feeddirect,tevenv,dblframe,shdwmemo,shdwtri,pcharge");
     // ARM11 counters for core 0 (pmu.c): cycles every second, two events in rotation, SCU traffic.
     fprintf(g_perf, "%s\n", pmu_columns());
     fflush(g_perf);
@@ -1214,6 +1218,7 @@ static const char* run_body(const char* path) {
         if (g_opt.abJ3dhook) g_portHooks &= ~(1u << PORT_J3DPNGP);  // --ab j3dhook starts off
         if (g_opt.abFlushhook) g_portHooks &= ~(1u << PORT_FLUSHPRIM);  // --ab flushhook starts off
         if (g_opt.abLighthook) g_portHooks &= ~(1u << PORT_LIGHTS);  // --ab lighthook starts off
+        g_portCharge = g_opt.abPortcharge || !g_opt.portCharge ? 100 : g_opt.portCharge;  // --ab portcharge starts in the 100 arm
         if (g_opt.abSkipfn) jit_skip_on = false;  // --ab skipfn starts off
         if (g_opt.abGfskip) g_gfskipOn = false;  // --ab gfskip starts off
         if (g_pica) pica_set_texdiv(g_opt.abTexdiv ? 1 : g_opt.texdiv);  // --ab texdiv starts at 1
@@ -1451,6 +1456,7 @@ static const char* run_body(const char* path) {
                 fprintf(g_perf, ",%d", g_pica && pica_dblframe() ? 1 : 0);
                 fprintf(g_perf, ",%d", hle_shdw_memo() ? 1 : 0);
                 fprintf(g_perf, ",%d", hle_shdw_tri() ? 1 : 0);
+                fprintf(g_perf, ",%u", (unsigned)g_portCharge);
                 if (g_vcacheOn) g_dlOnSecs++;
                 linksLast = links;
                 pmu_row(g_perf, secs);
@@ -1530,6 +1536,11 @@ static const char* run_body(const char* path) {
                 if (g_opt.abDblframe && g_pica && perfRows % AB_SECS == 0) pica_set_dblframe(!pica_dblframe());
                 if (g_opt.abShdwmemo && perfRows % AB_SECS == 0) hle_set_shdw_memo(!hle_shdw_memo());
                 if (g_opt.abShdwtri && perfRows % AB_SECS == 0) hle_set_shdw_tri(!hle_shdw_tri());
+                // A/B in two phases of AB_SECS: the ports' charge on the emulated clock, 100 against --port-charge PCT
+                // (pcharge column). Nothing is recompiled and no state changes, so both phases read from their first
+                // second: this is the timeline a port produces, apart from the work it removes (C41).
+                if (g_opt.abPortcharge && g_opt.portCharge && perfRows % AB_SECS == 0)
+                    g_portCharge = g_portCharge == 100 ? g_opt.portCharge : 100;
                 if (g_opt.abSmalltex && g_pica && perfRows % AB_SECS == 0) pica_set_smalltex(pica_smalltex() ? 0 : (g_opt.smalltex ? g_opt.smalltex : 1));
                 if (g_opt.abDeflit && g_pica && perfRows % AB_SECS == 0) pica_set_deflit(!pica_deflit());
                 if (g_opt.abVscache && perfRows % AB_SECS == 0) g_vsWays = g_vsWays > 1 ? 1 : 8;
@@ -1736,6 +1747,31 @@ static const char* run_body(const char* path) {
                             fprintf(g_perf, "\n");
                         }
                         lastP = p;
+                    }
+                    {  // where the emulated clock's cycles came from (gekko.h, C41) and the slack left in each field
+                        static u64 lastCyc, lastC[CLK_N], lastN[CLK_N];
+                        static u32 lastSlack[11];
+                        static const char* kN[CLK_N] = { "stand-ins", "ports", "idle fills", "poll fills" };
+                        u64 cyc = g_sys.cpu.cycles, d = cyc - lastCyc, charged = 0;
+                        lastCyc = cyc;
+                        if (!d) d = 1;
+                        fprintf(g_perf, "# clock 10s: %.2f M emulated cycles;", (double)d / 1e6);
+                        for (int k = 0; k < CLK_N; k++) {
+                            u64 dc = g_clkCyc[k] - lastC[k], dn = g_clkN[k] - lastN[k];
+                            charged += dc;
+                            lastC[k] = g_clkCyc[k];
+                            lastN[k] = g_clkN[k];
+                            fprintf(g_perf, " %s %.2f%% in %llu;", kN[k], 100.0 * (double)dc / (double)d,
+                                    (unsigned long long)dn);
+                        }
+                        fprintf(g_perf, " guest instructions run %.2f%%; field slack (tenths filled):",
+                                100.0 * (double)(d - charged) / (double)d);
+                        for (int b = 0; b <= 10; b++) {
+                            u32 n = g_clkSlack[b] - lastSlack[b];
+                            lastSlack[b] = g_clkSlack[b];
+                            if (n) fprintf(g_perf, " %d:%u", b, (unsigned)n);
+                        }
+                        fprintf(g_perf, "\n");
                     }
                     {  // function memoization's probe (memo.c)
                         static MemoStats lastM;

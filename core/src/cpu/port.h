@@ -33,6 +33,10 @@ void port_set_memory(u8* mem1, u32 size);
 void port_set_pipe(void (*write)(void* ctx, const u8* data, u32 len), void* ctx);
 bool port_is_hook(u32 pc);
 u32 port_run_hook(Gekko* g);  // guest instructions stood for (0: not taken, the guest code runs)
+// --port-charge PCT (100): every port's charge on the emulated clock scaled by PCT percent. Measurement only: the
+// charge is an estimate of the guest instructions a call stood for, and C41 found that changing it moves speed more
+// than the work it removes. With a knob the sweep is phases of one run instead of a build each.
+extern u32 g_portCharge;
 // --pmu-split port / portcommit (host3ds): brackets around building the context / committing it
 extern void (*g_portPmuBegin)(void), (*g_portPmuEnd)(void), (*g_portCommitBegin)(void), (*g_portCommitEnd)(void);
 extern u32 g_portPmuHooks;  // --pmu-port-hooks MASK: the hooks those brackets go around (all)

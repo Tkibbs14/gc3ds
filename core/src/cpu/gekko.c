@@ -201,6 +201,25 @@ u32 gekko_poll_loop_len(Gekko* g, u32 start) {
 
 void gekko_poll_stats(Gekko* g, u64* skips, u64* cycles) { *skips = GKP(g)->pollSkips; *cycles = GKP(g)->pollSkipped; }
 
+// Clock sources (gekko.h, C41). The counters are written by the charge and fill sites only (hle_run, the interpreter's
+// and the dispatcher's idle and polling skips), never per instruction.
+u64 g_clkCyc[CLK_N];
+u64 g_clkN[CLK_N];
+u32 g_clkSlack[11];
+u64 g_clkFields;
+
+void gekko_clock_field(u64 cycles) {
+    static u64 lastCyc, lastFill;
+    u64 fill = g_clkCyc[CLK_IDLE] + g_clkCyc[CLK_POLL];
+    u64 d = cycles > lastCyc ? cycles - lastCyc : 0, f = fill - lastFill;
+    lastCyc = cycles;
+    lastFill = fill;
+    if (!d) return;  // the clock went backwards (a state load): that field is not scored
+    u32 b = (u32)(f * 10 / d);
+    g_clkSlack[b > 10 ? 10 : b]++;
+    g_clkFields++;
+}
+
 void gekko_set_poll_ram(Gekko* g, u32 ramSize) {
     GkPriv* p = GKP(g);
     p->pollRam = ramSize;
@@ -465,6 +484,8 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                 if (skip < 1) skip = 1;
                 g->cycles += (u64)skip;
                 g->downcount -= skip;
+                g_clkCyc[CLK_IDLE] += (u64)skip;
+                g_clkN[CLK_IDLE]++;
                 break;
             }
             p->curPc = pc;
@@ -483,7 +504,13 @@ u32 gekko_run(Gekko* g, u32 cycles) {
                     if (gekko_idle_hook(g)) break;
                     s64 skip = g->downcount;
                     if ((s64)(limit - g->cycles) < skip) skip = (s64)(limit - g->cycles);
-                    if (skip > 0) { g->cycles += (u64)skip; g->downcount -= skip; p->pollSkipped += (u64)skip; }
+                    if (skip > 0) {
+                        g->cycles += (u64)skip;
+                        g->downcount -= skip;
+                        p->pollSkipped += (u64)skip;
+                        g_clkCyc[CLK_POLL] += (u64)skip;
+                    }
+                    g_clkN[CLK_POLL]++;
                     p->pollSkips++;
                     break;
                 }
