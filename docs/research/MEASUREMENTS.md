@@ -2474,6 +2474,26 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### OPT_FDIRECT on the device: not an established gain in gameplay (jobs 1510-1525, 2026-10-29)
+
+- **What (`--fdirect on`, off by default; C42):** float arithmetic writes frD's lane register instead of a scratch
+  register and a vmov. Exact: the fuzzer with FCACHE|FDIRECT (20,000 cases, default and chain, plants all caught), and
+  the whole-game qemu gate off against on - **238,313,992 guest instructions both and the same last.png hash**
+  (tp_arm_850.state, 1,000 frames).
+- **Offline bench (core/tools/jitbench.py, the device's mask):** hot ARM words per guest instruction psloop
+  8.89 -> 8.00, floatloop 6.46 -> 6.00; integer and call loops unchanged.
+- **Device, separate whole runs of 240 s scored from 80 s, frames a second:**
+
+  | scene | off | on | change |
+  |---|---|---|---|
+  | static Ordon (3 pairs) | 10.400, 10.406, 10.397 | 10.441, 10.428, 10.395 | +0.20% (the on arm spreads 0.44%, the off arm 0.09%) |
+  | heavy area (2 pairs) | 7.172, 7.174 | 7.180, 7.171 | +0.03% |
+
+- **Reading:** below the noise floor. The device's own `# jit words per guest instruction` reads 2.3 hot either way:
+  float arithmetic is too small a share of TP's compiled code for a word a lane to show. The change is exact and
+  costs nothing, but it is **not a measured gain**, so it stays off. The title (float- and shadow-dense) is the one
+  scene where it could show; jobs 1526-1527.
+
 ### What the emulated clock is made of, and why the charge sweep read what it did (C41 answered; jobs 1480-1488, 2026-10-29)
 
 - **Instruments (build fa1505fa264916fd, branch of a05f91d):** `# clock 10s` splits every cycle the clock advances

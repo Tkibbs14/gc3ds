@@ -818,7 +818,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C42. Float results written straight into their lane register (OPT_FDIRECT, 2026-10-29)
 
-- **Status:** built, off (`--fdirect on`, `--ab fdirect`); awaiting a device A/B.
+- **Status:** built, off, exact, **measured and not a gain in gameplay** (2026-10-29): static Ordon +0.20% with
+  the on arm noisier than that, the heavy area +0.03%; the device's hot-words metric does not move. Float
+  arithmetic is too small a share of TP's compiled code. Kept off, with the bench numbers below for a scene
+  where float work dominates.
 - **What:** the float-lane path computed every result into a scratch single register and then moved it into frD's
   lane register - a word a lane on every float arithmetic instruction. With OPT_FDIRECT the arithmetic, or the
   rounding that ends the double path, writes the lane register itself, except where that register is a source the
