@@ -26,6 +26,9 @@
 > field-gap histogram. If the real frame rate did not move with the charge, most of C41 is `speed_pct` accounting (a
 > charge change unlocks the two-fields-a-picture assumption that makes speed the frame rate) rather than the game
 > doing more work; then one run each at `--port-charge 1 / 100 / 330` with the text port on, scored on frames a second.
+> `bash core/tools/c41_jobs.sh queue` queues exactly those runs (plus an `--ab portcharge` one) and `... score JOB...`
+> fetches and scores them with runs.py and `core/tools/clock_split.py` (the reader for the new line; `--selftest` on it
+> parses a synthetic log and must catch two planted changes).
 
 > **▶ Current state (2026-10-25).** All defaults (`--port-hooks 503`): **Ordon walk 34.10% (10.19 frames a second; jobs
 > 1423 / 1425 / 1429), heavy area ~23.5% (jobs 1393-1401).** On 10-24 before that day's ports (jobs 1280-1284): heavy
