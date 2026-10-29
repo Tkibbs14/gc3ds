@@ -830,3 +830,20 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 - **Cost:** ~30 lines in compile_fc. Exact: the fuzzer passes with FCACHE|FDIRECT, and removing the aliasing guard
   fails 1 case in 4,000 (seed 1, mask 7|FDIRECT) where keeping it passes - the guard is exercised, not decoration.
 - **Re-evaluate when:** the device A/B is run (gameplay states that take no input, per C41).
+
+## C43. The second lane of a scalar single-precision result need not be materialised (2026-10-29)
+
+- **Status:** parked (measured, not built). Found by reading the JIT's ARM output with OPT_FDIRECT on
+  (core/tools/jitbench.py, floatloop.S, device mask): every scalar single-precision operation and every `lfs` writes
+  both lanes of frD, as the Gekko does, and the second write is a bare `vmov.f32` of the first - 8 words of that
+  loop's 80 hot words (10%), after FDIRECT had already taken 10%.
+- **Idea:** a "lane 1 equals lane 0, with no register of its own" flag per FPR in the float cache. Only a
+  paired-single read, a store of the pair or a write-back needs the value, and a write-back can write lane 0's
+  register into both halves of guest state.
+- **Cost and risk:** every reader of lane 1 has to honour the flag, and a reader that is handed lane 0's register
+  must not write it - the same aliasing class that OPT_FDIRECT's guard exists for (removing that guard failed a
+  fuzzer case, so this is not theoretical). Eviction of lane 0 has to materialise or write back both halves.
+- **Worth it when:** float-dense code is a large enough share of the hot code. In TP's heavy area the clock is 79%
+  poll fill and instructions really run are 21%, so this is a fraction of a fraction: measure OPT_FDIRECT on the
+  device first (C42) and read how much it moved before building this.
+- **Re-evaluate when:** OPT_FDIRECT's device A/B is in, or a scene turns out to be float-dense in its hot code.
