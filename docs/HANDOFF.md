@@ -1,5 +1,77 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-30)
 
+> **▶ 2026-10-30 (later): core 0's budget closed, and the honest answer to "where is the next 10%".** Build
+> `103456ecbdfe9264`. **Supersedes the 69.4% blind spot in the block below.**
+>
+> **The budget, complete (job 1569, the first profiled run with the new stand-in timer, TP heavy area, from 80 s):**
+> JIT block code and the helpers blocks call **80.9%** of core 0, port C code **9.65%** (`port_run` 7.05%,
+> `port_commit` 2.61%), stand-in C code **1.14%**, `gxsync` 0.6%, not running guest code 7.4%. The stand-ins'
+> cost is the new number and it is *small*, against a worth of +15.6% in Mario Party 4 - the opposite asymmetry to
+> the ports. Cross-checked: the new timer and the old `# hle 10s` counter agree to 2% inside one run (105.1 vs
+> 107 ms per 10 s). **PMU over the same window:** IPC **0.334**, fetch stalls **27.4%**, data stalls **22.1%** -
+> half of core 0 is memory. Fetch is 8.20 M L1 I-misses a second at 26.9 cycles each (so: served by L2); data is
+> core 0's 1.83 M L2 misses a second to FCRAM. **7.07 host instructions and 1.37 host data reads per guest
+> instruction**; one dispatcher entry per 4,742 guest instructions.
+>
+> **Rank directions by emulated clock delivered per core-0 wall point** (frames a second *is* the clock rate while
+> the game stays locked to two fields a picture). Job 1569 measures both sides at once for the first time: poll fill
+> 66.6% of clock for ~0 wall (free); **port C code 9.25% of clock for 9.65% of wall = 0.959**; stand-ins 0.70 / 1.14
+> = 0.614; **JIT block code 23.4% of clock for 80.9% of wall = 0.290**. So **a port delivers emulated clock 3.3x as
+> cheaply as running the guest code it replaces** - the quantitative reason the ports are +10.6% as a set. Recorded
+> with its failure: extrapolated naively it predicts +32% for the ports' 9.25%, against a measured +10.6%, because
+> part of what a charge saves is absorbed by smaller poll fill (C41) and `kInsScale` is not the guest instruction
+> count. **It ranks directions; it does not predict gains.**
+>
+> **Core 0's codegen is not where a large gain is left, and this is now evidence rather than a hunch.** No *layout*
+> change fixes fetch: 50% of time in compiled code is 54.8 KB over 84 pages, **3.4x the 16 KB L1 at any density**,
+> matching the nursery's packing having bought only 4% of fetch stalls (= 1% of core 0). And no peephole reaches the
+> **-15 to -20% of hot words** that +10% of core 0 needs at the measured exchange rate (OPT_RETSTUB: -2.1% words ->
+> +1.0-1.6%): a `bc`'s 12.2 words are the block's **one shared `rc_flush`** (`compile_branch` flushes once;
+> `condSite` makes the conditional branch itself the link site and `exit_const` is a *single* patched word), i.e. the
+> block boundary under another name, modelled at ~1.3% net; and `psq_l` / `psq_st` already went through OPT_FCACHE
+> and OPT_PIPEPS, with **72.8%** of `psloop`'s stall cycles in the VFP itself. New **C44** (exit stubs in their own
+> arena) is parked on arrival with its ceiling measured: they are a third of the hot arena and run on ~0.1% of block
+> executions, so real dead weight, but bounded at ~1% of core 0.
+>
+> **The four defaults of this morning, verified together** (one build, one session, 240 s from 80 s, frames a second;
+> "old" = `--fdirect off --port-hooks 503 --nskeep off --psflush on`): Mario Party 4 9.023 -> **9.238 (+2.38%)**,
+> Wind Waker 6.079 -> **6.223 (+2.37%)**, static Ordon 10.482 / 10.481 -> 10.519 / 10.520 (**+0.36%**), heavy area
+> 7.233 / 7.231 -> 7.215 / 7.222 (**-0.19%**, a real small loss; arms agree to 0.01-0.10%). **They are sub-additive:**
+> the parts predicted +1.04% and +0.86%, so TP is short by 0.7 and 1.05 points and the heavy area has the wrong sign.
+> The opposite of the ports, which are superadditive. A one-at-a-time bisect on the heavy area (jobs 1596-1603, two
+> runs an arm) is running; **OPT_FDIRECT is the first suspect** ("TP flat" was the weakest of the four claims).
+>
+> **Credit withdrawn: the J3D display-list writer stand-ins (`--hlegd`) run in none of the benchmark states.** Two
+> runs an arm across Ordon, the heavy area and all three tp850 sections are identical, because `# hle 10s` reports
+> **`J3DGD runs 0` with the group ON** in all eight. `hle_tp.c` dispatches `hle_ps_run` first, and these states' light
+> work goes through `GXLoadLightObjImm` (an `hle_ps` stand-in, 28,648 calls per 10 s in the title); `hle_gd.c` serves
+> the J3D display-list *recording* path, which no benchmark state takes (nor Mario Party 4 or Wind Waker - its
+> addresses are TP's). The original +2-3% cutscene credit was a pooled A/B mean with its uncertainty as large as the
+> effect (+5.17% +- 5.08). **Left on by default** - nothing says it costs anything and other scenes may record lists:
+> a withdrawn credit, not a rejected option.
+>
+> **Instruments fixed, all of the same family - an instrument that cannot tell "did nothing" from "was never asked":**
+> the perf.csv header hard-coded `A/B period 20 s, 2 phases (traces: ...)` whatever `--ab` named, so **every A/B log
+> of the last months claims traces**; an `--ab NAME` the build lacks set every flag false and ran no A/B *silently*
+> (which is what jobs 1567-1568 did for 300 s each) and now prints `UNKNOWN IN THIS BUILD: NO A/B RAN`; `AB_SECS` is
+> a count of perf.csv **rows**, not seconds (phases are 21-27 s), which is how I first mis-binned those logs;
+> `# hle 10s` now reports `entries` and `refused` beside `runs`, so a stand-in whose hash check stopped matching no
+> longer reads the same as one the game never calls. **Also:** `core/tools/host3ds_syntax.sh` + `stub3ds/` syntax-check
+> 8 of 15 host3ds files with no devkitARM (planted-bug self-test: this morning's `double tot` break fails it);
+> `--from` / `--skip` / `--by` now work after the file arguments in `port_cost.py`, `clock_split.py` and `runs.py`
+> (all three read the flag as a file name and died); `port_cost.py`'s "building the context" column is renamed **run**,
+> because for a subtree port it is the work, not overhead - only `commit` is, and even its pipe handoff belongs to C40.
+>
+> **Method lesson worth keeping: before believing a null result, check the arms differed.** The hlegd runs looked
+> like a textbook clean null (0.01% agreement) and were measuring the same code twice. Same family as C41, different
+> mechanism.
+>
+> **Open, in the order the budget supports:** finish the heavy-area bisect and fix whichever default regressed;
+> **larger ports where a whole subtree is replaced** (J3D packet draw, the remaining TEV block types - do the denormal
+> give-up first, CONTRIBUTOR_TASKS 9), since the set is superadditive and small functions lose; the ports'
+> `port_commit` (2.61% of core 0, and the J3D light port's one-copy commit is a proven technique not yet applied to
+> the other four); C40 (~1.6% every game); C32b; C1; frame skip as a user option.
+
 > **▶ 2026-10-30: what the ports really cost, and the first default from the new method.** This session's method
 > change matters more than any single number: **a port or stand-in cannot be judged on the scripted walk** (C41), and
 > **a port is charged instruction fetch, not work** (MEASUREMENTS "Why a port pays or loses"). Instruction-fetch
