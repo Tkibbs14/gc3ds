@@ -152,10 +152,11 @@ void jitsample_report(FILE* f, const Jit* j) {
     // one guest address at 38% of core 0 and a footprint of "1 block, 16 KB" - plausible-looking nonsense (2026-10-30).
     // The counters that do not use an address (where core 0 was, the GX thread, the joint states) are fine either way.
     bool addrs = jit_profile(j);
+    double tot = (double)(n + outside);  // every line's denominator: all samples, in compiled code or not. `n` is a
+                                         // valid count either way - only the sampled *addresses* need `addrs`.
     if (!addrs) {
         fprintf(f, "# hot guest code 10s: not sampled (--profile off: blocks do not store their start)\n");
         g_n = 0;
-        n = 0;
     }
     if (addrs) {  // how much compiled code core 0's time is spread over (before the samples are mapped to guest PCs)
         u32 fp[5][3];
@@ -191,7 +192,6 @@ void jitsample_report(FILE* f, const Jit* j) {
     }
     if (i < n) fprintf(f, "# hot guest code 10s: %u samples past %u distinct blocks not listed\n", (unsigned)(n - i), (unsigned)MAX_PAIRS);
     qsort(pairs, np, 8, by_count);
-    double tot = (double)(n + outside);
     fprintf(f, "# hot guest code 10s (%u samples): outside compiled code %.1f%%;", (unsigned)(n + outside),
             tot > 0 ? 100.0 * outside / tot : 0.0);
     for (u32 i = 0; i < np && i < 1500; i++)  // enough to group by function and library offline (--profile on; a flat profile needs many)
