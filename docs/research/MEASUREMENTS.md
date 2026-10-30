@@ -2700,19 +2700,25 @@ All re-scored with `runs.py`'s stolen-second filter, so every arm agrees interna
 **One at a time on the heavy area** (reference: the new defaults, 7.217; batch A is two runs an arm, batch B
 interleaves a reference before each arm, and the two agree):
 
-| reverted | batch A | batch B | what the default is worth in this scene |
+| reverted | batch A (2 runs) | batch B (interleaved) | what the default is worth in this scene |
 |---|---|---|---|
-| `--fdirect off` | 7.2035 | 7.213 | +0.19% / 0.00% - **neutral here** (it was banked on Wind Waker +2.6%, which stands) |
-| `--port-hooks 503` | 7.275 | 7.272 | **-0.80% / -0.81%: `--port-hooks 243` is a loss in the heavy area**, twice, against a recorded +0.55% |
-| `--psflush on` | 7.293 | - | **-1.04%: `--psflush off` is a loss in the heavy area**, against a recorded +0.31% |
-| `--nskeep off` | 7.189 | - | +0.39% (banked on Mario Party 4 +1.2%) |
+| `--fdirect off` | 7.2035 | 7.213 | +0.19% / **0.00%** - neutral here; it was banked on Wind Waker +2.6%, which stands |
+| `--port-hooks 503` | 7.275 | 7.272 | **-0.80% / -0.81%: `--port-hooks 243` is a loss here**, two independent batches agreeing to 0.01 points, against a recorded +0.55% |
+| `--psflush on` | 7.293 | 7.286 | **-1.05% / -0.87%: `--psflush off` is a loss here**, against a recorded +0.31% |
+| `--nskeep off` | 7.189 | 7.200 | **+0.39% / +0.41%** (banked on Mario Party 4 +1.2%) |
+
+Batch B's references ran before and after each arm (7.213, 7.211, 7.216, 7.230) and each arm is scored against its
+neighbours, so the two batches are independent in both scheduling and scoring. They agree to 0.01-0.02 points on
+three of the four arms.
 
 So the set is **+2.3 to +2.6% in Mario Party 4 and Wind Waker and -0.17% in TP's heavy area because two of its four
 members are losses there** - which is also why the parts do not sum to the whole (they predict -1.3% against -0.17%
 measured, so an interaction remains, but the signs and the dominant terms are now consistent). Both reverted
 figures were measured before the screenshot was understood, so **`--port-hooks` and `--psflush` are scene-dependent
-trade-offs, not settled gains, and which way they should go is the owner's call** (rule 5). The bisect covers the
-heavy area only; nobody has taken the two switches apart in Mario Party 4 or Wind Waker, where the set clearly pays.
+trade-offs, not settled gains, and which way they should go is the owner's call** (rule 5). **Nothing has been
+changed on the strength of this**: the bisect covers the heavy area only, and the set is +2.3 to +2.6% in Mario
+Party 4 and Wind Waker without anyone knowing which of its members drives that. Jobs 1622-1631 take `--port-hooks`
+and `--psflush` apart in those two games, two runs an arm with a reference, before either default moves.
 
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 
