@@ -2629,7 +2629,16 @@ done
   Every port pays in at least one of the two scenes **except bit 2 and bit 8**, and those two are complementary: the
   PNGP load is the loss in Ordon and neutral in the heavy area, the decoration the reverse. **`--port-hooks 243`
   (both off) is the default since 2026-10-30:** static Ordon 10.367 -> **10.441 (+0.71%)**, heavy area 7.155 ->
-  **7.194 (+0.55%)** (jobs 1547-1548), a little more than the parts, as the set effect predicts.
+  **7.194 (+0.55%)** (jobs 1547-1548), a little more than the parts, as the set effect predicts. **The title gains
+  too** (jobs 1551-1552): cutscene 40.38 -> 40.51, later stretch 23.15 -> 23.24, movie 14.67 -> 14.73, i.e. +0.3 to
+  +0.4% in all three sections - so the trim pays in every TP scene measured. With `--fdirect` on top of 243 in static
+  Ordon (1549-1550): 10.463 -> 10.473, flat, as FDIRECT is in TP generally.
+- **The PMU bracket round the PNGP port's two halves (jobs 1544-1546, `--pmu-split port|portcommit|empty`,
+  `--pmu-port-hooks 4`, runs sampled 1 in 8; shares of core 0 rounded to whole percent):** building the context reads
+  cycles 1%, instructions 0%, **instruction-fetch stalls 3%**, I-cache misses 2%; committing reads cycles 1%, fetch
+  stalls 2%, I-cache misses 1%; the empty bracket 0% everywhere (its own cost is below rounding). Coarse, but it
+  corroborates the bisect's reason: the port's share of *fetch stalls* is three times its share of cycles, i.e. its
+  native code is fetch-heavy for the work it does.
 
   The set is a large, real win, and the four bits above account for 3.9 of its 10.6 points - the rest is bits 0-2 and
   4 (setGX, drawSelf, the PNGP matrix load at 98,000 calls per 10 s, the lights), measured separately in 1516-1519.
