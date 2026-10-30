@@ -34,6 +34,13 @@
 > thread, the joint states - were always fine). The real footprint, from a profiled run (job 1490, heavy area):
 > **50% of core 0's compiled time in 129 blocks / 64 KB, 80% in 1,160 blocks / 362 KB, every sampled block 1.36 MB
 > over 699 pages** - against a 16 KB L1, which is why fetch stalls are 27%.
+> **The stand-ins audited too (jobs 1553-1561):** the paired-single library is worth **+3.8% in Ordon and +1.1% in the
+> heavy area** (the project's biggest stand-in, reputation intact); **`--psflush` is a -0.3% loss in both** against a
+> recorded +0.8% / +1.7% (walk and recompiling-A/B artifacts; Wind Waker and Mario Party 4 runs queued before it is
+> changed); the hle_tp.c group costs ~0.3% in gameplay and pays only in the title. **`--nskeep` is on by default**
+> (Mario Party 4 9.011 -> 9.122, +1.2%, exact in 106,264 compared shapes). **Frame skip is not a user option:** it
+> reads +9% on `speed_pct` while real frames a second fall **46%** (7.17 -> 3.90, four fields between copies, gaps to
+> 6.2 s) - the recorded "+10%" was the clock, not the picture rate.
 > **Also from this session:** `core/tools/jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc
 > image needed; `--disasm`), `core/tools/clock_split.py`, `--port-charge`, and C40 now has an exact plan (let core 2
 > write the FIFO mirror it already holds: Ordon 1.6%, every game). **Open, in order:** the port trim and the stand-in

@@ -2474,6 +2474,30 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### The stand-ins audited the way the ports were, and two more record corrections (jobs 1553-1561, 2026-10-30)
+
+- **Frames a second, separate 240 s runs scored from 80 s, build 0f3c3eac6e709b6a (its default mask, `--fdirect` off,
+  so the baselines are static Ordon 10.400 / 10.406 and heavy area 7.172 / 7.174):**
+
+  | group turned off | static Ordon | heavy area | that group is worth | on record |
+  |---|---|---|---|---|
+  | `--hle off` (hle_tp.c: the shadow-scan family and the rest) | 10.405 | 7.195 | **-0.3%** (a small loss in gameplay) | the title's lever (+14% there) |
+  | `--ps off` (the paired-single library) | 10.026 | 7.097 | **+3.8% Ordon, +1.1% heavy** | the project's biggest stand-in, confirmed |
+  | `--psflush off` (`__GXSendFlushPrim`) | 10.437 | 7.195 | **-0.3% in both** (a loss) | Ordon +0.8%, heavy +1.7% |
+
+  So the paired-single library is the single most valuable native stand-in and keeps its reputation, while
+  **`--psflush` is a small loss in both TP scenes** - its recorded gains came from the walk and from an A/B that
+  recompiles. The hle_tp.c group costs ~0.3% in gameplay and earns its keep only in the title, so it is scene-
+  dependent rather than wrong. `--ps off` and `--psflush off` are running on Wind Waker and Mario Party 4 (jobs
+  1562-1565) before `--psflush` is changed, since these stand-ins act in every game.
+- **`--nskeep` on by default (Mario Party 4 +1.2%):** 9.011 -> **9.122** frames a second (job 1560 against 1559),
+  TP and Wind Waker even; 60% of that game's stamps on shapes are false alarms. Exact: 106,264 kept shapes compared
+  stream by stream, 0 differed, both plants caught (jobs 1242-1274). It had been left as the owner's call since 10-24.
+- **Frame skip is not the +10% it looks (job 1561, heavy area).** `--fskip on` reads `speed_pct` 23.9 -> **26.1%
+  (+9%)** while **real frames a second fall 7.17 -> 3.90 (-46%)**: the pacing goes to four VI fields between copies
+  (`3:2 4:23`) with gaps up to **6.2 s**. The recorded "+10%, visual glitches" was the emulated clock, not the frame
+  rate - the game's logic advances faster while the player sees half the pictures. **Not a user option in this form.**
+
 ### Why a port pays or loses: its own code footprint (jobs 1491-1534, 2026-10-29)
 
 - **20.2% of core 0 runs inside port code** in TP's heavy area (job 1533, calls x us per call from the `# port 10s`

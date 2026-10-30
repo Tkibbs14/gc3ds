@@ -3355,7 +3355,10 @@ void pica_set_ns_once(u32 mode) { g_nsOnce = mode; }
 // unchanged since certified (kept, except in mode 4), [2] not keepable yet (no certified hash: made in a free slot, or
 // not yet made again with the hash before and after), [3] mode 4: unchanged by ns_sources_hash, [4] rebuilds certified, [5] rebuilds whose sources changed while converting, [6] compared, [7]
 // differed, [8] planted, [9] planted shapes caught by ns_verify, [10] caught at a stamp.
-static volatile u32 g_nsKeep;
+// On by default since 2026-10-30: Mario Party 4 9.011 -> 9.122 frames a second (+1.2%, job 1559 against 1560; it read
+// +1.9% on 10-24), TP and Wind Waker even, and 60% of Mario Party 4's stamps on shapes are false alarms. Exact:
+// 106,264 kept shapes compared stream by stream with 0 differences and both plants caught (jobs 1242-1274).
+static volatile u32 g_nsKeep = 1;
 u64 g_nsKeepStats[11];
 void pica_set_ns_keep(u32 mode) { g_nsKeep = mode; }
 static u64* g_nsXh;  // per slot: the certified ns_xhash of the sources (NShape.xflags NSX_OK)
