@@ -2741,10 +2741,13 @@ never completed and were cancelled.
   references on the same build (jobs 1644-1651): Mario Party 4 off 9.188 / 9.180 against on 9.187 / 9.187
   (**+0.03%**), Wind Waker off 6.212 / 6.215 against on 6.215 / 6.213 (**+0.01%**), within-arm spreads 0.00-0.09%.
   The single-run figure came from the log the full card truncated; this supersedes it.
-  **So what remains against `--psflush off` is TP's heavy area alone** (-0.96%, two independent batches on the older
-  build) against +0.33% in static Ordon from this morning's pre-filter scoring. Jobs 1652-1659 measure both TP
-  scenes on `dbac5779b30d8a92`, two runs an arm, which is what a default should turn on. If Ordon is neutral too,
-  reverting is unambiguous: a ~1% loss in the heaviest scene bought nowhere else.
+  **Decided, and the default is reverted (jobs 1652-1659, `dbac5779b30d8a92`, two runs an arm, all four scenes on
+  one build):** turning `--psflush` **on** is static Ordon **+0.40%** (10.503 / 10.513 -> 10.548 / 10.551), TP heavy
+  area **+0.85%** (7.216 / 7.212 -> 7.277 / 7.274), Mario Party 4 +0.03% and Wind Waker +0.01% - a gain in both TP
+  scenes, neutral in the other two games, a loss in none, with within-arm spreads of 0.01-0.10%. **`--psflush` is on
+  by default again**, reverting the same day's decision to turn it off. Note that Ordon came out with the *opposite
+  sign* once the stolen seconds were filtered (+0.33% for *off* this morning, +0.40% for *on* now): that is the
+  clearest single illustration of what the screenshot contamination was worth.
 - **Note the rebuild movement, and why fresh references were queued rather than reusing the morning's:** the same
   default settings read Mario Party 4 9.184 on `dbac5779b30d8a92` against 9.278 on `103456ecbdfe9264` (-1.0%) and
   Wind Waker 6.214 against 6.238 (-0.4%). That is the documented ~0.8% a rebuild moves a baseline, and it is larger

@@ -624,15 +624,17 @@ static void opts_default(RunOpts* o) {
     o->portCharge = 100;  // the ports' calibrated estimate (port_j2d.c kInsScale); --port-charge sweeps it (C41)
     o->hlegd = true;  // the J3D display-list writer stand-ins (a documented gain, never measured by separate runs)
     o->fdirect = true;  // OPT_FDIRECT: Wind Waker +2.6% (jobs 1528/1529, 1535/1536), Mario Party 4 +0.7%, TP flat
-    o->psflush = false;  // the __GXSendFlushPrim stand-in: off since 2026-10-30, when it measured a loss in all four
-                         // games on scenes that take no input (TP Ordon -0.33%, TP heavy -0.31%, Wind Waker -0.06%,
-                         // Mario Party 4 -0.24%; jobs 1555, 1558, 1563, 1565), its old +1.7% / +0.8% having come
-                         // from the scripted walk and an A/B that recompiles (C41).
-                         // **Those four runs were scored before the screenshot steal was found, and a re-bisect
-                         // disagrees in three of four scenes:** turning it back on reads +0.96% in TP's heavy area
-                         // (two batches), +0.44% in Mario Party 4, ~0 in Wind Waker, -0.33% in static Ordon
-                         // (jobs 1596-1631, provisional - the card filled up and the second runs were lost).
-                         // **This default is the leading candidate to revert**; MEASUREMENTS has the table.
+    o->psflush = true;   // the __GXSendFlushPrim stand-in: **back on since 2026-10-30 (later)**, reverting the same
+                         // day's decision to turn it off. All four scenes on one build (dbac5779b30d8a92), two runs
+                         // an arm, scored with the stolen-second filter: turning it ON is **static Ordon +0.40%**
+                         // (10.508 -> 10.5495), **TP heavy area +0.85%** (7.214 -> 7.2755), Mario Party 4 +0.03%
+                         // and Wind Waker +0.01% - a gain in both TP scenes, neutral in the other two games, a loss
+                         // in none (jobs 1644-1659; spreads 0.01-0.10%).
+                         // The morning's "a loss in all four games" (jobs 1555, 1558, 1563, 1565) was scored before
+                         // the periodic screenshot was found to steal 4-86% of a second five times a run, and its
+                         // Ordon figure came out with the opposite sign once that was filtered. Its *earlier*
+                         // +1.7% / +0.8% was a walk artifact and stays withdrawn (C41) - this is neither of those
+                         // numbers, it is a smaller gain measured properly.
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)

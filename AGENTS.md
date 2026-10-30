@@ -214,7 +214,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   ring records batched (`ringbatch`, heavy area +2.6%), overlapped GPU frames (`dblframe`, heavy area +1.9%), float
   lanes (`fcache`, +1.5% / +1.6% / title up to +2.4%; rejected on 10-13 from A/Bs that recompile, reversed by separate
   runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise), compact vertex records (`vin`, ~+0.7-0.9%), rlwinm as
-  shifts (`rotmask`, ~+0.3-0.6%), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32), the
+  shifts (`rotmask`, ~+0.3-0.6%), the __GXSendFlushPrim stand-in (`--psflush`, static Ordon +0.40%, TP heavy +0.85%,
+  Mario Party 4 and Wind Waker neutral; turned off on 2026-10-30 on pre-filter scoring and **reverted the same day**
+  once the stolen seconds were removed - Ordon's sign flipped), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32), the
   ShdwDraw's triangle
   path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b) and its fast form (`trifast`, both
   chains in registers: later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%), the shadow callback natively, read
@@ -237,7 +239,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
   tool).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the
-  __GXSendFlushPrim port (neutral, separate runs; the J3D light port turned positive with its one-copy commit),
+  __GXSendFlushPrim *port* (neutral, separate runs; the J3D light port turned positive with its one-copy commit -
+  not to be confused with the `--psflush` *stand-in*, which is on by default and measured +0.40% / +0.85% in the two
+  TP scenes on 2026-10-30, jobs 1644-1659),
   the cXyz operator stand-ins (`psxyz`, heavy area -0.9%), and re-tested with separate runs on 10-19 and 10-20: crstub
   (-1.0%), befloat (-0.8%), calls (-1.2%), fastfloat (-0.6%), relayout (-7.6%), traces (-5.1%), vw2 (-2.3%), steal,
   sched off, dlcache, vwmem 256 (-0.65 to -0.75%), pipeps, icbi, qbig, feeddirect, cmdpld (even),
