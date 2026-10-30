@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include "../src/cpu/aot.h"
 #include "../src/cpu/hle.h"
@@ -859,6 +860,19 @@ static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 // generation is kept (perf.prev.csv), so the pair is bounded at ~2x the cap, and every relay job's log is on the
 // relay and in core/out/ anyway. Rotating also keeps appends off the slow end of a huge FAT file.
 #define PERF_CAP (24u << 20)
+// Free space on the card, in MB, or -1 if it cannot be read. The rig had no way to report this, which is why
+// 2026-10-30's full card went unnoticed until six queued jobs failed to download a build: a run that cannot write
+// its log still half-works, so the symptom appeared far from the cause. Reported in every run's header, with a
+// warning under 32 MB (a build is ~6 MB and a 240 s log ~1.4 MB).
+#define SD_LOW_MB 32
+static long sd_free_mb(void) {
+    struct statvfs s;
+    if (statvfs("sdmc:/", &s) != 0) return -1;              // not every devoptab implements it; degrade quietly
+    unsigned long long unit = s.f_frsize ? s.f_frsize : s.f_bsize;
+    if (!unit) return -1;
+    return (long)((unsigned long long)s.f_bavail * unit >> 20);
+}
+
 static void perf_rotate(void) {
     struct stat st;
     if (stat("sdmc:/gc3ds/perf.csv", &st) || (u32)st.st_size < PERF_CAP) return;
@@ -880,6 +894,12 @@ static void perf_open(const char* path) {
     if (!g_opt.abName[0]) snprintf(ab, sizeof ab, "A/B off");
     else if (!g_opt.abKnown) snprintf(ab, sizeof ab, "A/B --ab %s UNKNOWN IN THIS BUILD: NO A/B RAN", g_opt.abName);
     else snprintf(ab, sizeof ab, "A/B --ab %s, 2 phases of %d rows", g_opt.abName, AB_SECS);
+    long sdMb = sd_free_mb();
+    if (sdMb >= 0)
+        fprintf(g_perf, "# card: %ld MB free%s\n", sdMb,
+                sdMb < SD_LOW_MB ? "  *** LOW: a build needs ~6 MB and this log ~1.4 MB; free space on the card ***" : "");
+    else
+        fprintf(g_perf, "# card: free space not readable on this build\n");
     fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | %s | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
             g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, ab, g_coreLine);

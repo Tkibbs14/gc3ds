@@ -95,4 +95,6 @@ static inline void LightEvent_Clear(LightEvent* e) { (void)e; }
 static inline void LightEvent_Wait(LightEvent* e) { (void)e; }
 static inline bool LightEvent_TryWait(LightEvent* e) { (void)e; return false; }
 
+// newlib has <sys/statvfs.h>; the host one is used for the syntax check.
+
 // Add what a file you want to check needs, and nothing more.

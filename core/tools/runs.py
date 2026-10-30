@@ -42,7 +42,11 @@ def score(path, skip, keep_stolen=False):
     
     t = 0.0
     shot_at = None
+    low_card = False
     for line in open(path, encoding='utf-8', errors='replace'):
+        if line.startswith('# card:') and 'LOW' in line:
+            low_card = True      # a full card truncates runs and fails build downloads (2026-10-30)
+            continue
         if line.startswith('# shot '):
             shot_at = t      # the row after this one is the second the screenshot was taken in
             shots.append(t)
@@ -102,8 +106,9 @@ def score(path, skip, keep_stolen=False):
     return '%-22s speed %.3f fields/s %.3f frames/s %.3f (%d windows) fields per copy %s%s' % (
         path.replace('\\', '/').split('/')[-1], sum(sp) / max(len(sp), 1), sum(fs) / max(len(fs), 1), f, len(fr),
         ' '.join('%d:%d' % kv for kv in sorted(fh.items())),
-        '' if not (stolen or dropped_windows) else
-        '  [dropped %d row(s) and %d frame window(s): core 0 lost the second]' % (stolen, dropped_windows))
+        ('' if not (stolen or dropped_windows) else
+         '  [dropped %d row(s) and %d frame window(s): core 0 lost the second]' % (stolen, dropped_windows))
+        + ('' if not low_card else '  *** the card was LOW on space: this run may be truncated ***'))
 
 
 def selftest():
