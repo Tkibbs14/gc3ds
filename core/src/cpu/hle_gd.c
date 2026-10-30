@@ -44,6 +44,12 @@ static GdFn g_fn[] = {
 static u8* g_mem;
 static u32 g_memSize;
 u64 g_hleGdRuns, g_hleGdInsns;
+// Entries at one of the three hooked addresses, and those the hash or shape check refused. Without these, `runs 0`
+// on the device means either "the game never calls them here" or "recognition broke", and the two are the same
+// line (2026-10-30: `runs 0` in all four benchmark states turned out to be the first, but it took reading the
+// dispatch order to tell). `find` is called for every pc that reaches the stand-in dispatch, so only a matching
+// address is counted.
+u64 g_hleGdSeen, g_hleGdRefused;
 
 static u32 rd_be32(u32 pa) { return ram_rd32(g_mem, pa); }  // (guest memory in its layout, ramlayout.h)
 
@@ -78,13 +84,15 @@ static GdFn* find(u32 pc) {
     for (u32 k = 0; k < NFN; k++) {
         GdFn* f = &g_fn[k];
         if (f->pc != pc) continue;
+        g_hleGdSeen++;
         if (f->known < 0) {
             f->known = check_fn(f) ? 1 : 0;
 #ifndef __3DS__
             if (!f->known && getenv("HLE_CHECK")) fprintf(stderr, "HLE_CHECK %s at %08x NOT recognised (bytes or shape differ)\n", f->name, f->pc);
 #endif
         }
-        return f->known == 1 ? f : NULL;
+        if (f->known != 1) { g_hleGdRefused++; return NULL; }
+        return f;
     }
     return NULL;
 }

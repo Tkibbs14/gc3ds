@@ -478,11 +478,15 @@ typedef struct {
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool hlegd;               // --hlegd on|off (on): the J3D display-list writer stand-ins (hle_gd.c; hle column bit 1).
                               // Needed because separate whole runs decide now (rule 3) and the group only had an A/B.
-                              // **Do not judge it on a gameplay scene: it does not run in one.** Separate runs
-                              // (jobs 1573, 1578-1583) agree to 0.01% in static Ordon and 0.05% in the heavy area
-                              // because '# hle 10s' reports `J3DGD runs 0` in both - the arms are the same code
-                              // there. It was adopted on the title cutscene (jobs 264-265, ~40,000 calls a second),
-                              // which is where tp850 runs must decide it.
+                              // **It runs in none of the four benchmark states, so do not judge it on them.**
+                              // Separate runs (jobs 1573, 1578-1583, 1588-1591) are identical in static Ordon, the
+                              // heavy area and all three tp850 sections, because '# hle 10s' reports `J3DGD runs 0`
+                              // with the group ON in every one: the dispatch in hle_tp.c runs hle_ps_run first and
+                              // these states' light work goes through GXLoadLightObjImm (an hle_ps stand-in,
+                              // 28,648 calls per 10 s in job 1590), while hle_gd.c serves the J3D display-list
+                              // recording path they never take. Left on: nothing says it costs anything and other
+                              // scenes may record lists; its +2-3% cutscene credit is withdrawn (MEASUREMENTS,
+                              // jobs 264-265).
     bool abHlegd;             // --ab hlegd: the same, alternating in one run
     char abName[24];          // --ab NAME as given, and whether it matched an A/B this build has (AB(), perf.csv
     bool abKnown;             // header). An unmatched name used to run no A/B silently: see AB()'s comment.
@@ -1963,11 +1967,13 @@ static const char* run_body(const char* path) {
                         static u64 lastHleRuns, lastHleInsns;
                         static u64 lastShdw[4];
                         fprintf(g_perf, "# hle 10s: stand-in runs %llu, guest instructions stood in for %llu; ShdwDraw: calls %llu, "
-                                "triangles skipped fast %llu, instructions %llu, %.1f ms inside; J3DGD runs %llu\n",
+                                "triangles skipped fast %llu, instructions %llu, %.1f ms inside; J3DGD runs %llu, "
+                                "entries %llu, refused %llu\n",
                                 (unsigned long long)(g_hleRuns - lastHleRuns), (unsigned long long)(g_hleInsns - lastHleInsns),
                                 (unsigned long long)(g_shdwStats[0] - lastShdw[0]), (unsigned long long)(g_shdwStats[1] - lastShdw[1]),
                                 (unsigned long long)(g_shdwStats[2] - lastShdw[2]),
-                                (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns);
+                                (double)(g_shdwStats[3] - lastShdw[3]) * 1000.0 / SYSCLOCK_ARM11, (unsigned long long)g_hleGdRuns,
+                                (unsigned long long)g_hleGdSeen, (unsigned long long)g_hleGdRefused);
                         memcpy(lastShdw, g_shdwStats, sizeof lastShdw);
                         static u64 lastShm[6];
                         fprintf(g_perf, "# shdw memo 10s: calls %llu, replayed to the end %llu, segments replayed %llu, segments run (holes, budget) %llu, "

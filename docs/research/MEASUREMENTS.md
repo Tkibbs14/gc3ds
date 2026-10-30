@@ -209,6 +209,22 @@ apart from the compiled code's light-index clamp: index > 7 -> 0, not in the dec
 them ~40,000 times a second. Device, `--ab hlegd`, core 0: job 264 cutscene +1.99% (+-3.54), later +0.06% (+-1.66);
 job 265 +2.81% (+-3.90), later +1.39% (+-2.33); pooled 10 pairs (29-250 s) **+5.17% (+-5.08)** cutscene, 8 pairs
 later +0.77% (+-1.45). Real speed in the cutscene ~+2-3%. **Adopted** (positive in every reading, exact, no crash risk).
+
+> **Correction, 2026-10-30 (jobs 1573, 1578-1583, 1588-1591): this group runs in none of the four states the project
+> benchmarks on, so it contributes nothing to any headline number and the +2-3% cutscene credit cannot be
+> reproduced.** Separate whole runs with `--hlegd off` against the defaults, two runs an arm: static Ordon 10.522 /
+> 10.521 against 10.519 / 10.527; heavy area 7.224 / 7.225 against 7.215 / 7.227; tp850 cutscene 40.90 / 40.84
+> against 40.91 / 40.87, later 22.98 / 22.99 against 23.03 / 23.06, movie 14.78 / 14.75 against 14.72 / 14.71. The
+> arms are identical because `# hle 10s` reports **`J3DGD runs 0` with the group ON** in every one of them.
+> **Why:** `hle_tp.c`'s dispatch runs `hle_ps_run` *before* `hle_gd_run`, and the light work in these states goes
+> through `GXLoadLightObjImm`, an `hle_ps` stand-in (job 1590: 28,648 calls per 10 s). `hle_gd.c` serves the J3D
+> *display-list recording* path (`__GDCurrentDL`), which these states never take. Note also that the figures above
+> are pooled A/B means with uncertainties as large as the effect (+5.17% +- 5.08), the method since shown to produce
+> phantom gains (C41).
+> **Not turned off:** nothing here says it costs anything, and the recording path may be taken in scenes or games
+> not benchmarked - this is a withdrawn credit, not a rejected option. `# hle 10s` now also reports `entries` and
+> `refused`, because until today "the game never calls them here" and "recognition broke" were the same line
+> (`runs 0`) on the device.
 **Lesson:** 7.7% of guest instructions were ~2-5% of core-0 time: straight-line stores are cheap per instruction on
 the 2DS. Rank HLE targets by device cycles per function (the sampler, `--profile on`, job 266), not instruction counts.
 
