@@ -12,6 +12,7 @@ bool hle_is_hook(Gekko* g, u32 pc);
 // cannot start there (nothing changed). `budget`: guest instructions the caller has left in its slice; the stand-in
 // stops at its next loop head once it has used that many (as compiled blocks do), so time and events stay on schedule.
 u32 hle_run(Gekko* g, u32 budget);
+extern u64 g_hleCost[3];  // what the stand-ins cost core 0: calls, timed calls (1 in 16), g_profClock ticks in them
 // Forget what was recognised (code in the page holding physical address pa may have changed).
 void hle_invalidate(u32 pa);
 // Stand-ins on (default) or off (comparison); compiled code holds hooks, so drop it after a change (jit_invalidate_all).

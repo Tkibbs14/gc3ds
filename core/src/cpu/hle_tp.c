@@ -1909,10 +1909,24 @@ static __attribute__((unused)) void tri_bench(Gekko* g) {
 // accounting (gekko.h, C41) can split them: the port site below counts its own charge, the rest is a stand-in's.
 static u32 hle_run_body(Gekko* g, u32 budget);
 
+// What the stand-ins cost core 0, sampled one call in 16 as the ports are (prof_begin; nothing at all when the profile
+// clock is off). The budget for TP's heavy area (job 1490) could account for every part of core 0 except this one:
+// 69.4% of it is "JIT block code or stand-in C code" with no instrument to split them, while the ports' own 20.2% has
+// been measurable since job 553. We know what the stand-ins are *worth* (the paired-single library: Mario Party 4
+// +15.6%, TP Ordon +3.8%) and not what they cost.
+u64 g_hleCost[3];  // calls, timed calls, ticks inside them
+
 u32 hle_run(Gekko* g, u32 budget) {
     u64 ports = g_clkN[CLK_PORT];
+    u64 t0 = prof_begin();
     u32 n = hle_run_body(g, budget);
-    if (n && g_clkN[CLK_PORT] == ports) { g_clkCyc[CLK_HLE] += n; g_clkN[CLK_HLE]++; }
+    bool port = g_clkN[CLK_PORT] != ports;
+    if (n && !port) {
+        g_clkCyc[CLK_HLE] += n;
+        g_clkN[CLK_HLE]++;
+        g_hleCost[0]++;
+        if (t0) { g_hleCost[1]++; g_hleCost[2] += g_profClock() - t0; }  // (a port's own time is counted by port_j2d.c)
+    }
     return n;
 }
 

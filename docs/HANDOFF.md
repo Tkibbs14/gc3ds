@@ -27,6 +27,13 @@
 > and the title +0.3 to +0.4% in all three sections (1551-1552). The PMU bracket round the PNGP port shows its share
 > of instruction-fetch stalls (3%) at three times its share of cycles (1%), which is the reason in one line. `core/tools/port_cost.py` prints what each one costs core 0
 > (heavy area 20.2%, static Ordon 21.1% of core 0 inside port code).
+> **Core 0's budget now adds up (job 1490, heavy area):** in compiled code **89.6%** (of which port C code 20.2%,
+> leaving **69.4% that is JIT block code or stand-in C code with nothing to split them**), waiting for the GX thread
+> 3.4%, outside compiled code 7.1% (the dispatcher bucket 5.9%, mostly the idle hook's GX wait; the measurement's own
+> reports 1.7%; events 0.8%). Half of core 0 is memory stalls (fetch 27%, data ~22%) and ~9% is waiting on the GX
+> side - that 9% is the whole ceiling for moving work to cores 2 and 3 in this scene. **`hle_run` now times itself**
+> (one call in 16, nothing when the profile clock is off; `# stand-in cost 10s`), so the next profiled run splits the
+> 69.4% - we know the stand-ins' worth (+15.6% in Mario Party 4) but have never known their cost.
 > **Instrument trap found and closed (2026-10-30):** without `--profile on`, blocks do not store their start
 > (`jit_set_profile`), so every sample read the same stale `Gekko.hostPc` - and `# hot guest code`, `# code footprint`
 > and `# code pages` printed *plausible-looking nonsense* (one guest address at 38% of core 0, "1 block, 16 KB").

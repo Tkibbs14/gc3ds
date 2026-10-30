@@ -2474,6 +2474,32 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### Core 0's budget, every part accounted for (job 1490's settled window, TP heavy area, 2026-10-30)
+
+| where core 0's wall time goes | share |
+|---|---|
+| **in compiled code** (C helpers called from blocks included) | **89.6%** |
+| - of which inside port C code (`port_cost.py`, job 1533) | 20.2% |
+| - JIT block code **or** stand-in C code: no instrument split these | 69.4% |
+| waiting for the GX thread to answer (`gxsync`) | 3.4% |
+| outside compiled code | 7.1% |
+| - the dispatcher bucket (mostly the idle hook's GX wait, not dispatch overhead) | 5.9% |
+| - the measurement's own reports (profiled runs only) | 1.7% |
+| - events (VI, DI, DSP) 0.8%, the gekko_run loop 0.4%, compiling 0.2%, the rest 0.2% | 1.6% |
+| **total** | **100.1%** |
+
+Read with the PMU over the same scene: **instruction-fetch stalls are 27% of core 0's cycles** (218 of 804 M a
+second) and data stalls ~22% (job 184). So about half of core 0 is memory stalls, and ~9% is waiting for the GX side
+(`gxsync` plus the idle hook inside the dispatcher bucket) - which is the ceiling on what moving work to cores 2 and 3
+could ever buy in this scene.
+
+**The one blind spot: the 69.4%.** The ports have had their own timers since job 553, so their 20.2% is known, but
+nothing separates the JIT's block code from the stand-ins' C code. We know what the stand-ins are *worth* (the
+paired-single library: Mario Party 4 +15.6%, TP Ordon +3.8%) and not what they cost - and the two questions have
+different answers, as the ports showed when two of eight turned out to cost more than they saved. `hle_run` now times
+itself the way the ports do (one call in 16, nothing when the profile clock is off) and perf.csv reports
+`# stand-in cost 10s`; the next profiled run splits that 69.4% for the first time.
+
 ### The stand-ins audited the way the ports were, and two more record corrections (jobs 1553-1561, 2026-10-30)
 
 - **Frames a second, separate 240 s runs scored from 80 s, build 0f3c3eac6e709b6a (its default mask, `--fdirect` off,

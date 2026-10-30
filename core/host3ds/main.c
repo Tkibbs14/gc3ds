@@ -1785,6 +1785,17 @@ static const char* run_body(const char* path) {
                         }
                         fprintf(g_perf, "\n");
                     }
+                    {  // what the native stand-ins cost core 0 (hle_tp.c g_hleCost; one call in 16 timed)
+                        static u64 lastH[3];
+                        u64 d[3];
+                        for (int q = 0; q < 3; q++) { d[q] = g_hleCost[q] - lastH[q]; lastH[q] = g_hleCost[q]; }
+                        if (d[0]) {
+                            double us = d[1] ? (double)d[2] * 1000000.0 / SYSCLOCK_ARM11 / (double)d[1] : 0.0;
+                            fprintf(g_perf, "# stand-in cost 10s: %.0f calls/s, %.2f us a call (%llu timed), %.1f ms/s = %.2f%% of core 0\n",
+                                    (double)d[0] / 10.0, us, (unsigned long long)d[1], (double)d[0] * us / 10000.0,
+                                    (double)d[0] * us / 100000.0);
+                        }
+                    }
                     {  // function memoization's probe (memo.c)
                         static MemoStats lastM;
                         MemoStats d = g_memoStats;
