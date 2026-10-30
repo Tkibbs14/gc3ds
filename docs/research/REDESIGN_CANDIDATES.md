@@ -152,20 +152,24 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ### C9a. The trade this actually offers, and why it is paced to a game speed now (2026-10-30)
 
-- **The arithmetic.** Rendering is the dominant part of a game frame, so skipping it buys a lot: from the measured
-  +60% in Ordon and +48% in the heavy area at one call in two (jobs 378, 385), rendering is **~75% of a game frame
-  in static Ordon and ~65% in the heavy area**. With cost factor `f(N) = 1 - R(N-1)/N` and today's build
-  (`103456ecbdfe9264`, Ordon 10.52 pictures/s, heavy 7.22):
+- **The arithmetic, now measured** (jobs 1616-1621, build `103456ecbdfe9264`, `--gfskip-n 2/3/4` on both scenes,
+  three points per scene fitted to `G(N) = base / (1 - R(N-1)/N)`; `# guest frames 10s` gives the renderer's calls
+  and how many drew). Rendering is **R = 0.737 of a game frame in static Ordon and 0.618 in the heavy area**, so
+  logic is the other 26% and 38%:
 
-  | | N=1 | N=2 | N=3 | N=4 | N=8 | infinite |
-  |---|---|---|---|---|---|---|
-  | **Ordon** game speed | 35% | 56% | 70% | 80% | 100% | 140% (capped at 100) |
-  | **Ordon** pictures/s | 10.5 | 8.4 | 7.0 | 6.0 | 3.8 | -> 0 |
-  | **heavy** game speed | 24% | 36% | 42% | 47% | 56% | **69%** |
-  | **heavy** pictures/s | 7.2 | 5.3 | 4.2 | 3.5 | 2.1 | -> 0 |
+  | | N=1 | N=2 | N=3 | N=4 | N=6 | N=8 | asymptote |
+  |---|---|---|---|---|---|---|---|
+  | **Ordon** game speed | 35% | 56% | 69% | 79% | 91% | 99% | 134% |
+  | **Ordon** pictures/s | 10.5 | 8.3 | 6.9 | 5.9 | 4.6 | 3.7 | -> 0 |
+  | **heavy** game speed | 24% | 35% | 41% | 45% | 50% | 52% | **63%** |
+  | **heavy** pictures/s | 7.2 | 5.2 | 4.1 | 3.4 | 2.5 | 2.0 | -> 0 |
 
-- **What that says.** Static Ordon can reach **full game speed today** at N~7.5, showing **4.0 pictures a second**;
-  the heavy area **cannot reach it at any N** (its asymptote is 69%, because logic is the other 35% of the frame).
+  Measured against fitted at the three points: Ordon 15.97 / 20.80 / 23.73 game frames a second against 16.69 /
+  20.71 / 23.56, heavy 10.77 / 12.00 / 13.50 against 10.44 / 12.27 / 13.44 - within 5%, worst at N=2.
+- **What that says.** Static Ordon reaches **full game speed at N = 8.4, showing 3.6 pictures a second**; the heavy
+  area **cannot reach it at any N** (asymptote 63%: logic is 38% of its frame). A one-point refit from N=2 alone
+  briefly read R = 0.68 and put the Ordon figure at N = 20 and 1.5 pictures a second - **N=2 is the worst-fitting
+  of the three points, and fitting to it alone was wrong by more than the effect being measured.**
   So guest frame skip is not a 10% lever, it is the difference between slow motion and a correctly paced game at a
   low picture rate. And it **multiplies with base speed** rather than competing with it: at full game speed in Ordon,
   the picture rate is 4.0/s today, **11.1/s at 1.5x base speed and 18.0/s at 2x** - the metric worth optimising is
@@ -181,10 +185,12 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   unreachable, so the heavy area degrades instead of freezing, and the existing fade / JUTFader guards still force a
   draw. `hle_tp.c`'s self-test drives it with a synthetic clock (AGENTS' checks table); four planted bugs must fail
   it, including one that clumps draws while keeping the right rate, since even spacing is the claim.
-- **Not measured on hardware yet** (the trade table above is derived from the mid-October `--gfskip-n` runs scaled to
-  today's base rates; jobs 1616-1621 re-measure the fixed ratio at N=2/3/4 on the current build to check it).
-  **Nobody has looked at it yet either:** "natural" is finally a question for eyes, not arithmetic, once the pacer
-  is on a build.
+- **The fixed ratio is measured; the pacer is built but unseen.** `--gfskip-target` is in build
+  `12b2a797a2e18bb6`; jobs 1632-1637 ask the question the design rests on - whether one target holds **one game
+  speed across scenes** (50% and 60% on both Ordon and the heavy area, where the fixed ratio gives 16.0 and 10.8
+  game frames a second), plus 70% on Ordon as the first setting worth watching and 100% on the heavy area, which
+  **cannot** reach it, as the floor test: it must degrade to one picture in ten and say it is floored rather than
+  freeze. **"Natural" is a question for eyes after that, not arithmetic.**
 - **Re-evaluate when:** the fixed-ratio trade curve is confirmed on the current build, and the owner has watched the
   paced version at a target that the scene can hold (Ordon 70% looks like the first thing worth trying).
 

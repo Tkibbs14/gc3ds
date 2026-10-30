@@ -272,12 +272,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
   repeated display lists (C1).
 - **Guest frame skip, paced to a game speed (C9/C9a; the owner's direction, 2026-10-30: "if we can make it look
-  natural").** Not a few percent. Rendering is **~75% of a game frame in static Ordon and ~65% in the heavy area**,
-  so Ordon reaches **full game speed today** at one picture in ~7.5 (showing 4.0 pictures a second), while the heavy
-  area cannot reach it at any ratio (its asymptote is 69%, logic being the other 35%). It **multiplies with base
-  speed** instead of competing with it: at full game speed Ordon shows 4.0 pictures a second today, **11.1 at 1.5x
-  base speed and 18.0 at 2x** - so *pictures a second while holding full game speed* is the metric to carry, and no
-  scene has ever been scored on it. `--gfskip-target PCT` holds one game speed everywhere and lets the picture rate
+  natural").** Not a few percent, and now measured (jobs 1616-1621, three ratios a scene): rendering is **0.737 of a
+  game frame in static Ordon and 0.618 in the heavy area**, so Ordon reaches **full game speed at one picture in 8.4
+  (showing 3.6 pictures a second)** while the heavy area cannot reach it at any ratio (asymptote **63%**, logic being
+  38% of its frame). The useful band is N=2-4: Ordon 56 / 69 / 79% of full speed at 8.3 / 6.9 / 5.9 pictures a
+  second, the heavy area 35 / 41 / 45% at 5.2 / 4.1 / 3.4. It **multiplies with base speed** instead of competing
+  with it - at full game speed Ordon shows 3.6 pictures a second today and ~18 at twice the base rate - so
+  *pictures a second while holding full game speed* is the metric to carry, and no scene has ever been scored on it. `--gfskip-target PCT` holds one game speed everywhere and lets the picture rate
   take the variation, because the speed *changing* between scenes (Ordon 35%, heavy 24%, cutscene 41%) is what a
   player feels; built, off by default, self-tested on a synthetic clock, **not yet measured on hardware or seen by
   anyone**.
