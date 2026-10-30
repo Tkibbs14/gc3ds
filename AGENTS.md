@@ -153,7 +153,7 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
   J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7%), the
   J2DPane::draw walk, all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%) and the
-  minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 503`); bits 3
+  minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 243` since 2026-10-30, when the PNGP matrix load and the minimap decoration came off: together +0.71% in static Ordon, +0.55% in the heavy area); bits 2, 3, 8
   (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off; **9 and 10
   measure +0.9-1.0% and +0.8-0.9% each, +1.3% together, on a gameplay scene that takes no input** (jobs 1491-1497;
   their old Ordon losses were the walk diverging, C41). Each is checked

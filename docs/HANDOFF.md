@@ -21,8 +21,9 @@
 > | 6 | J3DMaterial::diff | +2.2% | +0.7% | +3.0% |
 > | 7 | J3DSys::reinitGX | +0.9% | ~0 | Ordon +3.9% |
 > | 8 | minimap decoration | +0.06% | (job 1543) | Ordon +3.1% |
-> Every port pays in at least one scene except **bit 2 (PNGP)** and **bit 8 (decoration)**: `--port-hooks 243` is the
-> candidate default, running on three scenes (1547-1552). `core/tools/port_cost.py` prints what each one costs core 0
+> Every port pays in at least one scene except **bit 2 (PNGP)** and **bit 8 (decoration)**, and the two are
+> complementary (each a loss in one scene, neutral in the other). **`--port-hooks 243` is the default since
+> 2026-10-30:** static Ordon 10.367 -> **10.441 (+0.71%)**, heavy area 7.155 -> **7.194 (+0.55%)** (jobs 1547-1548). `core/tools/port_cost.py` prints what each one costs core 0
 > (heavy area 20.2%, static Ordon 21.1% of core 0 inside port code).
 > **Instrument trap found and closed (2026-10-30):** without `--profile on`, blocks do not store their start
 > (`jit_set_profile`), so every sample read the same stale `Gekko.hostPc` - and `# hot guest code`, `# code footprint`

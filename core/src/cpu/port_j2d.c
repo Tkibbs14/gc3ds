@@ -2367,8 +2367,12 @@ static inline int hook_of(u32 pc) {
 // until measured (--ab flushhook). diffLightObj (3.6% of the heavy area's core 0 inclusive, job 512): off until
 // measured (--ab lighthook); on since 2026-10-24 with its one-copy commit (heavy area +2.7%, jobs 1315-1322).
 // The pane walk (bit 5): Ordon +2.2%, heavy area +0.4%, exact in check mode (jobs 1080-1089; James 2026-10-23: on).
-u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_J3DPNGP | 1u << PORT_LIGHTS | 1u << PORT_PANEWALK |
-                  1u << PORT_MATDIFF | 1u << PORT_REINITGX | 1u << PORT_DECO;  // (J3DMaterial::diff: heavy area and Ordon
+// 243: bits 0, 1, 4-7. The PNGP matrix load (bit 2) and the minimap decoration (bit 8) came off on 2026-10-30, each
+// measured a loss in one scene and neutral in the other, both together +0.71% in a static Ordon scene (10.367 ->
+// 10.441 frames a second) and +0.55% in the heavy area (7.155 -> 7.194, jobs 1503-1548). A port is charged
+// instruction fetch rather than work, and those two add more native code than the guest code they remove.
+u32 g_portHooks = 1u << PORT_MATERIAL | 1u << PORT_PICTUREEX | 1u << PORT_LIGHTS | 1u << PORT_PANEWALK |
+                  1u << PORT_MATDIFF | 1u << PORT_REINITGX;  // (J3DMaterial::diff: heavy area and Ordon
                   // +3.0%, jobs 1340-1347; J3DSys::reinitGX: Ordon +3.9%, heavy area even, jobs 1363-1370; the minimap
                   // decoration: Ordon +3.1%, heavy area -0.4%, GX-thread bound there, jobs 1399-1404; all on 2026-10-24)
 bool port_is_hook(u32 pc) {

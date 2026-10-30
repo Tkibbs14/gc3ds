@@ -2627,8 +2627,9 @@ done
   | minus bit 8, the minimap decoration (1543) | 7.192 | **-0.5%** (a loss) |
 
   Every port pays in at least one of the two scenes **except bit 2 and bit 8**, and those two are complementary: the
-  PNGP load is the loss in Ordon and neutral in the heavy area, the decoration the reverse. `--port-hooks 243` (both
-  off) is therefore the candidate default, worth about +0.5% in each scene; jobs 1547-1552 confirm it on three scenes.
+  PNGP load is the loss in Ordon and neutral in the heavy area, the decoration the reverse. **`--port-hooks 243`
+  (both off) is the default since 2026-10-30:** static Ordon 10.367 -> **10.441 (+0.71%)**, heavy area 7.155 ->
+  **7.194 (+0.55%)** (jobs 1547-1548), a little more than the parts, as the set effect predicts.
 
   The set is a large, real win, and the four bits above account for 3.9 of its 10.6 points - the rest is bits 0-2 and
   4 (setGX, drawSelf, the PNGP matrix load at 98,000 calls per 10 s, the lights), measured separately in 1516-1519.
