@@ -55,9 +55,15 @@ def score(path, skip):
 def main():
     args = sys.argv[1:]
     skip = 50.0
-    if args[:1] == ['--skip']:
-        skip = float(args[1])
-        args = args[2:]
+    files = []
+    while args:   # --skip anywhere, not only first: `runs.py LOG LOG --skip 80` used to read "--skip" as a file
+        if args[0] == '--skip':
+            skip = float(args[1])
+            args = args[2:]
+        else:
+            files.append(args[0])
+            args = args[1:]
+    args = files
     if not args:
         print(__doc__)
         return

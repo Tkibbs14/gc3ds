@@ -76,9 +76,15 @@ def report(path, frm):
 def main():
     args = sys.argv[1:]
     frm = 80.0
-    while args and args[0] == '--from':
-        frm = float(args[1])
-        args = args[2:]
+    rest = []
+    while args:   # --from anywhere, not only first: `port_cost.py LOG --from 80` used to read "--from" as a file
+        if args[0] == '--from':
+            frm = float(args[1])
+            args = args[2:]
+        else:
+            rest.append(args[0])
+            args = args[1:]
+    args = rest
     if not args:
         print(__doc__)
         return

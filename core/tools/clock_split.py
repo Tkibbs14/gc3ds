@@ -147,8 +147,12 @@ def selftest():
 
 def main():
     args = sys.argv[1:]
-    frm, by = 0.0, None
-    while args and args[0].startswith('--'):
+    frm, by, files = 0.0, None, []
+    while args:   # a flag anywhere, not only before the files: `clock_split.py LOG --from 80` used to read
+        if not args[0].startswith('--'):   # "--from" as a file name and die on it
+            files.append(args[0])
+            args = args[1:]
+            continue
         if args[0] == '--selftest':
             selftest()
             return
@@ -160,6 +164,7 @@ def main():
             print(__doc__)
             return
         args = args[2:]
+    args = files
     if not args:
         print(__doc__)
         return

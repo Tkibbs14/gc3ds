@@ -866,3 +866,28 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   poll fill and instructions really run are 21%, so this is a fraction of a fraction: measure OPT_FDIRECT on the
   device first (C42) and read how much it moved before building this.
 - **Re-evaluate when:** OPT_FDIRECT's device A/B is in, or a scene turns out to be float-dense in its hot code.
+
+## C44. Exit stubs in their own arena, so hot block bodies pack together (2026-10-30)
+
+- **Status:** parked on arrival, with its ceiling already measured. Not built.
+- **What it is:** a block's hot code is emitted as `[body][exit stubs]` in the hot arena (`cold_begin` / `cold_end`
+  only separate the *cold* paths; HANDOFF 2026-10-12 confirms "stubs, hot paths, exit stubs" share the first 40% of
+  the buffer). Exit stubs are **1.2 of every 3.6 hot-arena words per guest instruction** - a third of the arena -
+  and once a site is linked the stub behind it is bypassed. Give them a third arena and the bodies pack contiguously.
+- **Evidence it is dead weight:** job 1569 (TP heavy area, today's defaults) reports `disp_k` 8,010 dispatcher
+  entries a second against 37.98 M guest instructions, i.e. **one return to the C dispatcher per 4,742 guest
+  instructions**, or roughly one per 800 block executions at today's ~5.9-instruction blocks. An exit stub runs on
+  the order of 0.1% of the times its block does. 33% of the hot arena is code that almost never executes, sitting
+  between the bodies that always do.
+- **Why it is parked rather than next:** the gain is bounded by what packing is worth, and that is measured. The
+  nursery packed decided blocks in the main area and cut fetch stalls by only **4% (220 -> 212 M cycles/s = 1% of
+  core 0)**, losing overall on its double compile (jobs 1295-1314, C-entry above). Job 1569 says why: 50% of time in
+  compiled code is 54.8 KB over 84 pages, so the working set is 3.4x the 16 KB L1 *at any density*. Removing the
+  stubs raises density from 16% to ~24% and cannot do better than the nursery's 1% of core 0, for a change that
+  touches every exit, every link patch, every snapshot and the fault tables.
+- **Cheaper to do first:** the same 1% without the risk is in the exchange rate - fewer hot words beats better-placed
+  ones (OPT_RETSTUB: -2.1% hot words, +1.0-1.6% core 0). See the branch exit sequences and the paired-single
+  accesses named at the end of MEASUREMENTS' job-1569 section.
+- **Re-evaluate when:** a change shrinks the 50%-of-time working set towards 16 KB (then density starts to decide), or
+  the exit stubs can move without a second compile and without new link-patch bookkeeping - for instance if a future
+  arena change is being made for another reason and this rides along.

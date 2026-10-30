@@ -2500,6 +2500,60 @@ different answers, as the ports showed when two of eight turned out to cost more
 itself the way the ports do (one call in 16, nothing when the profile clock is off) and perf.csv reports
 `# stand-in cost 10s`; the next profiled run splits that 69.4% for the first time.
 
+### The blind spot closed: core 0 is 81% JIT block code, and half of it is memory stalls (job 1569, 2026-10-30)
+
+Job 1569, the first profiled run with the stand-in timer: TP heavy area, 240 s, build `103456ecbdfe9264` (today's
+defaults), scored from 80 s. The three instruments now cover core 0 with nothing left over.
+
+| where core 0's wall time goes | share | from |
+|---|---|---|
+| running guest code | **91.7%** | `# joint 10s`, the `run/*` states |
+| - of which **JIT block code and the C helpers blocks call** | **80.9%** | the remainder, now that the other two are measured |
+| - inside port C code | 9.65% | `port_cost.py` (calls x microseconds a call, one call in 16 timed) |
+| - inside stand-in C code (`hle_tp.c`) | 1.14% | `# stand-in cost 10s`, 36-39 calls/s at ~300 us |
+| waiting for the GX thread (`gxsync`) | 0.6% | `# joint 10s` |
+| not running guest code (dispatcher, events, reports, compiling) | 7.4% | `# joint 10s`, the `other/*` states |
+
+The stand-ins' own cost is the new number, and it is **small: 1.14% of core 0**, against a worth of +15.6% in Mario
+Party 4 and +3.8% in TP Ordon for the paired-single library alone. That asymmetry is the opposite of the ports',
+where a 40-instruction leaf cost more than it saved. The ports' 9.65% splits 7.05% in `port_run` and 2.61% in
+`port_commit`; `port_run` is the actual work for a subtree port such as the pane walk, so only the commit is
+overhead - **`port_cost.py`'s "building the context" label is accurate for a leaf port and misleading for a subtree
+one**, and HANDOFF's "building their context 7-8% of core 0" should be read that way.
+
+**The PMU over the same window** (means of the 16 sampled rows from 80 s; core 0 is busy at 803.06 M cycles/s of 804):
+
+| counter | per second | share of core 0 |
+|---|---|---|
+| instructions retired | 268.58 M | IPC **0.334** |
+| instruction-fetch stalls | 220.17 M cycles | **27.4%** |
+| data stalls | 177.51 M cycles | **22.1%** |
+| L1 I-cache misses | 8.20 M | 26.9 cycles each, i.e. ~L2 latency (29): fetch stalls *are* L1 I misses served by L2 |
+| L1 D read / write misses | 1.61 M / 0.645 M | |
+| core 0's L2 misses (SCU) | 1.83 M | at the measured 126-170 ns FCRAM latency that is 185-250 M cycles before overlap, so FCRAM accounts for the data stalls |
+| data micro-TLB / main TLB misses | 3.09 M / 0.191 M | |
+| guest instructions | 37.98 M | **7.07 host instructions and 1.37 host data reads per guest instruction** |
+| dispatcher entries (`disp_k`) | 8,010 | **one per 4,742 guest instructions** |
+
+So **half of core 0 is memory stalls**, almost exactly split between fetch (L2) and data (FCRAM), and the JIT retires
+one instruction every three cycles.
+
+**Why no layout change fixes the fetch half.** The footprint line over the same window: 50% of sampled time in
+compiled code is **116 blocks / 54.8 KB of host code spanning 84 distinct 4 KB pages** (16% density), 80% in 885
+blocks / 290 KB / 289 pages, with 28,058 blocks live. Against a 16 KB L1 the 50% working set is 3.4x too big *at any
+density*, which is why the nursery's packing cut fetch stalls only 4% (220 -> 212 M cycles/s = 1% of core 0) and
+still lost on its compile cost. The sparsity is not mainly the exit stubs either, though they are 1.2 of every 3.6
+hot-arena words and, at one dispatcher entry per 4,742 guest instructions, are traversed on the order of **0.1% of
+block executions** - dead code interleaved between live bodies (C44).
+
+**What that leaves.** Fetch follows the hot code's size, so the only lever is *fewer host words per guest
+instruction*, and the exchange rate is measured: OPT_RETSTUB's -2.1% hot words bought +1.0-1.6% of core 0 (job 148),
+so +10% of core 0 needs roughly -15 to -20% of hot words. By the executed-words table (2026-10-12) the two places
+that much could come from are **the branch exit sequences (`bc` 16.0% of hot words at 12.2 each, `b` 4.7%, `bclr`
+3.3% = 24%)** and **the paired-single accesses (`psq_l` 8.3% at 24.3 words, `psq_st` 7.4% at 39.3 = 16%)**. Every
+peephole tried on the rest came in at 0.3-2% of hot words (C13), which is why the gains now arrive in 0.5-3%
+increments rather than in tens of percent.
+
 ### The stand-ins audited the way the ports were, and two more record corrections (jobs 1553-1561, 2026-10-30)
 
 - **Frames a second, separate 240 s runs scored from 80 s, build 0f3c3eac6e709b6a (its default mask, `--fdirect` off,
