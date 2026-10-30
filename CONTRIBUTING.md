@@ -21,6 +21,13 @@ needs and how it is checked (and what the project deliberately never collects).
 
 - One idea per pull request.
 - Run the checks for what you touched (`AGENTS.md`, "Checks") and paste their summary lines into the description.
+- **Update what your change makes out of date, in the same commit** (`AGENTS.md` rule 7 has the table: a headline
+  speed, a default, a contradicted measurement, a parked idea, a new tool or option, an instrument's meaning, a
+  contributor-visible fact - each has places that quote it). `python3 core/tools/docs_stale.py` catches the
+  mechanical half and runs in CI; the table is the half you do by hand. A pull request that leaves a number in
+  `README.md` or `AGENTS.md` disagreeing with the one it just measured will be asked to fix it.
+- **A withdrawn result is a normal outcome.** If you find a recorded gain was an artifact, correct the old entry in
+  place (never delete it) and say whether the option stays on - a withdrawn credit is not a rejected option.
 - Performance changes: say what was measured, how, and the result with its standard error. "Faster" without numbers
   will be asked for numbers.
 - New optimizations come off by default behind a switch; they become default after a measured A/B.

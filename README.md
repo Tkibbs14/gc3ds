@@ -6,9 +6,11 @@ PICA200 GPU doing the drawing. Every design decision here was measured on a real
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
 boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village. On a New 2DS XL it runs
-at **10.4 of the game's 30 frames a second in Ordon village (34.6% of full speed) and 7.2 in its heaviest area
-(23.9%)**, with the title's cutscene at 40.4%, the scene after it at 23.1% and the THP movie at 14.6%; *The Wind
-Waker* 6.2 frames a second on Outset and *Mario Party 4* 9.0 on its board (30 October 2026). Most of the work so far
+at **10.5 of the game's 30 frames a second in Ordon village (35.1% of full speed) and 7.2 in its heaviest area
+(24.1%)**, with the title's cutscene at 40.9%, the scene after it at 23.0% and the THP movie at 14.7%; *The Wind
+Waker* 6.2 frames a second on Outset and *Mario Party 4* 9.2 on its board (30 October 2026, build
+`103456ecbdfe9264`). The console drifts ~2% between days and a rebuild moves a baseline ~0.8%, so these are one
+session's numbers and small differences from an earlier figure are weather, not progress. Most of the work so far
 went into finding out where the time goes and what does and does not help on this hardware; that knowledge, in
 `docs/`, is the most useful part of the repository today.
 

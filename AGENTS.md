@@ -6,10 +6,13 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs a static Ordon scene at 10.40 frames a second (34.6% of full speed) and Ordon's heaviest area at
-7.17 (23.9%); Wind Waker's Outset 6.18 (20.6%), Mario Party 4's board 9.05 (15.1%), the title's cutscene 40.4%, its
-later Link / Epona stretch 23.1%, the THP movie 14.6% (30 October 2026, build 0f3c3eac6e709b6a). **Judge gameplay on
-frames a second from a scene that takes no input, not on the scripted walk** - see "Measuring" and C41.
+test. Today it runs a static Ordon scene at 10.52 frames a second (35.1% of full speed) and Ordon's heaviest area at
+7.22 (24.1%); Wind Waker's Outset 6.22 (20.7%), Mario Party 4's board 9.24 (15.5%), the title's cutscene 40.9%, its
+later Link / Epona stretch 23.0%, the THP movie 14.7% (30 October 2026, build 103456ecbdfe9264, two runs an arm
+except Wind Waker and Mario Party 4). **These are not comparable with the previous block's** (10.40 / 7.17 / 6.18 /
+9.05 on build 0f3c3eac6e709b6a): the device drifts ~2% between days and a rebuild moves a baseline ~0.8%, so only
+runs from one session on one build may be compared - most of the difference is weather, not progress. **Judge
+gameplay on frames a second from a scene that takes no input, not on the scripted walk** - see "Measuring" and C41.
 
 ## Rules
 
@@ -36,6 +39,24 @@ frames a second from a scene that takes no input, not on the scripted walk** - s
    `--ab name`), off by default, and become default only after a hardware A/B shows a gain and the checks pass (the
    owner, 2026-10-24: a measured, exact gain is turned on without asking; crash risks and trade-offs still go to the owner).
 6. **Small, reviewable changes.** One idea per pull request, with its checks and its measurement in the description.
+7. **Leave nothing stale.** A change is not finished when the code works - it is finished when every place that
+   quotes what you changed says the new thing. This is part of the change, not follow-up work, and it goes in the
+   same commit. Run `python3 core/tools/docs_stale.py` before you commit: it is mechanical (it cannot read meaning),
+   so the table below is the part you do by hand.
+
+   | what you changed | what must be updated in the same commit |
+   |---|---|
+   | a headline speed | the opening paragraph of `AGENTS.md` **and** `README.md`, "Where things stand" below, and HANDOFF's newest block - with the build id, and a note that figures from another session are not comparable (~2% day drift, ~0.8% a rebuild) |
+   | a default (`--name`, an `OPT_` bit, `--port-hooks`) | the option's own comment where it is set in `main.c` / `opts_default` (with the jobs), "Defaults that measured as gains" in `AGENTS.md`, `docs/REMOTE_RUNS.md` if the switch is new, and MEASUREMENTS with the runs |
+   | a measurement that contradicts a recorded one | the old entry is **corrected in place, never deleted** (a `> **Correction, DATE...**` block under it), its REDESIGN_CANDIDATES status, and any file quoting the old number - `grep` for it |
+   | an idea tried, parked or rejected | a REDESIGN_CANDIDATES entry with evidence, cost, status and "re-evaluate when" (rule 4), and AGENTS' "Open directions" if the ordering moved |
+   | a new tool or option | its own `--help` / docstring, the `core/tools/` row of the repository map, the checks table if it is a check, and `docs/REMOTE_RUNS.md` for a job option |
+   | an instrument's meaning or a column's name | every doc that quotes its output, and the tool's docstring - a label that teaches the wrong reading is a bug (`port_cost.py`'s "building the context", 2026-10-30) |
+   | a contributor-visible fact | `docs/CONTRIBUTOR_TASKS.md` (a task that is already done is worse than no task), `docs/TELEMETRY.md`, `CONTRIBUTING.md` |
+
+   **Withdrawing a credit is normal and must be explicit.** When a recorded gain turns out to be an artifact, say so
+   where it was recorded and say whether the option stays on - a withdrawn credit is not a rejected option
+   (`--hlegd`, 2026-10-30).
 
 ## Repository map
 
@@ -53,7 +74,7 @@ frames a second from a scene that takes no input, not on the scripted walk** - s
 | `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
 | `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
 | `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
-| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image), `arm11_sched.py` (ARM11 cycle model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image), `arm11_sched.py` (ARM11 cycle model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `docs_stale.py` (rule 7's mechanical documentation checks), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
 | `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
 | `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
 | `docs/` | Designs, findings and the running log (see README) |
@@ -93,6 +114,7 @@ on the console.
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
+| **Any change at all** | `python3 core/tools/docs_stale.py` (rule 7: headline speeds agree across AGENTS and README, one build id with a not-comparable note, frames against `speed_pct`, every option the docs name is really parsed, every `CNN` referenced exists and every shelved one keeps its trigger). Mechanical only - rule 7's table is the part done by hand. `--selftest` plants a fault per check. |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings. Without devkitARM (a cloud session), `bash core/tools/host3ds_syntax.sh` first: it compiles 8 of the 15 files `-fsyntax-only` against the stubs in `core/tools/stub3ds/` and catches plain C mistakes (on 2026-10-30 a `double tot` declared inside an `if` block broke a build and cost a device session). It is not a build, and never replaces one before a relay push. |
 
 Every check that compares has a planted-bug self-test; a check whose self-test cannot fail proves nothing (the first
@@ -150,11 +172,14 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (30 October 2026, build 0f3c3eac6e709b6a, frames a second; the `speed_pct` in brackets):** static
-  Ordon 10.40 (34.6%), heavy area 7.17 (23.9%), Wind Waker 6.18 (20.6%), Mario Party 4 9.05 (15.1%); the title:
-  cutscene 40.4%, later stretch 23.1%, movie 14.6% (the cutscene ends at ~150 s: windows must follow it). The scripted
-  Ordon *walk* reads 10.40-10.44 on the same build but cannot be compared across a change that shifts the guest's
-  timeline (C41). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (30 October 2026, build 103456ecbdfe9264, frames a second; the `speed_pct` in brackets; two runs an
+  arm except Wind Waker and Mario Party 4, whose second pair was queued as jobs 1604-1607):** static Ordon 10.52
+  (35.1%), heavy area 7.22 (24.1%), Wind Waker 6.22 (20.7%), Mario Party 4 9.24 (15.5%); the title: cutscene 40.9%,
+  later stretch 23.0%, movie 14.7% (the cutscene ends at ~150 s: windows must follow it). The previous build
+  (0f3c3eac6e709b6a) read 10.40 / 7.17 / 6.18 / 9.05 and **must not be differenced against these**: the device drifts
+  ~2% between days and a rebuild moves a baseline ~0.8%, so compare runs of one session on one build only. The
+  scripted Ordon *walk* also cannot be compared across a change that shifts the guest's timeline (C41).
+  **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
   walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay

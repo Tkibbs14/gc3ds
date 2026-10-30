@@ -98,7 +98,9 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C7. Queue counters on their own cache lines
 
-- **Status:** built (pica.c: `g_vwHeadL` / `g_vwTailL`, one 32-byte line each, `VwLine`).
+- **Status:** built and **on by default** with no switch - the layout is unconditional (pica.c:337-340, `VwLine`
+  aligned to 32 bytes: `g_vwHeadL`, `g_vwTailL`, and `g_vwPosL` at 2153). Nothing to re-run, so rule 4's trigger
+  does not apply.
 - **What:** `g_vwHead` (GX thread writes) and `g_vwTail` (worker writes) are declared together (pica.c:140), so they
   share a 32-byte line that moves between cores 2 and 3 on every job, even with one worker; with C2, `g_vwClaim` too.
   ARM11 MPCore: 32-byte lines, MESI, the SCU moves modified lines core to core (ARM DDI 0360F §1.3.4, §7.1.1, read by a
@@ -143,6 +145,10 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   game frames a second +55-65% in Ordon, +48% in the heavy area; area transitions need the fade guards
   (`--gfskip-ok`, JUTFader idle), which fixed them (owner-checked). Off by default; the owner wants full speed before
   frame skipping.
+- **Re-evaluate when:** the owner wants a playability option rather than full speed, or the remaining EFB-copy
+  glitches are fixed so the GX-side form is exact. Note that the *GX-side* `--fskip` is separately disqualified as a
+  speed lever: it reads +9% on `speed_pct` while real frames a second fall **46%** (7.17 -> 3.90, 2026-10-30), so
+  only the guest-side `--gfskip` form above is a candidate.
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 

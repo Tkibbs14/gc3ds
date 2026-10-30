@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  # Rule 7: a change is finished when every place that quotes what it changed says the new thing. These two are
+  # mechanical and take seconds, so they run first and on every pull request - the hand-done part is rule 7's table.
+  docs-and-host-syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Documentation staleness (self-test first, so a check that cannot fail is caught)
+        run: |
+          python3 core/tools/docs_stale.py --selftest
+          python3 core/tools/docs_stale.py
+      - name: 3DS host code syntax without devkitARM
+        run: bash core/tools/host3ds_syntax.sh
+
   pc-and-jit-fuzz:
     runs-on: ubuntu-24.04
     steps:
