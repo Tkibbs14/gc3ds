@@ -477,9 +477,12 @@ typedef struct {
     u32 lean; bool abLean;    // --lean on|off|MASK (LEAN_* bits), --ab lean (all bits and none): citro3d setters that would upload unchanged state are skipped (pica.c lean state; lean column; --ab starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
     bool hlegd;               // --hlegd on|off (on): the J3D display-list writer stand-ins (hle_gd.c; hle column bit 1).
-                              // Needed because separate whole runs decide now (rule 3) and the group only had an A/B,
-                              // which flushes compiled code at every switch: its own A/B read -0.03 +- 0.12 points in
-                              // static Ordon and -0.34 +- 0.34 in the heavy area (jobs 1567-1568), i.e. nothing settled.
+                              // Needed because separate whole runs decide now (rule 3) and the group only had an A/B.
+                              // **Do not judge it on a gameplay scene: it does not run in one.** Separate runs
+                              // (jobs 1573, 1578-1583) agree to 0.01% in static Ordon and 0.05% in the heavy area
+                              // because '# hle 10s' reports `J3DGD runs 0` in both - the arms are the same code
+                              // there. It was adopted on the title cutscene (jobs 264-265, ~40,000 calls a second),
+                              // which is where tp850 runs must decide it.
     bool abHlegd;             // --ab hlegd: the same, alternating in one run
     char abName[24];          // --ab NAME as given, and whether it matched an A/B this build has (AB(), perf.csv
     bool abKnown;             // header). An unmatched name used to run no A/B silently: see AB()'s comment.
