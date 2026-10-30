@@ -472,7 +472,11 @@ typedef struct {
     bool rawdraw, abRawdraw;  // --rawdraw on|off, --ab rawdraw: batches' draw calls as raw command words (pica.c; rawdraw column; --ab starts off)
     u32 lean; bool abLean;    // --lean on|off|MASK (LEAN_* bits), --ab lean (all bits and none): citro3d setters that would upload unchanged state are skipped (pica.c lean state; lean column; --ab starts off)
     bool shapes, abShapes;    // --shapes on: display-list draws converted once into GPU-resident shapes (pica.c); --ab shapes: on and off (shapes column; starts off)
-    bool abHlegd;             // --ab hlegd: the J3D display-list writer stand-ins (hle_gd.c) on and off (hle column bit 1)
+    bool hlegd;               // --hlegd on|off (on): the J3D display-list writer stand-ins (hle_gd.c; hle column bit 1).
+                              // Needed because separate whole runs decide now (rule 3) and the group only had an A/B,
+                              // which flushes compiled code at every switch: its own A/B read -0.03 +- 0.12 points in
+                              // static Ordon and -0.34 +- 0.34 in the heavy area (jobs 1567-1568), i.e. nothing settled.
+    bool abHlegd;             // --ab hlegd: the same, alternating in one run
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
     u32 smalltex; bool abSmalltex;  // --smalltex on|off, --ab smalltex: textures in the smallest exact PICA format (smalltex column; --ab starts off)
@@ -602,6 +606,7 @@ static void opts_default(RunOpts* o) {
     o->trifast = true;  // the triangle path's fast form: title later stretch +3.8% (+7.7% pictures), heavy area +0.24%, Ordon +0.4% (jobs 685-691)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->portCharge = 100;  // the ports' calibrated estimate (port_j2d.c kInsScale); --port-charge sweeps it (C41)
+    o->hlegd = true;  // the J3D display-list writer stand-ins (a documented gain, never measured by separate runs)
     o->fdirect = true;  // OPT_FDIRECT: Wind Waker +2.6% (jobs 1528/1529, 1535/1536), Mario Party 4 +0.7%, TP flat
     o->psflush = false;  // the __GXSendFlushPrim stand-in: **off since 2026-10-30**, a loss in all four games measured
                          // on scenes that take no input - TP static Ordon -0.33%, TP heavy -0.31%, Wind Waker -0.06%,
@@ -662,6 +667,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
         else if (!strcmp(a, "--nsonce")) pica_set_ns_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
+        else if (!strcmp(a, "--hlegd")) o->hlegd = !strcmp(v, "on");
         else if (!strcmp(a, "--nskeep"))
             pica_set_ns_keep(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : !strcmp(v, "count") ? 4 : 0);
         else if (!strcmp(a, "--nsraw")) pica_set_ns_raw(!strcmp(v, "on"));
@@ -1219,7 +1225,7 @@ static const char* run_body(const char* path) {
         { extern bool g_paneStat; g_paneStat = g_opt.panestat; }
         { extern bool g_triFast; g_triFast = g_opt.trifast; }
         if (g_opt.tribench) { extern u32 g_triBench; extern u64 (*hle_bench_clock)(void); g_triBench = g_opt.tribench; hle_bench_clock = svcGetSystemTick; }
-        hle_gd_set_enabled(!g_opt.abHlegd);  // --ab hlegd starts off
+        hle_gd_set_enabled(g_opt.hlegd && !g_opt.abHlegd);  // --ab hlegd starts off
         hle_thp_set_enabled(!g_opt.abThp && !g_opt.noThp);  // --ab thp starts off
         hle_ps_set_enabled(!g_opt.abPs && !g_opt.noPs);  // --ab ps starts off
         g_portMode = g_opt.abPort ? 0 : g_opt.port;  // --ab port starts off
