@@ -736,7 +736,20 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
      not per node. But it is game-engine code (Wind Waker and TP's framework), the per-title kind of work the owner
      does not want the architecture to depend on.
 - **Expected:** up to ~+15-20% core 0 in that Wind Waker scene (estimate); unmeasured elsewhere.
-- **Re-evaluate when:** the owner picks a form, or the region tier (C33) is built.
+- **Prior art, found 2026-10-30:** the mechanism is standard outside emulation and measured. V8 replaces a Wasm
+  `call_indirect` with a runtime check of the target against the assumed callee, inlining the body when it passes
+  and deoptimising when it does not: **~1.19x from indirect-call inlining alone and ~1.59x combined with deopts**.
+  Guarded inlining with a class or method test is long-established in JIT literature, and emulator-side there is a
+  patent on polymorphic inline caches plus a branch-target buffer inside an emulator's dispatch. So the shape is not
+  speculative.
+  **But every one of those hosts has instruction-cache headroom, and this one does not.** Inlining a callee at each
+  of its call sites multiplies its footprint, which is the thing that has lost here every time it was tried (traces
+  -5.1%, relayout -7.6%, the region nursery, AOT). **So if this is built, it must not duplicate code:** inline the
+  single hottest target once at the walk site that dominates the profile, not at every call site, and score it on
+  hot words per guest instruction as well as on speed.
+- **Re-evaluate when:** the owner picks a form, or the region tier (C33) is built. Take Wind Waker's profile again
+  first - the ~21% figure is from job 792 and predates two weeks of changes, and `--tier` (which already inlines
+  reached leaves) has been on by default since 2026-10-22 and may have taken part of it.
 
 ## C36. Translated display lists (G2): lists decoded once and replayed per state variant (2026-10-23)
 
@@ -976,3 +989,58 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
 - **Re-evaluate when:** a change shrinks the 50%-of-time working set towards 16 KB (then density starts to decide), or
   the exit stubs can move without a second compile and without new link-patch bookkeeping - for instance if a future
   arena change is being made for another reason and this rides along.
+
+## C45. Register-cache eviction by liveness lookahead instead of LRU (prior art: Mupen64Plus, 2026-10-30)
+
+- **Status:** next, not built. The one footprint-*reducing* idea found by surveying other projects, and the only
+  direction that has ever won on this hardware.
+- **What:** `rc_alloc` (jit.c) picks its victim **least-recently-used** (`c->rc.use[k] < c->rc.use[best]`), which can
+  evict a GPR the next instruction needs - paying a write-back now and a reload immediately after, two words of hot
+  code each time. Mupen64Plus's new dynarec instead evicts by liveness: *"a ten-instruction lookahead is used to
+  determine which registers will not be needed soon and these registers are evicted from the cache"*. With 5 slots
+  (r4-r8) for 32 GPRs in ~5.9-instruction blocks, the victim choice is made constantly.
+- **The prize, from this project's own numbers.** The regstat model (HANDOFF 2026-10-12) splits the register traffic
+  per block run: loads 2.04 at first touch + **0.28 after evictions**; write-backs 1.54 at constant exits + 0.45 at
+  blr/bctr + **0.49 at evictions**. So evictions cause **0.77 of 4.8 register memory operations a block run, 16% of
+  the traffic**, and they are the only part a better victim choice can remove. Against ~14.2 hot words a block run
+  and the measured exchange rate (OPT_RETSTUB: -2.1% hot words bought +1.0-1.6% of core 0):
+
+  | evictions avoided | words saved a block | share of hot words | core 0 |
+  |---|---|---|---|
+  | 30% | 0.23 | 1.6% | +0.8 to +1.2% |
+  | 50% | 0.39 | 2.7% | +1.3 to +2.1% |
+  | 70% | 0.54 | 3.8% | +1.8 to +2.9% |
+
+- **Why it is cheap to try:** the liveness data already exists and is already fuzzed - `gekko_regs(inst, &reads,
+  &writes)` (gekko.h:156, `gekko_regs.c`), which `crf_use` already uses for the CR-field fate model. A lookahead over
+  the next N decoded instructions of the block being compiled needs no new analysis and no new verification surface,
+  and it is **compile-time only**: the generated code is the same shape, just with fewer spill/reload pairs. The
+  regstat counters (`RW_EVICT`, `RL_EVICT`) already measure exactly what it is meant to reduce, so the model can
+  score it under qemu before any console time.
+- **Against:** blocks are short, so a 10-instruction lookahead often runs past the end of the block - at the exit
+  everything live is written back anyway, which may leave less to win than the table suggests. The honest first step
+  is to count, under qemu with `JIT_REGSTAT=1`, how many evictions had a victim that was dead for the rest of the
+  block (those are the free ones) before writing any code generation.
+- **Re-evaluate when:** that count is in. If dead-for-the-rest-of-the-block victims are a small share, the idea is
+  bounded well below the table and should be parked.
+
+## C46. A return stack buffer for blr, instead of the indirect table (prior art: emudev.org, 2026-10-30)
+
+- **Status:** parked pending an instrument - **its value cannot currently be estimated, which is itself the finding.**
+- **What:** `blr` goes through `ST_INDLR` into `ST_INDIRECT`: a 2-way address-indexed table probe (load LR, mask,
+  index, `ldmia`, compare, budget check, `bx`), ~13 ARM instructions on a first-slot hit and ~19 on the second.
+  The standard alternative (emudev.org, "Return Stack Buffer") pushes the guest return address and the host block
+  address at a call and pops and compares them at the return, *"if they don't match, the entire buffer is cleared and
+  the block falls back to hash table lookup"* - about 5 instructions on a hit.
+- **Why it may well lose here, which is the interesting part:** the saving is on the *return*, but the push is new
+  cost on every *call*, and in this JIT a linked `bl` costs **one** patched word (`exit_const`). So a pair goes from
+  ~13+1 to ~5+4, and the call site grows fourfold in a build where instruction fetch is 27.4% of core 0 and where
+  every call-site growth measured so far has lost: OPT_CALLS (following `bl` into the callee) **-1.2%**, traces
+  **-5.1%**, hot-block relayout **-7.6%**.
+- **Blocked on a measurement nobody can make today.** The rate of `blr` through the table is unknown: there is no
+  counter for `ST_INDIRECT` traversals, `# other exits` records only the ~512 a second that reach the C dispatcher,
+  and the two available estimates disagree by eight times (21% of exits being indirect implies ~1.35 M a second at
+  6.4 M block runs; `bclr` at 3.30% of hot words and 7.5 words each implies ~167 k a second). At the low end the
+  whole idea is worth under 0.5% and is not worth building.
+- **Re-evaluate when:** a counter for indirect-table hits by kind (LR / CTR, first slot / second / miss) has run on
+  the device. That counter is worth adding on its own: it also prices OPT_IND2 and the table's width.

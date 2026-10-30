@@ -2750,6 +2750,67 @@ never completed and were cancelled.
   Wind Waker 6.214 against 6.238 (-0.4%). That is the documented ~0.8% a rebuild moves a baseline, and it is larger
   than the effect being chased.
 
+### What other projects on this hardware did, and what transfers (survey, 2026-10-30)
+
+A survey of comparable projects, prompted by the owner asking how others made things playable. Sources are in the
+list at the end of this section. Two things it settled, two it corroborated, and two candidates it produced.
+
+**Where this hardware's frontier actually is.** On a New 3DS: **PS1 runs at full speed** (RetroArch's PCSX-ReARMed),
+**N64 barely runs at all** (DaedalusX64: "lots of GFX errors as well as emulation issues regarding speed"), and
+there is **no credible GameCube emulator** - the pages claiming one are SEO spam on staging-domain mirrors that
+contradict each other and credit a nonexistent Dolphin port. A *native* port of an N64 game (SM64, from its
+decompilation) holds 30 fps. So TP at 35% of full speed is past the frontier for emulation on this chip, one whole
+console generation beyond where it stops working for everyone else.
+
+**What does not transfer, with the reason:**
+- **The PS1 win was an accuracy trade in the renderer**, not a CPU one: they swapped P.E.Op.S. for PCSX4ALL's Unai
+  renderer, "less accurate, but much faster", worth 10-20 fps. Here the GPU is already only 5-15 ms a frame and core
+  0 is 93-97% busy, so that lever is spent - and it was spent *exactly*, by mipmaps (+19% in the heavy area), with
+  the inexact version (`--texdiv 4`, GPU 100.7 -> 28.1 ms) kept only as a diagnostic.
+- **Dolphin's largest speed hack does not apply.** "Skip EFB Access from CPU" takes Super Mario Galaxy from ~30-75%
+  to ~95-140% - a 2-3x swing - because the emulator otherwise stalls the GPU to read back pixels. gc3ds already
+  decoupled that path (PE register reads that no longer wait for the GX thread, cutscene +3.2%) and core 0 now waits
+  **0.6%** on the GX side, so there is nothing left there to buy.
+- **Static recompilation's success is host headroom, not technique.** N64Recomp is literal and
+  instruction-by-instruction, like `ps_translate.py`, needs symbol metadata that in practice comes from a
+  decompilation, and needs a runtime; Hackaday calls it "quite similar to what an emulator does in real-time, just
+  with the goal of creating a permanent copy". It wins on PC because the host dwarfs the guest. Here the host is
+  804 MHz ARM11 against a 486 MHz Gekko with a weaker memory system - which is why AOT measured *slower* on the
+  console, and why translator v3 and v4 both lost (jobs 320-327, 340-346).
+
+**What it corroborated, which matters because it is independent of this project's methodology:**
+- **Mupen64Plus's new dynarec documentation states the footprint rule outright:** optimizations that expand code
+  "generally lose out overall... The increase in code size often outweighs the benefit of this." A different
+  emulator, a different host, the same conclusion this project reached through traces (-5.1%), hot-block relayout
+  (-7.6%), AOT (-31 to -36%), the region nursery and float lanes. That is strong evidence the rule is a property of
+  constrained hosts and not an artifact of how gc3ds measures.
+- **Mupen64Plus also names this project's block-boundary problem independently:** jumping into recompiled code "very
+  often" needs "a stub of code that loads the registers required in the middle, and because those stubs can be
+  rather large and used often, they displace lots of code in the host's instruction cache."
+- **Register pressure here is worse than anywhere compared.** wasm-dolphin holds all 32 GPRs in locals for a block's
+  life; Dolphin's x86-64 backend has 16 host registers; ARMv6K has 16 of which **5** (r4-r8) are free for the guest's
+  32. The block-boundary flush is not a design choice that could be undone - it is the host.
+- **Adaptive frame skipping is where judder comes from, in practice.** PPSSPP users report flicker and stutter with
+  *auto* frameskip and some prefer a fixed value; its auto mode is bounded by a maximum skip. That is the failure
+  mode `--gfskip-target`'s accumulator was built to avoid, and the device runs measured gap sd 10.2 ms on a 127.8 ms
+  mean with no spikes (C9b), so the mitigation works - but it is the right thing to keep watching.
+
+**Two candidates it produced:** **C45**, register-cache eviction by liveness lookahead rather than LRU (Mupen does
+this with a ten-instruction lookahead; worth +0.8 to +2.9% of core 0 by this project's own eviction counters, and it
+*shrinks* hot code), and **C46**, a return stack buffer for `blr`, which is parked because the rate of `blr` through
+the indirect table is not instrumented and the two available estimates of it differ by eight times.
+
+**Sources:** [PS1 full speed on New 3DS](https://www.libretro.com/index.php/retroarch-3ds-full-speed-ps1-now-possible-with-pcsx-rearmed-w-unai-renderer/) ·
+[DaedalusX64 on New 3DS](https://gbatemp.net/threads/release-daedalusx64-n64-emulator.562195/) ·
+[SM64 3DS port at 30 fps](https://www.videogameschronicle.com/news/mario-64-3ds-port/) ·
+[N64Recomp](https://github.com/N64Recomp/N64Recomp) ·
+[static recompilation (Hackaday)](https://hackaday.com/tag/binary-translation/) ·
+[Mupen64Plus new dynarec](https://github.com/mupen64plus/mupen64plus-core/blob/master/doc/new_dynarec.mediawiki) ·
+[common dynarec optimizations (emudev.org)](https://emudev.org/2021/02/01/Dynarec) ·
+[V8 speculative Wasm optimizations](https://v8.dev/blog/wasm-speculative-optimizations) ·
+[wasm-dolphin](https://github.com/Remenby31/wasm-dolphin) ·
+[Dolphin EFB options](https://bugs.dolphin-emu.org/issues/7892)
+
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 
 Frames a second is the emulated clock rate while the game stays locked to two fields a picture, so a direction's
