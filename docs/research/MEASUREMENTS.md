@@ -2603,6 +2603,32 @@ repeatability. The stand-in was adopted on the title cutscene at ~40,000 calls a
 decides it (jobs 1588-1591; 1588, hlegd off: cutscene 40.90, later 22.98, movie 14.78). Same family of error as
 C41 - the arms were not what they looked like - by a different mechanism.
 
+### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
+
+Frames a second is the emulated clock rate while the game stays locked to two fields a picture, so a direction's
+value is **how much emulated clock it delivers for the core-0 wall time it costs**. Job 1569 measures both sides of
+that ratio for the first time - the clock side from `clock_split.py`, the wall side from the budget above:
+
+| the clock comes from | clock share | core-0 wall share | clock per wall point |
+|---|---|---|---|
+| poll fill (the guest spinning, fast-forwarded) | 66.61% | ~0 | free |
+| **port C code** | 9.25% | 9.65% | **0.959** |
+| stand-in C code | 0.70% | 1.14% | 0.614 |
+| **JIT block code (guest code actually executed)** | 23.43% | 80.90% | **0.290** |
+| | sums 99.99% | sums 91.69% (the `run/*` share) | |
+
+So a port delivers emulated clock **3.3x** as cheaply as running the guest code it replaces, and a stand-in 2.1x.
+That is the quantitative reason the library ports are worth +10.6% as a set, and the argument for ranking subtree
+ports above JIT codegen: codegen improves the 0.290, and no 15-20% improvement to it exists (above), whereas a port
+moves clock out of that bucket entirely.
+
+**Use this to rank, never to predict.** Extrapolating it naively - moving the ports' 9.25% of the clock out of the
+JIT bucket should free 22.25 wall points and give +32% - over-predicts the ports' **measured** set value of +10.6%
+by three times. The model is wrong in a known way: the guest code a port replaces was not all in the JIT bucket,
+because part of what a port's charge saves is absorbed by a smaller poll fill instead of by less real work (C41),
+and a port's charge (`kInsScale`) is not the guest instruction count. Any port's worth still has to be measured on
+a scene that takes no input.
+
 **The stand-in timer cross-checks against the old counter.** Inside job 1569's heavy area, one window:
 `# hle 10s` 357 calls and 105.1 ms inside per 10 s; `# stand-in cost 10s` 36 calls/s and 10.7 ms/s = 107 ms per
 10 s. The two instruments agree to 2%, so the 1.14% of core 0 above is independently confirmed; window to window
