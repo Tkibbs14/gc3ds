@@ -742,6 +742,22 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   and before any cached read of it (state save, a game reading its FIFO), or a stale dirty line evicted later would
   overwrite the bursts; deferring the copy to the GX thread breaks if the game writes or reuses that memory before
   the copy lands.
+- **An exact way, proposed 2026-10-30: let core 2 write the mirror, since it already has the bytes.** `gp_burst`
+  (hw/gx.c) hands every 32-byte burst to the GX thread (`gxAsync->feed`, batched by `ringbatch`) *and* memcpys the
+  same 32 bytes into guest RAM on core 0. The ring record already holds the data, so the mirror write is a duplicate
+  that core 0 pays for and core 2 - idle 12-13% in gameplay - could do for nothing.
+  - **What makes it exact.** The only readers of FIFO memory are the GP (which is our GX thread, and has the bytes),
+    the game itself through the FIFO's read pointer (it only reuses space the GP has consumed, so advancing the
+    reported read pointer *after* the mirror write keeps reuse safe), a save state (flush the pending writes first),
+    and a display list recorded through the pipe - the unlinked case in `gp_burst`, which keeps writing on core 0.
+  - **The hole and how to close it.** A guest *read* of FIFO memory for any other reason would see stale bytes. The
+    FIFO is a region nothing else touches, so marking its pages as not-fast (as MMIO pages are) makes any guest
+    access there take a slow path that flushes the pending writes first - no cost on normal memory, since nothing
+    else reads those pages.
+  - **Worth:** the mirror is Ordon 1.6% and the heavy area 0.5% of core 0 measured directly (`--fifomirror off`,
+    jobs 1375-1380), every game, plus whatever the write-allocate misses cost the shared L2.
+  - **Cost:** hw/gx.c, the GX thread's ring consumer, the save-state path and the JIT's page classification; a check
+    mode that compares the mirror against the eager version over a run, with a plant.
 - **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer
   measurement shows uncached bursts at well under a miss's cost.
 
