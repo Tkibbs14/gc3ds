@@ -39,6 +39,17 @@ extern u32 g_gfskipGuard[4];  // guest bytes that must be zero for a skip (TP: t
 typedef struct { u32 ptr, off, val; } GfskipOk;  // the word at *(u32*)ptr + off must equal val for a skip
 extern GfskipOk g_gfskipOk[4];
 extern u64 g_gfskipGuarded;
+// --gfskip-target PCT: hold the game at PCT of its own frame rate and spend what is left on pictures, instead of a
+// fixed ratio (hle_tp.c gfskip_skip has the reasoning and the clamps). The front end sets the clock and its rate;
+// with either unset the fixed ratio runs as before.
+extern u32 g_gfskipTarget, g_gfskipHz;
+extern u64 (*g_gfskipClock)(void);
+extern u64 g_gfskipTicksPerSec;
+extern double g_gfskipCd, g_gfskipCs, g_gfskipX;   // learned costs of a drawn / skipped frame, and the drawn fraction
+#ifndef __3DS__
+bool hle_gfskip_selftest(void);   // drives the pacer with a synthetic clock (hle_tp.c); GC3DS_GFSKIP_SELFTEST=1
+#endif
+extern u64 g_gfskipFloored, g_gfskipFull;          // frames pinned at the picture-rate floor / drawing everything
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

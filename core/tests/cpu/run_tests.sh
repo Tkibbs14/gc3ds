@@ -77,6 +77,21 @@ echo "$out" | grep -v '^DISASM' | head -20
 line=$(echo "$out" | grep '^DISASM')
 if [ $rc -eq 0 ]; then note "PASS disasm: $line"; else note "FAIL disasm: $line"; fail=1; fi
 
+# The guest frame pacer (--gfskip-target, hle_tp.c): feedback over real time, so it is driven here with a synthetic
+# clock instead of being judged by one console run. Needs no disc image.
+if [ -x "$here/../../build/gcemu" ]; then
+    echo "== guest frame pacer (--gfskip-target, synthetic clock)"
+    if out=$(GC3DS_GFSKIP_SELFTEST=1 "$here/../../build/gcemu" 2>&1); then
+        note "PASS gfskip pacer: ${out#gfskip selftest: }"
+    else
+        echo "$out" | head -8
+        note "FAIL gfskip pacer"
+        fail=1
+    fi
+else
+    note "SKIP gfskip pacer: no core/build/gcemu (make -C core)"
+fi
+
 if [ "${NO_BENCH:-0}" != 1 ]; then
     echo "== speed (PC, single thread)"
     "$w/bench" | while read -r l; do note "INFO $l"; done

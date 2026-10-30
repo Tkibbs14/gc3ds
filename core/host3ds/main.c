@@ -736,6 +736,10 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             }
         }
         else if (!strcmp(a, "--gfskip-n")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipEvery = k >= 2 && k <= 8 ? k : 2; }
+        // --gfskip-target PCT: hold the game at PCT of its own rate and spend the rest on pictures (hle_tp.c
+        // gfskip_skip). 0 or unset keeps the fixed ratio. --gfskip-hz is the game's own rate (TP 30, Mario Party 4 60).
+        else if (!strcmp(a, "--gfskip-target")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipTarget = k <= 100 ? k : 100; }
+        else if (!strcmp(a, "--gfskip-hz")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipHz = k >= 1 && k <= 120 ? k : 30; }
         else if (!strcmp(a, "--skipfn")) {
             const char* q = v;
             for (int k = 0; k < 4 && *q; k++) { jit_skip_fn[k] = (u32)strtoul(q, (char**)&q, 16); if (*q == ',') q++; }
@@ -1322,6 +1326,10 @@ static const char* run_body(const char* path) {
     if (g_jit && g_useJit) jitsample_start(&g_sys.cpu);
     if (g_jit && g_useJit && g_opt.profile) jitsample_stacks(g_sys.mem1);  // inclusive profile (# guest stacks)
     g_profClock = prof_clock;  // X toggles the profile lines
+    // The frame pacer's own clock, read once per game frame and never toggled: --gfskip-target must not depend on
+    // whether the profile lines are on (X and --ab profclock clear g_profClock).
+    g_gfskipClock = prof_clock;
+    g_gfskipTicksPerSec = SYSCLOCK_ARM11;
     memset(g_hostProf, 0, sizeof g_hostProf);
     while (aptMainLoop()) {
         if (region_bench_done) break;
@@ -1961,6 +1969,17 @@ static const char* run_body(const char* path) {
                             (double)(g_gfskipStats[0] + g_gfskipStats[1] - lastGf[0] - lastGf[1]) / 10.0,
                             (double)(g_gfskipStats[0] - lastGf[0]) / 10.0, (double)(g_gfskipStats[1] - lastGf[1]) / 10.0,
                             (double)(g_gfskipGuarded - lastGuarded) / 10.0, g_gfskipOn ? "on" : "off");
+                    if (g_gfskipTarget) {  // --gfskip-target: what the controller learned and whether it is pinned
+                        static u64 lastFl, lastFu;
+                        double tick = g_gfskipTicksPerSec ? 1000.0 / (double)g_gfskipTicksPerSec : 0.0;
+                        fprintf(g_perf, "# gfskip target 10s: %u%% of %u Hz; a drawn frame %.1f ms, a skipped one "
+                                        "%.1f ms, wants to draw %.3f of them; floored %llu, drawing all %llu\n",
+                                (unsigned)g_gfskipTarget, (unsigned)g_gfskipHz, g_gfskipCd * tick, g_gfskipCs * tick,
+                                g_gfskipX, (unsigned long long)(g_gfskipFloored - lastFl),
+                                (unsigned long long)(g_gfskipFull - lastFu));
+                        lastFl = g_gfskipFloored;
+                        lastFu = g_gfskipFull;
+                    }
                     lastGuarded = g_gfskipGuarded;
                     memcpy(lastGf, g_gfskipStats, sizeof lastGf);
                 }

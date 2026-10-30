@@ -118,6 +118,162 @@ u64 g_gfskipGuarded;  // calls run because a guard byte was set
 // idle) and mEStatus (+0x20) -1 (nothing pending) may a call be skipped.
 GfskipOk g_gfskipOk[4];
 
+// --gfskip-target PCT: hold the game at PCT of its own frame rate and spend whatever is left on pictures, instead of
+// drawing a fixed one call in N (--gfskip-n).
+//
+// Why a target and not a ratio. What reads as wrong today is not the picture rate on its own - it is that the
+// *game's speed* changes with the scene: static Ordon 35% of full, the heavy area 24%, the title's cutscene 41%
+// (2026-10-30 runs). The world slows by a third as you walk into a busy area, and that is the part a player feels,
+// because it moves animation, input response and music together. A fixed ratio keeps that variation and adds its own.
+// A target removes it: the game runs at one speed everywhere and the *picture rate* takes the variation instead,
+// which is much the less noticeable of the two. It also stops the ratio being wrong in both directions at once -
+// skipping in a cheap scene that did not need it, and not skipping enough in an expensive one.
+//
+// How. The hook is entered once per game frame, so the gap between two entries is one game frame's real cost. Keep a
+// running mean of that cost when the frame drew (cd) and when it skipped (cs); the drawn fraction x that lands the
+// mean cost on the target T solves x*cd + (1 - x)*cs = T. Pick the frames to draw with an accumulator rather than a
+// counter (acc += x; draw and acc -= 1 when acc >= 1), which spreads them as evenly as the ratio allows - the
+// measured gap spread is the thing to protect (jobs 380-381: skipping did not add stutter, sd 9-21 ms against
+// 12-24 ms, and that must stay true).
+//
+// Clamps, and why each: x is never below 1/kGfMaxN, so the screen keeps updating even when the target cannot be
+// reached at all (the heavy area cannot reach 100%: its asymptote with infinite skipping is ~69%); x is 1 whenever
+// the target is reachable while drawing everything, so a cheap scene is left alone; and the fade/fader guards above
+// still force a draw whichever way this comes out.
+#define kGfMaxN 10u             // never fewer than one picture in this many game frames
+u32 g_gfskipTarget;             // --gfskip-target PCT (0: use the fixed ratio instead)
+u64 (*g_gfskipClock)(void);     // host ticks, set by the front end; NULL falls back to the fixed ratio
+u32 g_gfskipHz = 30;            // --gfskip-hz: the game's own frame rate (TP and Wind Waker 30, Mario Party 4 60)
+u64 g_gfskipTicksPerSec;        // the clock's rate, set with g_gfskipClock
+// Reported by '# guest frames 10s': the mean costs it learned, the fraction it wants to draw, and whether it is
+// pinned at a clamp (so a run that cannot reach its target says so instead of looking like a tuning choice).
+double g_gfskipCd, g_gfskipCs, g_gfskipX;
+u64 g_gfskipFloored, g_gfskipFull;
+static u64 g_gfLast;            // tick at the previous hook entry
+static bool g_gfDrew;           // ... and whether that frame drew
+static double g_gfAcc;
+static u32 g_gfWarm;
+
+// Called when a frame drew (including a guarded draw), so the next gap is attributed to the right bucket.
+static void gfskip_drew(bool drew) { g_gfDrew = drew; }
+
+// true: skip this frame's rendering.
+static bool gfskip_skip(void) {
+    if (!g_gfskipTarget || !g_gfskipClock || !g_gfskipTicksPerSec || !g_gfskipHz) {
+        gfskip_drew((++g_gfskipN % g_gfskipEvery) == 0);   // the fixed ratio, unchanged
+        return (g_gfskipN % g_gfskipEvery) != 0;
+    }
+    u64 now = g_gfskipClock();
+    if (g_gfLast && now > g_gfLast) {
+        double dt = (double)(now - g_gfLast);
+        double* slot = g_gfDrew ? &g_gfskipCd : &g_gfskipCs;
+        *slot = *slot > 0 ? *slot + (dt - *slot) / 16.0 : dt;   // a 16-frame running mean
+    }
+    g_gfLast = now;
+    // Warm-up: draw four frames to learn cd, then skip one to learn cs. Without a cs sample there is no way to know
+    // what skipping buys, and guessing it made the first second oscillate.
+    if (g_gfWarm < 5) {
+        bool skip = g_gfWarm == 4;
+        g_gfWarm++;
+        gfskip_drew(!skip);
+        return skip;
+    }
+    double target = (double)g_gfskipTicksPerSec / (double)g_gfskipHz * 100.0 / (double)g_gfskipTarget;
+    double x = 1.0;
+    if (g_gfskipCd > 0 && g_gfskipCs > 0 && g_gfskipCd > g_gfskipCs) {
+        if (target >= g_gfskipCd) { x = 1.0; g_gfskipFull++; }          // reachable while drawing every frame
+        else {
+            x = (target - g_gfskipCs) / (g_gfskipCd - g_gfskipCs);
+            if (x < 1.0 / (double)kGfMaxN) { x = 1.0 / (double)kGfMaxN; g_gfskipFloored++; }
+            else if (x > 1.0) x = 1.0;
+        }
+    }
+    g_gfskipX = x;
+    g_gfAcc += x;
+    bool draw = g_gfAcc >= 1.0;
+    if (draw) g_gfAcc -= 1.0;
+    gfskip_drew(draw);
+    return !draw;
+}
+
+#ifndef __3DS__
+// The pacer is feedback over real time, so it cannot be judged by reading it or by one console run. This drives the
+// real gfskip_skip() with a synthetic clock and a synthetic frame cost, which makes it exactly reproducible:
+// `GC3DS_GFSKIP_SELFTEST=1 core/build/gcemu` (core/tests/cpu/run_tests.sh). It asserts the three things that decide
+// whether the feature is worth having - the game lands on its target speed, the drawn frames stay evenly spaced
+// (jobs 380-381 measured no added stutter and that must stay true), and the clamps behave at both ends.
+static u64 g_gfTestTick;
+static u64 gf_test_clock(void) { return g_gfTestTick; }
+static void gf_test_reset(void) {
+    g_gfLast = 0; g_gfDrew = false; g_gfAcc = 0; g_gfWarm = 0;
+    g_gfskipCd = g_gfskipCs = g_gfskipX = 0; g_gfskipFloored = g_gfskipFull = 0; g_gfskipN = 0;
+    g_gfTestTick = 1000;
+    g_gfskipClock = gf_test_clock;
+    g_gfskipTicksPerSec = 1000000;   // 1 tick = 1 us, so a "ms" below is 1000 ticks
+    g_gfskipHz = 30;
+}
+// Runs `frames` frames where a drawn one costs cdMs and a skipped one csMs. Returns the drawn count and, through
+// `spread`, the difference between the longest and shortest run of skips between draws (0 or 1 means even).
+static u32 gf_test_run(double cdMs, double csMs, u32 frames, u32* spread) {
+    u32 drawn = 0, gap = 0, lo = 0xFFFFFFFFu, hi = 0, settle = frames / 4;
+    for (u32 i = 0; i < frames; i++) {
+        bool skip = gfskip_skip();
+        g_gfTestTick += (u64)((skip ? csMs : cdMs) * 1000.0);
+        if (i < settle) continue;          // the warm-up and the first means are not the steady state
+        if (skip) { gap++; continue; }
+        drawn++;
+        if (drawn > 1) { if (gap < lo) lo = gap; if (gap > hi) hi = gap; }
+        gap = 0;
+    }
+    *spread = (drawn > 1 && hi >= lo) ? hi - lo : 0;
+    return drawn;
+}
+bool hle_gfskip_selftest(void) {
+    int bad = 0;
+    // 1. A target the hardware can hold while drawing every frame: draw every frame, skip nothing.
+    gf_test_reset();
+    g_gfskipTarget = 50;             // 50% of 30 Hz = 66.67 ms a frame; a drawn frame costs 20 ms
+    u32 spread = 0, drawn = gf_test_run(20.0, 8.0, 400, &spread);
+    if (drawn != 300) { printf("gfskip selftest: easy target drew %u of 300\n", drawn); bad++; }
+    // 2. A target that needs skipping: the realised frame cost must land on it, evenly.
+    gf_test_reset();
+    g_gfskipTarget = 70;             // 70% of 30 Hz = 47.62 ms a frame
+    u64 t0 = g_gfTestTick;
+    drawn = gf_test_run(95.0, 20.0, 1200, &spread);   // drawn 95 ms, skipped 20 ms -> wants x = 0.368
+    double meanMs = (double)(g_gfTestTick - t0) / 1000.0 / 1200.0;
+    double want = 1000.0 / 30.0 * 100.0 / 70.0;
+    if (meanMs < want * 0.97 || meanMs > want * 1.03) {
+        printf("gfskip selftest: mean frame %.2f ms, target %.2f ms (off %.1f%%)\n",
+               meanMs, want, 100.0 * (meanMs - want) / want); bad++;
+    }
+    if (spread > 1) { printf("gfskip selftest: draws unevenly spaced, skip runs differ by %u\n", spread); bad++; }
+    if (!drawn) { printf("gfskip selftest: drew nothing on a reachable target\n"); bad++; }
+    // 3. A target nothing can reach (even a skipped frame costs more than the budget): the floor must hold, so the
+    //    screen keeps updating instead of freezing. 1 in kGfMaxN, and the run must say it was floored.
+    gf_test_reset();
+    g_gfskipTarget = 100;            // 33.33 ms a frame; a skipped frame alone costs 60 ms
+    drawn = gf_test_run(200.0, 60.0, 600, &spread);
+    u32 expect = 450 / kGfMaxN;      // 450 frames scored, one drawn in kGfMaxN
+    if (drawn < expect - 2 || drawn > expect + 2) {
+        printf("gfskip selftest: floor drew %u, expected ~%u (1 in %u)\n", drawn, expect, kGfMaxN); bad++;
+    }
+    if (!g_gfskipFloored) { printf("gfskip selftest: floor engaged but not reported\n"); bad++; }
+    if (spread > 1) { printf("gfskip selftest: floored draws unevenly spaced (%u)\n", spread); bad++; }
+    // 4. With no target set, the fixed ratio must be untouched: one drawn in g_gfskipEvery.
+    gf_test_reset();
+    g_gfskipTarget = 0;
+    g_gfskipEvery = 3;
+    drawn = gf_test_run(50.0, 10.0, 300, &spread);
+    if (drawn != 75) { printf("gfskip selftest: fixed 1-in-3 drew %u of 75\n", drawn); bad++; }
+    g_gfskipEvery = 2;
+    gf_test_reset();
+    g_gfskipTarget = 0;
+    g_gfskipClock = NULL;
+    printf("gfskip selftest: %s\n", bad ? "FAILED" : "ok (target held, draws even, floor holds, fixed ratio intact)");
+    return bad == 0;
+}
+#endif
+
 static bool gfskip_guarded(void) {
     if (!g_mem) return true;
     for (u32 k = 0; k < 4; k++) {
@@ -1936,8 +2092,10 @@ static u32 hle_run_body(Gekko* g, u32 budget) {
     if (g_bsOn > 0 && (g->pc == PC_BODY || g->pc == PC_CBK)) return 0;  // (observed only: guest code runs)
 #endif
     if (g_gfskipAddr && g->pc == g_gfskipAddr) {
-        if (g_gfskipOn && gfskip_guarded()) { g_gfskipGuarded++; g_gfskipStats[0]++; return 0; }  // a fade: draw every frame
-        if (g_gfskipOn && (++g_gfskipN % g_gfskipEvery) != 0) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr
+        if (g_gfskipOn && gfskip_guarded()) {   // a fade or a transition: draw every frame
+            g_gfskipGuarded++; g_gfskipStats[0]++; gfskip_drew(true); return 0;
+        }
+        if (g_gfskipOn && gfskip_skip()) { g->pc = g->lr; g_gfskipStats[1]++; return 1; }  // as a blr
         g_gfskipStats[0]++;
         return 0;  // declined: the renderer runs
     }

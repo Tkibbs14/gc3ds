@@ -112,7 +112,8 @@ on the console.
   (`JIT_FUZZ_NURSERY`, a small one recycled often) and plant 29. Then the whole-game check below (qemu: set
   `GC3DS_NOFAULTMEM=1`, as the qemu build runs fault mode by default and fault mode turns the nursery off). |
 | JIT, whole game | Under qemu from a save state, the JIT with and without the change must run **the same number of guest instructions and produce the same final frame** (`core/build-arm/gcemu "$GC3DS_ISO" --load-state S --frames N --jit --out DIR`, compare `last.png` and the `JIT: N instructions run` line). `--frames` counts fields from boot, not from the state. This caught a bug the fuzzer missed (HANDOFF, float lanes). |
-| Interpreter | `bash core/tests/cpu/run_tests.sh` |
+| Interpreter | `bash core/tests/cpu/run_tests.sh` (needs devkitPPC for its PowerPC cases; it also runs the frame pacer's self-test, which does not) |
+| Guest frame pacer (`--gfskip*`, `hle_tp.c`) | `GC3DS_GFSKIP_SELFTEST=1 core/build/gcemu`, also run by `run_tests.sh`: it drives the real controller with a synthetic clock and asserts the game lands on its target speed, the drawn frames stay **evenly spaced**, the picture-rate floor holds when the target is unreachable, and the fixed ratio is untouched. Feedback over real time cannot be judged by reading it or by one console run. Planted-bug self-tests that must fail: dropping the skipped-frame cost from the maths, choosing draws by a counter instead of the accumulator, removing the floor, and clumping draws into pairs while keeping the right rate (that last one is the check that protects "looks natural"). |
 | Vertex path (`vfast.c`, `xform.c`) | `bash core/tools/vfast_check.sh 2` (all test DOLs, 0 draws over tolerance); deferred CPU lighting: `VFAST_CHECK=1 VFAST_DEFLIT_CHECK=1` on TP (0 differ) and `VFAST_DEFLIT_PLANT=1` / `=2` (must differ) |
 | Native stand-ins (`hle_*.c`, `hle_ps_gen.inc`) | `HLE_CHECK=1` on the PC over TP (0 differed; `HLE_STOP_EVERY=N` for the stops inside); after regenerating with `ps_translate.py`, the existing functions must come out byte-identical |
 | Display-list cache | `VCACHE_CHECK=1` on the PC build (every hit gathered again, 0 differences) and `VCACHE_PLANT=1` (must report differences) |
@@ -268,7 +269,17 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   the denormal give-up first, CONTRIBUTOR_TASKS 9); the ports' `port_commit` (2.61% of core 0, and the J3D light
   port's one-copy commit turned it from negative to +2.7%, so the technique is proven and unapplied elsewhere); C40
   (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
-  repeated display lists (C1); frame skip as a user option (guards for fades in place; game frames +50-60%).
+  repeated display lists (C1).
+- **Guest frame skip, paced to a game speed (C9/C9a; the owner's direction, 2026-10-30: "if we can make it look
+  natural").** Not a few percent. Rendering is **~75% of a game frame in static Ordon and ~65% in the heavy area**,
+  so Ordon reaches **full game speed today** at one picture in ~7.5 (showing 4.0 pictures a second), while the heavy
+  area cannot reach it at any ratio (its asymptote is 69%, logic being the other 35%). It **multiplies with base
+  speed** instead of competing with it: at full game speed Ordon shows 4.0 pictures a second today, **11.1 at 1.5x
+  base speed and 18.0 at 2x** - so *pictures a second while holding full game speed* is the metric to carry, and no
+  scene has ever been scored on it. `--gfskip-target PCT` holds one game speed everywhere and lets the picture rate
+  take the variation, because the speed *changing* between scenes (Ordon 35%, heavy 24%, cutscene 41%) is what a
+  player feels; built, off by default, self-tested on a synthetic clock, **not yet measured on hardware or seen by
+  anyone**.
 
 ## Code style
 

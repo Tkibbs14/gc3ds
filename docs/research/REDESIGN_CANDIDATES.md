@@ -145,10 +145,48 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   game frames a second +55-65% in Ordon, +48% in the heavy area; area transitions need the fade guards
   (`--gfskip-ok`, JUTFader idle), which fixed them (owner-checked). Off by default; the owner wants full speed before
   frame skipping.
-- **Re-evaluate when:** the owner wants a playability option rather than full speed, or the remaining EFB-copy
-  glitches are fixed so the GX-side form is exact. Note that the *GX-side* `--fskip` is separately disqualified as a
-  speed lever: it reads +9% on `speed_pct` while real frames a second fall **46%** (7.17 -> 3.90, 2026-10-30), so
-  only the guest-side `--gfskip` form above is a candidate.
+- **Re-evaluate when:** ~~the owner wants a playability option rather than full speed~~ **answered 2026-10-30: the
+  owner asked for this to be pursued and got right ("if we can make it look natural").** Note that the *GX-side*
+  `--fskip` is separately disqualified as a speed lever: it reads +9% on `speed_pct` while real frames a second fall
+  **46%** (7.17 -> 3.90, 2026-10-30), so only the guest-side `--gfskip` form above is a candidate.
+
+### C9a. The trade this actually offers, and why it is paced to a game speed now (2026-10-30)
+
+- **The arithmetic.** Rendering is the dominant part of a game frame, so skipping it buys a lot: from the measured
+  +60% in Ordon and +48% in the heavy area at one call in two (jobs 378, 385), rendering is **~75% of a game frame
+  in static Ordon and ~65% in the heavy area**. With cost factor `f(N) = 1 - R(N-1)/N` and today's build
+  (`103456ecbdfe9264`, Ordon 10.52 pictures/s, heavy 7.22):
+
+  | | N=1 | N=2 | N=3 | N=4 | N=8 | infinite |
+  |---|---|---|---|---|---|---|
+  | **Ordon** game speed | 35% | 56% | 70% | 80% | 100% | 140% (capped at 100) |
+  | **Ordon** pictures/s | 10.5 | 8.4 | 7.0 | 6.0 | 3.8 | -> 0 |
+  | **heavy** game speed | 24% | 36% | 42% | 47% | 56% | **69%** |
+  | **heavy** pictures/s | 7.2 | 5.3 | 4.2 | 3.5 | 2.1 | -> 0 |
+
+- **What that says.** Static Ordon can reach **full game speed today** at N~7.5, showing **4.0 pictures a second**;
+  the heavy area **cannot reach it at any N** (its asymptote is 69%, because logic is the other 35% of the frame).
+  So guest frame skip is not a 10% lever, it is the difference between slow motion and a correctly paced game at a
+  low picture rate. And it **multiplies with base speed** rather than competing with it: at full game speed in Ordon,
+  the picture rate is 4.0/s today, **11.1/s at 1.5x base speed and 18.0/s at 2x** - the metric worth optimising is
+  *pictures a second while holding full game speed*, which no scene has ever been scored on.
+- **Why a target, not a ratio (built 2026-10-30, `--gfskip-target PCT`, off by default).** What a player feels is the
+  game's speed *changing* with the scene - Ordon 35%, the heavy area 24%, the cutscene 41% - which moves animation,
+  input response and music together. A fixed ratio keeps that variation and adds its own (it skips in a cheap scene
+  that did not need it and under-skips in an expensive one). The controller holds one game speed everywhere and lets
+  the **picture rate** take the variation, which is much the less noticeable of the two. It learns the real cost of a
+  drawn and of a skipped frame, solves `x*cd + (1-x)*cs = target` for the drawn fraction, and picks which frames to
+  draw with an accumulator so they stay evenly spaced - the gap spread is the thing to protect (jobs 380-381:
+  skipping added no stutter, sd 9-21 ms against 12-24 ms). It clamps to one picture in ten when the target is
+  unreachable, so the heavy area degrades instead of freezing, and the existing fade / JUTFader guards still force a
+  draw. `hle_tp.c`'s self-test drives it with a synthetic clock (AGENTS' checks table); four planted bugs must fail
+  it, including one that clumps draws while keeping the right rate, since even spacing is the claim.
+- **Not measured on hardware yet** (the trade table above is derived from the mid-October `--gfskip-n` runs scaled to
+  today's base rates; jobs 1616-1621 re-measure the fixed ratio at N=2/3/4 on the current build to check it).
+  **Nobody has looked at it yet either:** "natural" is finally a question for eyes, not arithmetic, once the pacer
+  is on a build.
+- **Re-evaluate when:** the fixed-ratio trade curve is confirmed on the current build, and the owner has watched the
+  paced version at a target that the scene can hold (Ordon 70% looks like the first thing worth trying).
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
