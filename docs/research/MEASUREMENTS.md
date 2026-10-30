@@ -2720,6 +2720,29 @@ changed on the strength of this**: the bisect covers the heavy area only, and th
 Party 4 and Wind Waker without anyone knowing which of its members drives that. Jobs 1622-1631 take `--port-hooks`
 and `--psflush` apart in those two games, two runs an arm with a reference, before either default moves.
 
+### `--port-hooks` and `--psflush` across the four games: one is vindicated, the other is not (jobs 1622-1631, **provisional**)
+
+Taking the two switches apart in Mario Party 4 and Wind Waker, since the heavy-area bisect found both to be losses
+there while the set as a whole is +2.3 to +2.6% in those two games. **Provisional and not acted on:** the card filled
+up mid-batch (see the entry below), so most arms are a single run and three logs came back truncated at 7-9 scored
+windows instead of 10. Jobs 1625, 1627, 1629 and 1631 - the second run of each pair and Wind Waker's own reference -
+never completed and were cancelled.
+
+| what the default is worth | static Ordon | TP heavy area | Mario Party 4 | Wind Waker |
+|---|---|---|---|---|
+| `--port-hooks 243` (vs 503) | +0.71% | **-0.80%** | +0.18% | **+3.2%** |
+| `--psflush off` (vs on) | +0.33% | **-0.96%** | **-0.44%** | ~0% |
+
+- **`--port-hooks 243` is vindicated.** Wind Waker's +3.2% pays for the heavy-area loss several times over, so it is
+  a real scene-dependent trade-off and keeping it is right. (References: Mario Party 4 9.278 / 9.279 / 9.259 against
+  `--port-hooks 503` 9.273 / 9.238; Wind Waker 6.241 / 6.236 against 6.044.)
+- **`--psflush off` is now the opposite of what it was banked as**, and points at reverting it: a loss in TP's heavy
+  area (-0.96%, two batches), a loss in Mario Party 4 (-0.44%), neutral in Wind Waker, and +0.33% in static Ordon
+  only. It was made the default on 2026-10-30 on the strength of being "a loss in all four games" when *on* - that
+  reading came from runs scored before the screenshot steal was understood, and three of four scenes now disagree.
+  **Not reverted:** Mario Party 4 and Wind Waker are one run each here, and `--psflush on` in Mario Party 4 (9.313)
+  came from one of the truncated logs. The four cancelled runs are what settles it.
+
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 
 Frames a second is the emulated clock rate while the game stays locked to two fields a picture, so a direction's
