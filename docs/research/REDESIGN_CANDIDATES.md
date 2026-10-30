@@ -1044,3 +1044,126 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
   whole idea is worth under 0.5% and is not worth building.
 - **Re-evaluate when:** a counter for indirect-table hits by kind (LR / CTR, first slot / second / miss) has run on
   the device. That counter is worth adding on its own: it also prices OPT_IND2 and the table's width.
+
+## C47. Attribute core 0's data stalls - 22.1% of the core with no breakdown (2026-10-30)
+
+- **Status:** next, and the owner's direction of 2026-10-30 ("the more things that are unknown to us right now we
+  need to put measurements on"). This is an **instrument, not an optimisation**.
+- **The unknown:** the fetch half of core 0 is attributed in detail - 50% of compiled-code time in 54.8 KB over 84
+  pages, a per-block miss distribution, a blockmap. The data half has **only totals** in the whole record ("data
+  stalls ~22%", job 184, 2026-10-15). Job 1569 adds that core 0 misses L2 **1.83 M times a second** and that ~81% of
+  its data misses reach FCRAM, but nothing says *what is being touched*. That is the largest unexamined block in the
+  budget - larger than any candidate below it.
+- **The split that matters**, because only some of it is ours to fix:
+  1. **guest RAM the game genuinely touches** - physics, nothing to do;
+  2. **the Gekko state struct** (the register file at `fp`, FPRs, SPRs) - ours, and its layout is ours to choose;
+  3. **JIT metadata** - the indirect table (C48), the block table, link tables, fault tables;
+  4. **the GX ring and the FIFO mirror** (C40 already prices the mirror's duplicate copy).
+  If 2-4 are a meaningful share they are addressable; if 1 dominates, the data half is a wall like the fetch half and
+  should be recorded as such so nobody chases it.
+- **Cheapest measurement first:** the PC build already has a data-cache simulator (`dcache.c`, whose own header calls
+  its L2 misses a lower bound). Tag each simulated access with which of the four regions it fell in and report the
+  miss counts by region - no device time, no new hardware probe. Only if that says 2-4 matter is a device
+  confirmation worth the PMU bracket (`--pmu-split` around the suspect path).
+- **Why to expect something:** the model says the simulator sees only compiled code's data accesses on core 0 and
+  models the L2 as LRU where the device's is not, so it is not the answer on its own - but it is enough to *rank* the
+  four regions, which nothing does today.
+- **Re-evaluate when:** the region split is in. It decides whether C48, C50 and any Gekko-state relayout are worth
+  anything at all.
+
+## C48. The indirect-branch table's cache and TLB cost (2026-10-30)
+
+- **Status:** next; it also unblocks C46 and prices OPT_IND2, which was adopted on +0.9% with no idea why.
+- **The unknown:** `FAST_BITS` is **16**, so the indirect table is 65,536 entries of 8 bytes = **512 KB**, spanning
+  **128 pages**, and `blr` / `bctr` probe it at a pc-derived index - effectively a random offset in a structure 32x
+  the 16 KB L1 D-cache and a quarter of the shared 2 MB L2. Every indirect branch is therefore a likely L1 D miss, a
+  plausible L2 miss and a plausible data micro-TLB miss (C50). **None of this has ever been measured**, and the table
+  was sized without a measurement of the trade.
+- **Measurements, cheapest first:**
+  1. **A counter, which is wanted for its own sake:** indirect-table probes by kind - LR vs CTR, first slot, second
+     slot (OPT_IND2), miss. There is none today, which is why C46 cannot even be estimated and why the two available
+     guesses at the `blr` rate differ by **eight times** (~1.35 M/s from "21% of exits are indirect" against ~167 k/s
+     from `bclr` at 3.30% of hot words).
+  2. **Sweep `FAST_BITS`** (16 -> 14 -> 12, i.e. 512 / 128 / 32 KB) as separate whole runs. A smaller table means
+     more collisions and more dispatcher returns but a far better cache and TLB footprint; nobody knows which wins.
+     OPT_IND2 exists precisely to absorb collisions, so the two should be swept together.
+- **Expected:** unknown by construction, which is the point. The upper bound is whatever share of the 22.1% data
+  stalls C47 attributes to JIT metadata.
+- **Re-evaluate when:** the probe counter has run on the device.
+
+## C49. Why switch effects are sub-additive - it affects every default decision (2026-10-30)
+
+- **Status:** parked on a measurement; **not a speed idea, a validity one.**
+- **The unknown:** the four defaults of 2026-10-30, measured one at a time and then together on one build with two
+  runs an arm, do not add up. Static Ordon: the parts predict **+1.04%**, the set delivers **+0.36%** (short by
+  0.68 points). TP heavy area: the parts predict **-1.26%**, the set delivers **-0.17%** (short by 1.09). The ports
+  are the opposite - superadditive as a set, +10.6% against ~3.7% for the parts, which is understood (the set keeps
+  guest code out of the compiled footprint).
+- **Why it matters more than its size:** every default in this project is decided by measuring one switch against a
+  baseline. If effects routinely do not compose, then a stack of individually-measured gains is not the sum of its
+  parts and the ledger overstates the whole. It would also explain why the headline numbers have moved far less over
+  twenty days than the ledger's entries suggest they should.
+- **The hypothesis to test first:** shared resources that saturate - all four switches move hot-code footprint and
+  I-cache pressure, which is a *shared* budget, so two changes that each free cache lines cannot both be paid for
+  the same lines. If so, the right unit of measurement is not the switch but the footprint, and `hot words per guest
+  instruction` should be recorded next to frames a second for every default (the exchange rate -2.1% words ->
+  +1.0-1.6% core 0 already exists to convert between them).
+- **Measurement:** for one pair that is known sub-additive, record hot words per guest instruction and I-cache misses
+  for each arm and for both together. If the footprint saving of the pair is less than the sum of the singles, the
+  hypothesis holds and the ledger needs a note on every stacked claim.
+- **Re-evaluate when:** that pair is measured. Also worth re-reading the ledger's "as a set" claims against it.
+
+## C50. The data micro-TLB: 3.09 M misses a second, never examined (2026-10-30)
+
+- **Status:** parked; cheap to size, and AGENTS already lists "whether the micro-TLB can be made to matter" as an
+  open hardware question.
+- **The unknown:** job 1569 measures **dmtlb 3.09 M misses a second** against imtlb 0.22 M and main-TLB 0.19 M - so
+  **5.9% of core 0's 52.06 M data reads a second miss the data micro-TLB**, fourteen times the instruction side's
+  rate. The ARM1176's data micro-TLB is small (ten entries), and the JIT touches guest RAM (24 MB), the Gekko state,
+  the code buffer and a 512 KB indirect table (C48) in the same breath, which is more live pages than it can hold.
+  At a few cycles a miss this is of order **1% of core 0** - small, but it is a *measured* 1% that nobody has looked
+  at, and it points at the same page-footprint problem as C48.
+- **Measurement:** the PMU counter is already there (`dmtlb_k`), so the question is only what moves it. Sweep
+  `FAST_BITS` with C48 and watch `dmtlb_k`; separately, check whether the Gekko state and the hot JIT tables share
+  pages or scatter across them.
+- **Against:** a few cycles a miss is the optimistic reading; if the micro-TLB miss is absorbed by the main TLB in
+  the shadow of another stall it may cost nothing at all. Size it before building anything.
+- **Re-evaluate when:** C47 says whether JIT metadata is a real share of the data stalls.
+
+## C51. Spill guest GPRs to VFP registers instead of memory (2026-10-30, novel for this host)
+
+- **Status:** parked, **model first** - and there is a specific reason to expect it to fail, which is why it is
+  written down rather than built.
+- **What:** the register cache has **5 host registers (r4-r8) for 32 guest GPRs** - worse than any comparable JIT
+  (wasm-dolphin keeps all 32 in locals; Dolphin's x86-64 has 16 host registers), and the eviction and
+  block-boundary traffic that follows is 4.8 memory operations a block run. ARMv6K has no more core registers, but
+  VFPv2 has **32 single-precision registers**, of which the float lanes use s16-s31 (OPT_FCACHE). Whichever of
+  s0-s15 the float path does not need could hold spilled GPRs: `vmov` is a register-to-register move with no address
+  calculation, no store buffer and no cache line.
+- **Why to doubt it, from this project's own model:** the arm11_sched stall breakdown already attributes **8.5% of
+  stall cycles to ARM->VFP transfers** and 27.0% to the VFP itself. ARM11's VFP is a coprocessor and a core-to-VFP
+  move has real latency, while a spill to memory goes into the write buffer and usually reloads from L1 at 4 cycles.
+  So the trade may be strictly worse, and the honest expectation is that it loses.
+- **Measurement, no device needed:** `core/tools/jitbench.py` and `arm11_sched.py` already model exactly this - hand
+  a guest loop that spills (more than five live GPRs) through the JIT with and without a VFP spill slot and read the
+  modelled stall cycles and host words. That is an afternoon with no console time, and it either kills the idea
+  cheaply or justifies the first real register-allocator change in the project.
+- **Re-evaluate when:** the model has run. If it loses, record the numbers so nobody revisits it - that is the point
+  of this file.
+
+## C52. The pacer overshoots its target, and the overshoot grows with it (2026-10-30)
+
+- **Status:** open, small, and in the feature currently in flight (C9b).
+- **The unknown:** `--gfskip-target` lands Ordon at 51 / 63 / 75% of full speed for targets of 50 / 60 / 70 - always
+  *fast*, by +1.4%, +4.2% then +6.7% relative. Running fast means it skipped more than it needed and gave up picture
+  rate for nothing: at target 70 it shows 5.00 pictures a second when a correctly calibrated controller would show
+  more.
+- **The hypothesis:** the solver takes `x = (target - cs) / (cd - cs)` from running means of the drawn and skipped
+  frame costs, and a **systematically high `cs`** produces exactly this signature - too little drawing, and the
+  error growing as the target approaches `cs`. A drawn frame's cost may also be bimodal (guarded draws during a fade
+  cost differently), which a single running mean cannot represent.
+- **Measurement:** the self-test already drives the real controller with a synthetic clock, so the fix is verifiable
+  without hardware: add a case that asserts the realised speed lands within ~1% of the target across a range of
+  cd/cs ratios, which the current case only checks at one point. Then look at `# gfskip target 10s`, which already
+  reports the learned `cd` and `cs`, against the measured per-frame costs in the same run.
+- **Re-evaluate when:** the owner has chosen the floor policy (C9b), since both touch the same solver.

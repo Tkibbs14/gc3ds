@@ -264,6 +264,19 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   and OPT_PIPEPS, and everything else measured 0.3-2% of hot words (C13, C44). **Core 0's codegen is not where a
   large gain is**; `core/tools/jitbench.py` still ranks candidates cheaply with no disc image (OPT_FDIRECT came
   from it, C42).
+- **The unknowns now have measurements attached (owner's direction, 2026-10-30: "the more things that are unknown to
+  us right now we need to put measurements on").** Each is an instrument or a model run, not a build, and the cheap
+  one comes first: **C47** attribute core 0's data stalls - 22.1% of the core with only totals in the record, split
+  into guest RAM / Gekko state / JIT metadata / the GX ring, because only some of it is ours to fix (PC cache
+  simulator, no device time); **C48** the indirect table's cache and TLB cost - `FAST_BITS` is 16, so it is 512 KB
+  over 128 pages probed at a pc-derived index per `blr`, never measured, and a probe counter also unblocks C46 and
+  prices OPT_IND2; **C49** why switch effects are sub-additive (the four defaults' parts predict +1.04% in Ordon and
+  deliver +0.36%), which decides whether a stack of individually-measured gains can be added at all; **C50** the data
+  micro-TLB at 3.09 M misses a second, 5.9% of data reads, fourteen times the instruction side; **C51** spilling GPRs
+  to VFP registers instead of memory (5 host registers for 32 guest GPRs is worse than any comparable JIT), modelled
+  first because ARM->VFP transfers are already 8.5% of modelled stalls and it may lose outright; **C52** the pacer's
+  systematic overshoot. **A result that kills one of these is as valuable as one that builds it** - the point is that
+  none of them is currently knowable.
 - **Open directions, in the order the budget supports them:** removing guest code wholesale - **larger ports where a
   whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`), since the
   ports as a *set* are +10.6% while their parts sum to ~3.7% and small functions lose as entry-hook stand-ins (do
