@@ -188,6 +188,7 @@ void jit_set_so_exact(Jit* j, bool on);
 // Each block stores its start in Gekko.hostPc for the sampling profiler (host3ds/jitsample.c): one store per block
 // entered, so it is off unless asked for. Drops all compiled code.
 void jit_set_profile(Jit* j, bool on);
+bool jit_profile(const Jit* j);  // whether blocks store their start, i.e. whether the sampler's addresses mean anything
 bool jit_so_exact(const Jit* j);
 bool jit_slow_inline(const Jit* j);
 bool jit_mem_stubs(const Jit* j);

@@ -147,7 +147,17 @@ u32 jitsample_hot(const Jit* j, u32* pcs, u32 max) {
 void jitsample_report(FILE* f, const Jit* j) {
     if (!g_thread || !f) return;
     u32 n = g_n, outside = g_outside;
-    {  // how much compiled code core 0's time is spread over (before the samples are mapped to guest PCs)
+    // Every line below that comes from a sample's address needs blocks to store their start (jit_set_profile, i.e.
+    // --profile on). Without it Gekko.hostPc never changes and each sample reads the same stale word, which read as
+    // one guest address at 38% of core 0 and a footprint of "1 block, 16 KB" - plausible-looking nonsense (2026-10-30).
+    // The counters that do not use an address (where core 0 was, the GX thread, the joint states) are fine either way.
+    bool addrs = jit_profile(j);
+    if (!addrs) {
+        fprintf(f, "# hot guest code 10s: not sampled (--profile off: blocks do not store their start)\n");
+        g_n = 0;
+        n = 0;
+    }
+    if (addrs) {  // how much compiled code core 0's time is spread over (before the samples are mapped to guest PCs)
         u32 fp[5][3];
         jit_footprint(j, g_samples, n, fp);
         fprintf(f, "# code footprint 10s (blocks, host KB covering this share of time in compiled code): 50%% %u %.1f, "
@@ -157,12 +167,13 @@ void jitsample_report(FILE* f, const Jit* j) {
         fprintf(f, "# code pages 10s (4 KB host pages those blocks span): 50%% %u, 80%% %u, 90%% %u, 99%% %u, all sampled %u\n",
                 (unsigned)fp[0][2], (unsigned)fp[1][2], (unsigned)fp[2][2], (unsigned)fp[3][2], (unsigned)fp[4][2]);
     }
-    if (!jit_map_hosts(j, g_samples, n)) {
+    if (addrs && !jit_map_hosts(j, g_samples, n)) {
         fprintf(f, "# hot guest code 10s: not mapped (no memory for the work arrays)\n");
         g_n = 0;
         g_outside = 0;
         return;
     }
+    if (addrs) {
     qsort(g_samples, n, sizeof *g_samples, by_value);
     // (pc, count) pairs, then the most frequent.
     // Room for every block a report samples (4,600-7,300 distinct in TP, job 309): with 4,096 the pairs, built in PC
@@ -186,6 +197,7 @@ void jitsample_report(FILE* f, const Jit* j) {
     for (u32 i = 0; i < np && i < 1500; i++)  // enough to group by function and library offline (--profile on; a flat profile needs many)
         fprintf(f, " %08lx %.3f%%", (unsigned long)pairs[2 * i], tot > 0 ? 100.0 * pairs[2 * i + 1] / tot : 0.0);
     fprintf(f, "\n");
+    }
     {  // where core 0 was when it was not in compiled code (common.h: WH_*), as a share of all samples
         static const char* const kWh[WH_N] = { "none", "gekko_run", "dispatch", "compile", "sys_run", "events", "gx_poll", "hle",
                                                "interp", "frontend", "present", "vblank_wait", "perf_log",

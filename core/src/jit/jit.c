@@ -6981,6 +6981,7 @@ void jit_set_trace_parts(Jit* j, bool follow, u32 side, u32 maxInsns) {
 
 u32 jit_entries(const Jit* j) { return j->nEntries; }
 
+bool jit_profile(const Jit* j) { return j->profile; }
 void jit_set_profile(Jit* j, bool on) {
     if (j->profile == on) return;
     j->profile = on;

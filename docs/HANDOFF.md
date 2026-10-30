@@ -24,6 +24,13 @@
 > Every port pays in at least one scene except **bit 2 (PNGP)** and **bit 8 (decoration)**: `--port-hooks 243` is the
 > candidate default, running on three scenes (1547-1552). `core/tools/port_cost.py` prints what each one costs core 0
 > (heavy area 20.2%, static Ordon 21.1% of core 0 inside port code).
+> **Instrument trap found and closed (2026-10-30):** without `--profile on`, blocks do not store their start
+> (`jit_set_profile`), so every sample read the same stale `Gekko.hostPc` - and `# hot guest code`, `# code footprint`
+> and `# code pages` printed *plausible-looking nonsense* (one guest address at 38% of core 0, "1 block, 16 KB").
+> Those lines now say they were not sampled instead (jitsample.c; the address-free counters - where core 0 was, the GX
+> thread, the joint states - were always fine). The real footprint, from a profiled run (job 1490, heavy area):
+> **50% of core 0's compiled time in 129 blocks / 64 KB, 80% in 1,160 blocks / 362 KB, every sampled block 1.36 MB
+> over 699 pages** - against a 16 KB L1, which is why fetch stalls are 27%.
 > **Also from this session:** `core/tools/jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc
 > image needed; `--disasm`), `core/tools/clock_split.py`, `--port-charge`, and C40 now has an exact plan (let core 2
 > write the FIFO mirror it already holds: Ordon 1.6%, every game). **Open, in order:** the port trim and the stand-in
