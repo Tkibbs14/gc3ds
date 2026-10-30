@@ -3,15 +3,20 @@
 
     python3 core/tools/port_cost.py core/out/relay_<job>.csv ... [--from S]
 
-Per port: calls a second, microseconds a call (building the context and committing it, one call in 16 timed) and the
-share of core 0 that is, with the total. The share is `calls * us / 10 s` against one core at 804 MHz, i.e. the wall
-time core 0 spends inside port code.
+Per port: calls a second, microseconds a call and the share of core 0 that is, with the total. The share is
+`calls * us / 10 s` against one core at 804 MHz, i.e. the wall time core 0 spends inside port code.
 
-Why it matters (MEASUREMENTS.md "Why a port pays or loses", 2026-10-29): a port is charged instruction fetch, not
-work. In TP's heavy area the ports hold 20.2% of core 0, while a bisect on a static scene says they are worth
-+0.9%, -0.5%, ~0, +2.2%, +0.9% and +0.2% - one of them (a 40-instruction guest function) is a net loss because its
-native code fetches more than the code it replaces. So read this table next to a bisect, never on its own: a port
-with a large share here is a candidate for removal or for a cheaper commit, not a success.
+The two microsecond columns are `port_run` ("build") and `port_commit` ("commit"), one call in 16 timed.
+**"build" is not overhead.** It is everything `port_run` does, which for a leaf port is mostly reading guest state
+into a native struct, but for a subtree port such as the pane walk is the actual job the guest code would have done.
+Only "commit" is overhead - writing the result back - and even there the pipe handoff belongs to C40, not to the
+port: commit time tracks pipe bytes (job 1569: J3DMaterial::diff 0 bytes 7.03 us, J3DSys::reinitGX 1,705 bytes
+39.78 us, the pane walk 2,221 bytes 40.40 us, so ~0.019 us a byte), and every pipe byte is copied twice in
+`gp_burst` - once into the FIFO mirror in guest RAM, once to the GX thread.
+
+Why the table matters at all (MEASUREMENTS.md "Why a port pays or loses", 2026-10-29): a port is charged instruction
+fetch, not work, so a large share here is not a success - one 40-instruction guest function was a net loss because
+its native code fetches more than the code it replaces. **Read this next to a bisect, never on its own.**
 """
 import re
 import sys
@@ -67,7 +72,7 @@ def report(path, frm):
         us = t[0] + t[1]
         ms = n * us / 1000.0 / 10.0   # milliseconds a second
         total += ms
-        lines.append('  %-44s %8.0f calls/s %8.2f us (build %6.2f commit %6.2f) %6.1f ms/s = %5.2f%% of core 0'
+        lines.append('  %-44s %8.0f calls/s %8.2f us (run %6.2f commit %6.2f) %6.1f ms/s = %5.2f%% of core 0'
                      % (port[:44], n / 10.0, us, t[0], t[1], ms, 100.0 * ms / CORE_MS))
     lines.append('  %-44s %54s %6.1f ms/s = %5.2f%% of core 0' % ('TOTAL inside ports', '', total, 100.0 * total / CORE_MS))
     return '\n'.join(lines)
