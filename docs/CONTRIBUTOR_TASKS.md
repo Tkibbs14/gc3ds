@@ -18,6 +18,14 @@ artifacts that way, and two ports that were "gains" were in fact losses. **Many 
 **What to do:** pick an entry, work out from its job numbers and options whether it used the walk (`--press`) or an
 A/B that recompiles, and say in an issue whether it is still trustworthy. No hardware: this is reading and arithmetic.
 **Verify:** quote the job numbers and the reasoning. If it needs a re-run, write the exact relay command.
+**Two more ways a recorded number can be wrong, both found on 2026-10-30, both checkable by reading:**
+- **A pooled A/B mean with its uncertainty as large as the effect.** The J3D display-list writers were adopted on
+  "+5.17% (+- 5.08)". Pooled A/B means are the method C41 showed produces phantoms; `ab_phases.py` exists because of
+  it. Any entry quoting a pooled mean, or a +- near its own effect, is a candidate.
+- **An A/B whose two arms were the same code.** Until 2026-10-30 the perf.csv header named "traces" whatever `--ab`
+  asked for, and an `--ab NAME` the build did not have ran **no A/B at all, silently**. So an A/B result from a build
+  older than that is only as good as its option column: check that the column actually changes between phases, and
+  that the feature's own counter (`# hle 10s`, `# ps library 10s`, `# port 10s`) is non-zero in the "on" arm.
 
 ### 2. Add a case to the JIT's ARM bench
 **Why:** `core/tools/jitbench.py` runs hand-written PowerPC loops through the real JIT under qemu and reports hot ARM
@@ -44,14 +52,23 @@ candidates in `docs/research/REDESIGN_CANDIDATES.md` have never been modelled.
 
 ## A console helps (New 3DS / New 2DS XL, homebrew-enabled)
 
-### 5. Bisect the native stand-ins the way the ports were bisected
-**Why:** the ports' bisect found two of eight were dead weight, worth +0.71% and +0.55% once removed. **The stand-ins
-(`core/src/cpu/hle_*.c`: the paired-single library, the J3D display-list writers, the THP decoder, the shadow-scan
-family) have never had the same treatment** - and they are charged the same way, by instruction fetch rather than work.
-**What to do:** separate whole runs with `--hle off`, `--ps off`, `--psflush off` and the `--ab` names in
-`REMOTE_RUNS.md`, on a state that takes no input, scored on frames a second with `core/tools/runs.py`. Compare
-against `core/tools/port_cost.py`-style cost (calls x microseconds a call) from the same log.
-**Verify:** two runs an arm (they agree to ~0.1% on a static scene), and say which build you used.
+### 5. Finish the stand-in bisect (started 2026-10-30; the THP decoder and the shadow-scan family are left)
+**Why:** the ports' bisect found two of eight were dead weight. The stand-ins are charged the same way - by
+instruction fetch, not work - and the bisect begun on 2026-10-30 has already found one loss and one withdrawn
+credit: **`--psflush` is off by default** (a -0.06 to -0.33% loss in all four games, against a recorded +0.8% /
++1.7%), and the **J3D display-list writers (`--hlegd`) run in none of the benchmark states at all**, so their
++2-3% cutscene credit is withdrawn (MEASUREMENTS, jobs 264-265 and the correction under it). The paired-single
+library came out intact (+3.8% Ordon, +1.1% heavy area), and the whole stand-in group costs **1.14% of core 0**
+(job 1569).
+**What is left:** `--thp off` on the title's movie section, and the `hle_tp.c` shadow-scan family one piece at a
+time (`--shdwmemo`, `--shdwtri`, `--shdwcb`, `--trifast`) on the title's later stretch, which is where they pay.
+**What to do:** separate whole runs, two an arm, on a state that takes no input, scored on frames a second with
+`core/tools/runs.py --skip 80`; `core/tools/title_sections.py` for tp850. Read the cost side from
+`# stand-in cost 10s` in the same log.
+**Verify, and this is the part that matters:** **check the arms actually differed before believing a null.** Two
+runs an arm agreeing to 0.01% is what you get when both arms ran the same code - that is how the hlegd result was
+caught (`# hle 10s` reported `J3DGD runs 0` with the group *on*). Every stand-in has a counter in `# hle 10s` or
+`# ps library 10s`; quote it for both arms, and say which build you used.
 
 ### 6. Measure a game nobody has measured
 **Why:** every number in the repository comes from four games (Twilight Princess, Wind Waker, Mario Party 4, and the
@@ -98,6 +115,25 @@ remaining TEV block types.
 profile of the scene you care about, and do task 9 first.
 **Verify:** `--port check` with 0 differed, `--port plant` catching a planted difference, and separate whole runs on a
 scene that takes no input.
+**Why this is now the *first* direction and not one of several** (2026-10-30, job 1569): frames a second is the
+emulated clock rate, and a port delivers clock **3.3x as cheaply** as running the guest code it replaces (ports
+9.25% of the clock for 9.65% of core 0; JIT block code 23.4% for 80.9%). Core 0's codegen cannot be the answer -
+half of core 0 is memory stalls, no layout change fixes fetch (50% of time in compiled code is 54.8 KB against a
+16 KB L1), and no peephole reaches the -15 to -20% of hot words that +10% would need. See MEASUREMENTS' job-1569
+sections.
+
+### 11. Give one of the remaining ports a one-copy commit
+**Why:** `port_commit` is **2.61% of core 0** in TP's heavy area and it is pure overhead (unlike `port_run`, which
+for a subtree port is the work). The J3D light port's commit was a store per byte, 8.7 us a call; **one copy turned
+that port from a measured loss into +2.7% in the heavy area** (2026-10-24). The technique has not been applied to the
+other four. Per call today (job 1569): `J3DSys::reinitGX` 39.78 us, the pane walk 40.40, `J3DMaterial::diff` 7.03,
+`J2DMaterial::setGX` 9.61.
+**What to do:** read `port_commit` in `core/src/cpu/port_j2d.c` - the first two loops write scattered single words
+(`ram_wr32`) for the GX register shadow and the store log. Coalesce runs of consecutive words the way `ram_from_be`
+already does for display-list bytes. **Do not touch the pipe handoff**: commit time tracks pipe bytes, and those
+bytes are copied twice in `gp_burst`, which is C40's to fix, not the port's.
+**Verify:** `--port check` with 0 differed and `--port plant` catching a planted difference, then separate whole runs
+on a scene that takes no input, with the `us per call` line from `# port 10s` before and after.
 
 ## How a measurement gets accepted
 
