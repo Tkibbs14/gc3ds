@@ -79,17 +79,28 @@ if [ $rc -eq 0 ]; then note "PASS disasm: $line"; else note "FAIL disasm: $line"
 
 # The guest frame pacer (--gfskip-target, hle_tp.c): feedback over real time, so it is driven here with a synthetic
 # clock instead of being judged by one console run. Needs no disc image.
-if [ -x "$here/../../build/gcemu" ]; then
-    echo "== guest frame pacer (--gfskip-target, synthetic clock)"
-    if out=$(GC3DS_GFSKIP_SELFTEST=1 "$here/../../build/gcemu" 2>&1); then
+#
+# It runs core/build/gcemu, which this script does not otherwise build, so **build it first**: a gcemu left over from
+# an older checkout does not know the env var, falls through to the usage text and fails the case for the wrong
+# reason (2026-10-30: it did exactly that on a machine that had only run core/host3ds/build.sh). If it still prints
+# usage after the build, say so plainly instead of dumping it.
+gcemu="$here/../../build/gcemu"
+echo "== guest frame pacer (--gfskip-target, synthetic clock)"
+make -C "$here/../.." >/dev/null 2>&1 || true
+if [ -x "$gcemu" ]; then
+    out=$(GC3DS_GFSKIP_SELFTEST=1 "$gcemu" 2>&1); rc=$?
+    if [ $rc -eq 0 ] && [ "${out#*gfskip selftest}" != "$out" ]; then
         note "PASS gfskip pacer: ${out#gfskip selftest: }"
+    elif [ "${out#*usage:}" != "$out" ]; then
+        note "FAIL gfskip pacer: core/build/gcemu predates this branch (it printed its usage text). Run: make -C core"
+        fail=1
     else
         echo "$out" | head -8
         note "FAIL gfskip pacer"
         fail=1
     fi
 else
-    note "SKIP gfskip pacer: no core/build/gcemu (make -C core)"
+    note "SKIP gfskip pacer: no core/build/gcemu and make did not produce one (try: make -C core)"
 fi
 
 if [ "${NO_BENCH:-0}" != 1 ]; then
