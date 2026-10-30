@@ -2543,8 +2543,12 @@ static const char* run_body(const char* path) {
                                 (unsigned long long)(js->traceCalls - lastCalls));
                         lastFlush = js->flushes; lastFollow = js->traceFollowed; lastSide = js->traceSideExits; lastCalls = js->traceCalls;
                         double kept = js->insnsKept ? (double)js->insnsKept : 1.0;
-                        fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.1f, exit stubs %.1f, "
-                                "cold %.1f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
+                        // Three decimals, not one: AGENTS tells a reader to report this beside the cycle model, and
+                        // the changes being chased move it by well under 1% - at "hot 2.3" the figure could not
+                        // resolve a 0.8% difference, which is the size of the I-cache effect that --psflush turned
+                        // out to be worth (2026-10-30, C49).
+                        fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.3f, exit stubs %.3f, "
+                                "cold %.3f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
                                 (double)js->wordsCold / kept);
                         // Returns to the C dispatcher per second over the last 10 s, by reason, and emulation slices.
                         // Indirect misses by what the target was: a polling or idle block (never in the table), a block that
