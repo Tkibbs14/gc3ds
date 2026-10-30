@@ -2620,7 +2620,7 @@ repeatability. The stand-in was adopted on the title cutscene at ~40,000 calls a
 decides it (jobs 1588-1591; 1588, hlegd off: cutscene 40.90, later 22.98, movie 14.78). Same family of error as
 C41 - the arms were not what they looked like - by a different mechanism.
 
-### Within-session repeatability broke down in a long batch: interleave the arms (jobs 1574-1607, 2026-10-30)
+### The "within-session drift" was the screenshot stealing core 0 (jobs 1574-1612, 2026-10-30; **resolved**)
 
 **The "two runs an arm agree to ~0.1%" rule held only while a batch was short.** Over ~3 hours of continuous
 running on 2026-10-30 the console's output drifted ~2.5-3% *within one session on one build*, which is 25x the
@@ -2645,17 +2645,74 @@ mode and grown all session, the relay stream, heap state across state loads) is 
 - **A paired difference survives; an absolute level does not.** Mario Party 4 reads +2.38% early (9.238 / 9.023)
   and +2.25% late (8.998 / 8.800) - the arms drifted together, so the comparison holds. The default set's
   **+2.3% in Mario Party 4 therefore stands.**
-- **Any comparison across batches below ~3% is void.** That includes the heavy-area bisect of jobs 1596-1603,
-  whose arms ran late against a reference (1571, 1585) from hours earlier. Its arithmetic says so by itself: the
-  four switches measured one at a time sum to **+2.43%** while all four together measure **-0.19%**, and two arms
-  had ~1% internal spread against 0.01-0.10% in the tight ones. **Do not read the per-switch figures from that
-  batch**; jobs 1608-1615 re-run it with a reference interleaved before every arm.
+- ~~Any comparison across batches below ~3% is void~~ **- withdrawn: re-scored with the filter, the bisect is
+  sound and reproduces across two independent batches.** See the bisect's own section below.
 - **The heavy area's -0.19% for the set is the one cross-arm figure that survives**, because both its pairs
   (1570/1584 old, 1571/1585 new) ran early and each agreed internally to 0.03% and 0.10%.
 
-**Method, from here:** in a batch longer than about half an hour, **interleave the arms** (reference, arm,
-reference, arm) and score each arm against the reference run next to it in time, never against a batch mean from
-earlier. Quote the within-arm spread always: today it was the spread, not the difference, that gave the game away.
+**Found, an hour later: there is no drift.** Three *identical* reference runs (jobs 1608, 1610, 1612) read 7.074 /
+7.188 / 7.226 frames a second - a 2.1% spread - with everything scaling together (speed, fields, draws, vertices,
+instructions all 2.4% apart) while the proportions were identical (`rest_pct` 98.5%, `jitcode_pct` 58.2%). That is
+a uniform throughput change, and `pmu_mcyc` named it: core 0's own cycle rate was **785.2 / 798.5 / 803.0 M/s**
+against 804, with individual rows as low as **116 M/s**. Core 0 was not getting the whole second.
+
+**It is the program's own screenshot.** Every run has exactly five short rows, at 33 s intervals (105, 138, 171,
+204, 237 s), and `main.c` took a screenshot every 30 perf rows - the `# shot` lines land at 104.2, 137.0, 169.8,
+202.8, 235.7 s. Writing the BMP to the card, and shipping the frame to the relay on a relay job, steals core 0 for
+part of that second: **between 4% and 86% of it**, and how many of the five land on the severe end varies run to
+run. Four severe steals in 147 rows is 2.4% of the mean, which is the whole effect.
+
+**Scored without those seconds, the three references agree to 0.07%** (frames a second 7.213 / 7.211 / 7.216,
+speed 24.109 / 24.091 / 24.093) - the noise floor is better than the ~0.1% this file has always claimed, and
+**nothing about the console or the session was ever drifting**.
+
+- **The fix in the scorer (retroactive, every log on disk).** `core/tools/runs.py` drops a row where core 0 got less
+  than half the second, judged against **that run's own median** rate, and drops a frame window containing a
+  screenshot (the pictures it lost are the measurement's own). `--keep-stolen` restores the old behaviour, and
+  `--selftest` plants three faults. **An absolute threshold is wrong and was nearly shipped:** at "below 800 M/s" it
+  dropped *half* of a tp850 run, because the title streams THP data from disc and sits at 635-804 M/s continuously -
+  that is the workload, not a steal, and filtering it keeps only the easiest seconds and flatters the build. The
+  self-test now fails on exactly that mistake.
+- **The fix in the program.** The periodic screenshot is **off by default** since 2026-10-30 (`--shots N` brings it
+  back). The two warm-up shots stay: they land before the scored window.
+- **How much of the record this touches.** Over the 136 logs on disk the stolen seconds depressed a run's mean by a
+  **median of 0.00% and a mean of 0.26%**, but **17 logs lost 0.5-3.2%** - so most historical numbers are fine and
+  any sub-1% result is at risk, with nothing in the log having flagged it. The affected runs cluster (1602-1607
+  consecutively, which is what produced the "drift"), so an arm can be hit while its neighbour is clean.
+
+**Method, from here:** score with `runs.py` (the filter is the default) and **quote the within-arm spread always** -
+today it was the spread, not the difference, that gave this away, and the dropped-row note in the output is how a
+reader sees it. Interleaving arms is still a reasonable habit in a long batch, but it was treating a symptom.
+
+### The four defaults bisected on the heavy area, re-scored: two of them are losses there (jobs 1570-1612)
+
+All re-scored with `runs.py`'s stolen-second filter, so every arm agrees internally to 0.01-0.22%.
+
+**The set, two runs an arm:**
+
+| scene | old defaults | new defaults | change |
+|---|---|---|---|
+| Mario Party 4 | 9.061 / 9.081 | 9.278 / 9.279 | **+2.29%** |
+| Wind Waker | 6.084 / 6.078 | 6.241 / 6.236 | **+2.59%** |
+| static Ordon | 10.501 / 10.500 | 10.535 / 10.539 | **+0.35%** |
+| TP heavy area | 7.230 / 7.228 | 7.218 / 7.216 | **-0.17%** |
+
+**One at a time on the heavy area** (reference: the new defaults, 7.217; batch A is two runs an arm, batch B
+interleaves a reference before each arm, and the two agree):
+
+| reverted | batch A | batch B | what the default is worth in this scene |
+|---|---|---|---|
+| `--fdirect off` | 7.2035 | 7.213 | +0.19% / 0.00% - **neutral here** (it was banked on Wind Waker +2.6%, which stands) |
+| `--port-hooks 503` | 7.275 | 7.272 | **-0.80% / -0.81%: `--port-hooks 243` is a loss in the heavy area**, twice, against a recorded +0.55% |
+| `--psflush on` | 7.293 | - | **-1.04%: `--psflush off` is a loss in the heavy area**, against a recorded +0.31% |
+| `--nskeep off` | 7.189 | - | +0.39% (banked on Mario Party 4 +1.2%) |
+
+So the set is **+2.3 to +2.6% in Mario Party 4 and Wind Waker and -0.17% in TP's heavy area because two of its four
+members are losses there** - which is also why the parts do not sum to the whole (they predict -1.3% against -0.17%
+measured, so an interaction remains, but the signs and the dominant terms are now consistent). Both reverted
+figures were measured before the screenshot was understood, so **`--port-hooks` and `--psflush` are scene-dependent
+trade-offs, not settled gains, and which way they should go is the owner's call** (rule 5). The bisect covers the
+heavy area only; nobody has taken the two switches apart in Mario Party 4 or Wind Waker, where the set clearly pays.
 
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 

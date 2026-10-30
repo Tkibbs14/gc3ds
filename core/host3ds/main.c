@@ -490,6 +490,8 @@ typedef struct {
     bool abHlegd;             // --ab hlegd: the same, alternating in one run
     char abName[24];          // --ab NAME as given, and whether it matched an A/B this build has (AB(), perf.csv
     bool abKnown;             // header). An unmatched name used to run no A/B silently: see AB()'s comment.
+    u32 shotEvery;            // --shots N: a screenshot every N perf rows (0, the default: only the two in the
+                              // warm-up). It steals core 0 for part of that second, so it is off while scoring.
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
     u32 smalltex; bool abSmalltex;  // --smalltex on|off, --ab smalltex: textures in the smallest exact PICA format (smalltex column; --ab starts off)
@@ -735,6 +737,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
                 if (*q == ',') q++;
             }
         }
+        else if (!strcmp(a, "--shots")) o->shotEvery = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--gfskip-n")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipEvery = k >= 2 && k <= 8 ? k : 2; }
         // --gfskip-target PCT: hold the game at PCT of its own rate and spend the rest on pictures (hle_tp.c
         // gfskip_skip). 0 or unset keeps the fixed ratio. --gfskip-hz is the game's own rate (TP 30, Mario Party 4 60).
@@ -1513,7 +1516,14 @@ static const char* run_body(const char* path) {
                 memcpy(xLast, x, sizeof xLast);
                 pLast = *ps;
                 g_wdRows = ++perfRows;
-                if (perfRows == 5 || perfRows == 15 || perfRows % 30 == 0)
+                // Screenshots: the two early ones land in the warm-up that scoring skips anyway (runs.py --skip 80),
+                // and the periodic one is OFF by default since 2026-10-30. Writing the BMP to the card - and shipping
+                // the frame to the relay on a relay job - stole core 0 for part of that second: measured between 4%
+                // and 86% of it, and a run that caught several severe ones read up to 3.2% slow with nothing saying
+                // so. 17 of 136 logs on disk lost 0.5-3% that way, which is enough to decide a default wrongly
+                // (jobs 1602-1607 caught it consecutively and read as session drift). `--shots N` brings the
+                // periodic ones back every N rows for looking at a run.
+                if (perfRows == 5 || perfRows == 15 || (g_opt.shotEvery && perfRows % g_opt.shotEvery == 0))
                     perf_shot((double)(now - t0) / SYSCLOCK_ARM11, (double)g_sys.cpu.cycles / GEKKO_HZ);
                 if (g_pica && pica_take_description()) {
                     if (g_perf) fputs(pica_take_description(), g_perf);

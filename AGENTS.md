@@ -6,12 +6,12 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs a static Ordon scene at 10.52 frames a second (35.1% of full speed) and Ordon's heaviest area at
-7.22 (24.1%); Wind Waker's Outset 6.22 (20.7%), Mario Party 4's board 9.24 (15.5%), the title's cutscene 40.9%, its
-later Link / Epona stretch 23.0%, the THP movie 14.7% (30 October 2026, build 103456ecbdfe9264, two runs an arm
-except Wind Waker and Mario Party 4). **These are not comparable with the previous block's** (10.40 / 7.17 / 6.18 /
-9.05 on build 0f3c3eac6e709b6a): the device drifts ~2% between days and a rebuild moves a baseline ~0.8%, so only
-runs from one session on one build may be compared - most of the difference is weather, not progress. **Judge
+test. Today it runs a static Ordon scene at 10.54 frames a second (35.1% of full speed) and Ordon's heaviest area at
+7.22 (24.1%); Wind Waker's Outset 6.24 (20.8%), Mario Party 4's board 9.28 (15.5%), the title's cutscene 40.9%, its
+later Link / Epona stretch 23.0%, the THP movie 14.7% (30 October 2026, build 103456ecbdfe9264, two runs an arm,
+scored with `runs.py`'s stolen-second filter - arms agree to 0.01-0.2%). **These are not comparable with the
+previous block's** (10.40 / 7.17 / 6.18 / 9.05 on build 0f3c3eac6e709b6a): a rebuild moves a baseline ~0.8%, older
+numbers were scored before the filter, and only runs from one session on one build may be compared. **Judge
 gameplay on frames a second from a scene that takes no input, not on the scripted walk** - see "Measuring" and C41.
 
 ## Rules
@@ -25,13 +25,13 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    ones.
 3. **Measure, do not guess.** A performance change is judged by **separate whole runs on real hardware, on a scene
    that takes no input**, scored on **frames a second** (`core/tools/runs.py`): two runs an arm, one session, one
-   build. Such runs agree to ~0.1% **in a short batch** - but over ~3 hours of continuous running on 2026-10-30 the
-   console drifted **2.5-3% within one session on one build**, 25x that floor, with the scene identical (draws a
-   picture within 0.1%) and the clock steady at 851-852 MHz. So: **in a batch longer than about half an hour,
-   interleave the arms** (reference, arm, reference, arm) and score each arm against the reference next to it in
-   time, never against a batch mean from earlier; **always quote the within-arm spread**, because a difference
-   smaller than it is not a result; and prefer a **paired** difference to an absolute level (Mario Party 4 read
-   +2.38% early and +2.25% late while both arms fell 2.5%, so the comparison held and the levels did not). An A/B within one run (`--ab NAME`) is a cross-check,
+   build. Such runs agree to **0.07%** once the seconds core 0 did not get are left out, which `runs.py` does by
+   default: the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
+   and a run that caught several severe ones read up to **3.2% slow with nothing saying so** (17 of 136 logs on
+   disk; it is what looked like "session drift" on 2026-10-30 until `pmu_mcyc` named it). The periodic shot is off
+   by default now (`--shots N`). **Always quote the within-arm spread** - a difference smaller than it is not a
+   result, and today it was the spread, not the difference, that exposed this. `runs.py` prints how many rows and
+   frame windows it dropped; a run that drops many is telling you something. An A/B within one run (`--ab NAME`) is a cross-check,
    not the verdict: switches that flush compiled code stall for seconds and read the on arm ~2% low, and `speed_pct`
    is the emulated clock, which native stand-ins and ports charge for work they did natively. **Do not judge a change
    on the scripted walk** (`--press`): the input is sampled when the guest polls the pad, so a change that shifts
@@ -121,6 +121,7 @@ on the console.
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
+| Measurement tools (`runs.py`) | `python3 core/tools/runs.py --selftest`: a synthetic log with a planted steal must be recovered exactly, a merely busy scene must **not** be filtered (an absolute threshold dropped half a tp850 run and kept only its easiest seconds - that mistake has its own planted test), and a frame window containing a screenshot must be dropped. |
 | **Any change at all** | `python3 core/tools/docs_stale.py` (rule 7: headline speeds agree across AGENTS and README, one build id with a not-comparable note, frames against `speed_pct`, every option the docs name is really parsed, every `CNN` referenced exists and every shelved one keeps its trigger). Mechanical only - rule 7's table is the part done by hand. `--selftest` plants a fault per check. |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings. Without devkitARM (a cloud session), `bash core/tools/host3ds_syntax.sh` first: it compiles 8 of the 15 files `-fsyntax-only` against the stubs in `core/tools/stub3ds/` and catches plain C mistakes (on 2026-10-30 a `double tot` declared inside an `if` block broke a build and cost a device session). It is not a build, and never replaces one before a relay push. |
 
@@ -180,8 +181,8 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
 - **All defaults (30 October 2026, build 103456ecbdfe9264, frames a second; the `speed_pct` in brackets; two runs an
-  arm except Wind Waker and Mario Party 4, whose second pair was queued as jobs 1604-1607):** static Ordon 10.52
-  (35.1%), heavy area 7.22 (24.1%), Wind Waker 6.22 (20.7%), Mario Party 4 9.24 (15.5%); the title: cutscene 40.9%,
+  arm, scored with the stolen-second filter):** static Ordon 10.54
+  (35.1%), heavy area 7.22 (24.1%), Wind Waker 6.24 (20.8%), Mario Party 4 9.28 (15.5%); the title: cutscene 40.9%,
   later stretch 23.0%, movie 14.7% (the cutscene ends at ~150 s: windows must follow it). The previous build
   (0f3c3eac6e709b6a) read 10.40 / 7.17 / 6.18 / 9.05 and **must not be differenced against these**: the device drifts
   ~2% between days and a rebuild moves a baseline ~0.8%, so compare runs of one session on one build only. The
