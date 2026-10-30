@@ -818,7 +818,7 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
 
 ## C42. Float results written straight into their lane register (OPT_FDIRECT, 2026-10-29)
 
-- **Status:** built, off, exact, **measured and not a gain in gameplay** (2026-10-29): static Ordon +0.20% with
+- **Status:** **on by default since 2026-10-30** (Wind Waker +2.6%, Mario Party 4 +0.7%, TP flat): static Ordon +0.20% with
   the on arm noisier than that, the heavy area +0.03%; the device's hot-words metric does not move. Float
   arithmetic is too small a share of TP's compiled code. Kept off, with the bench numbers below for a scene
   where float work dominates.

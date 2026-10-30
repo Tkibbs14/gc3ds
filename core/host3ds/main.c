@@ -602,6 +602,7 @@ static void opts_default(RunOpts* o) {
     o->trifast = true;  // the triangle path's fast form: title later stretch +3.8% (+7.7% pictures), heavy area +0.24%, Ordon +0.4% (jobs 685-691)
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->portCharge = 100;  // the ports' calibrated estimate (port_j2d.c kInsScale); --port-charge sweeps it (C41)
+    o->fdirect = true;  // OPT_FDIRECT: Wind Waker +2.6% (jobs 1528/1529, 1535/1536), Mario Party 4 +0.7%, TP flat
     o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)

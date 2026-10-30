@@ -2501,7 +2501,7 @@ done
   whole guest functions out of the compiled code. Any 10%-class lever has to shrink what core 0 fetches - a bigger
   port that replaces a whole subtree, or work skipped outright - not shorten what it executes.
 
-### OPT_FDIRECT on the device: not an established gain in gameplay (jobs 1510-1525, 2026-10-29)
+### OPT_FDIRECT on the device: +2.6% in Wind Waker, flat in TP (jobs 1510-1538, 2026-10-29/30; on by default)
 
 - **What (`--fdirect on`, off by default; C42):** float arithmetic writes frD's lane register instead of a scratch
   register and a vmov. Exact: the fuzzer with FCACHE|FDIRECT (20,000 cases, default and chain, plants all caught), and
@@ -2516,10 +2516,19 @@ done
   | static Ordon (3 pairs) | 10.400, 10.406, 10.397 | 10.441, 10.428, 10.395 | +0.20% (the on arm spreads 0.44%, the off arm 0.09%) |
   | heavy area (2 pairs) | 7.172, 7.174 | 7.180, 7.171 | +0.03% |
 
-- **Reading:** below the noise floor. The device's own `# jit words per guest instruction` reads 2.3 hot either way:
-  float arithmetic is too small a share of TP's compiled code for a word a lane to show. The change is exact and
-  costs nothing, but it is **not a measured gain**, so it stays off. The title (float- and shadow-dense) is the one
-  scene where it could show; jobs 1526-1527.
+- **The other games, where it pays (two pairs each, 240 s, frames a second):**
+
+  | scene | off | on | change |
+  |---|---|---|---|
+  | Wind Waker, Outset | 6.024, 6.023 | 6.173, 6.185 | **+2.6%** |
+  | Mario Party 4, board | 8.960, 9.014 | 9.046, 9.047 | **+0.7%** |
+  | TP title (1526-1527) | cutscene 40.36, later 23.05, movie 14.67 | 40.37, 23.10, 14.60 | flat |
+
+- **Reading:** in TP it is below the noise floor - the device's own `# jit words per guest instruction` reads 2.3 hot
+  either way, float arithmetic being a small share of TP's compiled code - but Wind Waker's hot code is float-dense
+  enough to show the bench's -10% hot words, twice over, with an off arm that repeats to 0.02%. Exact (fuzzer with
+  FCACHE|FDIRECT; the whole-game qemu gate identical: 238,313,992 instructions and the same last.png), a gain in two
+  games of four and a loss in none: **on by default (rule 5)**.
 
 ### What the emulated clock is made of, and why the charge sweep read what it did (C41 answered; jobs 1480-1488, 2026-10-29)
 
