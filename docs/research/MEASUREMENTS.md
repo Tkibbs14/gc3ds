@@ -2570,6 +2570,44 @@ reduction, and core 0's codegen is not where a 10% gain is**: the remaining upsi
 wholesale (the library ports as a *set* are +10.6% while their parts sum to ~3.7%) and in the structural items still
 open (C40's ~1.6% in every game, fault mode's +2-5%). This is why gains now arrive in 0.5-3% increments.
 
+### The four defaults of 2026-10-30 verified together, and they are sub-additive (jobs 1570-1587)
+
+One build (`103456ecbdfe9264`), one session, 240 s runs scored from 80 s, frames a second. "Old" is
+`--fdirect off --port-hooks 503 --nskeep off --psflush on`, i.e. the four changes banked that day reverted together;
+"new" is plain defaults.
+
+| scene | old | new | change | within-arm spread |
+|---|---|---|---|---|
+| Mario Party 4 board | 9.023 | 9.238 | **+2.38%** | one run an arm (second pair queued) |
+| Wind Waker Outset | 6.079 | 6.223 | **+2.37%** | one run an arm (second pair queued) |
+| TP static Ordon | 10.482 / 10.481 | 10.519 / 10.520 | **+0.36%** | 0.01% both arms |
+| TP heavy area | 7.233 / 7.231 | 7.215 / 7.222 | **-0.19%** | 0.03% / 0.10% |
+
+The two TP arms agree to 0.01-0.10% between their own runs, so both TP figures are real: a small gain in Ordon and
+a small **loss** in the heavy area.
+
+**They do not add up.** The four parts were measured separately as `--port-hooks 243` (Ordon +0.71%, heavy +0.55%),
+`--psflush off` (Ordon +0.33%, heavy +0.31%), OPT_FDIRECT (Wind Waker +2.6%, Mario Party 4 +0.7%, TP flat) and
+`--nskeep` (Mario Party 4 +1.2%), which predicts **+1.04% in Ordon and +0.86% in the heavy area**. Measured together
+they give +0.36% and -0.19% - **sub-additive by 0.7 and 1.05 points**, and the wrong sign where it matters. That is
+the opposite of the library ports, which are superadditive as a set (+10.6% against ~3.7% for the parts), and it
+means at least one of the four is worse in TP than its own measurement said. A one-at-a-time bisect on the heavy
+area (jobs 1596-1603, each arm two runs against the new-defaults runs above) is queued to find which; OPT_FDIRECT is
+the first suspect, since "TP flat" was the weakest of the four claims and it grows hot code in float-dense paths.
+
+**Method note that cost an hour: a null result needs its arms checked, not just its spread.** The `--hlegd on|off`
+separate runs (jobs 1573, 1578-1583) came back agreeing to 0.01% in Ordon and 0.05% in the heavy area, which reads
+as a clean "worth nothing". `# hle 10s` reports **`J3DGD runs 0`** in every one of those runs: the J3D display-list
+writers never fire in a TP gameplay scene, both arms ran the same code, and the numbers measure only the device's
+repeatability. The stand-in was adopted on the title cutscene at ~40,000 calls a second (jobs 264-265), so tp850
+decides it (jobs 1588-1591; 1588, hlegd off: cutscene 40.90, later 22.98, movie 14.78). Same family of error as
+C41 - the arms were not what they looked like - by a different mechanism.
+
+**The stand-in timer cross-checks against the old counter.** Inside job 1569's heavy area, one window:
+`# hle 10s` 357 calls and 105.1 ms inside per 10 s; `# stand-in cost 10s` 36 calls/s and 10.7 ms/s = 107 ms per
+10 s. The two instruments agree to 2%, so the 1.14% of core 0 above is independently confirmed; window to window
+they vary ~12%, which is the sampled profile clock's own spread and the reason to read several windows.
+
 ### The stand-ins audited the way the ports were, and two more record corrections (jobs 1553-1561, 2026-10-30)
 
 - **Frames a second, separate 240 s runs scored from 80 s, build 0f3c3eac6e709b6a (its default mask, `--fdirect` off,
