@@ -53,7 +53,7 @@ frames a second from a scene that takes no input, not on the scripted walk** - s
 | `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
 | `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
 | `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
-| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image), `arm11_sched.py` (ARM11 cycle model), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image), `arm11_sched.py` (ARM11 cycle model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
 | `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
 | `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
 | `docs/` | Designs, findings and the running log (see README) |
@@ -93,7 +93,7 @@ on the console.
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
-| 3DS host code | `bash core/host3ds/build.sh` with no new warnings |
+| 3DS host code | `bash core/host3ds/build.sh` with no new warnings. Without devkitARM (a cloud session), `bash core/tools/host3ds_syntax.sh` first: it compiles 8 of the 15 files `-fsyntax-only` against the stubs in `core/tools/stub3ds/` and catches plain C mistakes (on 2026-10-30 a `double tot` declared inside an `if` block broke a build and cost a device session). It is not a build, and never replaces one before a relay push. |
 
 Every check that compares has a planted-bug self-test; a check whose self-test cannot fail proves nothing (the first
 `VCACHE_PLANT` did not: its planted change never altered vertex data).
@@ -121,7 +121,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 - **Separate whole runs decide defaults:** `python3 core/tools/runs.py core/out/relay_<job>.csv ...` (gameplay: settled
   speed, fields and real frames a second, VI fields per picture) and `python3 core/tools/title_sections.py ...` (tp850:
   cutscene, later stretch, movie). Queue the change's run and a baseline on the same build.
-- The A/B switch flips every 20 s (`AB_SECS`); each row of perf.csv records which half it is in. **Score it with
+- The A/B switch flips every 20 **rows** of perf.csv (`AB_SECS` is a row count, not seconds: a row is emitted on the
+  first loop pass after a second, so a phase is 21-27 s depending on how long a field takes). Each row records which
+  half it is in - which is why the phases are read out of the option column and never by binning the log into fixed
+  blocks. The option column is the `--ab` name's own column where it has one, or the bit the name sets in a shared
+  one (`hlegd` is bit 1 of `hle`, so the arms read 383 and 381); the header line names the A/B that actually ran, and
+  says so loudly when the build had no such name. **Score it with
   `python3 core/tools/ab_phases.py LOG COLUMN 60 ON_VALUE`** (each phase against its neighbours, from 60 s), not with
   pooled means (they showed phantom gains); `core/tools/ab_split.py --col NAME` for the tp850 state (cutscene / later
   stretch). Read "speed" and **core 0's own speed** (`speed / (1 - gxwait_pct)`): while the GX side limits the game, a

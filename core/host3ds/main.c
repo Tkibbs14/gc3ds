@@ -396,7 +396,11 @@ static Disc g_disc;
 // photographed. Comment lines (#) mark each run, the measured CPU clock every 10 s, and the most frequent
 // interpreted instructions of the last 10 s.
 static FILE* g_perf;
-#define AB_SECS 20  // A/B period: JIT traces on and off (each switch recompiles all code)
+// The A/B period, in **perf.csv rows, not seconds**: the switches below run on `perfRows % AB_SECS == 0`, and a row
+// is emitted on the first loop pass after a second, so a phase is 20 rows = 21-27 s depending on how long a field
+// takes (jobs 1567-1568: 230 rows in 300 s in static Ordon, 219 in the heavy area). Score an A/B from the option
+// column with ab_phases.py, which finds the phases in the data; never by binning the log into 20 s blocks.
+#define AB_SECS 20  // (each switch that changes compiled code also recompiles all of it)
 // The native shadow-scan stand-in (hle_tp.c) alternates on and off in the A/B. Its first version froze Twilight Princess at
 // the first Link and Epona close-up (2DS, 9d7c239: the hook read a stale PC); the fix was proven under qemu with the JIT:
 // 1,235 calls to field 1100, all identical to the interpreter. Off here until the budget fix (e7e7cbe) has had the same
@@ -477,6 +481,8 @@ typedef struct {
                               // which flushes compiled code at every switch: its own A/B read -0.03 +- 0.12 points in
                               // static Ordon and -0.34 +- 0.34 in the heavy area (jobs 1567-1568), i.e. nothing settled.
     bool abHlegd;             // --ab hlegd: the same, alternating in one run
+    char abName[24];          // --ab NAME as given, and whether it matched an A/B this build has (AB(), perf.csv
+    bool abKnown;             // header). An unmatched name used to run no A/B silently: see AB()'s comment.
     bool noThp;               // --thp off: the THP stand-ins never recognised
     char psOff[256];          // --psoff PREFIX,...: SDK stand-ins named so stay off (hle_ps_disable)
     u32 smalltex; bool abSmalltex;  // --smalltex on|off, --ab smalltex: textures in the smallest exact PICA format (smalltex column; --ab starts off)
@@ -619,6 +625,11 @@ static void opts_default(RunOpts* o) {
     o->vwmemKb = 128;  // 1 MB 18.9%, 256 KB 21.2%, 128 KB 21.4%, 96 KB 21.5% (cutscene, relay 76-80)
 }
 
+// One --ab flag. It also records that the name matched something, so `--ab NAME` with a name this build does not
+// have is reported instead of running no A/B at all: jobs 1567-1568 were queued as `--ab hlegd` against a build
+// without that A/B, ran at plain defaults, and their logs still claimed an A/B of traces in the header.
+#define AB(f, name) do { if (!strcmp(v, name)) { o->f = true; o->abKnown = true; } else o->f = false; } while (0)
+
 static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
     for (int i = 0; i < argc; i++) {
         const char* a = argv[i];
@@ -632,7 +643,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { o->abTraces = !strcmp(v, "traces"); o->abHle = !strcmp(v, "hle"); o->abMerge = !strcmp(v, "merge"); o->abVwmem = !strcmp(v, "vwmem"); o->abSplit = !strcmp(v, "splitopen"); o->abPld = !strcmp(v, "pld"); o->abFault = !strcmp(v, "faultmem"); o->abSched = !strcmp(v, "sched"); o->abOpt = !strcmp(v, "opt"); o->abVtrim = !strcmp(v, "vtrim"); o->abDlcache = !strcmp(v, "dlcache"); o->abVw2 = !strcmp(v, "vw2"); o->abFskip = !strcmp(v, "fskip"); o->abKstore = !strcmp(v, "kstore"); o->abFcache = !strcmp(v, "fcache"); o->abAot = !strcmp(v, "aot"); o->abCalls = !strcmp(v, "calls"); o->abRetstub = !strcmp(v, "retstub"); o->abSyscall = !strcmp(v, "syscall"); o->abHlelink = !strcmp(v, "hlelink"); o->abStack = !strcmp(v, "stack"); o->abCrstub = !strcmp(v, "crstub"); o->abRotmask = !strcmp(v, "rotmask"); o->abNative2 = !strcmp(v, "native2"); o->abInd2 = !strcmp(v, "ind2"); o->abSteal = !strcmp(v, "steal"); o->abBefloat = !strcmp(v, "befloat"); o->abFastfloat = !strcmp(v, "fastfloat"); o->abLatch = !strcmp(v, "latch"); o->abIcbi = !strcmp(v, "icbi"); o->abPipek = !strcmp(v, "pipek"); o->abRelayout = !strcmp(v, "relayout"); o->abVin = !strcmp(v, "vin"); o->abInlmem = !strcmp(v, "inlmem"); o->abHlegd = !strcmp(v, "hlegd"); o->abShapes = !strcmp(v, "shapes"); o->abVoices = !strcmp(v, "voices"); o->abThp = !strcmp(v, "thp"); o->abPs = !strcmp(v, "ps"); o->abLean = !strcmp(v, "lean"); o->abRawdraw = !strcmp(v, "rawdraw"); o->abCmdpld = !strcmp(v, "cmdpld"); o->abRawstate = !strcmp(v, "rawstate"); o->abPipeps = !strcmp(v, "pipeps"); o->abPsgx = !strcmp(v, "psgx"); o->abSkipfn = !strcmp(v, "skipfn"); o->abGfskip = !strcmp(v, "gfskip"); o->abTexdiv = !strcmp(v, "texdiv"); o->abGpudiag = !strcmp(v, "gpudiag"); o->abDeflit = !strcmp(v, "deflit"); o->abShlight = !strcmp(v, "shlight"); o->abVscache = !strcmp(v, "vscache"); o->abBlacklit = !strcmp(v, "blacklit"); o->abVramtex = !strcmp(v, "vramtex"); o->abGxdiag = !strcmp(v, "gxdiag"); o->abProfclock = !strcmp(v, "profclock"); o->abSplitverts = !strcmp(v, "splitverts"); o->abL2pf = !strcmp(v, "l2pf"); o->abQbig = !strcmp(v, "qbig"); o->abCmdbuf = !strcmp(v, "cmdbuf"); o->abPsflush = !strcmp(v, "psflush"); o->abMips = !strcmp(v, "mips"); o->abSmalltex = !strcmp(v, "smalltex"); o->abTevver = !strcmp(v, "tevver"); o->abPort = !strcmp(v, "port"); o->abGpbulk = !strcmp(v, "gpbulk"); o->abPichook = !strcmp(v, "pichook"); o->abJ3dhook = !strcmp(v, "j3dhook"); o->abFlushhook = !strcmp(v, "flushhook"); o->abLighthook = !strcmp(v, "lighthook"); o->abRingbatch = !strcmp(v, "ringbatch"); o->abIdlewait = !strcmp(v, "idlewait"); o->abFeeddirect = !strcmp(v, "feeddirect"); o->abTevenv = !strcmp(v, "tevenv"); o->abDblframe = !strcmp(v, "dblframe"); o->abShdwmemo = !strcmp(v, "shdwmemo"); o->abShdwtri = !strcmp(v, "shdwtri"); o->abPortcharge = !strcmp(v, "portcharge"); o->abFdirect = !strcmp(v, "fdirect"); }
+        else if (!strcmp(a, "--ab")) { snprintf(o->abName, sizeof o->abName, "%s", v); AB(abTraces, "traces"); AB(abHle, "hle"); AB(abMerge, "merge"); AB(abVwmem, "vwmem"); AB(abSplit, "splitopen"); AB(abPld, "pld"); AB(abFault, "faultmem"); AB(abSched, "sched"); AB(abOpt, "opt"); AB(abVtrim, "vtrim"); AB(abDlcache, "dlcache"); AB(abVw2, "vw2"); AB(abFskip, "fskip"); AB(abKstore, "kstore"); AB(abFcache, "fcache"); AB(abAot, "aot"); AB(abCalls, "calls"); AB(abRetstub, "retstub"); AB(abSyscall, "syscall"); AB(abHlelink, "hlelink"); AB(abStack, "stack"); AB(abCrstub, "crstub"); AB(abRotmask, "rotmask"); AB(abNative2, "native2"); AB(abInd2, "ind2"); AB(abSteal, "steal"); AB(abBefloat, "befloat"); AB(abFastfloat, "fastfloat"); AB(abLatch, "latch"); AB(abIcbi, "icbi"); AB(abPipek, "pipek"); AB(abRelayout, "relayout"); AB(abVin, "vin"); AB(abInlmem, "inlmem"); AB(abHlegd, "hlegd"); AB(abShapes, "shapes"); AB(abVoices, "voices"); AB(abThp, "thp"); AB(abPs, "ps"); AB(abLean, "lean"); AB(abRawdraw, "rawdraw"); AB(abCmdpld, "cmdpld"); AB(abRawstate, "rawstate"); AB(abPipeps, "pipeps"); AB(abPsgx, "psgx"); AB(abSkipfn, "skipfn"); AB(abGfskip, "gfskip"); AB(abTexdiv, "texdiv"); AB(abGpudiag, "gpudiag"); AB(abDeflit, "deflit"); AB(abShlight, "shlight"); AB(abVscache, "vscache"); AB(abBlacklit, "blacklit"); AB(abVramtex, "vramtex"); AB(abGxdiag, "gxdiag"); AB(abProfclock, "profclock"); AB(abSplitverts, "splitverts"); AB(abL2pf, "l2pf"); AB(abQbig, "qbig"); AB(abCmdbuf, "cmdbuf"); AB(abPsflush, "psflush"); AB(abMips, "mips"); AB(abSmalltex, "smalltex"); AB(abTevver, "tevver"); AB(abPort, "port"); AB(abGpbulk, "gpbulk"); AB(abPichook, "pichook"); AB(abJ3dhook, "j3dhook"); AB(abFlushhook, "flushhook"); AB(abLighthook, "lighthook"); AB(abRingbatch, "ringbatch"); AB(abIdlewait, "idlewait"); AB(abFeeddirect, "feeddirect"); AB(abTevenv, "tevenv"); AB(abDblframe, "dblframe"); AB(abShdwmemo, "shdwmemo"); AB(abShdwtri, "shdwtri"); AB(abPortcharge, "portcharge"); AB(abFdirect, "fdirect"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -816,6 +827,8 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
     }
     return true;
 }
+#undef AB  // it reads `v` and `o` from opts_parse's scope: nowhere else
+
 static bool g_aotTables;  // aot_reserve at startup
 static bool g_pipeFast = true;  // compiled code appends pipe stores itself (jit_set_gather_buffer)
 static bool g_abGpuPos = true;    // the gpupos A/B runs (test builds fix the transform instead)
@@ -832,9 +845,15 @@ static void perf_open(const char* path) {
     if (!g_perf) return;
     g_perf = relay_tee(g_perf);  // a relay job also streams the log (relay.c)
     pmu_init();
-    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | A/B period %d s, 2 phases (traces: blocks follow branches) | hot guest code sampled\n# %s\n",
+    // What the A/B actually is. This line used to name "traces" whatever was running, and a name the build does not
+    // have ran no A/B at all without saying so (jobs 1567-1568): both read as a normal A/B log.
+    char ab[80];
+    if (!g_opt.abName[0]) snprintf(ab, sizeof ab, "A/B off");
+    else if (!g_opt.abKnown) snprintf(ab, sizeof ab, "A/B --ab %s UNKNOWN IN THIS BUILD: NO A/B RAN", g_opt.abName);
+    else snprintf(ab, sizeof ab, "A/B --ab %s, 2 phases of %d rows", g_opt.abName, AB_SECS);
+    fprintf(g_perf, "# run %s | %s | jit %s | gx %s | lighting %s | pmu %s | GPU queue at %lx | %s | hot guest code sampled\n# %s\n",
             strrchr(path, '/') + 1, g_clockLine, g_useJit ? "on" : "off", gxthread_enabled() ? "core 2" : "inline",
-            g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, AB_SECS, g_coreLine);
+            g_pica && pica_shader_light() ? "shader" : "cpu", pmu_status(), g_pica ? (unsigned long)pica_queue_offset() : 0UL, ab, g_coreLine);
     fprintf(g_perf, "real_s,emu_s,speed_pct,fields_s,shown_s,dropped_s,field_ms_avg,field_ms_max");
     for (int k = 0; k < PROF_N; k++) fprintf(g_perf, ",%s_pct", kProfNames[k]);
     fprintf(g_perf, ",wait_pct,rest_pct,draws_s,verts_s,ins_k,fb_k,disp_k,slowld_k,slowst_k,native_pct"
