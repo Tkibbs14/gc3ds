@@ -88,6 +88,7 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--memo ADDR` | function memoization probe on the function at ADDR (measurement only; `# memo 10s`) |
 | `--tribench N`, `--panestat on` | measurement: time the ShdwDraw triangle path's pieces on its Nth run (`# tri bench`, core-0 cycles); count J2DPane::draw's pane classes by vtable (`# pane types 10s`). Every run with the shadow stand-in active also reports `# shdw where 10s` (where in the stand-in core 0's samples fall) |
 | `--port off\|on\|check\|plant`, `--port-hooks MASK`, `--port-parts on` | the native library ports (on; MASK: bit 0 J2DMaterial::setGX, 1 J2DPictureEx::drawSelf, 2 the J3D concat-view matrices, 3 __GXSendFlushPrim, 4 J3D's light loads, 5 the J2DPane::draw walk, 6 J3DMaterial::diff, 7 J3DSys::reinitGX, 8 the minimap's renderingDecoration, 9 J3DShapeMtxMultiConcatView::load, 10 J2DTextBoxEx::drawSelf; default 503 = bits 0-2, 4-8); `--pmu-port-hooks MASK`: `--pmu-split port\|portcommit` around these hooks only; check: every call compared with the interpreter on the console (`# port 10s`, its `differed` count), plant: a planted difference the check must report; parts: per-part timing |
+| `--fdirect on\|off` | float arithmetic writes frD's lane register instead of a scratch one and a vmov (OPT_FDIRECT, on since 2026-10-30: Wind Waker +2.6%, Mario Party 4 +0.7%, TP flat); `--ab fdirect` |
 | `--port-charge PCT` | the ports' charge on the emulated clock, in percent of the calibrated estimate (100; `port_j2d.c` kInsScale). Measurement only, for C41: with `--ab portcharge` the run alternates 100 and PCT every 20 s, recompiling nothing, so the charge's effect on speed is readable apart from the work a port removes |
 | `--gpbulk on\|off` | pipe bursts copied whole (on) |
 | `--ringbatch on\|off` | the pipe's bursts batched into GX-thread ring records of up to 512 bytes (on) |
@@ -101,6 +102,12 @@ an edge) for scripted runs; its fields count from the run's start.
 | `--trace-follow on\|off`, `--trace-side on\|off\|MASK`, `--trace-len N`, `--link on\|off` | JIT block shape |
 | `--profile on` | hot guest code, guest stacks, core 0's samples by guest thread, the GX thread's position and the decoder's command classes (`# hot guest code`, `# guest stacks`, `# guest threads`, `# gx thread where`, `# gx decode`). Every run also reports `# joint 10s` (core 0 / GX thread / vertex worker states sampled together: who waits on whom) and `# new frames` / `# new frames hist` (real frames a second; real gaps and VI fields between XFB copies) |
 | `--fuzz CASES [SEED]` | the JIT differential fuzzer (tests/jit/jit_fuzz.c) on the console's own CPU |
+
+`python3 core/tools/port_cost.py core/out/relay_<job>.csv` says what each native port costs core 0 (calls a second,
+microseconds a call, share of a core), and `python3 core/tools/clock_split.py ...` where the run's emulated clock came
+from (instructions really run, stand-in and port charges, idle and polling fills) with each field's slack.
+`python3 core/tools/jitbench.py core/tests/jit/bench/*.S --cycles --disasm` needs no console at all: it runs
+hand-written guest loops through the real JIT under qemu and reports hot ARM words a guest instruction.
 
 Score separate whole runs (how defaults are decided now) with `python3 core/tools/runs.py core/out/relay_<job>.csv ...`
 (gameplay: settled speed, fields and real frames a second, the VI fields per picture) and

@@ -6,8 +6,10 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs the Ordon walk at ~34% of full speed and Ordon's heaviest area at ~23.5% (25 October 2026; the title's
-cutscene ~36.7%, its later Link / Epona stretch ~24%, the THP movie ~13.3%, last measured 24 October).
+test. Today it runs a static Ordon scene at 10.40 frames a second (34.6% of full speed) and Ordon's heaviest area at
+7.17 (23.9%); Wind Waker's Outset 6.18 (20.6%), Mario Party 4's board 9.05 (15.1%), the title's cutscene 40.4%, its
+later Link / Epona stretch 23.1%, the THP movie 14.6% (30 October 2026, build 0f3c3eac6e709b6a). **Judge gameplay on
+frames a second from a scene that takes no input, not on the scripted walk** - see "Measuring" and C41.
 
 ## Rules
 
@@ -139,10 +141,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (25 October 2026):** Ordon walk 34.10% (jobs 1423 / 1425 / 1429), the heavy area ~23.5% (jobs
-  1393-1401). Last measured on 24 October (jobs 1280-1284, before that day's ports): Mario Party 4 14.87%, Wind Waker
-  20.30%; the title: cutscene (25-150 s) 36.73%, later stretch 24.05%, movie 13.29% (the cutscene ends at ~150 s:
-  windows must follow it). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
+- **All defaults (30 October 2026, build 0f3c3eac6e709b6a, frames a second; the `speed_pct` in brackets):** static
+  Ordon 10.40 (34.6%), heavy area 7.17 (23.9%), Wind Waker 6.18 (20.6%), Mario Party 4 9.05 (15.1%); the title:
+  cutscene 40.4%, later stretch 23.1%, movie 14.6% (the cutscene ends at ~150 s: windows must follow it). The scripted
+  Ordon *walk* reads 10.40-10.44 on the same build but cannot be compared across a change that shifts the guest's
+  timeline (C41). The device drifts ~2% between days: compare runs of one session only. **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
   walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay
@@ -165,7 +168,7 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   (heavy area +19%), small texel formats (+6%), CPU-lit draws and then all lighting on the vertex worker (+6.8%, +2.9%),
   textures in VRAM (+12%), vertex set-ups cached for 8 keys (+1.1%), uploads without a divide per texel, the
   measurement-only decoder statistics and profile clock out of normal runs (+3.2%, +6%), a 2 MB command buffer (+2.6%),
-  the three library ports (Ordon +3.6-5.9%, +4.5%, +5.8%), pipe bursts copied whole (`gpbulk`, +3.2% / +4.5%), GX-thread
+  the library ports (as a set +10.6%; per port see the ledger in HANDOFF, the old per-port figures were walk artifacts), pipe bursts copied whole (`gpbulk`, +3.2% / +4.5%), GX-thread
   ring records batched (`ringbatch`, heavy area +2.6%), overlapped GPU frames (`dblframe`, heavy area +1.9%), float
   lanes (`fcache`, +1.5% / +1.6% / title up to +2.4%; rejected on 10-13 from A/Bs that recompile, reversed by separate
   runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise), compact vertex records (`vin`, ~+0.7-0.9%), rlwinm as
@@ -176,7 +179,8 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stage by stage (`shdwcb`, later stretch +1.1%, Ordon +0.7%).
 - **Added 24-25 October (MEASUREMENTS.md, HANDOFF):** ports, on: the J3D lights with a one-copy commit (heavy area
   +2.7%), all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%), the minimap's
-  renderingDecoration (Ordon +3.1%, heavy area -0.4%: GX-thread bound there). Built, exact, off: the skinned-shape
+  renderingDecoration (re-measured 2026-10-30: ~0 in Ordon and **-0.5% in the heavy area**, a candidate to turn off
+  with the PNGP matrix load; both are in the ledger). Built, exact, off: the skinned-shape
   matrix load (bit 9, Ordon -2.9%) and HUD text with J2DPrint / JUTResFont (bit 10, Ordon -4.3%). **A port's charge diverts the
   scripted walk rather than making a scene cost more** (C41, answered 2026-10-29: in Ordon the emulated clock is 79%
   poll fill, so a charge is absorbed by a smaller fill; flipping it 100 against 330 inside one run moves frames a

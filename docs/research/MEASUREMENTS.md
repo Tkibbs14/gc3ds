@@ -2610,6 +2610,25 @@ done
   | minus bit 7, J3DSys::reinitGX (1505) | 10.275 | **+0.9%** | +3.9% |
   | minus bit 6, J3DMaterial::diff (1506) | 10.141 | **+2.2%** | +3.0% |
   | minus bit 5, the J2DPane::draw walk (1507) | 10.280 | **+0.9%** | +2.2% |
+  | minus bit 0, J2DMaterial::setGX (1516) | 10.345 | +0.2% | - |
+  | minus bit 1, J2DPictureEx::drawSelf (1517) | 10.369 | ~0 (not taken here) | Ordon +4.5% |
+  | minus bit 2, the PNGP matrix load (1518, 1532) | 10.423, 10.419 | **-0.5%** (a loss) | +4.5% |
+  | minus bit 4, the J3D lights (1519) | 10.367 | 0 (5 calls per 10 s) | heavy +2.7% |
+
+- **The same bisect in the heavy area (jobs 1533-1543, default 7.154 / 7.156 frames a second):**
+
+  | run | frames a second | that port is worth |
+  |---|---|---|
+  | minus bit 0, J2DMaterial::setGX (1539) | 7.020 | **+1.9%** |
+  | minus bit 5, the J2DPane::draw walk (1540) | 7.121 | +0.5% |
+  | minus bit 6, J3DMaterial::diff (1541) | 7.107 | +0.7% |
+  | minus bit 7, J3DSys::reinitGX (1542) | 7.160 | ~0 |
+  | minus bit 2, the PNGP matrix load (1534) | 7.157 | ~0 |
+  | minus bit 8, the minimap decoration (1543) | 7.192 | **-0.5%** (a loss) |
+
+  Every port pays in at least one of the two scenes **except bit 2 and bit 8**, and those two are complementary: the
+  PNGP load is the loss in Ordon and neutral in the heavy area, the decoration the reverse. `--port-hooks 243` (both
+  off) is therefore the candidate default, worth about +0.5% in each scene; jobs 1547-1552 confirm it on three scenes.
 
   The set is a large, real win, and the four bits above account for 3.9 of its 10.6 points - the rest is bits 0-2 and
   4 (setGX, drawSelf, the PNGP matrix load at 98,000 calls per 10 s, the lights), measured separately in 1516-1519.
