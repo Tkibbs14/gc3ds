@@ -20,11 +20,15 @@ frames a second from a scene that takes no input, not on the scripted walk** - s
    changes results is a bug, not a trade-off. Known, documented differences are limited to the host float model
    (`jit.c`, the comment above `ld_fpr`: flush-to-zero denormals, default NaN, no FPSCR exception bits); do not add new
    ones.
-3. **Measure, do not guess.** Every performance change is judged by an A/B *within one run* on real hardware
-   (`--ab NAME`, see "Measuring"). Runs of the same build differ by ~5%, so comparisons across runs are hints only.
-   Report the mean and standard error, and split long runs at the scene change (`real_s` 300 for the tp850 state).
-   **Judge speed on gameplay** (the Ordon walk, "Measuring"): the tp850 state is the title / attract sequence, and work
-   that only helps it (its static title-screen shadow) does not help play.
+3. **Measure, do not guess.** A performance change is judged by **separate whole runs on real hardware, on a scene
+   that takes no input**, scored on **frames a second** (`core/tools/runs.py`): two runs an arm, one session, one
+   build. Such runs agree to ~0.1%, so a 0.5% effect is visible. An A/B within one run (`--ab NAME`) is a cross-check,
+   not the verdict: switches that flush compiled code stall for seconds and read the on arm ~2% low, and `speed_pct`
+   is the emulated clock, which native stand-ins and ports charge for work they did natively. **Do not judge a change
+   on the scripted walk** (`--press`): the input is sampled when the guest polls the pad, so a change that shifts
+   timing sends Link down another path and the arms render different scenes (C41). This is not pedantry - on
+   2026-10-30 it turned out that eight recorded per-port gains, two stand-in gains and frame skip's "+10%" were all
+   artifacts of the old method.
 4. **Keep the evidence.** Every idea with redesign potential goes into `docs/research/REDESIGN_CANDIDATES.md` with its
    evidence, cost, status (parked / next / built / rejected) and a "re-evaluate when" trigger. Never delete an entry;
    update its status. A rejected idea keeps the measurement that rejected it, so nobody re-runs it blind.
@@ -173,7 +177,7 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   lanes (`fcache`, +1.5% / +1.6% / title up to +2.4%; rejected on 10-13 from A/Bs that recompile, reversed by separate
   runs), the 2-way indirect table (`ind2`, ~+0.9%, likewise), compact vertex records (`vin`, ~+0.7-0.9%), rlwinm as
   shifts (`rotmask`, ~+0.3-0.6%), the ShdwDraw walk memo (`shdwmemo`, later stretch +14.2%, C32), the
-  __GXSendFlushPrim stand-in (`psflush`, heavy area +1.7%, Ordon +0.8%: its old A/B read neutral), ShdwDraw's triangle
+  ShdwDraw's triangle
   path natively (`shdwtri`, later stretch +2.0-2.7%, gameplay +0.2-0.3%, C32b) and its fast form (`trifast`, both
   chains in registers: later stretch +3.8%, +7.7% pictures, gameplay +0.2-0.4%), the shadow callback natively, read
   stage by stage (`shdwcb`, later stretch +1.1%, Ordon +0.7%).

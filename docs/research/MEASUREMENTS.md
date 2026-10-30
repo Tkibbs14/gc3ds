@@ -2490,6 +2490,17 @@ done
   recompiles. The hle_tp.c group costs ~0.3% in gameplay and earns its keep only in the title, so it is scene-
   dependent rather than wrong. `--ps off` and `--psflush off` are running on Wind Waker and Mario Party 4 (jobs
   1562-1565) before `--psflush` is changed, since these stand-ins act in every game.
+- **Both stand-ins across all four games (jobs 1553-1565), frames a second against each game's baseline:**
+
+  | | TP static Ordon | TP heavy | Wind Waker | Mario Party 4 |
+  |---|---|---|---|---|
+  | the paired-single library (`--ps`) | **+3.8%** | **+1.1%** | **+0.5%** | **+15.6%** |
+  | `__GXSendFlushPrim` (`--psflush`) | -0.33% | -0.31% | -0.06% | -0.24% |
+
+  The paired-single library is the single most valuable thing in the project after draw merging - Mario Party 4 runs
+  8.987 frames a second with it and **7.773 without**. `__GXSendFlushPrim` is a loss in **every** game measured:
+  **off by default since 2026-10-30**. It stands in for one guest store of a word, which is far too small to pay -
+  the same rule that made the PNGP port a loss, since a stand-in is charged instruction fetch rather than work.
 - **`--nskeep` on by default (Mario Party 4 +1.2%):** 9.011 -> **9.122** frames a second (job 1560 against 1559),
   TP and Wind Waker even; 60% of that game's stamps on shapes are false alarms. Exact: 106,264 kept shapes compared
   stream by stream, 0 differed, both plants caught (jobs 1242-1274). It had been left as the owner's call since 10-24.

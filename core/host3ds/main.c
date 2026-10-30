@@ -603,7 +603,11 @@ static void opts_default(RunOpts* o) {
     o->shdwtri = true;  // the ShdwDraw triangle path natively: title later stretch +2.0-2.7% (~5% more pictures), heavy area +0.3%, Ordon +0.2% (jobs 657-670)
     o->portCharge = 100;  // the ports' calibrated estimate (port_j2d.c kInsScale); --port-charge sweeps it (C41)
     o->fdirect = true;  // OPT_FDIRECT: Wind Waker +2.6% (jobs 1528/1529, 1535/1536), Mario Party 4 +0.7%, TP flat
-    o->psflush = true;  // the __GXSendFlushPrim stand-in: heavy area +1.7% (two runs), Ordon +0.8%, title even (separate runs, jobs 640, 650-654)
+    o->psflush = false;  // the __GXSendFlushPrim stand-in: **off since 2026-10-30**, a loss in all four games measured
+                         // on scenes that take no input - TP static Ordon -0.33%, TP heavy -0.31%, Wind Waker -0.06%,
+                         // Mario Party 4 -0.24% (jobs 1555, 1558, 1563, 1565). Its old +1.7% / +0.8% came from the
+                         // scripted walk and an A/B that recompiles (C41). One guest store a word: too small to pay,
+                         // like every leaf port (a stand-in is charged instruction fetch, not work).
     o->vin = true;    // compact job vertices (~145 -> ~90 bytes each): heavy area +0.7%, Ordon +0.9%, title +0.2-0.5% (separate runs, jobs 588-602)
     o->rotmask = true;  // rlwinm / rlwimi as shifts (OPT_ROTMASK): heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin +1.3% / +1.2% (jobs 585-604)
     o->aotCall = o->aotAbi = o->aotPipe = -1;  // aot switches at their defaults (aot.h)
