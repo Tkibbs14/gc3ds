@@ -1,4 +1,36 @@
-# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-29)
+# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-30)
+
+> **▶ 2026-10-30: what the ports really cost, and the first default from the new method.** This session's method
+> change matters more than any single number: **a port or stand-in cannot be judged on the scripted walk** (C41), and
+> **a port is charged instruction fetch, not work** (MEASUREMENTS "Why a port pays or loses"). Instruction-fetch
+> stalls are **27% of core 0** (218 of 804 M cycles a second, heavy area) - the largest line item there is.
+> **Banked:** `OPT_FDIRECT` on by default (float arithmetic writes frD's lane register, not a scratch register and a
+> vmov): **Wind Waker +2.6%**, Mario Party 4 +0.7%, TP flat, exact by the fuzzer and by an identical whole-game qemu
+> gate. **Today's session baselines** (build 0f3c3eac6e709b6a, frames a second): static Ordon 10.40, TP heavy 7.17,
+> Wind Waker 6.02 -> 6.18 with FDIRECT, Mario Party 4 8.96 -> 9.05, title cutscene 40.4 / later 23.1 / movie 14.6.
+> **The ports' ledger, measured one bit at a time on scenes that take no input** (jobs 1503-1543; the set is worth
+> **+10.6%** in static Ordon, while the parts sum to ~3.7% - the difference is the guest code the set keeps out of the
+> compiled set, confirmed by +12% I-cache misses with every port off):
+> | bit | port | static Ordon | heavy area | was on record |
+> |---|---|---|---|---|
+> | 0 | J2DMaterial::setGX | +0.2% | **+1.9%** | - |
+> | 1 | J2DPictureEx::drawSelf | ~0 (not taken) | - | Ordon +4.5% |
+> | 2 | PNGP matrix load | **-0.5%** | ~0 | +4.5% |
+> | 4 | J3D lights | 0 (5 calls/10 s) | - | heavy +2.7% |
+> | 5 | J2DPane::draw walk | +0.9% | +0.5% | Ordon +2.2% |
+> | 6 | J3DMaterial::diff | +2.2% | +0.7% | +3.0% |
+> | 7 | J3DSys::reinitGX | +0.9% | ~0 | Ordon +3.9% |
+> | 8 | minimap decoration | +0.06% | (job 1543) | Ordon +3.1% |
+> Every port pays in at least one scene except **bit 2 (PNGP)** and **bit 8 (decoration)**: `--port-hooks 243` is the
+> candidate default, running on three scenes (1547-1552). `core/tools/port_cost.py` prints what each one costs core 0
+> (heavy area 20.2%, static Ordon 21.1% of core 0 inside port code).
+> **Also from this session:** `core/tools/jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc
+> image needed; `--disasm`), `core/tools/clock_split.py`, `--port-charge`, and C40 now has an exact plan (let core 2
+> write the FIFO mirror it already holds: Ordon 1.6%, every game). **Open, in order:** the port trim and the stand-in
+> audit (jobs 1553-1561) by the same method; C40's deferred mirror; big-subtree ports, the only shape that can pay
+> under the fetch rule (J3D packet draw, the remaining TEV block types - the cXyz operators at 3.3% are the wrong
+> shape, tiny functions called everywhere); fault mode (+2-5% every scene, off for a kernel crash in svc 0x94, the
+> owner's call); frame skip as a user option (+10%, visual glitches).
 
 > **▶ 2026-10-29: C41 answered — a port's charge diverts the scripted walk; it does not make a scene cost more.**
 > With the instruments on the device (build fa1505fa264916fd, jobs 1480-1488): in Ordon at defaults the emulated clock
