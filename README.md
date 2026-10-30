@@ -5,11 +5,22 @@ actually do: a Gekko-to-ARM11 JIT on one core, the GameCube's graphics pipeline 
 PICA200 GPU doing the drawing. Every design decision here was measured on a real New 2DS XL.
 
 **Status: research project, not a usable emulator yet.** *The Legend of Zelda: Twilight Princess* (the stress test)
-boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village (Link walking around).
-On a New 2DS XL it runs at about **34% of full speed walking in Ordon and ~23.5% in its heaviest area** (about 10.2 and
-7.1 of the game's 30 frames a second; 25 October 2026), ~37% in the intro cutscene, ~24% in the scene after it and
-~13.3% in the THP movie (24 October 2026). Most of the work so far went into finding out where the time goes and what does and does not
-help on this hardware; that knowledge is written down in `docs/` and is the most useful part of the repository today.
+boots and plays: its title, THP movies and opening cutscene, then gameplay in Ordon Village. On a New 2DS XL it runs
+at **10.4 of the game's 30 frames a second in Ordon village (34.6% of full speed) and 7.2 in its heaviest area
+(23.9%)**, with the title's cutscene at 40.4%, the scene after it at 23.1% and the THP movie at 14.6%; *The Wind
+Waker* 6.2 frames a second on Outset and *Mario Party 4* 9.0 on its board (30 October 2026). Most of the work so far
+went into finding out where the time goes and what does and does not help on this hardware; that knowledge, in
+`docs/`, is the most useful part of the repository today.
+
+**Measured, not guessed - and the measuring is half the work.** Three results from one day in October show what that
+means here: a benchmark that steered the game with scripted stick input turned out to be unable to judge any change
+that shifts emulated timing (the input lands in a different field, the character walks a different path, and the two
+arms render different scenes); a profiling line printed one stale address as "38% of core 0" whenever profiling was
+off; and when eight native library ports were re-measured one at a time on a scene that takes no input, **every
+recorded per-port gain was wrong and two of the eight were net losses** - removing those two is worth +0.7%. The
+project keeps the evidence for ideas that failed as carefully as for ideas that worked
+(`docs/research/REDESIGN_CANDIDATES.md`), because the failures are what stop the next person
+wasting a week.
 
 **Bring your own games.** gc3ds contains no game data, BIOS or firmware, and never will. Use dumps of discs you own.
 
@@ -98,3 +109,13 @@ and its effect is measured.
 ## Licence
 
 GPL-2.0-or-later (`LICENSE`). Dolphin, YAGCD, WiiBrew, 3dbrew and the IBM and ARM manuals were read as documentation.
+
+## Helping out
+
+Contributions are welcome, and the repository is set up so that a stranger's number can be trusted: see
+`CONTRIBUTING.md` for the rules, **`docs/CONTRIBUTOR_TASKS.md` for scoped tasks with the evidence behind each** (four
+of them need no console), and `docs/TELEMETRY.md` for how a measurement is submitted and checked. gc3ds collects
+nothing automatically and never will without saying so here first.
+
+Bring your own games: no disc images, save states of commercial games, BIOS, firmware or assets, in the repository,
+in issues or in pull requests.

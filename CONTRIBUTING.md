@@ -3,6 +3,10 @@
 Thanks for looking. gc3ds is a measurement-driven project: a change is merged when it is **exact** and its effect is
 **measured**. Read `AGENTS.md` first; it holds the rules, the checks and how to measure.
 
+**Looking for something to do?** `docs/CONTRIBUTOR_TASKS.md` lists real tasks with the measurement behind each and
+the checks that prove them - four need no console at all. `docs/TELEMETRY.md` says what a measurement submission
+needs and how it is checked (and what the project deliberately never collects).
+
 ## What helps most
 
 - **Performance work with numbers.** A JIT or graphics change behind a switch, with the cycle model's before/after
