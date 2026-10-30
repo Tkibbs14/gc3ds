@@ -885,9 +885,11 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   compiled code is 54.8 KB over 84 pages, so the working set is 3.4x the 16 KB L1 *at any density*. Removing the
   stubs raises density from 16% to ~24% and cannot do better than the nursery's 1% of core 0, for a change that
   touches every exit, every link patch, every snapshot and the fault tables.
-- **Cheaper to do first:** the same 1% without the risk is in the exchange rate - fewer hot words beats better-placed
-  ones (OPT_RETSTUB: -2.1% hot words, +1.0-1.6% core 0). See the branch exit sequences and the paired-single
-  accesses named at the end of MEASUREMENTS' job-1569 section.
+- **And do not expect a peephole to beat it:** the exchange rate says fewer hot words beats better-placed ones
+  (OPT_RETSTUB: -2.1% hot words, +1.0-1.6% core 0), but the two large items in the executed-words table turn out to
+  be worked ground - a `bc`'s 12.2 words are the block's shared `rc_flush` (the handover modelled at ~1.3% net), and
+  the paired-single accesses already went through OPT_FCACHE and OPT_PIPEPS, with 72.8% of `psloop`'s stall cycles
+  in the VFP itself. The reading is at the end of MEASUREMENTS' job-1569 section.
 - **Re-evaluate when:** a change shrinks the 50%-of-time working set towards 16 KB (then density starts to decide), or
   the exit stubs can move without a second compile and without new link-patch bookkeeping - for instance if a future
   arena change is being made for another reason and this rides along.

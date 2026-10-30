@@ -217,13 +217,27 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
-- **Open directions (HANDOFF.md's current state orders them):** ARM code quality on core 0 (the owner's direction,
-  2026-10-29: `core/tools/jitbench.py` benches the JIT's output with no disc image; OPT_FDIRECT is the first item from
-  it, C42); the library ports' own cost (Ordon: building their context 7-8% of core 0, committing 4-5%); larger
-  ports where a whole subtree is replaced (other TEV block types, J3D packet draw;
-  `docs/research/LIBRARY_PORTS.md`), since small functions lose as entry-hook stand-ins; the ShdwDraw stand-in's code footprint (C32b); core 0: less hot code per guest instruction, longer blocks;
-  GPU-resident vertex data for repeated display lists (C1); frame skip as a user option (guards for fades in place;
-  game frames +50-60%).
+- **Core 0's whole budget, measured (job 1569, TP heavy area, today's defaults; MEASUREMENTS' job-1569 section):**
+  **80.9%** JIT block code and the helpers blocks call, **9.65%** port C code (7.05% in `port_run`, which for a
+  subtree port *is* the work, 2.61% in `port_commit`), **1.14%** stand-in C code, 0.6% `gxsync`, 7.4% not running
+  guest code. Inside that: **IPC 0.334, instruction-fetch stalls 27.4% and data stalls 22.1%, so half of core 0 is
+  memory** - the fetch half is 8.20 M L1 I misses a second served by L2, the data half core 0's 1.83 M L2 misses a
+  second to FCRAM. 7.07 host instructions and 1.37 host data reads per guest instruction; one dispatcher entry per
+  4,742 guest instructions.
+- **What that rules out:** no code *layout* change fixes fetch (50% of time in compiled code is 54.8 KB over 84
+  pages, 3.4x the 16 KB L1 at any density; the nursery's packing bought 4% of fetch stalls = 1% of core 0), and **no
+  peephole gets the -15 to -20% of hot words that +10% of core 0 would need** - a `bc`'s 12.2 words are the block's
+  one shared `rc_flush` (handover modelled ~1.3% net), the paired-single accesses already went through OPT_FCACHE
+  and OPT_PIPEPS, and everything else measured 0.3-2% of hot words (C13, C44). **Core 0's codegen is not where a
+  large gain is**; `core/tools/jitbench.py` still ranks candidates cheaply with no disc image (OPT_FDIRECT came
+  from it, C42).
+- **Open directions, in the order the budget supports them:** removing guest code wholesale - **larger ports where a
+  whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`), since the
+  ports as a *set* are +10.6% while their parts sum to ~3.7% and small functions lose as entry-hook stand-ins (do
+  the denormal give-up first, CONTRIBUTOR_TASKS 9); the ports' `port_commit` (2.61% of core 0, and the J3D light
+  port's one-copy commit turned it from negative to +2.7%, so the technique is proven and unapplied elsewhere); C40
+  (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
+  repeated display lists (C1); frame skip as a user option (guards for fades in place; game frames +50-60%).
 
 ## Code style
 

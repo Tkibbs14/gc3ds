@@ -2546,13 +2546,29 @@ still lost on its compile cost. The sparsity is not mainly the exit stubs either
 hot-arena words and, at one dispatcher entry per 4,742 guest instructions, are traversed on the order of **0.1% of
 block executions** - dead code interleaved between live bodies (C44).
 
-**What that leaves.** Fetch follows the hot code's size, so the only lever is *fewer host words per guest
-instruction*, and the exchange rate is measured: OPT_RETSTUB's -2.1% hot words bought +1.0-1.6% of core 0 (job 148),
-so +10% of core 0 needs roughly -15 to -20% of hot words. By the executed-words table (2026-10-12) the two places
-that much could come from are **the branch exit sequences (`bc` 16.0% of hot words at 12.2 each, `b` 4.7%, `bclr`
-3.3% = 24%)** and **the paired-single accesses (`psq_l` 8.3% at 24.3 words, `psq_st` 7.4% at 39.3 = 16%)**. Every
-peephole tried on the rest came in at 0.3-2% of hot words (C13), which is why the gains now arrive in 0.5-3%
-increments rather than in tens of percent.
+**What that leaves, and why it is not a 10% lever.** Fetch follows the hot code's size, so the only lever is *fewer
+host words per guest instruction*, and the exchange rate is measured: OPT_RETSTUB's -2.1% hot words bought
++1.0-1.6% of core 0 (job 148), so +10% of core 0 would need roughly -15 to -20% of hot words. The executed-words
+table (2026-10-12) seems to offer two items that big, and **reading the emitter shows both are already-worked
+ground**:
+
+- **The branch sequences (`bc` 16.0% of hot words at 12.2 each, `b` 4.7%, `bclr` 3.3% = 24%) are not an exit-code
+  problem.** `compile_branch` calls `rc_flush` **once**, before the branch, so both sides of a `bc` share one
+  writeback; with a single condition the conditional branch itself becomes the taken side's link site
+  (`condSite` in `emit_branch_cond`) and `exit_const` is a **single** patched word. So a `bc`'s 12.2 words are
+  almost all the block's register-cache writeback, attributed to the instruction that carries it - the
+  block-boundary cost under another name, and handing entry state over at linked exits was modelled at
+  **2.2-2.4% of executed hot words, ~1.3% net** (HANDOFF 2026-10-12). Nothing here is 15%.
+- **The paired-single accesses (`psq_l` 8.3%, `psq_st` 7.4% = 16%) have been attacked twice**: OPT_FCACHE took
+  modelled `psq_st` 39.0 -> 30.1 cycles and is on by default (C11), and OPT_PIPEPS (psq_st straight to the pipe)
+  measured -2.3% inlined and no gain inside the stubs (C27). jitbench's `psloop` at the device mask now reports
+  `psq_l` 19.5 words / `psq_st` 22.0 words, i.e. the post-FCACHE figure, with **72.8% of its stall cycles in the
+  VFP itself** - ARM11 VFPv2 latency, not code we emit.
+
+Every peephole tried on the rest came in at 0.3-2% of hot words (C13). **So there is no identified 15-20% hot-word
+reduction, and core 0's codegen is not where a 10% gain is**: the remaining upside is in removing guest code
+wholesale (the library ports as a *set* are +10.6% while their parts sum to ~3.7%) and in the structural items still
+open (C40's ~1.6% in every game, fault mode's +2-5%). This is why gains now arrive in 0.5-3% increments.
 
 ### The stand-ins audited the way the ports were, and two more record corrections (jobs 1553-1561, 2026-10-30)
 
