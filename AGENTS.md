@@ -25,7 +25,13 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    ones.
 3. **Measure, do not guess.** A performance change is judged by **separate whole runs on real hardware, on a scene
    that takes no input**, scored on **frames a second** (`core/tools/runs.py`): two runs an arm, one session, one
-   build. Such runs agree to ~0.1%, so a 0.5% effect is visible. An A/B within one run (`--ab NAME`) is a cross-check,
+   build. Such runs agree to ~0.1% **in a short batch** - but over ~3 hours of continuous running on 2026-10-30 the
+   console drifted **2.5-3% within one session on one build**, 25x that floor, with the scene identical (draws a
+   picture within 0.1%) and the clock steady at 851-852 MHz. So: **in a batch longer than about half an hour,
+   interleave the arms** (reference, arm, reference, arm) and score each arm against the reference next to it in
+   time, never against a batch mean from earlier; **always quote the within-arm spread**, because a difference
+   smaller than it is not a result; and prefer a **paired** difference to an absolute level (Mario Party 4 read
+   +2.38% early and +2.25% late while both arms fell 2.5%, so the comparison held and the levels did not). An A/B within one run (`--ab NAME`) is a cross-check,
    not the verdict: switches that flush compiled code stall for seconds and read the on arm ~2% low, and `speed_pct`
    is the emulated clock, which native stand-ins and ports charge for work they did natively. **Do not judge a change
    on the scripted walk** (`--press`): the input is sampled when the guest polls the pad, so a change that shifts

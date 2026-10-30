@@ -2620,6 +2620,43 @@ repeatability. The stand-in was adopted on the title cutscene at ~40,000 calls a
 decides it (jobs 1588-1591; 1588, hlegd off: cutscene 40.90, later 22.98, movie 14.78). Same family of error as
 C41 - the arms were not what they looked like - by a different mechanism.
 
+### Within-session repeatability broke down in a long batch: interleave the arms (jobs 1574-1607, 2026-10-30)
+
+**The "two runs an arm agree to ~0.1%" rule held only while a batch was short.** Over ~3 hours of continuous
+running on 2026-10-30 the console's output drifted ~2.5-3% *within one session on one build*, which is 25x the
+assumed noise floor and large enough to swamp every result the day was chasing.
+
+| arm | first run | later run | within-arm spread |
+|---|---|---|---|
+| Mario Party 4, old defaults | 9.023 | 8.800 | **2.5%** |
+| Mario Party 4, new defaults | 9.238 | 8.998 | **2.7%** |
+| Wind Waker, old defaults | 6.079 | 5.923 | **2.6%** |
+| TP heavy area, old defaults (both early) | 7.233 | 7.231 | 0.03% |
+| TP heavy area, new defaults (both early) | 7.215 | 7.222 | 0.10% |
+
+**What it is not:** not the scene diverging (draws and vertices a picture agree to 0.1% between the runs of every
+arm, and the emulated windows match - this is not C41), and not downclocking (the measured clock is 851-852 MHz in
+every job). **What moves with it:** `cpu_pct`, core 0's own share, falls by about as much as the frame rate -
+Mario Party 4 old 99.03 -> 96.14, new 99.72 -> 96.54, Wind Waker old 100.81 -> 97.86. So core 0 is getting less
+done per real second for the same work. The cause is not identified; the apparatus (a perf.csv opened in append
+mode and grown all session, the relay stream, heap state across state loads) is the first place to look.
+
+**Consequences, applied to the same day's results:**
+- **A paired difference survives; an absolute level does not.** Mario Party 4 reads +2.38% early (9.238 / 9.023)
+  and +2.25% late (8.998 / 8.800) - the arms drifted together, so the comparison holds. The default set's
+  **+2.3% in Mario Party 4 therefore stands.**
+- **Any comparison across batches below ~3% is void.** That includes the heavy-area bisect of jobs 1596-1603,
+  whose arms ran late against a reference (1571, 1585) from hours earlier. Its arithmetic says so by itself: the
+  four switches measured one at a time sum to **+2.43%** while all four together measure **-0.19%**, and two arms
+  had ~1% internal spread against 0.01-0.10% in the tight ones. **Do not read the per-switch figures from that
+  batch**; jobs 1608-1615 re-run it with a reference interleaved before every arm.
+- **The heavy area's -0.19% for the set is the one cross-arm figure that survives**, because both its pairs
+  (1570/1584 old, 1571/1585 new) ran early and each agreed internally to 0.03% and 0.10%.
+
+**Method, from here:** in a batch longer than about half an hour, **interleave the arms** (reference, arm,
+reference, arm) and score each arm against the reference run next to it in time, never against a batch mean from
+earlier. Quote the within-arm spread always: today it was the spread, not the difference, that gave the game away.
+
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 
 Frames a second is the emulated clock rate while the game stays locked to two fields a picture, so a direction's

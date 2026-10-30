@@ -54,8 +54,14 @@ Each of these was learned the hard way, and a submission that ignores them canno
   without the game getting faster. Frames a second is what the game delivers.
 - **The device drifts ~2% between days** and a rebuild moves a baseline by up to ~0.8%. A baseline from last week
   against a change from today measures the weather.
-- **Two runs an arm.** On a state that takes no input they agree to ~0.1%, which is how a 0.5% effect becomes
-  believable. Single runs have reversed on repeat in this project more than once.
+- **Two runs an arm.** On a state that takes no input they agree to ~0.1% **in a short batch**, which is how a 0.5%
+  effect becomes believable. Single runs have reversed on repeat in this project more than once.
+- **In a long batch, interleave the arms.** Over ~3 hours of continuous running on 2026-10-30 one console drifted
+  **2.5-3% within a single session on one build** - 25x that floor - with the scene identical (draws a picture
+  within 0.1%) and the clock steady. The cause is not known. So run reference, arm, reference, arm and score each
+  arm against the reference *next to it in time*; quote the within-arm spread every time, and prefer a paired
+  difference to an absolute level. A submission whose two arms were measured an hour apart cannot be used for an
+  effect under ~3%.
 
 ## How a submission is checked
 
