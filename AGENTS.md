@@ -25,7 +25,12 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    ones.
 3. **Measure, do not guess.** A performance change is judged by **separate whole runs on real hardware, on a scene
    that takes no input**, scored on **frames a second** (`core/tools/runs.py`): two runs an arm, one session, one
-   build. Such runs agree to **0.07%** once the seconds core 0 did not get are left out, which `runs.py` does by
+   build. **Measure it against the *current* defaults, and record I-cache misses beside frames a second** - switches
+   that both move instruction-fetch pressure cannot both be paid out of the same cache lines, and one switch's best
+   setting can depend on another's: with `--psflush` off, `--port-hooks 503` beats 243 by +0.37%; with `--psflush`
+   on, 503 *loses* to 243 by 0.42% (C49, measured 2026-10-30). A figure taken at an older baseline is not evidence
+   about today's, and **the ledger's entries must not be added up** - where they share the cache budget some of them
+   cancel, which is why the headline numbers have moved far less than the entries suggest. Such runs agree to **0.07%** once the seconds core 0 did not get are left out, which `runs.py` does by
    default: the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
    and a run that caught several severe ones read up to **3.2% slow with nothing saying so** (17 of 136 logs on
    disk; it is what looked like "session drift" on 2026-10-30 until `pmu_mcyc` named it). The periodic shot is off

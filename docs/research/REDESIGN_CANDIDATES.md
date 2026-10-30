@@ -1111,7 +1111,39 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
 - **Measurement:** for one pair that is known sub-additive, record hot words per guest instruction and I-cache misses
   for each arm and for both together. If the footprint saving of the pair is less than the sum of the singles, the
   hypothesis holds and the ledger needs a note on every stacked claim.
-- **Re-evaluate when:** that pair is measured. Also worth re-reading the ledger's "as a set" claims against it.
+- **ANSWERED 2026-10-30, and it is worse than the hypothesis: the ranking of one switch reverses depending on the
+  other.** Four arms on `tp_area2`, build `dbac5779b30d8a92`, two runs an arm, within-arm spreads 0.04-0.10%:
+
+  | arm | frames/s | vs A | I-cache misses |
+  |---|---|---|---|
+  | **A** `--port-hooks 243`, psflush off | 7.2140 | - | 8.215 M/s |
+  | **B** `--port-hooks 243`, **psflush on** | **7.2755** | **+0.85%** | **8.152 M/s (-0.77%)** |
+  | **C** `--port-hooks 503`, psflush off | 7.2405 | +0.37% | 8.255 M/s (+0.49%) |
+  | **D** `--port-hooks 503`, psflush on | 7.2450 | +0.43% | 8.251 M/s (+0.44%) |
+
+  Additively D should be **+1.22%**; it measures **+0.43%** - sub-additive by 0.79 points, and **D is 0.42% worse
+  than B alone**, so adding a second measured gain *lost* speed.
+- **The mechanism, visible in the counters:** the two switches pay in different currencies. `--psflush` buys
+  **-0.77% I-cache misses** and returns +0.85% speed, almost exactly 1:1 - its gain *is* the cache. The extra ports
+  in 503 **add 0.49% more misses** and are still +0.37% faster, because they do less work than the guest code they
+  replace and pay part of it back in fetch. Put together, the ports' fetch cost **cancels the stand-in's cache
+  saving** (D's misses are C's, 8.251 against 8.255) and only the work saving survives. Two changes cannot both be
+  paid out of the same cache lines.
+- **So one switch's best setting depends on another's:** with psflush **off**, `--port-hooks 503` beats 243 by
+  **+0.37%**; with psflush **on**, 503 *loses* to 243 by **-0.42%**. The ranking reverses. Every "measure one switch
+  against the baseline" result in this project is therefore conditional on the rest of the baseline, and a default
+  decided while another default was wrong may be the wrong default now.
+- **What to do about it, applied immediately:** re-measure any port or stand-in decision at the *current* default
+  rather than reusing a figure taken at an older one - `--port-hooks 1779` (bits 9+10) read +0.64% against the 243
+  default with psflush off and is being re-run with psflush on (jobs 1667-1668) before anything is banked, and Wind
+  Waker's +3.2% for 503 is being re-checked the same way (1669-1672). Record **I-cache misses beside frames a
+  second** for every such decision, since that is what says whether two changes can coexist; `# jit words per guest
+  instruction` now prints three decimals for the same reason (one could not resolve 0.8%).
+- **It also explains the twenty-day puzzle:** the ledger's entries sum to far more than the headline numbers have
+  moved. Where entries share the I-cache budget they cannot be added, and some of them cancel. The ledger is not
+  wrong about each measurement; it is wrong to read it as a total.
+- **Re-evaluate when:** more pairs are measured. Worth re-reading every "as a set" claim against this, and the
+  per-switch defaults chosen before 2026-10-30 in particular.
 
 ## C50. The data micro-TLB: 3.09 M misses a second, never examined (2026-10-30)
 
