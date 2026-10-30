@@ -2474,6 +2474,33 @@ done
   inlining load is one candidate. Not chased further; off.
 - **Lesson:** a port whose own time falls can still lose; only whole runs decide.
 
+### Why a port pays or loses: its own code footprint (jobs 1491-1534, 2026-10-29)
+
+- **20.2% of core 0 runs inside port code** in TP's heavy area (job 1533, calls x us per call from the `# port 10s`
+  lines): the J2D pane walk 5.7% (2,291 calls per 10 s at 249.7 us), the PNGP matrix load 5.6% (73,941 at 7.5),
+  the minimap decoration 3.4% (944 at 364.7), J3DMaterial::diff 2.9% (11,450 at 25.1), J3DSys::reinitGX 2.4%
+  (2,054 at 116.9), J2DMaterial::setGX 0.2%. Against the static-Ordon bisect, their worth is +0.9%, **-0.5%**, ~0,
+  +2.2%, +0.9%, +0.2%.
+- **The PNGP port loses because its native code fetches more than the guest code it replaces.** The guest function is
+  0xa0 bytes (40 instructions); the port's C path is span checks, 24 guest words read and byte-swapped, a paired-single
+  matrix concat, an inverse transpose and 94 pipe bytes. Turning it off (PMU columns, means from 80 s):
+
+  | scene | I-cache misses | instruction-fetch stalls | instructions retired |
+  |---|---|---|---|
+  | heavy, port on | 8,236 k/s | 218 M cycles/s | 265 M/s |
+  | heavy, port off | 7,827 (**-5.0%**) | 209 (**-4.1%**) | 268 (+1.1%) |
+  | Ordon, port on | 8,413 k/s | 241 M cycles/s | 257 M/s |
+  | Ordon, port off | 8,007 (**-4.8%**) | 231 (**-4.1%**) | 259 (+0.8%) |
+
+  Fewer misses, fewer stalls and **more** instructions retired with the port off, in both scenes. So the rule is
+  sharper than "a port must do less than the guest code": **a port must remove much more guest code than the native
+  code it adds**, because instruction fetch, not work, is what it is charged. A 40-instruction guest function can
+  never pay as a port.
+- **Instruction-fetch stalls are 27% of core 0** (218 of 804 M cycles a second in the heavy area). That is the largest
+  single line item on core 0 and the reason the port *set* is worth +10.6% while its parts sum to +3.7%: the set keeps
+  whole guest functions out of the compiled code. Any 10%-class lever has to shrink what core 0 fetches - a bigger
+  port that replaces a whole subtree, or work skipped outright - not shorten what it executes.
+
 ### OPT_FDIRECT on the device: not an established gain in gameplay (jobs 1510-1525, 2026-10-29)
 
 - **What (`--fdirect on`, off by default; C42):** float arithmetic writes frD's lane register instead of a scratch
