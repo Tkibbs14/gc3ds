@@ -853,8 +853,23 @@ static const char* const kProfNames[PROF_N] = { "gx", "disc", "log", "jitc", "pr
 _Static_assert(PROF_N == 24, "kProfNames must list every PROF_ area");
 static JitOpCounts g_fbPrev;  // fallbackRun at the last dump
 
+// perf.csv is appended by every run and was never rotated, so it grew without bound: ~1.4 MB per 240 s relay job,
+// about 96 MB in one day of measuring on 2026-10-30, and the card then had under 6 MB free - the device could no
+// longer download a build and six queued jobs failed with curl's "Failure writing output to destination". One
+// generation is kept (perf.prev.csv), so the pair is bounded at ~2x the cap, and every relay job's log is on the
+// relay and in core/out/ anyway. Rotating also keeps appends off the slow end of a huge FAT file.
+#define PERF_CAP (24u << 20)
+static void perf_rotate(void) {
+    struct stat st;
+    if (stat("sdmc:/gc3ds/perf.csv", &st) || (u32)st.st_size < PERF_CAP) return;
+    remove("sdmc:/gc3ds/perf.prev.csv");
+    if (rename("sdmc:/gc3ds/perf.csv", "sdmc:/gc3ds/perf.prev.csv")) remove("sdmc:/gc3ds/perf.csv");
+    printf("perf.csv was %lu MB: rotated to perf.prev.csv\n", (unsigned long)(st.st_size >> 20));
+}
+
 static void perf_open(const char* path) {
     mkdir("sdmc:/gc3ds", 0777);
+    perf_rotate();
     g_perf = asyncfile_open("sdmc:/gc3ds/perf.csv", "a");  // written to the card by a thread on core 1
     if (!g_perf) return;
     g_perf = relay_tee(g_perf);  // a relay job also streams the log (relay.c)
