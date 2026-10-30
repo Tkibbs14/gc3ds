@@ -185,6 +185,39 @@ Status values: **parked** (not started, waiting for its trigger), **next** (chos
   unreachable, so the heavy area degrades instead of freezing, and the existing fade / JUTFader guards still force a
   draw. `hle_tp.c`'s self-test drives it with a synthetic clock (AGENTS' checks table); four planted bugs must fail
   it, including one that clumps draws while keeping the right rate, since even spacing is the claim.
+### C9b. The pacer on hardware: it holds one game speed, and the *floor* governs a heavy scene (jobs 1638-1643)
+
+Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guards. **The design claim holds.**
+
+| | fixed ratio N=2 | target 50 | target 60 | target 70 |
+|---|---|---|---|---|
+| **Ordon** game frames/s | 16.0 | **15.2** (51%) | 18.8 (63%) | 22.4 (75%) |
+| **Ordon** pictures/s | 8.0 | 7.83 | 6.64 | 5.00 |
+| **heavy** game frames/s | 10.8 | **15.9** (53%) | 15.9 (53%) | - |
+| **heavy** pictures/s | 5.3 | 1.35 | 1.44 | - |
+
+- **One target really does hold one game speed across scenes**, which is what the whole idea was for: at target 50
+  Ordon runs 15.2 game frames a second and the heavy area 15.9, a **4.6% spread**, where the fixed ratio gives 16.0
+  against 10.8 - a **48%** spread. The game no longer slows by a third as you walk into a busy area.
+- **Ordon tracks its target to within +1 to +7%, always slightly fast** (51 / 63 / 75% for 50 / 60 / 70), so it skips
+  a little more than it needs and gives up picture rate for nothing. The overshoot grows with the target, which is
+  what an overestimated skipped-frame cost looks like; a calibration item, not a design one.
+- **In the heavy area the floor governs, not the target.** Targets 50, 60 and **100** all give exactly 15.9 game
+  frames a second and 1.4 pictures a second, all reporting `wants to draw 0.100, floored 159` - the solver asks for
+  less than one picture in ten at every target, so the clamp decides and the target does nothing there. That is the
+  floor test passing (it degrades and *says* it is floored rather than freezing or pinning silently), and it is also
+  the feature's real limit: 53% of full speed at 1.4 pictures a second.
+- **Pacing stays even, which was the other claim.** Gap standard deviation 10.2 ms on a 127.8 ms mean in Ordon at
+  target 50 and 5.3 ms on 699 ms in the heavy area, with the largest gap only 8-9% over the mean and no spikes -
+  against 5.3 ms on 95.3 ms and 3.7 ms on 137.4 ms with no skipping at all. Relatively jitterier, absolutely small.
+- **The open design question, for the owner.** The floor is a *ratio* (never fewer than one picture in ten), which is
+  what produces 1.4 pictures a second in the heavy area. An **absolute picture-rate floor** (never below ~4 a second)
+  would instead make a heavy scene abandon the target: a slower game you can watch rather than a correctly paced
+  slideshow. Both are a line of code; which is right is a taste question about what should give way when a scene is
+  too heavy, and nobody has looked at either on a screen yet.
+- **Re-evaluate when:** the owner has watched Ordon at target 60-70 (6.6 and 5.0 pictures a second, the band worth
+  seeing) and said which floor he wants.
+
 - **The fixed ratio is measured; the pacer is built but unseen.** `--gfskip-target` is in build
   `12b2a797a2e18bb6`; jobs 1632-1637 ask the question the design rests on - whether one target holds **one game
   speed across scenes** (50% and 60% on both Ordon and the heavy area, where the fixed ratio gives 16.0 and 10.8

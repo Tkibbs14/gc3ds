@@ -2736,12 +2736,19 @@ never completed and were cancelled.
 - **`--port-hooks 243` is vindicated.** Wind Waker's +3.2% pays for the heavy-area loss several times over, so it is
   a real scene-dependent trade-off and keeping it is right. (References: Mario Party 4 9.278 / 9.279 / 9.259 against
   `--port-hooks 503` 9.273 / 9.238; Wind Waker 6.241 / 6.236 against 6.044.)
-- **`--psflush off` is now the opposite of what it was banked as**, and points at reverting it: a loss in TP's heavy
-  area (-0.96%, two batches), a loss in Mario Party 4 (-0.44%), neutral in Wind Waker, and +0.33% in static Ordon
-  only. It was made the default on 2026-10-30 on the strength of being "a loss in all four games" when *on* - that
-  reading came from runs scored before the screenshot steal was understood, and three of four scenes now disagree.
-  **Not reverted:** Mario Party 4 and Wind Waker are one run each here, and `--psflush on` in Mario Party 4 (9.313)
-  came from one of the truncated logs. The four cancelled runs are what settles it.
+- **`--psflush off`: the provisional -0.44% in Mario Party 4 was noise from a truncated log, and the switch is
+  simply neutral in both of those games.** Re-run properly on build `dbac5779b30d8a92`, two runs an arm with
+  references on the same build (jobs 1644-1651): Mario Party 4 off 9.188 / 9.180 against on 9.187 / 9.187
+  (**+0.03%**), Wind Waker off 6.212 / 6.215 against on 6.215 / 6.213 (**+0.01%**), within-arm spreads 0.00-0.09%.
+  The single-run figure came from the log the full card truncated; this supersedes it.
+  **So what remains against `--psflush off` is TP's heavy area alone** (-0.96%, two independent batches on the older
+  build) against +0.33% in static Ordon from this morning's pre-filter scoring. Jobs 1652-1659 measure both TP
+  scenes on `dbac5779b30d8a92`, two runs an arm, which is what a default should turn on. If Ordon is neutral too,
+  reverting is unambiguous: a ~1% loss in the heaviest scene bought nowhere else.
+- **Note the rebuild movement, and why fresh references were queued rather than reusing the morning's:** the same
+  default settings read Mario Party 4 9.184 on `dbac5779b30d8a92` against 9.278 on `103456ecbdfe9264` (-1.0%) and
+  Wind Waker 6.214 against 6.238 (-0.4%). That is the documented ~0.8% a rebuild moves a baseline, and it is larger
+  than the effect being chased.
 
 ### Ranking directions by emulated clock delivered per unit of core-0 wall time (job 1569, heavy area)
 
