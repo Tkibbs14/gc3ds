@@ -420,8 +420,25 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   anything in `getNewColor` / `setTevMode` not reproduced - the give-up histogram then shows the residue instead of
   it being silent. Checks: `PORT_CHECK=1` on the PC over TP's title states, `--port check` on the 2DS in a scene with
   the HUD, and `porthash.py` entries for each newly followed guest function.
-- **Re-evaluate when:** immediately - this is the next piece of work. If it is built and the walk's coverage does not
-  rise, the line histogram says which test refuses next, which is a result either way.
+- **The two halves are COUPLED, and J2DPicture alone is worth exactly nothing (a peer's PORT_CHECK on the owner's
+  PC, 2026-10-31).** The port was built, its hashes generated and three faults in it fixed - and then
+  `picture_draw_self` ran **0 times** over the title states, so the "0 differed" it reported was vacuous. The
+  measurement that explains it: with the port on, the walk accepts 1,236 more subtrees and visits **412 J2DPicture
+  panes, every one of them hidden** (`vis` false). None had no box, none were clipped. **Every *visible* picture
+  sits in a subtree that also holds a `J2DTextBoxEx` pane, so the subtree is still refused** - of the 1,648 picture
+  refusals, 412 simply move one pane further on and are refused by `0x803075AC` instead (7,931 -> 8,343).
+  **A subtree is all-or-nothing: the walk cannot accept it unless *every* pane class in it is accepted**, so the
+  ~1,184 picture and ~3,182 text refusals a window are not independent quantities that can be attacked separately.
+  The 1,236 "vanishing" hook calls are also explained and are not a fault: an accepted parent absorbs its children's
+  hooked calls, so they are never made - which is what a subtree port is supposed to do.
+- **So the order of work is forced:** `J2DTextBoxEx` is the half that unblocks anything, and it is **already built
+  and exact as port bit 10** (`PORT_TEXT`), off only because it lost as a standalone entry hook. Folding that into
+  the walk is the whole of C53's value; `J2DPicture` is the cheap passenger that comes along with it.
+- **And it cannot be checked on the PC at all.** The title states have no visible picture outside a text subtree, so
+  exactness for this path needs the 2DS (`--port check` in a scene with the HUD and minimap, which AGENTS already
+  says the PC states do not cover) or the text half first.
+- **Re-evaluate when:** the J2DTextBoxEx half is folded into the walk. Until then `--port-picture` stays off and its
+  "0 differed" must not be quoted as evidence of anything - it covers only walks that skip hidden pictures.
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
@@ -1336,7 +1353,33 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
      OPT_IND2 exists precisely to absorb collisions, so the two should be swept together.
 - **Expected:** unknown by construction, which is the point. The upper bound is whatever share of the 22.1% data
   stalls C47 attributes to JIT metadata.
-- **Re-evaluate when:** the probe counter has run on the device.
+- **ANSWERED AND CLOSED (2026-10-31, jobs 1733, 1741-1749). The table is correctly sized; shrinking it loses.**
+  The probe counter ran first: TP's heavy area does **6.46 probes per 1,000 guest instructions, ~800,000 a second**,
+  91.0% hitting the first slot, **8.8% the second** (so OPT_IND2 earns its ~+0.9% - the qemu shapes that showed
+  *zero* second-slot use were unrepresentative, and recording that as "moves the burden of proof" rather than
+  settled is the only reason it did not become a false conclusion), and **0.2% missing**. That closed the eightfold
+  disagreement between the two guesses on record (~1.35 M/s against ~167 k/s): the truth is 0.8 M/s.
+
+  Then the `FAST_BITS` sweep, three arms from one commit with only `-DFAST_BITS` differing, **interleaved**
+  16/14/12/12/14/16 so session drift could not land on one arm:
+
+  | `FAST_BITS` | tables | frames a second | spread | against 16 |
+  |---|---|---|---|---|
+  | **16** (the default) | 2,048 KB | 7.296 / 7.296 | 0.00% | - |
+  | 14 | 512 KB | 7.261 / 7.251 | 0.14% | **-0.55%** |
+  | 12 | 128 KB | 7.034 / 7.039 | 0.07% | **-3.56%** |
+
+  Monotonic, and both losses are far outside the heavy area's ~0.2% floor. **The footprint theory is wrong:** 2 MB
+  spanning 512 pages probed 800,000 times a second looked like it had to be costing cache, and the arithmetic said
+  ~2.9% of core 0 if every probe stayed in L2 - but whatever it costs, collisions cost more. At 0.2% misses the
+  table is doing its job, and the headroom to trade hit rate for footprint does not exist.
+- **What this rules out, so nobody re-runs it:** shrinking the indirect tables, in any direction. `FAST_BITS` stays
+  16. C46 and the rest of the table's cache cost are closed with it - the sweep bounds them from above, because if
+  the tables were costing several percent in cache, the 16x smaller one would have recovered some of it and it lost
+  3.56% instead.
+- **Re-evaluate when:** never, unless the probe rate changes by an order of magnitude (it is reported by
+  `--indstat`, so a future scene can be checked cheaply) or the dispatcher's miss handling gets much cheaper, which
+  would change the collision side of the trade rather than the footprint side.
 
 ## C49. Why switch effects are sub-additive - it affects every default decision (2026-10-30)
 
