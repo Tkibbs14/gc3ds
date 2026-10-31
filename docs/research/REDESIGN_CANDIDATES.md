@@ -436,7 +436,15 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   the walk is the whole of C53's value; `J2DPicture` is the cheap passenger that comes along with it.
 - **And it cannot be checked on the PC at all.** The title states have no visible picture outside a text subtree, so
   exactness for this path needs the 2DS (`--port check` in a scene with the HUD and minimap, which AGENTS already
-  says the PC states do not cover) or the text half first.
+  says the PC states do not cover) or the text half first. **Queued as jobs 1755-1756** (`--port-picture on` with
+  `--port check` and `--port plant`, static Ordon).
+- **The float tail is 11% and is not what the record said** (jobs 1753-1754, 2026-10-31). After the class test
+  (82%), the next-largest give-up reason is `plain()` refusing a float, and it is **100% NaN or infinity with zero
+  denormals** - 864 per 10 s in Ordon, 640 in the heavy area, all in `psmtx_concat`. The nine-day-old claim that
+  these were denormals came from a counter that merged the two cases; CONTRIBUTOR_TASKS 9 is corrected in place and
+  is **no longer a prerequisite** for this entry or for a subtree port. Matching Gekko's NaN payloads means routing
+  `ps_madd` through `gekko_softfp.c`, so it is worth doing only after C53 and only after the counter is split again
+  (NaN against infinity).
 - **Re-evaluate when:** the J2DTextBoxEx half is folded into the walk. Until then `--port-picture` stays off and its
   "0 differed" must not be quoted as evidence of anything - it covers only walks that skip hidden pictures.
 

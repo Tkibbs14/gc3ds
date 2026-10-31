@@ -1,5 +1,67 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-31)
 
+> **▶ 2026-10-31 (later): the first decoded guest stack profile, C53 answered, and the next port written but
+> unchecked.** Builds `088fb0df6610` -> `04824e949fd12861`, all on the cloud toolchain (devkitARM 16.1.0: compare
+> only against that baseline, see the block two down).
+>
+> **C53 is answered and it is the next piece of work** (jobs 1738-1740, the per-line give-up histogram). The pane
+> walk refuses ~5,600 calls per 10 s in the heavy area, and **100% of them are one test: the pane-class test**, with
+> **exactly two classes and no tail** - `J2DPicture::drawSelf` (0x802FDB90, 108 bytes) and
+> `J2DTextBoxEx::drawSelf`. The reason code those refusals print under was labelled "tev block" until today and has
+> **21 sites**; `otherTev`, the only field that records a real unported TEV block, reads **0** in the same runs. So
+> the open direction that read "other TEV block types" was sized from a bucket of unrelated causes and had never
+> actually been sized at all. Nothing in the walk needs a TEV block ported.
+> **The two classes are coupled:** in TP's HUD every visible `J2DPicture` shares a subtree with a `J2DTextBoxEx`, so
+> taking one without the other buys little - and the text half **is already built and exact as port bit 10**, off
+> only because it lost as a standalone *entry hook*. Folding it into the walk is the subtree direction whose
+> component is already written.
+>
+> **The J2DPicture half is now written too** (`--port-picture`, 7e72ea8 + 4ba02a6), **off and it must stay off**:
+> a cloud session can write it from the decompilation but cannot run `PORT_CHECK=1` without a disc image. A peer
+> session on the owner's PC generated its hashes and found three real faults in the first draft, one of which was
+> that **the port never ran at all** - `walk_scan` passed the `drawSelf` test and then refused on `rewriteAlpha`
+> (0x802FF65C). A port that silently never fires reads exactly like a port that is neutral. `# port walk-scan 10s`
+> now prints the unported `drawSelf` addresses so that cannot happen quietly again. **Device `--port check` /
+> `--port plant` runs are queued (jobs 1755-1756); the port stays off until they read 0 differed.**
+>
+> **Where core 0's guest time actually goes, read for the first time** (job 1750). `stack_funcs.py` needs
+> zeldaret's symbol map, which lives outside the repository and had never been fetched into a session, so **inclusive
+> time per subsystem had never been read on this project**. Past the framework spine the tree is ~50% under the actor
+> method dispatch and ~36% under the painter; the self-contained subtrees are `J2DPane::draw` **<=9.5% inclusive /
+> 5.49% leaf** (the largest single leaf in the profile), the J3D joint-calc tree **~5.2%** (C54, unexplored),
+> `dMeter2Draw_c::draw` 9.53%, `J3DDrawBuffer::draw` 10.0%, `J2DScreen::draw` 8.49%, the minimap ~6.9%,
+> `J3DShapePacket::drawFast` 6.92%.
+> **Two consequences.** **C53's prize is several percent of core 0, not the ~2.2% on its ledger line:** a taken call
+> produces no guest samples, so the pane walk's inclusive share *is* the refused walks, and the +2.2% measured what
+> the walk captures at ~29% coverage. And **inclusive and leaf profiles answer different questions** - a subsystem
+> that is 11% inclusive and 0.9% leaf is a subtree port and is invisible to a leaf profile, which is how
+> "matrix-chain HLE (flat profile)" came to be rejected.
+> **The mistake inside that, kept because it will recur:** C54 was opened at 11.42% off `recursiveCalc`'s inclusive
+> share, which is **inflated by its own nesting depth** - its non-recursive parent reads 5.17%. I quoted the tool's
+> own warning about this and then ignored it the same hour. Corrected the same day, and `stack_funcs.py`'s docstring
+> now says to quote the nearest non-recursive ancestor where it cannot be missed.
+>
+> **The "denormal give-up" that blocked big ports does not exist** (jobs 1753-1754). `plain()`'s counter merged
+> denormals with NaNs, and the hedge "(or NaN)" was dropped every time the figure was requoted, so
+> CONTRIBUTOR_TASKS 9 has read "2,108 of 2,134 give-ups are `plain()` refusing a denormal" since 2026-10-22. Split,
+> it reads **denormal 0, plain nan/inf 13,216** in static Ordon and **0 / 9,544** in the heavy area - 864 and 640 per
+> 10 s, every one of them in `psmtx_concat`'s matrix elements. Floats are ~11% of give-ups against the pane-class
+> test's 82%, and the remedy costs much more than was assumed: the VFP runs with default-NaN on (FPSCR 0x03000010),
+> so matching Gekko means routing the whole `ps_madd` chain through `gekko_softfp.c`, not flushing one input.
+> **Nothing waits on it** - task 9 is no longer a prerequisite for task 10, and whoever picks it up should split the
+> counter again (NaN against infinity) first, because infinities need no payload matching.
+>
+> **C48 and C46 are closed** (`--indstat`, qemu): `FAST_BITS` stays 16. ~800 k probes a second, 0.2% misses,
+> collisions rather than footprint dominate, and a dispatcher return costs ~480-820 cycles. **C51 is redirected:**
+> `gpr_traffic.py` says 65-80% of GPR traffic is write-back, so spilling GPRs to VFP registers attacks the wrong
+> half; C47 comes first. **C52's predicted cause is falsified:** the fixed build reports `impossible samples 0,
+> probed 0` and still overshoots 6-10%, so the live hypothesis is a state-dependent skip cost needing a two-state
+> estimate.
+>
+> **Next:** C53 - fold `J2DTextBoxEx` into the pane walk (the component exists; the walk's class test is the only
+> thing refusing it), after jobs 1755-1756 settle the J2DPicture half's exactness. Then C47, which gates C51.
+> Still owed from the block below: the whole-game qemu JIT check for `--indstat`, on a machine with a disc image.
+
 > **▶ 2026-10-31: the frame pacer was silently doing nothing, and the headline re-measured on a fresh build.**
 > Build `2ba59806b89d7a22` (`--gfskip-minfps` added), then the fix in `2bc8c19` which still needs a device build.
 >
@@ -152,7 +214,9 @@
 >
 > **Open, in the order the budget supports:** finish the heavy-area bisect and fix whichever default regressed;
 > **larger ports where a whole subtree is replaced** (J3D packet draw, the remaining TEV block types - do the denormal
-> give-up first, CONTRIBUTOR_TASKS 9), since the set is superadditive and small functions lose; the ports'
+> give-up first, CONTRIBUTOR_TASKS 9) [**corrected 2026-10-31: there are no denormal give-ups (jobs 1753-1754) and
+> nothing waits on that task; "the remaining TEV block types" was sized from a mislabelled reason code and the real
+> blocker is C53's pane-class test** - see the newest block], since the set is superadditive and small functions lose; the ports'
 > `port_commit` (2.61% of core 0, and the J3D light port's one-copy commit is a proven technique not yet applied to
 > the other four); C40 (~1.6% every game); C32b; C1; frame skip as a user option.
 

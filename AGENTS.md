@@ -350,7 +350,11 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   them, ~3.4x, on a port credited +2.2%. **C53 is the next piece of work.** The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
-  **rank candidates by work per call, not by call count** (and do the denormal give-up first, CONTRIBUTOR_TASKS 9);
+  **rank candidates by work per call, not by call count**. **The "denormal give-up" that CONTRIBUTOR_TASKS 9 called a
+  prerequisite for big ports is not one** (corrected 2026-10-31, jobs 1753-1754): with the counter split, the ports'
+  float give-ups are **100% NaN or infinity and zero denormals** (Ordon 13,216 all-time, heavy area 9,544, all in
+  `psmtx_concat`), they are ~11% of give-ups against the pane-class test's 82%, and matching Gekko's NaN propagation
+  costs far more than flushing a denormal would have. Nothing waits on it;
   the ports' `port_commit` (2.61% of core 0, and the J3D light
   port's one-copy commit turned it from negative to positive at the time, so the technique is proven and unapplied
   elsewhere - though that port's +2.7% is now inside bit 6's, and PNGP's commit is already one copy, so the next

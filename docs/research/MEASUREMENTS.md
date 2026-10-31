@@ -2907,6 +2907,31 @@ measured neutral), `reinitGX` 2.21% (bit 7, on) and `GXBegin` 2.12%. Every one o
 exists, running on the calls it refuses - so the residue is give-ups, not unported subsystems, which is the same
 conclusion the give-up histogram reached from the other direction.
 
+### The ports' float give-ups are 100% NaN/infinity and contain no denormals (jobs 1753-1754, 2026-10-31)
+
+`plain()` refuses any single the VFP and the Gekko would treat differently, and until today it counted denormals and
+NaNs in **one slot**. Split (`836ac60`), 180 s runs at the current default hooks on build `04824e949fd12861`:
+
+| scene | job | `denormal` | `plain nan/inf` | `fpu off` | per 10 s | refusing site |
+|---|---|---|---|---|---|---|
+| static Ordon | 1753 | **0** | **13,216** | 85 | 864 | `port_j2d.c:892` (`psmtx_concat`, 5 at `:2530`) |
+| heavy area | 1754 | **0** | **9,544** | 69 | 640 | the same |
+
+Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82% and the root-pointer check ~7%.
+
+> **Correction to the 2026-10-22 figure (job 812, `docs/research/LIBRARY_PORTS.md`), which must not be deleted:**
+> that run recorded "**2,108 of 2,134 float give-ups are `plain()` refusing a denormal (or NaN) input**". The count
+> is right; the attribution was never measured, because the counter could not separate the two. The hedge was then
+> dropped each time the number was requoted, and CONTRIBUTOR_TASKS 9 has carried "refusing a denormal" as a fact
+> for nine days, with AGENTS and HANDOFF naming it a **prerequisite for the whole subtree-port direction**.
+> **Three things change.** The *remedy* is unaffected (`gekko_softfp.c` is exact for NaNs too). Its **cost is much
+> higher than assumed**: flushing a denormal input is one line, while a NaN needs Gekko's payload propagation
+> through the whole `ps_madd` chain, since the device's VFP runs with default-NaN on (FPSCR 0x03000010, DN+FZ -
+> gcbench 3) and discards every input payload. And the **prize is an 11% tail, not a prerequisite**: the thing
+> actually blocking a subtree port is C53's pane-class test, whose missing half is already built as port bit 10.
+> Before anyone builds this, split the counter once more - NaN against infinity - because infinities need no
+> payload matching and may be all of it.
+
 ### The baseline on devkitARM 16.1.0 (jobs 1723-1732, 2026-10-31)
 
 Two runs an arm, one session, one build (commit `088fb0df6610`, relay build `c23935942a982a7a`), 240 s each and

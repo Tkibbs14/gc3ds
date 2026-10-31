@@ -96,6 +96,22 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
   - **For the pane walk:** a pane with such an input should be computed exactly through the interpreter's soft float
     (as hle_ps.c's SOP / SMADD do), for that pane only, rather than aborting the subtree. It is ~2% of panes, so the
     slow path's cost is small.
+
+> **Correction, 2026-10-31 (jobs 1753-1754, build `04824e949fd12861`): there are no denormals. Every one of these
+> give-ups is a NaN or an infinity.** The 2026-10-22 counter merged the two cases into one slot, so "denormal (or
+> NaN)" was a guess that the instrument could not settle; the parenthesis turned into "denormal" everywhere it was
+> quoted afterwards. `plain()` now counts them separately (`# port float give-ups`: `denormal` and `plain nan/inf`)
+> and reads, over whole runs at the current default hooks: static Ordon **denormal 0, plain nan/inf 13,216** (864 per
+> 10 s, all at `port_j2d.c:892`, `psmtx_concat`'s matrix elements) plus 85 for the FPU off; heavy area **denormal 0,
+> plain nan/inf 9,544** (640 per 10 s) plus 69. Floats are ~11% of all give-ups in both scenes; the pane-class test
+> is 82% (C53).
+> **What this changes.** The *remedy* is unaffected - softfp is exact for NaNs too - but its **cost is not what was
+> written**: flushing a denormal input is one line, while matching Gekko's NaN propagation means routing the whole
+> `ps_madd` chain through `gekko_softfp.c`, because the VFP runs with default-NaN on (FPSCR 0x03000010, DN+FZ) and
+> throws every input payload away. And the *prize* is 11%, not the "prerequisite for big ports" it was treated as:
+> C53's one class test is the blocker, and its missing component is already built (port bit 10). So this is no longer
+> a prerequisite for anything - it is an 11% tail to pick up after C53, and worth a second counter split (NaN against
+> infinity) before anyone builds it, since infinities need no payload matching.
 - **The pane walk's design, read from the machine code (2026-10-20; J2DPane::draw 0x802F67E0, 334 instructions):**
   - Per pane: visible = param && 176(p); the graf context's getGrafType (vtable +32: J2DOrthoGraph 0x802E9C88 `li r3,1;
     blr`, J2DGrafContext 0x802E9664 `li r3,0`); parent = 12(236(p)) when 236(p); bounds valid when 40 >= 32 and 44 >= 36

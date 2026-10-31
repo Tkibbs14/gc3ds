@@ -97,14 +97,23 @@ and why the reported read pointer must advance only after the write) and the one
 **Verify:** a check mode comparing the deferred mirror against the eager one over a run, with a planted difference
 that must be caught; then the usual A/B.
 
-### 9. The give-up that blocks big ports
-**Why:** a native port of a whole subtree is the only port shape that can pay under the fetch rule, and the thing
-stopping one today is that a single denormal input makes a port give up and abandon the subtree: **2,108 of 2,134
-give-ups are `plain()` refusing a denormal** (`docs/research/LIBRARY_PORTS.md`).
+### 9. The float give-up: an 11% tail, and not a denormal one
+**Why:** a port gives up and abandons its whole subtree when a float input is one the host VFP and the Gekko treat
+differently. **Measured 2026-10-31 (jobs 1753-1754): 100% of these are NaN or infinity and *none* is a denormal** -
+static Ordon `denormal 0, plain nan/inf 13,216` (864 per 10 s, all at `port_j2d.c:892` in `psmtx_concat`), heavy area
+`0 / 9,544`. They are ~11% of all give-ups in both scenes.
 **What to do:** compute that one item through the interpreter's exact soft float (as `hle_ps.c`'s SOP / SMADD do)
-instead of aborting, so the subtree continues.
+instead of aborting, so the subtree continues. **Split the counter first** (NaN against infinity): the VFP runs with
+default-NaN on, so a NaN needs Gekko's payload propagation through the whole `ps_madd` chain, while an infinity
+needs none - and nobody knows yet which of the two these are.
 **Verify:** `--port check` on a console (every call also run by the interpreter and compared, 0 differed) and
 `--port plant` to prove the checker still reports a difference.
+
+> **Correction, 2026-10-31.** This task used to read "the give-up that blocks big ports", on **2,108 of 2,134
+> give-ups are `plain()` refusing a denormal** - a figure from a counter that merged denormals with NaNs
+> (`docs/research/LIBRARY_PORTS.md`, job 812), and whose "(or NaN)" hedge was dropped everywhere it was requoted.
+> It is not a prerequisite for task 10: **C53's pane-class test is 82% of give-ups and its missing half is already
+> built** (port bit 10, `J2DTextBoxEx`). Do task 10 first; this is the tail afterwards.
 
 ### 10. A port of a whole subtree
 **Why:** the ports as a set are worth +10.6% while their parts sum to ~3.7% - the difference is the guest code the set
@@ -112,7 +121,8 @@ keeps out of the compiled code. A port must therefore **remove much more guest c
 40-instruction leaf can never pay (one such port was a 0.5% loss). The named candidates are J3D's packet draw and the
 remaining TEV block types.
 **What to do:** read `docs/research/LIBRARY_PORTS.md` ("Entry", and how a context covers a subtree), start from the
-profile of the scene you care about, and do task 9 first.
+profile of the scene you care about. (This used to say "do task 9 first"; it does not - see task 9's correction of
+2026-10-31. The blocker is C53's pane-class test, 82% of give-ups, and `J2DTextBoxEx` is already written.)
 **Verify:** `--port check` with 0 differed, `--port plant` catching a planted difference, and separate whole runs on a
 scene that takes no input.
 **Why this is now the *first* direction and not one of several** (2026-10-30, job 1569): frames a second is the
