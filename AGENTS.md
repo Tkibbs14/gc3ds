@@ -89,7 +89,7 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
 | `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
 | `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
 | `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
-| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image), `arm11_sched.py` (ARM11 cycle model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `docs_stale.py` (rule 7's mechanical documentation checks), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image; its cases are `core/tests/jit/bench/*.S` - `callmany.S` is the one with a many-caller leaf, which is what makes indirect branches happen), `arm11_sched.py` (ARM11 cycle model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `docs_stale.py` (rule 7's mechanical documentation checks), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
 | `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
 | `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
 | `docs/` | Designs, findings and the running log (see README) |
@@ -247,7 +247,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   second by 0.8%, while separate walk runs swing up to 20% because the presses land in another field and Link walks
   elsewhere). Judge a port on a scene that takes no input, never on the walk. The
   FIFO mirror in guest RAM costs Ordon up to 1.6% (C40, parked: no exact way yet).
-- **Added 22-24 October (details in HANDOFF):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
+- **Added 22-24 October (details in HANDOFF; `--tier` turns out to remove 87.5% of indirect-table probes in a
+  many-caller leaf, qemu 2026-10-31, so part of its gain may be fewer indirect branches rather than the inlining -
+  C48):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
   +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
   EFB copies hashed only when reused (`--copystamp`, on: TP +0.7-0.9%), the J2D pane walk (on: Ordon +2.2%). Built, off:
   pre-decoded display lists (`--g2 on`, exact, no speed change: TP and Wind Waker are core-0-bound), `--nskeep`

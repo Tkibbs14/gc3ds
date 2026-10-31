@@ -2861,6 +2861,37 @@ The self-test poisons every warm-up skip sample (400 ms against a 95 ms drawn fr
 within 3% of target; removing the probe reproduces the device exactly (scored mean 95.00 ms, a drawn frame's own
 cost, against a 47.62 ms target).
 
+### The indirect-table probe rate, first measurements (`--indstat`, qemu, 2026-10-31)
+
+C48's counter, built this day. The 2 MB of indirect-branch tables (`FAST_BITS` 16, four tables - the size of the
+whole shared L2) is probed at a pc-derived index on every `blr` / `bctr`, and **the rate had never been measured**:
+the two guesses on record differed eightfold (~1.35 M/s from "21% of exits are indirect" against ~167 k/s from
+`bclr` at 3.30% of hot words). Two `jitbench.py` cases, 486 M guest instructions each, no disc image:
+
+| case | `--tier` | probes per 1k guest instructions | first slot | second slot | missed |
+|---|---|---|---|---|---|
+| `callloop.S` (one leaf, two call sites in one block) | on | **0.00026** (128 in 486 M) | - | - | 128 (all) |
+| `callmany.S` (one leaf, eight call sites) | on | **19.2** | 99.995% | **0** | 512 |
+| `callmany.S` | off | **153.8** | ~100% | **0** | 8 |
+
+- **The region tier removes 87.5% of indirect-table probes, and nobody had attributed that to it.** 153.8 per 1k
+  with `--tier` off is exactly the case's arithmetic (8 returns in a 51-instruction iteration); with it on, one
+  return per iteration survives, because the region inlines the other seven. `--tier` is on by default (Wind Waker
+  +7.2%) and part of that gain may be fewer indirect branches rather than the inlining itself. It also means the
+  device's probe rate varies with how much of a scene's hot code gets regionized.
+- **The second slot was used zero times in all three runs.** OPT_IND2 was adopted on ~+0.9% with no idea why, and
+  this is the first direct evidence about the mechanism: in these shapes it is not second-slot hits. A shape with
+  real index collisions would differ, so this moves the burden of proof rather than settling it.
+- **The rate is not guessable** - five orders of magnitude between two call shapes that both look like SDK code -
+  which is exactly why the earlier estimates disagreed. Where a leaf has one caller the return is *linked* and the
+  2 MB of tables is never touched.
+- **Cross-validated:** `callloop.S` reports 128 probes, all misses, all from `blr`, against the dispatcher's own
+  independent "indirect-table misses 128"; `callmany.S`'s 15,761 "hits out of budget" matches its budget ends. Hot
+  words per guest instruction are unchanged with the counter on (2.670 either way), as stub-only counting should
+  leave them.
+- **Still to do on the device:** the same counter in TP's heavy area and the title (`--indstat on`, a run that is
+  not a speed measurement), then the `FAST_BITS` 16 / 14 / 12 sweep that the rate decides.
+
 ### What other projects on this hardware did, and what transfers (survey, 2026-10-30)
 
 A survey of comparable projects, prompted by the owner asking how others made things playable. Sources are in the

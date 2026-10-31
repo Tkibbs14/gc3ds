@@ -1151,12 +1151,33 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
   `blr`, against the dispatcher's "indirect-table misses 128". One trap found while building it: the stubs are
   emitted once at `jit_create`, *before* the front end calls `jit_set_opt`, so the first version of this counted
   **zero** with the option on; `jit_set_opt` now re-emits them when the bit flips.
-- **First reading, which the device must confirm or refute:** in `callloop.S` (a two-caller leaf called 24 M times)
-  the table is probed only **128 times in 486 M guest instructions** - the returns are resolved as *links* instead.
-  If the device shows anything like that, the 2 MB of tables is nearly cold and shrinking `FAST_BITS` is close to
-  free; if it shows millions of probes a second, the tables are a live cache cost. **Either answer kills or builds
-  this candidate, which is the point.** A synthetic loop is not the game's call graph (one leaf, two callers; the
-  game has many), so this is a prediction to test, not a result.
+- **First readings under qemu, and they span five orders of magnitude** (`jitbench.py` cases, 486 M guest
+  instructions each, probes per 1,000 guest instructions):
+
+  | case | `--tier` | probes per 1k | first slot | second slot | missed |
+  |---|---|---|---|---|---|
+  | `callloop.S` (one leaf, called twice from one block) | on | **0.00026** | - | - | 128 (all) |
+  | `callmany.S` (one leaf, eight call sites) | on | **19.2** | 99.995% | **0** | 512 |
+  | `callmany.S` | **off** | **153.8** | 99.99999% | **0** | 8 |
+
+  Three things fall out, and the first two were not known:
+
+  - **The region tier is an indirect-branch-elimination pass, which nobody had attributed to it.** With eight call
+    sites a `blr` probes once per 52 guest instructions with `--tier` off (153.8 per 1k = exactly the 8 returns in
+    the case's 51-instruction iteration) and **once per iteration** with it on (19.2 per 1k): the region inlines
+    seven of the eight returns away, **-87.5% of probes**. `--tier` is on by default (Wind Waker +7.2%, TP heavy
+    -0.9%, jobs of 2026-10-22) and part of that gain may be this rather than the inlining itself. It also means the
+    device's probe rate depends on how much of the hot code gets regionized, which varies by scene.
+  - **The second slot was used exactly zero times in every case.** OPT_IND2 was adopted on ~+0.9% with no idea why;
+    this is the first direct evidence about the mechanism, and in these shapes it is *not* second-slot hits. Not
+    conclusive for the game (a shape with real collisions would differ), but it moves the burden of proof.
+  - **The probe rate is not guessable**, which is why the two prior estimates differed eightfold: it swings from
+    0.00026 to 153.8 per 1k between two call shapes that both look like SDK code. Where a leaf has one caller the
+    return is *linked* and the 2 MB of tables is never touched at all.
+  A synthetic loop is not the game's call graph, so these set the range and the mechanism; the device decides the
+  value. If it comes out near the bottom of this range the tables are nearly cold and shrinking `FAST_BITS` is close
+  to free; near the top they are a live cache cost. **Either answer kills or builds this candidate, which is the
+  point.**
 - **The unknown:** `FAST_BITS` is **16**, so each indirect table is 65,536 entries of 8 bytes = **512 KB**, and
   `FAST_TABLES` is 4 (one per recent block key), so the allocation is **2 MB - the size of the entire shared L2**,
   spanning 512 pages. `blr` / `bctr` probe it at a pc-derived index - effectively a random offset in a structure 32x
