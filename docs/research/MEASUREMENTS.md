@@ -2821,6 +2821,41 @@ The +1.3% is **withdrawn** (it was measured at a baseline that no longer exists)
 1779 arm's spread is 0.21%, wider than the 0.04-0.10% elsewhere, so the magnitude is soft - but the sign is not, and
 the sign is what decides a default.
 
+### devkitARM 16.1.0 against the project's older toolchain (jobs 1723-1737, 2026-10-31)
+
+A cloud session installed devkitPro by extracting devkitPro's **official container image** through the registry API
+(no daemon, and the apt/pacman hosts are blocked by the environment's network policy), which lets a session with no
+devkitARM build and push to the console on its own. The toolchain that arrives this way is **devkitARM 16.1.0**,
+newer than the project's, and it is **not a neutral substitution**:
+
+| scene | older toolchain (`2ba59806b89d7a22`) | devkitARM 16.1.0 (`088fb0df6610`) | |
+|---|---|---|---|
+| static Ordon | 10.55 | **10.61** | +0.6% |
+| TP heavy area | 7.28 | **7.35** | +1.0% |
+| Wind Waker | 6.23 | **6.25** | +0.3% |
+| **Mario Party 4** | 9.27 | **8.83** | **-4.7%** |
+| cutscene / later / movie | 40.93 / 22.97 / 14.76 | 41.10 / 22.99 / 14.80 | +0.1 to +0.4% |
+
+Within-arm spreads 0.02-0.18%, so the Mario Party 4 loss is five times the rebuild drift and not noise.
+
+- **It is the toolchain, not the code.** The *old* commit (`9a24e37`) built with devkitARM 16.1.0 reads **8.802 /
+  8.797** - the new commit's 8.83 within 0.3%, and nowhere near 9.27. That isolation run is the whole argument;
+  without it the loss would have been attributed to a day's commits.
+- **It is the GX thread's vertex path.** `gxvtx_pct` goes **18.2% -> 36.8%** (median after 80 s), while `gx_pct`
+  rises only 72.2 -> 74.2 and core 0's own share falls. So gcc 16 compiles `vfast.c`'s gather / lighting / texgen
+  about half as fast, and Mario Party 4 - which is vertex-heavy - pays for it while TP, which leans on core 0,
+  gains slightly.
+- **It is not auto-vectorisation.** The obvious hypothesis was gcc 12+ vectorising at `-O2` for a target with no
+  NEON; `-fno-tree-vectorize` reads **8.798**, identical to the vectorised build (job 1736). Refuted, and recorded
+  so nobody spends the device time again.
+- **What this means for measuring from a cloud session:** core-0 work (the JIT, the ports, the stand-ins) is fine
+  to measure here - TP and Wind Waker move +0.3 to +1.0%, within the usual rebuild scale. **GX-side and vertex work
+  is not**, and **Mario Party 4's number from this toolchain must not be compared with any other**: it is 4.7% low
+  for a reason that has nothing to do with the emulator. Always read the `# build: gc3ds <commit>` line before
+  differencing two numbers.
+- **Still open:** what in `vfast.c` gcc 16 gets wrong. The next cheap step is one `--profile on` run to see which
+  GX-thread function grew, rather than more flag guessing at ~9 minutes of device time an attempt.
+
 ### The headline at all defaults, build `2ba59806b89d7a22` (jobs 1690-1699, 2026-10-31)
 
 Two runs an arm, one session, one build, 240 s each (the title 420 s), scored with `runs.py` / `title_sections.py`

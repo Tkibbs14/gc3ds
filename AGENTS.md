@@ -103,6 +103,16 @@ culling, triangle assembly).
 ## Toolchain
 
 Linux or WSL (Debian). devkitPro at `/opt/devkitpro` (devkitARM, libctru, citro3d, 3ds portlibs: curl, mbedtls, zlib),
+**A cloud session with no devkitARM can install one** by extracting devkitPro's official container image through the
+registry API with `curl` (no daemon needed; the apt and pacman hosts are usually blocked by the environment's
+network policy, and `downloads.devkitpro.org` only redirects to one of them). That brings **devkitARM 16.1.0**,
+which is **not a neutral substitution**: it is +0.3 to +1.0% on TP and Wind Waker but **-4.7% on Mario Party 4**,
+because `gxvtx_pct` doubles (18.2% -> 36.8%) - gcc 16 compiles `vfast.c`'s vertex path about half as fast. Proven to
+be the toolchain and not the code by building the *old* commit with it (jobs 1734-1735), and **not**
+auto-vectorisation (`-fno-tree-vectorize` changes nothing, job 1736). So from such a session: core-0 work is safe to
+measure, **GX-side and vertex work is not**, and Mario Party 4's number must not be compared across toolchains.
+Every log's header now carries `# build: gc3ds <commit>` and `runs.py` prints it, so read it before differencing.
+
 devkitPPC for `gc-tests/`, a host gcc, `arm-linux-gnueabihf-gcc` and `qemu-arm` (`qemu-user`) for the ARM checks,
 Python 3 for the tools, Node 18+ for the relay server.
 
