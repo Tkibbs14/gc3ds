@@ -320,17 +320,23 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   place to apply it has to be found rather than assumed); C40
   (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
   repeated display lists (C1).
-- **Guest frame skip, paced to a game speed (C9/C9a; the owner's direction, 2026-10-30: "if we can make it look
-  natural").** Not a few percent, and now measured (jobs 1616-1621, three ratios a scene): rendering is **0.737 of a
-  game frame in static Ordon and 0.618 in the heavy area**, so Ordon reaches **full game speed at one picture in 8.4
-  (showing 3.6 pictures a second)** while the heavy area cannot reach it at any ratio (asymptote **63%**, logic being
-  38% of its frame). The useful band is N=2-4: Ordon 56 / 69 / 79% of full speed at 8.3 / 6.9 / 5.9 pictures a
-  second, the heavy area 35 / 41 / 45% at 5.2 / 4.1 / 3.4. It **multiplies with base speed** instead of competing
-  with it - at full game speed Ordon shows 3.6 pictures a second today and ~18 at twice the base rate - so
-  *pictures a second while holding full game speed* is the metric to carry, and no scene has ever been scored on it. `--gfskip-target PCT` holds one game speed everywhere and lets the picture rate
-  take the variation, because the speed *changing* between scenes (Ordon 35%, heavy 24%, cutscene 41%) is what a
-  player feels; built, off by default, self-tested on a synthetic clock, **not yet measured on hardware or seen by
-  anyone**.
+- **Guest frame skip: built, exact, off, and shelved as a *speed strategy* - a user option instead (C9d, the
+  owner's decision of 2026-10-31 after watching six runs: "let's just get things at native speed and keep working
+  at improving performance").** The first human look at it settled three things the arithmetic could not.
+  **The trade is four points, not a dial:** a picture lands only on a game-frame boundary and a frame costs `cd`
+  drawn or `cs` skipped, so the achievable intervals are `cd + n*cs` - in static Ordon (cd 92.5, cs 34.6 ms) that is
+  10.8 pictures a second at 36% speed (draw all), **8.4 at 51%** (one in two, job 1722), 6.2 at ~62%, 5.1 at ~68%,
+  and nothing between. The owner called 10.8 fine, **8.4 "a little slideshowy on camera pans"**, and 5.1 "very
+  jittery". **It helps where the game is already fastest and cannot help where it is slowest:** the useful band is
+  between a scene's native picture rate and the rate a player accepts, and TP's heavy area natively shows 7.3 -
+  already below 8.4 - so there is no acceptable skipping point there at all. **And the cost lands on camera pans,
+  which neither benchmark scene contains** (both take no input), so every number here *understates* it: judge
+  smoothness on the walk, speed on the static scenes, never mixed. `--gfskip-snap` (on) rounds the period to a whole
+  number of frames, because a fractional one alternates between two intervals and reads as jitter (32% of the mean
+  gap at target 50, job 1715). **A perceptual verdict on one run is not reproducible** - jobs 1718-1720 were all the
+  unpaced emulator (two latch-ups, C9e) and were called "smoother", "okay" and "choppier"; use a blind A/B inside
+  one run. **Re-evaluate when base speed rises**: the band opens from above, so this becomes useful *because of*
+  ordinary performance work, not instead of it.
 
 ## Code style
 

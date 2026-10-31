@@ -281,6 +281,78 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
 - **Re-evaluate when:** the fixed build's runs are in. The hardware answer to "does the floor look natural" is still
   outstanding - everything measured so far at the floor came from the build that could latch.
 
+### C9d. Seen by a human at last, and shelved as a speed strategy (jobs 1713-1722, 2026-10-31)
+
+**The owner's decision, after watching six runs: "let's just get things at native speed and keep working at
+improving performance."** Frame skip stays built, exact and off - a **user option**, not a route to full speed.
+Everything below is why, and it is worth keeping because the reasoning is not obvious from the arithmetic alone.
+
+**The trade curve is four points, not a dial.** A picture can only land on a game-frame boundary, and a frame costs
+`cd` drawn or `cs` skipped, so the achievable picture intervals are `cd + n*cs` for whole n and nothing between.
+With static Ordon's measured 92.5 and 34.6 ms:
+
+| frames a picture | pictures a second | game speed | the owner's verdict, watching |
+|---|---|---|---|
+| 1 (draw everything) | 10.8 | 36% | fine |
+| **2** | **8.4** | **51%** (job 1722) | **"a little slideshowy on camera pans"** |
+| 3 | 6.2 | ~62% | - |
+| 4 | 5.1 | ~68% | "very jittery", "more slideshowy" |
+
+`--gfskip-target PCT` therefore does not set a speed; it picks one of these points. **A target or floor between two
+points is rounded, and a floor just above a point collapses to "draw everything"** - asking for 8 pictures when the
+points are 10.8 and 7.9 switches the feature off, because a floor is a promise and 7.9 breaks it. That edge is in
+the code and should either gain a tolerance or report "your floor is not achievable here; the nearest points are X
+and Y", because at present it silently does nothing.
+
+**It helps where the game is already fastest and cannot help where it is slowest.** The useful band is between the
+scene's native picture rate and the rate a player will accept. Static Ordon natively shows 10.8, so there is room.
+TP's heavy area natively shows **7.3** - already below the 8.4 that reads as slightly slideshowy - so one picture in
+two there would give ~5.1, the rate rejected twice. **A slow scene has no picture budget to spend because it is
+already spending it**, which is the exact inverse of what the feature was wanted for.
+
+**Where the cost lands: camera pans.** Standing still at 8.4 pictures a second is invisible; panning the camera is
+not. This has a consequence for the whole measurement programme: **both benchmark scenes take no input, so neither
+contains a camera pan**, and they are therefore the scenes where a low picture rate looks its best. Every number the
+project can measure *understates* the perceptual cost, and the only place it shows is the scripted walk, which
+cannot be used for speed (C41). **Speed from the static scenes, smoothness from the walk, never mixed.**
+
+**And a human's verdict on a single run is not reproducible.** Jobs 1718, 1719 and 1720 all drew *every frame* (two
+latch-ups, below) and were therefore the same configuration - the unpaced emulator - yet they were called
+"smoother", "don't notice a difference, okay" and "definitely choppier, more slideshowy". The scene's own variation
+along the walk (`cd` wandering 92-101 ms window to window) is larger than the differences being judged. **A
+perceptual question needs a blind A/B inside one run** (`--ab gfskip` flips mid-run and logs the phase), not one
+run watched at a time. Four of the owner's six viewings were spent before this was understood.
+
+### C9e. Two more latch-ups, both found on hardware after the first was fixed (jobs 1718-1721)
+
+Recorded because they are the same failure three times and the shape is worth recognising: **a controller that
+cannot act stops producing the samples it needs to learn that it cannot act.**
+
+1. **Unsolvable costs** (C9c, jobs 1681-1688): one bad warm-up sample left `cs >= cd`, the solver could not act, so
+   nothing was skipped, so `cs` was never re-sampled. Fixed with incremental means, impossible-sample rejection, and
+   a probe that skips one frame in 16 while the costs cannot be solved.
+2. **Costs that merely look solvable** (jobs 1718-1719): `cd` 96.5 ms against a stale `cs` of 84.3 (true ~33). `cd >
+   cs`, so the solver believed itself; the floor asked for 75% drawn; snapping rounded 1.34 frames a picture to 1;
+   nothing was skipped; `cs` was never corrected. **The probe did not fire, because it only covered case 1.** Fixed
+   by probing a solver pinned at `x = 1` as well - but only where the target says there is skipping to do and the
+   floor is not itself demanding every frame, since a floor above what a scene can show is *correctly* served by
+   drawing everything (job 1718 was right to do nothing). Four times slower there, as the estimate is suspect
+   rather than unusable.
+3. **The jitter nobody's test could see** (job 1717): the self-test asserted the spread of *skip counts* between
+   pictures, which read 0 while the spread in *time* was 32% (job 1715, gaps alternating 92 and 125 ms). Frames have
+   unequal cost, so an even number of skips is not an even amount of time. The harness now measures gaps in
+   milliseconds; `--gfskip-snap` (on) rounds the period to a whole number of frames so every gap is identical.
+
+Each has a planted-bug self-test that fails without its fix: *"gaps still vary by 28.2% of the mean"*, *"drew 1500
+of 1500 scored frames - it never skipped"*, *"a solver pinned at x=1 was never probed"*, and *"landed at 92.00 ms,
+more than a frame from the 66.67 ms target"* (the snap must round to nearest, not down).
+
+- **Re-evaluate when:** base speed rises enough that a scene's native picture rate clears the acceptable rate with
+  room to spare - the band only opens from above. At twice today's speed static Ordon would show ~21 pictures a
+  second natively, and one in two would still leave ~10.5, which the owner finds fine. **So this feature becomes
+  useful as a consequence of ordinary performance work, not as a substitute for it** - which is the owner's call of
+  2026-10-31, reached by looking at it.
+
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
 - **Status:** parked (2026-10-13).
