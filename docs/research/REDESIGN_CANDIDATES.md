@@ -353,6 +353,49 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   useful as a consequence of ordinary performance work, not as a substitute for it** - which is the owner's call of
   2026-10-31, reached by looking at it.
 
+## C53. The pane walk is refused by exactly two pane classes, both already half-built (2026-10-31)
+
+- **Status:** **next**, and the best-sized lever on the board. Found by three instrument steps in one afternoon, each
+  narrowing the one before; no code written yet, on purpose.
+- **How it was found, because the path matters.** AGENTS' top open direction was "other TEV block types", sized from
+  4,720 refusals a 10 s window that perf.csv labelled **"tev block"**. That label was a bug: the reason code has
+  **21 call sites** and only one is a TEV block, while `otherTev` - the only field recording a real unported TEV
+  block - reads **0** in those runs. With the label fixed to name the refusing *line*, 100% of it turned out to be
+  `walk_scan`'s pane-class test; with that test instrumented per class, it is **two addresses and no tail**:
+
+  | address | class | code size | refusals a 10 s window |
+  |---|---|---|---|
+  | `0x802FDB90` | **`J2DPicture::drawSelf`** | 0x6C (108 bytes) | ~1,184 |
+  | `0x803075AC` | **`J2DTextBoxEx::drawSelf`** | 0x300 (768 bytes) | ~3,182 |
+
+  The two sum to **exactly** the walk-scan line's count (4,366 in that window), so they are the whole of it. Names
+  from zeldaret/tp `config/GZ2E01/symbols.txt` (fetched outside the repository, as the tools expect).
+- **Why this is unusually cheap.** Both connect to work already in the tree:
+  - **`J2DTextBoxEx::drawSelf` is already ported** - it is `PORT_TEXT`, bit 10, built, checked exact, and **off**
+    because it measured -4.3% in Ordon as a standalone **entry hook** (and bits 9+10 together -0.46% at the current
+    default). That is the project's own documented lesson - *small functions lose as entry-hook stand-ins; a port
+    pays only when it does less than the guest code*. **Inside the walk it is a different proposition:** the subtree
+    is already in native context, so there is no per-call entry, no separate `port_commit`, and no cycle charge per
+    call. This is precisely the "larger ports where a whole subtree is replaced" direction, with the component
+    already written and proven exact.
+  - **`J2DPicture::drawSelf` is 108 bytes** and `J2DPictureEx::drawSelf` - already ported - is its derived class, so
+    the work is likely a subset of code that exists.
+- **The prize, sized:** the walk takes 1,450 calls and refuses 3,500 per 10 s in TP's heavy area, so accepting both
+  classes could take coverage from ~29% to near 100% - about **3.4x** - on a port credited **+2.2%** in Ordon and
+  costing 4.52% of core 0 at today's coverage.
+- **Why it might not pay, stated before building it:** a refusal is counted per *subtree*, and one unknown pane deep
+  inside rejects the whole thing, so the refusals are an upper bound on what accepting these two classes unlocks - a
+  subtree may still refuse on depth or the 512-pane cap once they are accepted (the line histogram will say
+  immediately). The TextBoxEx port also cost 137 us a call as an entry hook; inside the walk it loses the entry and
+  commit overhead but not the work itself, so the walk's own cost grows and the net is a hypothesis, not a
+  prediction. And `J2DTextBoxEx` is *text*: if the heavy area's refusals are mostly the HUD, the same panes may be
+  cheap for the guest to draw and dear for a port to replicate.
+- **Checks it needs:** `PORT_CHECK=1` on the PC over TP's title states and `--port check` on the 2DS in the scenes
+  that have the HUD (the existing bit-10 checks already cover the TextBoxEx path), plus `porthash.py` entries for
+  any newly followed guest function.
+- **Re-evaluate when:** immediately - this is the next piece of work. If it is built and the walk's coverage does not
+  rise, the line histogram says which test refuses next, which is a result either way.
+
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
 - **Status:** parked (2026-10-13).

@@ -326,7 +326,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   bug** (2026-10-31): the pane walk refuses 5,600 calls per 10 s in the heavy area with 4,720 under the reason
   perf.csv called "tev block", and that reason has **21 sites** of which one is a TEV block, while `otherTev` - the
   only field recording a real unported TEV block - reads 0 in those runs. `# port give-ups 10s` now names the
-  refusing line, so **one device run with the ports on re-sizes this direction before any of it is built**. The
+  refusing line, and the answer came back (**C53**, jobs 1738-1740): 100% of the pane walk's refusals are its
+  pane-class test, and that is **exactly two classes with no tail** - `J2DPicture::drawSelf` (108 bytes, whose
+  derived `J2DPictureEx` is already ported) and `J2DTextBoxEx::drawSelf`, **which is already built and exact as port
+  bit 10** and is off only because it lost as a standalone *entry hook*. Folding it into the walk is the subtree
+  direction with the component already written: coverage could go from 1,450 taken / 3,500 refused to near all of
+  them, ~3.4x, on a port credited +2.2%. **C53 is the next piece of work.** The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
   **rank candidates by work per call, not by call count** (and do the denormal give-up first, CONTRIBUTOR_TASKS 9);
