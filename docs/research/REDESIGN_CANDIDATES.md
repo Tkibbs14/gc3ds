@@ -1299,8 +1299,32 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
   frame costs, and a **systematically high `cs`** produces exactly this signature - too little drawing, and the
   error growing as the target approaches `cs`. A drawn frame's cost may also be bimodal (guarded draws during a fade
   cost differently), which a single running mean cannot represent.
-- **Measurement:** the self-test already drives the real controller with a synthetic clock, so the fix is verifiable
-  without hardware: add a case that asserts the realised speed lands within ~1% of the target across a range of
-  cd/cs ratios, which the current case only checks at one point. Then look at `# gfskip target 10s`, which already
-  reports the learned `cd` and `cs`, against the measured per-frame costs in the same run.
-- **Re-evaluate when:** the owner has chosen the floor policy (C9b), since both touch the same solver.
+- **The arithmetic discriminates the two candidates, and it picks `cs` (2026-10-31).** Which cost is wrong decides
+  the *direction* the overshoot moves as the target rises, so the device's three points identify it. With Ordon's
+  measured costs (cd 95 ms, cs 33 ms):
+
+  | target | if `cd` is 10% too high | if `cs` is 5 ms too high | **measured** |
+  |---|---|---|---|
+  | 50 | +7.2% (53.6% of full) | +3.9% (51.9%) | 51% |
+  | 60 | +5.7% (63.4%) | +6.6% (64.0%) | 63% |
+  | 70 | +4.3% (73.0%) | +9.6% (76.7%) | 75% |
+
+  A high `cd` makes the overshoot **shrink** with the target; a high `cs` makes it **grow**. The device grows
+  (+2, +5, +7), so **`cs` is the one that is wrong**, and by roughly 5 ms on 33 - about 15%.
+
+- **And the mechanism is almost certainly the defect fixed for C9c, in its mild form.** That bug seeded `cs` from a
+  *single* warm-up sample, and every contaminated sample on record was **too high** (149.5, 187.2, 173.6 ms against
+  a true 33 ms), because what pollutes the skipped-frame slot is work that belongs to a drawn frame. Severe
+  contamination latched the solver (C9c); mild contamination leaves `cs` 10-20% high and produces exactly this
+  signature. The fix therefore predicts the overshoot shrinks or disappears: **three warm-up samples with 1/n
+  weighting, impossible samples rejected, and the probe re-sampling `cs`.**
+- **What would falsify that:** a run of the fixed build that still overshoots by +5 to +7% at target 70 while
+  `# gfskip target 10s` reports a `cs` close to the per-frame cost actually seen in a no-skip run of the same
+  scene. That would mean the skipped-frame cost is genuinely state-dependent (a skip after a draw costing more than
+  a skip after a skip), which one running mean cannot represent, and the solver would need two.
+- **Measurement:** the self-test already drives the real controller with a synthetic clock, so the solver is
+  verifiable without hardware - but note that a *constant* synthetic cost cannot reproduce this at all (the maths is
+  exact there, which is why the existing case passes). A case with a state-dependent cost would test the
+  falsification above. On the device: `# gfskip target 10s` against a no-skip run of the same scene.
+- **Re-evaluate when:** the fixed build has run `--gfskip-target 50/60/70` on Ordon again (C9c). The prediction is
+  recorded before the measurement on purpose.
