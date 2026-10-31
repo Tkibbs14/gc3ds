@@ -393,6 +393,33 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Checks it needs:** `PORT_CHECK=1` on the PC over TP's title states and `--port check` on the 2DS in the scenes
   that have the HUD (the existing bit-10 checks already cover the TextBoxEx path), plus `porthash.py` entries for
   any newly followed guest function.
+- **The `J2DPicture` half is scoped (2026-10-31), from zeldaret/tp's sources - not from the DOL, so no disc image is
+  needed to write it.** The vtable slot is the three-argument `drawSelf(f32, f32, Mtx*)`, and the chain is short:
+
+  | guest function | size | what it does |
+  |---|---|---|
+  | `J2DPicture::drawSelf` | 0x6C | if `mTexture[0]` and `mTextureNum`, call `drawFullSet` with `mGlobalBounds` + the offsets |
+  | `J2DPicture::drawFullSet` | 0x74 | forwards to `drawTexCoord` with `mBounds` and the four texture corners |
+  | `J2DPicture::drawTexCoord` | 0x250 | `load(i)` per texture, `GXSetNumTexGens`, `getNewColor`, `setTevMode`, `MTXConcat(m, mGlobalMtx)`, `GXLoadPosMtxImm`, vtx desc + fmt, then `GXBegin(GX_QUADS, 4)` and four position/colour/texcoord vertices |
+  | `J2DPicture::load` | 0x34 | `mTexture[i]->load(stage)`, only for `i < 2` |
+  | `J2DPicture::getNewColor` | 0xE0 | the four corner colours |
+  | `J2DPicture::setTevMode` | 0x490 | **not a mode switch** - straight-line GX writes, branching only on `mTextureNum` (1 or 2) and `mTexture[0]->getTransparency()` |
+
+  **`setTevMode`'s size was the one thing that looked expensive and it is not**: 1,168 bytes of sequential GX setter
+  calls with two boolean branches, not a switch over many cases, so the port reproduces a fixed program parameterised
+  by two values rather than a table of modes.
+
+  **Every primitive it needs is already in `port_j2d.c`**: `gx_clear_vtx_desc`, `gx_set_num_tex_gens`,
+  `gx_load_pos_mtx_imm`, `gx_set_tev_order`, `gx_set_tev_color`, `gx_set_tev_color_in`, `gx_set_tev_alpha_in`,
+  `gx_set_tev_op` / `op_mode`, `psmtx_concat` for `MTXConcat`, and `gx_begin(c, 128, 0, 4)` for the quad - which the
+  PictureEx and text paths already use (`port_j2d.c` lines 940 and 2152). Field offsets come from the decompilation's
+  header: `mTexture[2]` at 0x100, `mTextureNum` at 0x108.
+
+  **So the work is:** accept `0x802FDB90` in `walk_scan`, add a `walk_picture()` in the walk's dispatch beside the
+  existing `A_PICEX_DRAWSELF` branch, and **give up** rather than guess on `mTextureNum > 2`, a null texture, or
+  anything in `getNewColor` / `setTevMode` not reproduced - the give-up histogram then shows the residue instead of
+  it being silent. Checks: `PORT_CHECK=1` on the PC over TP's title states, `--port check` on the 2DS in a scene with
+  the HUD, and `porthash.py` entries for each newly followed guest function.
 - **Re-evaluate when:** immediately - this is the next piece of work. If it is built and the walk's coverage does not
   rise, the line histogram says which test refuses next, which is a result either way.
 
