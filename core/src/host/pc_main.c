@@ -6,6 +6,7 @@
 #include "../host/gxcensus.h"
 #include "../cpu/aot.h"
 #include "../cpu/hle.h"
+#include "../cpu/port.h"   // port_whyline_selftest (an implicit declaration here is an error on gcc 14+)
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>

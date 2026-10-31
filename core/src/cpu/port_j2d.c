@@ -29,6 +29,11 @@ static u32 g_psz;
 static void (*g_ppipe)(void* ctx, const u8* data, u32 len);
 static void* g_pctx;
 void port_set_memory(u8* mem1, u32 size) {
+#ifndef __3DS__
+    // The PC build parses no options, so without this PORT_CHECK could not reach the J2DPicture path at all and
+    // reported a vacuous "0 differed" (a peer's run on the owner's PC, 2026-10-31).
+    if (getenv("GC3DS_PORT_PICTURE")) g_portPicture = strcmp(getenv("GC3DS_PORT_PICTURE"), "on") == 0;
+#endif
     g_pm = mem1;
     g_psz = size;
 #ifndef __3DS__
@@ -57,6 +62,10 @@ enum {
     // refused every subtree containing one of these until C53: 100% of walk_scan's refusals were this vtable, split
     // J2DPicture ~1,184 and J2DTextBoxEx ~3,182 a 10 s window in TP's heavy area (job 1740).
     A_PICTURE_DRAWSELF = 0x802FDB90, A_PICTURE_DRAWFULLSET = 0x802FDBFC, A_PICTURE_DRAWTEXCOORD = 0x802FE380,
+    // ... and its rewriteAlpha, which is a bare `blr` (size 4) exactly as J2DPane's is, so accepting it changes
+    // nothing. Missing it is why the first version of this port never ran: the drawSelf test passed and the very
+    // next line refused (a peer's PORT_CHECK on the owner's PC, 2026-10-31).
+    A_PICTURE_REWRITEALPHA = 0x802FF65C,
     A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
     A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0, A_J3D_MATDIFF = 0x803167D8, A_J3D_REINITGX = 0x8031073C,
@@ -1218,7 +1227,8 @@ static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
     if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF && !(g_portPicture && ds == A_PICTURE_DRAWSELF)) {
         walk_ds(ds); return walk_no(__LINE__);   // still unported: J2DTextBoxEx is the rest of C53
     }
-    if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA) return walk_no(__LINE__);
+    if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA &&
+        !(g_portPicture && ra == A_PICTURE_REWRITEALPHA)) return walk_no(__LINE__);
     if (++*panes > 512) return walk_no(__LINE__);
     for (u32 l = f32(p + 220); l; l = f32(l + 12)) {
         if (!in_mem1(l, 16)) return walk_no(__LINE__);

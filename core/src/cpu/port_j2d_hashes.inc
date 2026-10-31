@@ -212,3 +212,14 @@
     { 0x802E0118, 0x30, 0x5F65246D8270ED6Cull },  // isLeadByte_ShiftJIS__7JUTFontFi
     { 0x8035F198, 0x8C, 0x127577893DEE095Cull },  // GXSetTevOp
     { 0x8035E0D4, 0x164, 0x361E82B32D39FD9Dull },  // GXInitTexObjLOD
+    // J2DPicture, for --port-picture (C53). Generated on the owner's PC by a peer session (2026-10-31) because a
+    // cloud session has no disc image; **not verified here**, which is safe in one direction only - a wrong hash
+    // makes the port refuse itself, it cannot make it run on code it does not match. The next PORT_CHECK proves
+    // them: if a row is wrong the port takes 0 calls instead of differing.
+    { 0x802FDB90, 0x6C, 0x59FEE6BBB9AEC1DEull },  // drawSelf__10J2DPictureFffPA3_A4_f
+    { 0x802FDBFC, 0x74, 0xEC9B98051B74C9E6ull },  // drawFullSet__10J2DPictureFffffPA3_A4_f
+    { 0x802FE380, 0x250, 0xF9A0AD7C26270AD8ull },  // drawTexCoord__10J2DPictureFffffssssssssPA3_A4_f
+    { 0x802FF268, 0x34, 0x92001374DF551AC8ull },  // load__10J2DPictureFUc
+    { 0x802FEC64, 0xE0, 0xE900D1BEAAE2B681ull },  // getNewColor__10J2DPictureFPQ28JUtility6TColor
+    { 0x802FE5D0, 0x490, 0x4FEF765E46218323ull },  // setTevMode__10J2DPictureFv
+    { 0x802FF65C, 0x4, 0x2F639DC45181817Full },  // rewriteAlpha__10J2DPictureFv (a bare blr, as J2DPane's is)
