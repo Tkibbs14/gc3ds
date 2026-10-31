@@ -2821,6 +2821,26 @@ The +1.3% is **withdrawn** (it was measured at a baseline that no longer exists)
 1779 arm's spread is 0.21%, wider than the 0.04-0.10% elsewhere, so the magnitude is soft - but the sign is not, and
 the sign is what decides a default.
 
+### The baseline on devkitARM 16.1.0 (jobs 1723-1732, 2026-10-31)
+
+Two runs an arm, one session, one build (commit `088fb0df6610`, relay build `c23935942a982a7a`), 240 s each and
+420 s for the title. **This is the baseline for anything measured from a cloud session**, and it is a different
+baseline from the owner's toolchain - see the comparison below before differencing anything against it.
+
+| scene | run A | run B | mean | spread |
+|---|---|---|---|---|
+| static Ordon | 10.605 | 10.619 | **10.61** | 0.13% |
+| TP heavy area | 7.359 | 7.346 | **7.35** | 0.18% |
+| Wind Waker, Outset | 6.248 | 6.247 | **6.25** | 0.02% |
+| Mario Party 4 | 8.829 | 8.834 | **8.83** | 0.06% |
+| tp850 cutscene | 41.08% | 41.11% | **41.10%** | - |
+| tp850 later stretch | 22.99% | 22.99% | **22.99%** | - |
+| tp850 movie | 14.80% | 14.80% | **14.80%** | - |
+
+The heavy area's spread (0.18%) again matches the ~0.2% floor established this morning rather than the 0.07% a
+lucky pair once showed. **Mario Party 4's 8.83 is 4.7% below the same code on the owner's toolchain and must not be
+read as a regression in the emulator** - the next section has the isolation run that proves it is the compiler.
+
 ### devkitARM 16.1.0 against the project's older toolchain (jobs 1723-1737, 2026-10-31)
 
 A cloud session installed devkitPro by extracting devkitPro's **official container image** through the registry API

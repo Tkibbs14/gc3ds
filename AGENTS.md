@@ -212,6 +212,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   -0.1%) is that drift with nothing else in it - a useful scale for how large a "gain" has to be. Within this session
   the arms agree to 0.00-0.22%. The
   scripted Ordon *walk* also cannot be compared across a change that shifts the guest's timeline (C41).
+  **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732):
+  static Ordon **10.61**, heavy area **7.35**, Wind Waker **6.25**, Mario Party 4 **8.83**; cutscene 41.10%, later
+  22.99%, movie 14.80%. **The headline above stays on the project's own toolchain** - the cloud toolchain is
+  +0.3 to +1.0% on TP and Wind Waker but **-4.7% on Mario Party 4** (gcc 16 compiles `vfast.c`'s vertex path about
+  half as fast), so putting its numbers in the headline would read as an emulator regression that does not exist.
+  Measure against whichever baseline your build's `# build: gc3ds <commit>` line belongs to, and never across them.
   **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%
   in the title, the vertex worker idle ~70-96%, the GPU ~5-15 ms a frame. In the title's later stretch the ShdwDraw
