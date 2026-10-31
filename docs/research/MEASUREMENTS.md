@@ -2881,6 +2881,42 @@ The self-test poisons every warm-up skip sample (400 ms against a 95 ms drawn fr
 within 3% of target; removing the probe reproduces the device exactly (scored mean 95.00 ms, a drawn frame's own
 cost, against a 47.62 ms target).
 
+### `--port-hooks` 503's loss apportioned, one bit at a time (jobs 1700-1711, 2026-10-31)
+
+503 over 243 was measured as a loss of 0.42-0.75% and attributed to "the PNGP matrix load and the minimap
+decoration" together, without separating them. Three runs an arm on build `2ba59806b89d7a22`, TP's heavy area, and
+deliberately **not batched**: two rounds in opposite order (243, 247, 499, 251, then 251, 499, 247, 243) so a slow
+drift cannot land on one arm - the design the noise-floor finding below asks for.
+
+| arm | runs (frames a second) | mean | spread | vs 243 | runs below all 3 baseline runs |
+|---|---|---|---|---|---|
+| **243** (the default) | 7.264 / 7.276 / 7.283 | 7.274 | 0.26% | - | - |
+| 247 (+bit 2, the PNGP matrix load) | 7.271 / 7.273 / 7.273 | 7.272 | 0.03% | **-0.03%** | overlapping |
+| **499** (+bit 8, the minimap decoration) | 7.254 / 7.255 / 7.258 | 7.256 | 0.06% | **-0.26%** | **3 of 3** |
+| 251 (+bit 3, the `__GXSendFlushPrim` port) | 7.281 / 7.278 / 7.281 | 7.280 | 0.04% | +0.08% | overlapping |
+
+- **The minimap decoration is the whole of 503's loss.** Its mean difference (-0.26%) is about the size of the
+  baseline arm's own spread, so the mean alone would not carry it - but **all three of its runs fall below all three
+  baseline runs**, which has probability 1/20 under the null. Scored on means against overlapping spreads this would
+  have read "inconclusive"; the rank separation is what settles it, and it is the right test when three arms repeat
+  to 0.03-0.06% and the fourth happens to spread 0.26%.
+- **The PNGP matrix load is neutral, and that is the interesting half.** It is **the most-called port in this scene
+  by six times** - 1,527,527 calls in 240 s against 236,556 for `J3DMaterial::diff` - and its own timers price it at
+  7,488 calls/s x 7.74 us = **5.8% of core 0** (41% of that in the commit; ~6,200 cycles a call to write 94 pipe
+  bytes). Confirmed to have really run (the `# port 10s` line is present in the 247 arm and absent in the 243 arm).
+  So 1.5 M calls were moved into native code, ~5.8% of core 0 was spent doing it, and the result is **-0.03%**: the
+  guest code it replaces costs the same. This is the clearest instance on record of the rule in AGENTS - *a port
+  pays only when it does less than the guest code, not when it copies the SDK step by step* - and it adds the
+  practical corollary: **rank candidate ports by work per call, not by call count.** (A tempting "20 us a call"
+  threshold does **not** hold: bit 9 does 37.7 us a call and still loses 0.46%. The cost table is the artifact, not
+  a rule fitted to it.) It also rules PNGP out of the `port_commit` lever: its commit is already a single
+  `ram_from_be` plus one pipe write of bytes the guest would also pay for, not the byte-by-byte copy the light port
+  had.
+- **The `__GXSendFlushPrim` port (bit 3) is neutral**, +0.08% with overlapping spreads, which reproduces its
+  recorded "neutral, separate runs" at today's default rather than inheriting it from an older baseline.
+- **No default changes.** 243 stays; bits 2, 3 and 8 stay off (bit 2 and 3 because neutral code is still code and
+  footprint, bit 8 because it loses). What changed is the apportionment and the confidence.
+
 ### The heavy area's noise floor with four replicates, not two (jobs 1692/1693 + 1700/1701, 2026-10-31)
 
 Four runs of the **identical** configuration - same build (`2ba59806b89d7a22`), same scene (`tp_area2`), same

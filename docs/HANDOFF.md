@@ -35,11 +35,54 @@
 > run, in plain words, and the thing that caught it was a value that did not move between windows. Worth checking for
 > deliberately - a learned or averaged quantity that is identical in every window has one sample, not a stable one.
 >
-> **Next:** the fix needs a devkitARM build (this container has none), then jobs 1681-1688 re-run - no hardware
-> number for the floor exists yet that was not taken on the build that could latch. Device-idle meanwhile: jobs
-> 1700-1707 split `--port-hooks` 503's two extra bits (2 = J3DPNGP, 8 = the minimap decoration) and re-test bit 3
-> (the `__GXSendFlushPrim` *port*) one at a time against today's 243, since C49 says an old-baseline figure is not
-> evidence about today's.
+> **Three more things the day's device time bought, all of them about the ledger's validity rather than speed.**
+>
+> **1. The heavy area's noise floor is ~0.2%, not 0.07%.** Four runs of the identical configuration (jobs 1692/1693
+> and 1700/1701, same build, scene, session; the same five ports confirmed active in each) span **0.23%** - and the
+> adjacent pair inside that span reads 0.01%, which is where the 0.07% came from. **Two adjacent runs understate the
+> floor.** Corrected in rule 3. Consequence applied the same day: arms are **interleaved or reversed, not batched**,
+> so a slow drift cannot land on one of them.
+>
+> **2. `--port-hooks` 503's loss is entirely the minimap decoration, and the PNGP matrix load is worth nothing**
+> (jobs 1700-1711, three runs an arm, two rounds in opposite order). Bit 8 **-0.26%** with *all three* of its runs
+> below all three baseline runs (p = 1/20; the mean alone would not have carried it against the baseline arm's own
+> 0.26% spread - **the rank separation is what settles it**). Bit 2 **-0.03%**, bit 3 **+0.08%**, both overlapping.
+> The striking half is bit 2: it is **the most-called port in the scene by six times** (1.53 M calls against
+> 236 k for `J3DMaterial::diff`), its own timers price it at **5.8% of core 0**, and it delivers nothing - so the
+> guest code it replaces costs the same. **Rank ports by work per call, not by call count.** A tempting "20 us a
+> call" threshold does not hold (bit 9 is 37.7 us a call and still loses 0.46%).
+>
+> **3. The J3D light port's +2.7% is *inside* bit 6's +3.0%, not beside it.** It was measured with hooks 39 against
+> 55, before `J3DMaterial::diff` existed; bit 6 does the whole material diff including the light block. The counters
+> prove the subsumption rather than suggest it: the light hook fires **exactly** as often as bit 6 declines (84/84,
+> 84/84, 84/84, 84/84, 85/85 across five runs), i.e. 84 calls in 240 s. It stays on - exact, free, and it covers
+> those give-ups. **This is a second mechanism for the ledger being sub-additive (C49), and a mundane one: one
+> option can simply subsume another's work.** New rule there: before quoting a ledger entry, check its option still
+> runs at the current default. That check has now caught two entries.
+>
+> **C48 has its first instrument and its first numbers** (`--indstat`, counters in the shared stub only). Under
+> qemu the indirect-table probe rate spans **five orders of magnitude** between two plausible call shapes (0.00026
+> per 1k guest instructions for a one-caller leaf, where the return is *linked* and the 2 MB of tables is never
+> touched; 19.2 for an eight-caller leaf). Two things fall out that were not known: **`--tier` removes 87.5% of
+> indirect-table probes** (153.8 per 1k with it off, 19.2 with it on - the region inlines seven of eight returns
+> away), so part of its +7.2% in Wind Waker may be fewer indirect branches rather than the inlining; and **the
+> second slot was used exactly zero times in every run**, the first direct evidence about where OPT_IND2's +0.9%
+> came from. Cross-validated against the dispatcher's own independent counters. **Checks for that JIT change:** the
+> fuzzer passes at 20000/1 default and chain, with `JIT_FUZZ_OPT=7`, with `JIT_FUZZ_NOFAULT=1` on seeds 1 and 3,
+> and - the new path - with `OPT_INDSTAT` set throughout, which also exercises the stub re-emit. **The whole-game
+> qemu check could not run here for want of a disc image; it is owed on a machine that has one.**
+>
+> **And C52's overshoot is probably this same latch-up in its mild form.** Which learned cost is wrong decides the
+> *direction* the overshoot moves with the target: a `cd` 10% high makes it shrink (+7.2, +5.7, +4.3 at 50/60/70), a
+> `cs` 5 ms high makes it grow (+3.9, +6.6, +9.6). The device grows (+2, +5, +7), so **`cs` is the wrong one** - and
+> every contaminated `cs` sample on record was *too high*, because what pollutes that slot is work belonging to a
+> drawn frame. The prediction (recorded before the measurement): the C9c fix shrinks the overshoot too. What would
+> falsify it is in C52.
+>
+> **Next:** the pacer fix needs a devkitARM build (this container has none), then jobs 1681-1688 re-run - **no
+> hardware number for the floor exists yet that was not taken on the build that could latch** - and
+> `--gfskip-target 50/60/70` on Ordon again to test C52's prediction. Then `--indstat on` in the heavy area and the
+> title, which decides whether the `FAST_BITS` sweep is worth running.
 >
 > **▶ 2026-10-30 (later): core 0's budget closed, and the honest answer to "where is the next 10%".** Build
 > `103456ecbdfe9264`. **Supersedes the 69.4% blind spot in the block below.**
