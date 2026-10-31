@@ -923,22 +923,6 @@ static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled co
     str_imm(e, LR, R12, 0);
     g_ctrWords += e->n - n0;
 }
-// --indstat (OPT_INDSTAT, C48): count indirect-branch table probes by kind. The probe rate has never been measured
-// and the two available guesses differ by eight times, so nothing about the 2 MB of tables can be estimated - not
-// their cache cost, not OPT_IND2's worth, not C46. The counting lives in the shared stub only (five sites, not one
-// per block), and uses r0 and r12, which ST_INDIRECT clobbers unconditionally on entry (`ldmia r12, {r0, r1}`) and
-// so are dead at every site. Flags are untouched. **A counted run is slower, so read these per guest instruction,
-// never per real second.** 32-bit on purpose: the front end reads them every row and accumulates the wrap-safe
-// deltas, which keeps the stub at four instructions.
-enum { IND_LR = JIT_IND_LR, IND_CTR = JIT_IND_CTR, IND_HIT1 = JIT_IND_HIT1, IND_HIT2 = JIT_IND_HIT2,
-       IND_MISS = JIT_IND_MISS, IND_SPENT = JIT_IND_SPENT };
-u32 g_jitIndStat[JIT_IND_N];
-static void ind_emit_count(Emit* e, u32 k) {  // ++g_jitIndStat[k] (r0, r12; flags kept)
-    load_const(e, R12, (u32)(uintptr_t)&g_jitIndStat[k]);
-    ldr_imm(e, R0, R12, 0);
-    dp_imm(e, ADD, 0, R0, R0, 1);
-    str_imm(e, R0, R12, 0);
-}
 static void rx_add(Cg* c, int kind, u32 target, u32 from);
 
 static void dop_add(u32 key, u32 hot) {
@@ -6112,6 +6096,27 @@ static void emit_float_stubs(Jit* j, Emit* e) {
         }
 }
 
+// --indstat (OPT_INDSTAT, C48): count indirect-branch table probes by kind. The probe rate has never been measured
+// and the two available guesses differ by eight times, so nothing about the 2 MB of tables can be estimated - not
+// their cache cost, not OPT_IND2's worth, not C46. The counting lives in the shared stub only (five sites, not one
+// per block), and uses r0 and r12, which ST_INDIRECT clobbers unconditionally on entry (`ldmia r12, {r0, r1}`) and
+// so are dead at every site. Flags are untouched. **A counted run is slower, so read these per guest instruction,
+// never per real second.** 32-bit on purpose: the front end reads them every row and accumulates the wrap-safe
+// deltas, which keeps the stub at four instructions.
+//
+// It lives here, beside emit_stubs, and **not** up with the regstat helpers it resembles: that region is inside
+// `#ifndef __3DS__`, so the 3DS build compiled the call sites below with no definition in sight and broke (first
+// real 3DS build of this change, 2026-10-31). The PC and ARM-Linux builds had both compiled it happily, which is
+// exactly why AGENTS' checks table ends with `build.sh` and says the syntax check never replaces it.
+enum { IND_LR = JIT_IND_LR, IND_CTR = JIT_IND_CTR, IND_HIT1 = JIT_IND_HIT1, IND_HIT2 = JIT_IND_HIT2,
+       IND_MISS = JIT_IND_MISS, IND_SPENT = JIT_IND_SPENT };
+u32 g_jitIndStat[JIT_IND_N];
+static void ind_emit_count(Emit* e, u32 k) {  // ++g_jitIndStat[k] (r0, r12; flags kept)
+    load_const(e, R12, (u32)(uintptr_t)&g_jitIndStat[k]);
+    ldr_imm(e, R0, R12, 0);
+    dp_imm(e, ADD, 0, R0, R0, 1);
+    str_imm(e, R0, R12, 0);
+}
 static void emit_stubs(Jit* j) {
     Emit em = { j->code, 0, ST_WORDS, false };
     Emit* e = &em;
