@@ -1294,7 +1294,44 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
   a guest loop that spills (more than five live GPRs) through the JIT with and without a VFP spill slot and read the
   modelled stall cycles and host words. That is an afternoon with no console time, and it either kills the idea
   cheaply or justifies the first real register-allocator change in the project.
-- **Re-evaluate when:** the model has run. If it loses, record the numbers so nobody revisits it - that is the point
+- **First measurements, 2026-10-31 (`core/tools/gpr_traffic.py`, new): the ceiling is 6-9% of hot words in the
+  shapes that matter, and two thirds to four fifths of it is *stores*.** Four `jitbench.py` shapes through the real
+  JIT at the device's own opt mask, every hot host instruction of every executed block classified by what it touches
+  and weighted by execution count:
+
+  | shape | guest-GPR spill/fill, share of executed hot words | of that, stores | distinct GPRs through memory a block |
+  |---|---|---|---|
+  | `floatloop.S` | **1.00%** | 0% | 1.0 |
+  | `psloop.S` | **1.04%** | 0% | 1.0 |
+  | `intloop.S` | **6.05%** | **79.7%** | 4.01 |
+  | `callmany.S` | **8.95%** | **64.7%** | 3.67 |
+
+  Three readings, and the second is the one that matters:
+
+  - **The ceiling is modest.** Even if a VFP spill were free, 6-9% of hot words is all it could remove in integer
+    and call-heavy code, and ~1% in float-heavy code (where OPT_FCACHE already holds the floats). At the measured
+    exchange rate (OPT_RETSTUB: -2.1% of hot words bought +1.0-1.6% of core 0) the whole of it is worth a few
+    percent at the absolute most, before paying for the transfers.
+  - **It is mostly write-back, not demand fills.** 80% stores in the integer shape and 65% in the call shape. A
+    fill-heavy profile would mean capacity pressure, which a bigger or cheaper cache fixes; a store-heavy one means
+    the traffic is the register cache **flushing architectural state at block boundaries and calls** - and a
+    VFP-backed cache must still do that, because the interpreter, the helpers and every exit read `Gekko.gpr` from
+    memory. **So C51 as written attacks the wrong half.** The lever on write-back is fewer boundaries (block
+    linking, handover - modelled at ~1.3% net, C44), not a different spill destination.
+  - **The latency argument survives contact with the numbers.** ARM->VFP is 4 cycles and VFP->ARM 2 against an L1
+    load's 3 (+1 when the consumer needs it early) and a store that goes to the write buffer. A VFP spill/fill is
+    **not** cheaper per access, so any gain would have to come from D-cache *pressure* rather than latency - i.e.
+    only if those accesses are causing misses, which is **C47's** question and is unmeasured. **That orders the two:
+    C47 before C51.**
+- **Honest limits of this.** These are hand-written loops, not the game's instruction mix, and the "distinct GPRs a
+  block" column mixes two causes that this tool cannot yet separate - capacity overflow (a block wanting more than
+  the cache's 5) and boundary flush (writing back registers the cache *did* hold). The store share argues for the
+  second, but separating them properly needs the prologue/regstat information in the dump or a counter in `jit.c`,
+  and it is the distinction that would actually decide this candidate. A game dump also needs one qemu run with a
+  disc image, which a cloud session does not have.
+- **Re-evaluate when:** the two causes above are separated, or C47 attributes a real share of core 0's data misses
+  to Gekko-state accesses. Absent either, the expectation stays "it loses", now for a measured reason rather than a
+  suspected one. If it loses, record the numbers so nobody revisits it - that is the point
   of this file.
 
 ## C52. The pacer overshoots its target, and the overshoot grows with it (2026-10-30)

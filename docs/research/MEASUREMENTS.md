@@ -2947,6 +2947,38 @@ What it changes, concretely, for claims already on record:
 - Anything claimed at **0.2-0.3% from two runs an arm is not resolved**, in any scene. Either run four, or
   interleave the arms (queue A, B, A, B) instead of batching them, so a slow drift cannot land on one arm.
 
+### Where compiled code's data accesses go, and C51's ceiling (`gpr_traffic.py`, qemu, 2026-10-31)
+
+C51 asks whether guest GPRs should spill to VFP registers instead of memory. Its first question is the ceiling, and
+nothing had measured it. New tool (`core/tools/gpr_traffic.py`) over the same `JIT_SCHEDDUMP` the cycle model takes:
+every hot host instruction of every executed block, classified by what it touches and weighted by execution count.
+Four `jitbench.py` shapes through the real JIT at the device's own opt mask (8722295):
+
+| shape | guest GPRs | of that, stores | guest floats | other Gekko state | guest memory | distinct GPRs a block |
+|---|---|---|---|---|---|---|
+| `floatloop.S` | **1.00%** | 0% | 20.0% | - | ~0% | 1.0 |
+| `psloop.S` | **1.04%** | 0% | 12.5% | - | ~0% | 1.0 |
+| `intloop.S` | **6.05%** | **79.7%** | - | 2.4% | 6.0% | 4.01 |
+| `callmany.S` | **8.95%** | **64.7%** | - | 5.3% | 2.6% | 3.67 |
+
+- **The ceiling is 6-9% of hot words** in integer and call-heavy code, ~1% where the floats dominate (OPT_FCACHE
+  already holds those). At the project's measured exchange rate - OPT_RETSTUB bought +1.0-1.6% of core 0 for -2.1%
+  of hot words - the whole of that traffic is worth a few percent at most, before paying for any transfers.
+- **Two thirds to four fifths of it is stores**, which is the finding. A fill-heavy profile would mean capacity
+  pressure (a block wanting more than the cache's five registers), which a bigger or cheaper cache fixes. A
+  store-heavy one means the traffic is the cache **writing architectural state back at block boundaries and calls** -
+  and a VFP-backed cache must still do that, because the interpreter, the helpers and every exit read `Gekko.gpr`
+  from memory. **C51 as written attacks the wrong half**; the lever on write-back is fewer boundaries (C44's
+  handover, modelled ~1.3% net), not a different spill destination.
+- **Latency says the same.** ARM->VFP 4 cycles, VFP->ARM 2, against an L1 load's 3 (+1 early) and a store into the
+  write buffer. A VFP spill/fill is not cheaper per access, so a gain would have to come from D-cache *pressure*,
+  which is only real if those accesses miss - **C47's** question, unmeasured. **C47 therefore comes before C51.**
+- **Limits, stated because they bound the conclusion:** hand-written loops are not the game's instruction mix, and
+  the "distinct GPRs a block" column mixes capacity overflow with boundary flush, which this tool cannot yet
+  separate - the store share argues for the second but does not prove it. A game dump needs one qemu run with a disc
+  image. The tool fails loudly on an unrecognised record rather than reporting "few accesses", because a parser that
+  silently finds nothing would have produced exactly the conclusion being tested.
+
 ### The indirect-table probe rate, first measurements (`--indstat`, qemu, 2026-10-31)
 
 C48's counter, built this day. The 2 MB of indirect-branch tables (`FAST_BITS` 16, four tables - the size of the
