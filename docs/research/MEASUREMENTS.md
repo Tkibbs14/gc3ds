@@ -2861,6 +2861,36 @@ The self-test poisons every warm-up skip sample (400 ms against a 95 ms drawn fr
 within 3% of target; removing the probe reproduces the device exactly (scored mean 95.00 ms, a drawn frame's own
 cost, against a 47.62 ms target).
 
+### The heavy area's noise floor with four replicates, not two (jobs 1692/1693 + 1700/1701, 2026-10-31)
+
+Four runs of the **identical** configuration - same build (`2ba59806b89d7a22`), same scene (`tp_area2`), same
+session, 240 s each, the same five ports active in every one (checked in the `# port 10s` lines, not assumed), no
+rows dropped by the stolen-second filter, start clock 281-282 MHz in all four:
+
+| job | frames/s | when |
+|---|---|---|
+| 1692 | 7.281 | 03:43 batch |
+| 1693 | 7.280 | 03:43 batch |
+| 1700 | 7.264 | 05:30 batch |
+| 1701 | 7.276 | 05:30 batch |
+
+Range **0.23%** of the 7.2753 mean. The two adjacent pairs inside it read **0.01%** (1692/1693) and **0.17%**
+(1700/1701).
+
+> **Correction to the 0.07% figure quoted in AGENTS.md rule 3.** That came from adjacent pairs, and adjacent pairs
+> understate the floor: the same pair that gave 0.01% sits inside a 0.23% spread once two more runs of the same
+> thing are added, and even an adjacent pair reached 0.17% here. **The heavy area's floor is ~0.2%, not 0.07%.**
+
+What it changes, concretely, for claims already on record:
+
+- `--psflush` on, heavy area **+0.85%** - about 4x the floor. Safe.
+- `--port-hooks 243` over 503, heavy area **+0.42%** - about 2x. Probably real; the sign is corroborated by every
+  other scene, which is what carries it rather than the margin.
+- port bits 9+10 at the current default, **-0.46%** - about 2x, and its own arm spread was 0.21%. The sign decided a
+  default and the sign is the part to trust.
+- Anything claimed at **0.2-0.3% from two runs an arm is not resolved**, in any scene. Either run four, or
+  interleave the arms (queue A, B, A, B) instead of batching them, so a slow drift cannot land on one arm.
+
 ### The indirect-table probe rate, first measurements (`--indstat`, qemu, 2026-10-31)
 
 C48's counter, built this day. The 2 MB of indirect-branch tables (`FAST_BITS` 16, four tables - the size of the
