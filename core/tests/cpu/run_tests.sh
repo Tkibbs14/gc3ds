@@ -103,6 +103,25 @@ else
     note "SKIP gfskip pacer: no core/build/gcemu and make did not produce one (try: make -C core)"
 fi
 
+# The ports' give-up line histogram (port_j2d.c why_line). It cannot be exercised without a disc image, so it has
+# its own self-test, and a histogram that teaches the wrong lesson is the bug it replaced.
+echo "== port give-up line histogram"
+if [ -x "$gcemu" ]; then
+    out=$(GC3DS_PORTWHY_SELFTEST=1 "$gcemu" 2>&1); rc=$?
+    if [ $rc -eq 0 ] && [ "${out#*port whyline selftest}" != "$out" ]; then
+        note "PASS port whyline: ${out#port whyline selftest: }"
+    elif [ "${out#*usage:}" != "$out" ]; then
+        note "FAIL port whyline: core/build/gcemu predates this branch (it printed its usage text). Run: make -C core"
+        fail=1
+    else
+        echo "$out" | head -8
+        note "FAIL port whyline"
+        fail=1
+    fi
+else
+    note "SKIP port whyline: no core/build/gcemu"
+fi
+
 if [ "${NO_BENCH:-0}" != 1 ]; then
     echo "== speed (PC, single thread)"
     "$w/bench" | while read -r l; do note "INFO $l"; done

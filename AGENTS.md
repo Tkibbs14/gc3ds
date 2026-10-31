@@ -132,6 +132,7 @@ on the console.
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
+| The ports' give-up histogram (`port_j2d.c` `why_line`) | `GC3DS_PORTWHY_SELFTEST=1 core/build/gcemu`, also run by `run_tests.sh`: it cannot be exercised without a disc image (the ports only hook TP's code), so the histogram has its own check - a repeated line increments its own slot rather than taking a new one, the slots fill in order, and give-ups past them are counted in `other` rather than lost. Planted bugs that must fail it: a repeated line taking a new slot, and the overflow dropped. The thing it protects is that **`# port give-ups 10s` says which line refused**: the reason codes are coarse (reason 5 has 21 sites and its old "tev block" label was sizing the top open direction from a bucket of unrelated causes) |
 | Measurement tools (`runs.py`) | `python3 core/tools/runs.py --selftest`: a synthetic log with a planted steal must be recovered exactly, a merely busy scene must **not** be filtered (an absolute threshold dropped half a tp850 run and kept only its easiest seconds - that mistake has its own planted test), and a frame window containing a screenshot must be dropped. |
 | **Any change at all** | `python3 core/tools/docs_stale.py` (rule 7: headline speeds agree across AGENTS and README, one build id with a not-comparable note, frames against `speed_pct`, every option the docs name is really parsed, every `CNN` referenced exists and every shelved one keeps its trigger). Mechanical only - rule 7's table is the part done by hand. `--selftest` plants a fault per check. |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings. Without devkitARM (a cloud session), `bash core/tools/host3ds_syntax.sh` first: it compiles 8 of the 15 files `-fsyntax-only` against the stubs in `core/tools/stub3ds/` and catches plain C mistakes (on 2026-10-30 a `double tot` declared inside an `if` block broke a build and cost a device session). It is not a build, and never replaces one before a relay push. |
@@ -304,10 +305,19 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   systematic overshoot. **A result that kills one of these is as valuable as one that builds it** - the point is that
   none of them is currently knowable.
 - **Open directions, in the order the budget supports them:** removing guest code wholesale - **larger ports where a
-  whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`), since the
-  ports as a *set* are +10.6% while their parts sum to ~3.7% and small functions lose as entry-hook stand-ins (do
-  the denormal give-up first, CONTRIBUTOR_TASKS 9); the ports' `port_commit` (2.61% of core 0, and the J3D light
-  port's one-copy commit turned it from negative to +2.7%, so the technique is proven and unapplied elsewhere); C40
+  whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`) - but
+  **"other TEV block types" has never actually been sized, and the number that looked like its size was a label
+  bug** (2026-10-31): the pane walk refuses 5,600 calls per 10 s in the heavy area with 4,720 under the reason
+  perf.csv called "tev block", and that reason has **21 sites** of which one is a TEV block, while `otherTev` - the
+  only field recording a real unported TEV block - reads 0 in those runs. `# port give-ups 10s` now names the
+  refusing line, so **one device run with the ports on re-sizes this direction before any of it is built**. The
+  direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
+  lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
+  **rank candidates by work per call, not by call count** (and do the denormal give-up first, CONTRIBUTOR_TASKS 9);
+  the ports' `port_commit` (2.61% of core 0, and the J3D light
+  port's one-copy commit turned it from negative to positive at the time, so the technique is proven and unapplied
+  elsewhere - though that port's +2.7% is now inside bit 6's, and PNGP's commit is already one copy, so the next
+  place to apply it has to be found rather than assumed); C40
   (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
   repeated display lists (C1).
 - **Guest frame skip, paced to a game speed (C9/C9a; the owner's direction, 2026-10-30: "if we can make it look

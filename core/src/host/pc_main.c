@@ -255,6 +255,7 @@ int main(int argc, char** argv) {
 #endif
     // The frame pacer's self-test needs no disc image: it drives --gfskip-target with a synthetic clock (hle_tp.c).
     if (getenv("GC3DS_GFSKIP_SELFTEST")) return hle_gfskip_selftest() ? 0 : 1;
+    if (getenv("GC3DS_PORTWHY_SELFTEST")) return port_whyline_selftest() ? 0 : 1;
     if (argc < 2) {
         fprintf(stderr, "usage: %s program.dol|game.iso [--seconds N | --frames N] [--out DIR] [--every N] [--log cats|all]\n"
                         "       [--trace N [--trace-at CYCLES]] [--profile] [--disc-info] [--press BUTTON@from-to,...]\n"

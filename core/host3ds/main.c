@@ -1837,7 +1837,12 @@ static const char* run_body(const char* path) {
                             if (h->checked)
                                 fprintf(g_perf, "; instructions per call: interpreter %.1f, port's estimate %.1f", (double)h->insReal / (double)h->checked,
                                         (double)h->insEst / (double)h->checked);
-                            fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, tev block %08lx, texgens, indirect):",
+                            // "unrecognised" (reason 5) is a bucket of 21 unrelated give-up sites, so the line
+                            // histogram below, not this column, is what says what to port next (2026-10-31; the
+                            // column used to be labelled "tev block", which read as 4,720 unported TEV blocks a
+                            // second in the heavy area and need not have been one of them). otherTev is the last
+                            // real unported TEV block setGX, and reads 0 when there has been none.
+                            fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, unrecognised [21 sites; last real TEV block %08lx], texgens, indirect):",
                                     (unsigned long)p.otherTev);
                             for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(h->refusedBy[q] - l->refusedBy[q]));
                             if (p.bad && (int)p.badHook == k)
@@ -1856,6 +1861,32 @@ static const char* run_body(const char* path) {
                             fprintf(g_perf, "\n");
                         }
                         lastP = p;
+                        // Which line of port_j2d.c refused, per reason. This, not the coarse reason column above, is
+                        // what says what to port next: reason 5 has 21 sites and its old label named only one of
+                        // them (2026-10-31). Rates over the window, so a dominant site is obvious at a glance; the
+                        // line numbers are of the build the run was made with, which is in the header.
+                        {
+                            static u64 lastWl[8][6], lastWo[8];
+                            static const char* kWhy[8] = { "setup", "memory", "floats", "texregion", "palette",
+                                                           "unrecognised", "texgens", "indirect" };
+                            for (int r = 0; r < 8; r++) {
+                                bool any = g_portWhyOther[r] != lastWo[r];
+                                for (int i = 0; i < 6 && !any; i++) any = g_portWhyLineN[r][i] != lastWl[r][i];
+                                if (!any) continue;
+                                fprintf(g_perf, "# port give-ups 10s, %s: ", kWhy[r]);
+                                for (int i = 0; i < 6; i++) {
+                                    if (!g_portWhyLine[r][i]) break;
+                                    u64 d = g_portWhyLineN[r][i] - lastWl[r][i];
+                                    lastWl[r][i] = g_portWhyLineN[r][i];
+                                    if (d) fprintf(g_perf, "port_j2d.c:%lu x%llu  ", (unsigned long)g_portWhyLine[r][i],
+                                                   (unsigned long long)d);
+                                }
+                                if (g_portWhyOther[r] != lastWo[r])
+                                    fprintf(g_perf, "other lines x%llu", (unsigned long long)(g_portWhyOther[r] - lastWo[r]));
+                                lastWo[r] = g_portWhyOther[r];
+                                fprintf(g_perf, "\n");
+                            }
+                        }
                     }
                     {  // where the emulated clock's cycles came from (gekko.h, C41) and the slack left in each field
                         static u64 lastCyc, lastC[CLK_N], lastN[CLK_N];

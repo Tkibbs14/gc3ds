@@ -25,6 +25,15 @@ typedef struct {
     u64 txWhy[4];  // J2DTextBoxEx::drawSelf not taken: font class or encoding, a byte outside ASCII text, font page change, gradient
 } PortStats;
 extern PortStats g_portStats;
+// Which line of port_j2d.c each give-up came from, per reason (port_j2d.c why_line): the reason codes are coarse -
+// reason 5 alone has 21 sites and its old "TEV block type" label was sizing the top open direction from a bucket of
+// unrelated causes. `g_portWhyLine[r][i]` is a line number (0: unused), `g_portWhyLineN` its count, and
+// `g_portWhyOther[r]` the give-ups past the slots a reason has. Global, not per hook.
+#ifndef __3DS__
+bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): the give-up histogram's own check
+#endif
+extern u32 g_portWhyLine[8][6];
+extern u64 g_portWhyLineN[8][6], g_portWhyOther[8];
 extern const char* const g_portNames[PORT_N];
 extern int g_portMode;  // --port: 0 off, 1 on, 2 check (each call compared with the interpreter, whose result is kept), 3 plant
 extern bool g_portParts;  // --port-parts on: PortStats.tSub

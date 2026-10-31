@@ -134,9 +134,37 @@ typedef struct {
     u32 nundo, undoCap;
 } Pc;
 
-// Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 TEV block type,
-// 6 texgens, 7 indirect stages; 0 the set-up.
-static inline void give_up(Pc* c, u32 why) { if (!c->fail) c->fail = why; }
+// Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 **a shape or
+// address not recognised**, 6 texgens, 7 indirect stages; 0 the set-up.
+//
+// Reason 5 used to be labelled "TEV block type" in perf.csv, and that label was a bug (2026-10-31): it has **21
+// call sites** in this file - an unported TEV block is one of them, the rest are a graf type, a vtable that is not
+// the expected one, a walk scan that failed, a font class, a switch default and so on. The project's top-ranked
+// open direction ("other TEV block types", AGENTS) was being sized from that bucket: in TP's heavy area the pane
+// walk refuses 5,600 calls in 10 s with 4,720 of them under reason 5, which read as "4,720 unported TEV blocks"
+// and need not have been any of them (`PortStats.otherTev`, the only field that records a real TEV block, reads
+// 0 in those runs).
+//
+// So each give-up also records **which line of this file** it came from, which needs no naming of 21 sites and
+// cannot drift out of step with the code the way a hand-written reason list does. The histogram is global rather
+// than per hook (give_up does not know the hook), which is enough to say what to port next - the counts are
+// give-up *attempts*, and only the first per call is counted, so they track `refusedBy` rather than defining it.
+#define kWhyLines 6
+u32 g_portWhyLine[8][kWhyLines];
+u64 g_portWhyLineN[8][kWhyLines];
+u64 g_portWhyOther[8];   // give-ups past the kWhyLines distinct lines a reason can hold
+static void why_line(u32 why, u32 line) {
+    u32 w = why & 7;
+    for (u32 i = 0; i < kWhyLines; i++) {
+        if (g_portWhyLine[w][i] == line) { g_portWhyLineN[w][i]++; return; }
+        if (!g_portWhyLine[w][i]) { g_portWhyLine[w][i] = line; g_portWhyLineN[w][i] = 1; return; }
+    }
+    g_portWhyOther[w]++;
+}
+static inline void give_up_at(Pc* c, u32 why, u32 line) {
+    if (!c->fail) { c->fail = why; why_line(why, line); }
+}
+#define give_up(c, why) give_up_at((c), (why), __LINE__)
 u64 g_portFloatSite[5];  // which float check gave up (reports): NaN/inf, psq GQR, denormal or NaN, drawSelf f7, FPU off
 static inline bool in_mem1(u32 a, u32 len) { return a >= 0x80000000u && a - 0x80000000u + len <= g_psz; }
 static inline u32* gxw(Pc* c, u32 i) {
@@ -2501,6 +2529,42 @@ static u32 port_check(Gekko* g, u32 hook) {
 }
 
 #ifndef __3DS__
+// The give-up line histogram cannot be exercised without a disc image (the ports only hook TP's code), and a
+// histogram that teaches the wrong lesson is the bug this replaced - so it has its own self-test:
+// `GC3DS_PORTWHY_SELFTEST=1 core/build/gcemu` (core/tests/cpu/run_tests.sh). A repeated line must increment its
+// own slot rather than take a new one, the slots must fill in order, and give-ups past the slots must land in
+// `other` instead of being lost or overwriting a slot.
+bool port_whyline_selftest(void) {
+    int bad = 0;
+    memset(g_portWhyLine, 0, sizeof g_portWhyLine);
+    memset(g_portWhyLineN, 0, sizeof g_portWhyLineN);
+    memset(g_portWhyOther, 0, sizeof g_portWhyOther);
+    for (u32 k = 0; k < 3; k++) why_line(5, 640);          // the same site three times
+    why_line(5, 1094);
+    for (u32 L = 100; L < 100 + kWhyLines; L++) why_line(5, L);   // fills the rest, then overflows
+    why_line(5, 777);                                      // past the slots: `other`
+    why_line(1, 561);                                      // a different reason keeps its own slots
+    if (g_portWhyLine[5][0] != 640 || g_portWhyLineN[5][0] != 3) {
+        printf("port whyline selftest: repeated line took %lu slots (line %lu x%llu)\n", 1UL,
+               (unsigned long)g_portWhyLine[5][0], (unsigned long long)g_portWhyLineN[5][0]); bad++;
+    }
+    if (g_portWhyLine[5][1] != 1094 || g_portWhyLineN[5][1] != 1) { printf("port whyline selftest: second slot wrong\n"); bad++; }
+    for (u32 i = 2; i < kWhyLines; i++)
+        if (g_portWhyLine[5][i] != 100 + (i - 2)) { printf("port whyline selftest: slot %lu = %lu\n", (unsigned long)i, (unsigned long)g_portWhyLine[5][i]); bad++; }
+    // Two of the kWhyLines lines above do not fit (slots 0 and 1 were already taken), plus 777: three in all,
+    // whatever kWhyLines is.
+    u64 want = 3;
+    if (g_portWhyOther[5] != want) {
+        printf("port whyline selftest: overflow counted %llu, expected %llu\n",
+               (unsigned long long)g_portWhyOther[5], (unsigned long long)want); bad++;
+    }
+    if (g_portWhyLine[1][0] != 561 || g_portWhyLine[5][0] != 640) { printf("port whyline selftest: reasons share slots\n"); bad++; }
+    memset(g_portWhyLine, 0, sizeof g_portWhyLine);
+    memset(g_portWhyLineN, 0, sizeof g_portWhyLineN);
+    memset(g_portWhyOther, 0, sizeof g_portWhyOther);
+    printf("port whyline selftest: %s\n", bad ? "FAILED" : "ok (repeats merge, slots fill in order, overflow counted)");
+    return bad == 0;
+}
 static void port_report(void) {
     for (int k = 0; k < PORT_N; k++) {
         PortHook* s = &g_portStats.h[k];
@@ -2509,9 +2573,24 @@ static void port_report(void) {
         if (s->checked)
             fprintf(stderr, "  guest instructions per checked call: interpreter %.1f, port estimate %.1f (kInsScale %.0f)\n",
                     (double)s->insReal / s->checked, (double)s->insEst / s->checked, 100.0 * s->insReal / (s->insEst ? s->insEst : 1));
-        fprintf(stderr, "  not taken by reason (setup, memory, floats, texregion, palette, block type, texgens, other):");
+        fprintf(stderr, "  not taken by reason (setup, memory, floats, texregion, palette, unrecognised, texgens, indirect):");
         for (int q = 0; q < 8; q++) fprintf(stderr, " %llu", (unsigned long long)s->refusedBy[q]);
         fputc('\n', stderr);
+    }
+    // Which line gave up, per reason: the reason codes are coarse (reason 5 has 21 sites), so this is what says
+    // what to port next. Same histogram the device's '# port give-ups 10s' prints.
+    {
+        static const char* kWhy[8] = { "setup", "memory", "floats", "texregion", "palette", "unrecognised",
+                                       "texgens", "indirect" };
+        for (int r = 0; r < 8; r++) {
+            if (!g_portWhyLine[r][0]) continue;
+            fprintf(stderr, "PORT: give-ups, %s:", kWhy[r]);
+            for (int i = 0; i < kWhyLines && g_portWhyLine[r][i]; i++)
+                fprintf(stderr, " port_j2d.c:%lu x%llu", (unsigned long)g_portWhyLine[r][i],
+                        (unsigned long long)g_portWhyLineN[r][i]);
+            if (g_portWhyOther[r]) fprintf(stderr, " other lines x%llu", (unsigned long long)g_portWhyOther[r]);
+            fputc('\n', stderr);
+        }
     }
     const u64* w = g_portStats.mdWhy;
     fprintf(stderr, "PORT: J3DMaterial::diff not taken because of texture numbers %llu, texgens %llu, blend %llu, TEV stages %llu, "
