@@ -6,12 +6,13 @@ For people and coding agents. Read this whole file before changing anything; the
 gc3ds is a GameCube emulator for the New Nintendo 3DS / New 2DS XL (ARM11 MPCore, 4 cores at 804 MHz, 2 MB shared L2,
 PICA200 GPU). The goal is the highest speed the hardware allows, with **exact** emulation: the interpreter is the
 reference, and the JIT and the fast graphics paths must produce the same results. *Twilight Princess* is the stress
-test. Today it runs a static Ordon scene at 10.54 frames a second (35.1% of full speed) and Ordon's heaviest area at
-7.22 (24.1%); Wind Waker's Outset 6.24 (20.8%), Mario Party 4's board 9.28 (15.5%), the title's cutscene 40.9%, its
-later Link / Epona stretch 23.0%, the THP movie 14.7% (30 October 2026, build 103456ecbdfe9264, two runs an arm,
-scored with `runs.py`'s stolen-second filter - arms agree to 0.01-0.2%). **These are not comparable with the
-previous block's** (10.40 / 7.17 / 6.18 / 9.05 on build 0f3c3eac6e709b6a): a rebuild moves a baseline ~0.8%, older
-numbers were scored before the filter, and only runs from one session on one build may be compared. **Judge
+test. Today it runs a static Ordon scene at 10.55 frames a second (35.2% of full speed) and Ordon's heaviest area at
+7.28 (24.3%); Wind Waker's Outset 6.23 (20.8%), Mario Party 4's board 9.27 (15.5%), the title's cutscene 40.9%, its
+later Link / Epona stretch 23.0%, the THP movie 14.8% (31 October 2026, build 2ba59806b89d7a22, two runs an arm,
+scored with `runs.py`'s stolen-second filter - arms agree to 0.00-0.22%). **These are not comparable with the
+previous block's** (10.54 / 7.22 / 6.24 / 9.28 on build 103456ecbdfe9264): a rebuild moves a baseline ~0.8%, the
+device drifts ~2% between days, and only runs from one session on one build may be compared - the defaults did not
+change between those two builds, so the difference between them *is* that drift, measured. **Judge
 gameplay on frames a second from a scene that takes no input, not on the scripted walk** - see "Measuring" and C41.
 
 ## Rules
@@ -188,12 +189,15 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
 
 ## Where things stand (docs/research/MEASUREMENTS.md has the newest numbers)
 
-- **All defaults (30 October 2026, build 103456ecbdfe9264, frames a second; the `speed_pct` in brackets; two runs an
-  arm, scored with the stolen-second filter):** static Ordon 10.54
-  (35.1%), heavy area 7.22 (24.1%), Wind Waker 6.24 (20.8%), Mario Party 4 9.28 (15.5%); the title: cutscene 40.9%,
-  later stretch 23.0%, movie 14.7% (the cutscene ends at ~150 s: windows must follow it). The previous build
-  (0f3c3eac6e709b6a) read 10.40 / 7.17 / 6.18 / 9.05 and **must not be differenced against these**: the device drifts
-  ~2% between days and a rebuild moves a baseline ~0.8%, so compare runs of one session on one build only. The
+- **All defaults (31 October 2026, build 2ba59806b89d7a22, frames a second; the `speed_pct` in brackets; two runs an
+  arm, scored with the stolen-second filter; jobs 1690-1699):** static Ordon 10.55
+  (35.2%), heavy area 7.28 (24.3%), Wind Waker 6.23 (20.8%), Mario Party 4 9.27 (15.5%); the title: cutscene 40.9%,
+  later stretch 23.0%, movie 14.8% (the cutscene ends at ~150 s: windows must follow it). The previous build
+  (103456ecbdfe9264) read 10.54 / 7.22 / 6.24 / 9.28 and **must not be differenced against these**: the device drifts
+  ~2% between days and a rebuild moves a baseline ~0.8%, so compare runs of one session on one build only. **Those two
+  builds have the same defaults**, so what lies between them (Ordon +0.1%, heavy +0.8%, Wind Waker -0.2%, Mario Party 4
+  -0.1%) is that drift with nothing else in it - a useful scale for how large a "gain" has to be. Within this session
+  the arms agree to 0.00-0.22%. The
   scripted Ordon *walk* also cannot be compared across a change that shifts the guest's timeline (C41).
   **Core 0 is the limit in every scene:** the joint-state line ('# joint 10s') shows it
   running guest code 93-97% of the time and almost never waiting; the GX thread is idle 12-13% in gameplay and 40-75%

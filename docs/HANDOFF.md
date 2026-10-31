@@ -1,5 +1,46 @@
-# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-30)
+# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-31)
 
+> **▶ 2026-10-31: the frame pacer was silently doing nothing, and the headline re-measured on a fresh build.**
+> Build `2ba59806b89d7a22` (`--gfskip-minfps` added), then the fix in `2bc8c19` which still needs a device build.
+>
+> **Headline, all defaults, jobs 1690-1699** (240 s each except the title's 420 s, two runs an arm, one session, one
+> build): static Ordon **10.55** frames a second (35.2%), heavy area **7.28** (24.3%), Wind Waker **6.23** (20.8%),
+> Mario Party 4 **9.27** (15.5%); tp850 cutscene **40.93%**, later stretch **22.97%**, movie **14.76%**. The arms
+> agree to **0.00-0.22%** (Ordon is the loose one, as its noise floor says it should be). **The defaults are
+> identical to build `103456ecbdfe9264`'s** (10.54 / 7.22 / 6.24 / 9.28), so the gap between the two builds -
+> Ordon +0.1%, heavy **+0.8%**, Wind Waker -0.2%, Mario Party 4 -0.1% - is pure rebuild-and-day drift with no change
+> in it. Keep that beside any claim under a point: it is the same size as most entries in the ledger.
+>
+> **The pacer latched up and paced nothing for four minutes while its report looked healthy (C9c).** Jobs 1681-1688,
+> the first runs with the picture floor: four of six skipped **not one frame** - Ordon `game 11.00 drawn 11.00`,
+> heavy area `7.97 / 7.97`. The report named the cause without my reading it: *"a drawn frame 94.6 ms, a skipped one
+> 149.5 ms"*. A skipped frame cannot cost more than a drawn one; it is the same frame's logic minus the rendering.
+> **What gave it away was not the speed but a learned value that never moved:** `cs` read exactly 149.5 in every
+> ten-second window of a 240 s run while `cd` moved 94.6 -> 94.1. One sample. The warm-up took a single skipped
+> frame, seeded the mean with it, the solver's `cd > cs` guard went false, so nothing was skipped - and because
+> nothing was skipped, `cs` could never be sampled again. Job 1685 got 33.3 ms on the same build and paced perfectly,
+> so **whether the feature worked was luck**, and the earlier floor table (jobs 1638-1643) is only trustworthy where
+> its two rates differ.
+>
+> **Fixed three ways so no sample can be permanent** (`hle_tp.c`, the latch-up note above `gfskip_skip`): incremental
+> means (weight 1/n up to 1/16, so nothing seeds them forever), a skip sample at or above the drawn cost **rejected**
+> as impossible, and - the part that turns "unlikely" into "impossible" - **one frame in 16 skipped anyway while the
+> costs cannot be solved**, so `cs` is re-sampled, with the accumulator credited so the frame is moved rather than
+> lost. `# gfskip target 10s` now prints `probed` and `impossible samples`, so this shows in the log instead of
+> having to be inferred. The self-test poisons **every** warm-up skip sample (400 ms against a 95 ms drawn frame) and
+> asserts the run still lands within 3% of target; removing the probe reproduces the device exactly, a scored mean of
+> 95.00 ms against a 47.62 ms target.
+>
+> **The lesson for the instruments, again:** the pacer's own report had the impossible number in it from the first
+> run, in plain words, and the thing that caught it was a value that did not move between windows. Worth checking for
+> deliberately - a learned or averaged quantity that is identical in every window has one sample, not a stable one.
+>
+> **Next:** the fix needs a devkitARM build (this container has none), then jobs 1681-1688 re-run - no hardware
+> number for the floor exists yet that was not taken on the build that could latch. Device-idle meanwhile: jobs
+> 1700-1707 split `--port-hooks` 503's two extra bits (2 = J3DPNGP, 8 = the minimap decoration) and re-test bit 3
+> (the `__GXSendFlushPrim` *port*) one at a time against today's 243, since C49 says an old-baseline figure is not
+> evidence about today's.
+>
 > **▶ 2026-10-30 (later): core 0's budget closed, and the honest answer to "where is the next 10%".** Build
 > `103456ecbdfe9264`. **Supersedes the 69.4% blind spot in the block below.**
 >

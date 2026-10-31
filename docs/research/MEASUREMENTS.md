@@ -2801,6 +2801,66 @@ The +1.3% is **withdrawn** (it was measured at a baseline that no longer exists)
 1779 arm's spread is 0.21%, wider than the 0.04-0.10% elsewhere, so the magnitude is soft - but the sign is not, and
 the sign is what decides a default.
 
+### The headline at all defaults, build `2ba59806b89d7a22` (jobs 1690-1699, 2026-10-31)
+
+Two runs an arm, one session, one build, 240 s each (the title 420 s), scored with `runs.py` / `title_sections.py`
+and the stolen-second filter. **This is the headline AGENTS.md and README.md now quote.**
+
+| scene | run A | run B | mean | spread | `speed_pct` |
+|---|---|---|---|---|---|
+| static Ordon | 10.541 | 10.564 | **10.55** | 0.22% | 35.18% |
+| TP heavy area | 7.281 | 7.280 | **7.28** | 0.01% | 24.27% |
+| Wind Waker, Outset | 6.228 | 6.228 | **6.23** | 0.00% | 20.76% |
+| Mario Party 4, board | 9.267 | 9.267 | **9.27** | 0.00% | 15.49% |
+| tp850 cutscene | 40.93% | 40.93% | **40.93%** | 0.00% | - |
+| tp850 later stretch | 22.98% | 22.96% | **22.97%** | 0.09% | - |
+| tp850 movie | 14.74% | 14.78% | **14.76%** | 0.27% | - |
+
+**The useful second reading: this build's defaults are identical to `103456ecbdfe9264`'s, so the gap between the two
+sets is drift with nothing else in it.** Ordon 10.54 -> 10.55 (+0.1%), heavy area 7.22 -> 7.28 (**+0.8%**), Wind
+Waker 6.24 -> 6.23 (-0.2%), Mario Party 4 9.28 -> 9.27 (-0.1%). That is a measured instance of the ~0.8% a rebuild
+moves a baseline, in the scene that otherwise repeats to 0.01%, and it is **larger than most entries in the
+defaults ledger**. Quote it whenever a sub-point claim is made across builds.
+
+Ordon is again the loose scene (0.22% against 0.00-0.09% everywhere else), consistent with the 0.25-0.31% measured
+in jobs 1673-1676: nothing about the method changed, the scene is just less repeatable.
+
+### The frame pacer paced nothing, and the report said so in words (jobs 1681-1689, 2026-10-31)
+
+The first hardware runs of `--gfskip-minfps` on build `2ba59806b89d7a22`. **Four of the six paced runs skipped not a
+single frame**, while reporting a controller that looked healthy at a glance:
+
+| job | scene | floor | drawn frame | skipped frame | wants to draw | result |
+|---|---|---|---|---|---|---|
+| 1681-1682 | static Ordon | 5 (default) | 94.6 ms | **149.5 ms** | 1.000 | latched: `game 11.00 drawn 11.00` |
+| 1683-1684 | heavy area | 5 | 137.1 ms | **187.2 ms** | 1.000 | latched: `7.97 / 7.97` |
+| 1685 | static Ordon | 4 | 92.4 ms | 33.3 ms | 0.243 | paced correctly |
+| 1687 | heavy area | 7 | 136.5 ms | **173.6 ms** | 1.000 | latched |
+| 1642 (older build) | static Ordon | none | 93.6 ms | 33.3 ms | 0.237 | paced correctly |
+
+A **skipped** frame measured as costing more than a drawn one is physically impossible - it is the same frame's logic
+minus the rendering - so the solver's `cd > cs` guard was false and the drawn fraction stayed 1.
+
+**What identified it was not the speed but a value that never moved.** `cs` read **exactly 149.5 ms in every
+ten-second window of a 240 s run** while `cd` moved (94.6 -> 94.1). A learned mean that is identical in every window
+has one sample, not a stable one. The warm-up took a single skipped frame, seeded `cs` with it, and once the solver
+stopped skipping, `cs` could never be sampled again: a self-sealing failure. Job 1642's **first** window reads
+`drawn 363.6, skipped 34.1`, so warm-up samples are wildly noisy and that one sample could land anywhere - **whether
+the feature worked was luck, not a setting.**
+
+> **Correction to the floor table in C9b (jobs 1638-1643 and the follow-ups).** Those were measured with the same
+> single-sample warm-up, so **any run of that build could silently be a no-skip run.** Runs whose game-speed and
+> picture rates differ did skip and remain evidence; a run whose two rates are equal measured nothing. The floor
+> table's own runs all show skipping, so it stands - but no number from that build should be read without checking
+> that the two rates differ.
+
+**Fixed in `2bc8c19`** (not yet on hardware - this container has no devkitARM): incremental means (weight 1/n up to
+1/16), skip samples at or above the drawn cost rejected as impossible, and one frame in 16 skipped anyway while the
+costs cannot be solved, so `cs` is re-sampled. `# gfskip target 10s` now prints `probed` and `impossible samples`.
+The self-test poisons every warm-up skip sample (400 ms against a 95 ms drawn frame) and asserts the run still lands
+within 3% of target; removing the probe reproduces the device exactly (scored mean 95.00 ms, a drawn frame's own
+cost, against a 47.62 ms target).
+
 ### What other projects on this hardware did, and what transfers (survey, 2026-10-30)
 
 A survey of comparable projects, prompted by the owner asking how others made things playable. Sources are in the
