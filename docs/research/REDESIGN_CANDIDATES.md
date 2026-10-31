@@ -1373,6 +1373,26 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   spanning 512 pages probed 800,000 times a second looked like it had to be costing cache, and the arithmetic said
   ~2.9% of core 0 if every probe stayed in L2 - but whatever it costs, collisions cost more. At 0.2% misses the
   table is doing its job, and the headroom to trade hit rate for footprint does not exist.
+- **The mechanism, from the counters in the same arms** (`--indstat`, jobs 1747-1749), which is why the sweep lost:
+
+  | `FAST_BITS` | first slot | second slot | **missed** | frames a second |
+  |---|---|---|---|---|
+  | 16 | 91.8% | 8.0% | **0.2%** | 7.296 |
+  | 14 | 83.9% | 14.8% | **1.3%** | -0.55% |
+  | 12 | 80.1% | 15.0% | **4.9%** | -3.56% |
+
+  The probe *rate* is unchanged (6.47-6.48 per 1,000 guest instructions in all three), which is the check that the
+  sweep changed only what it meant to: the rate is a property of the guest's call graph, not of the table. Misses go
+  up 6x then 25x, and OPT_IND2's second slot takes up some of the slack (8.0 -> 14.8 -> 15.0%) exactly as it was
+  meant to - which is a second, independent sign that OPT_IND2 does real work. **Note also that probes per *second*
+  fell at 12 bits (840 k -> 745 k) purely because the emulator got slower**: reporting this counter per 1,000 guest
+  instructions rather than per second is what makes the three arms comparable at all.
+- **A number worth keeping, derived from the two loss arms: a dispatcher return costs roughly 480-820 cycles.**
+  At 14 bits, 9,236 extra misses a second cost 0.55% of core 0 (~479 cycles each); at 12 bits, 34,996 extra cost
+  3.56% (~818 cycles each). The two do not agree, so the cost is not purely per-miss - the larger arm also probes
+  the second slot more and disturbs the caches differently - but **the order of magnitude is now measured rather
+  than assumed, and it prices any future change that adds or removes dispatcher returns.** For scale, the project's
+  normal rate is one dispatcher entry per 4,742 guest instructions.
 - **What this rules out, so nobody re-runs it:** shrinking the indirect tables, in any direction. `FAST_BITS` stays
   16. C46 and the rest of the table's cache cost are closed with it - the sweep bounds them from above, because if
   the tables were costing several percent in cache, the 16x smaller one would have recovered some of it and it lost
