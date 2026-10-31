@@ -2879,6 +2879,28 @@ exceeds `J2DScreen::draw`'s 13.24%, so panes also hang under other parents - the
 **131.11 us building, 31.38 us committing.** That is the most expensive port in the project by a wide margin - which
 is the *point* of a subtree port, and the reason it still pays while the PNGP matrix load at 7.74 us a call does not.
 
+> **Correction, 2026-10-31, within hours of writing the table above: the inclusive shares of *recursive* functions
+> in it are inflated, and I had built conclusions on two of them.** `stack_funcs.py` counts every return address on
+> the stack once, so a function that appears at several nesting levels in one sample is counted once per level - its
+> own docstring says so, and I quoted the docstring and then ignored it. A child cannot exceed its parent's inclusive
+> share, so **the bound is the nearest non-recursive parent**:
+>
+> | subtree | reported | non-recursive parent | corrected bound |
+> |---|---|---|---|
+> | `J3DJoint::recursiveCalc` (C54) | 11.42% / 13.61% | `J3DJointTree::calc` **5.17% / 5.47%** | **~5.2 / 5.5%** |
+> | `J2DPane::draw` (C53) | 11.09% / 17.31% | `dMeter2Draw_c::draw` **9.53% / 14.83%** | **<=9.5 / 14.8%** |
+>
+> So **C54 is about half the size I claimed** (~5.2-5.5%, still the third-largest self-contained subtree, but not
+> 11%), and **C53's figure is an over-estimate too** - the pane tree recurses over children, so its true share is
+> at most its parents', and panes hang under several parents (the HUD meter, the minimap, other screens) which is
+> why no single parent bounds it tightly. The *ordering* survives - these are still the two biggest identified
+> targets on core 0, and C53 is still larger than C54 in both scenes - but the magnitudes above should be read as
+> the corrected bounds. The leaf figures are unaffected: `J2DPane::draw`'s **5.49% leaf** is a direct measurement
+> and remains the largest single leaf in the profile.
+>
+> **The general rule, now recorded next to the tool:** read a recursive function's inclusive share as an upper bound
+> inflated by its depth, and take the number from its nearest non-recursive ancestor instead.
+
 **What the leaf profile also says about the existing ports:** the biggest leaves after the pane walk are
 `J3DMaterial::diff` 2.85% (bit 6, on - so this is its give-up residue), `loadMtxConcatView_PNGP` 2.30% (bit 2, off,
 measured neutral), `reinitGX` 2.21% (bit 7, on) and `GXBegin` 2.12%. Every one of those is a port that already

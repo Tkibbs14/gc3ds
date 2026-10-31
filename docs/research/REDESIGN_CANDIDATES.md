@@ -444,7 +444,7 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 - **Status:** **next**, alongside C53, and the first new large target in some time.
 - **What the measurement says** (job 1750, the first decoded guest *stack* profile, TP heavy area):
-  `recursiveCalc__8J3DJoint` is **11.42% of core 0 inclusive** and only **0.90% leaf**, with
+  `recursiveCalc__8J3DJoint` reads **11.42% of core 0 inclusive** and only **0.90% leaf**, with
   `J3DModel::calc` 6.03%, `calcAnmMtx__8J3DModel` 5.26% and `J3DJointTree::calc` 5.17% nested under or beside it.
   Time spread across a tree rather than concentrated in one function is the signature of a **subtree port**, not a
   stand-in - which is the direction AGENTS already ranks first.
@@ -457,17 +457,32 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   functions is invisible to a leaf profile by construction - and the inclusive profile needed zeldaret's symbol map,
   which lives outside the repository and had never been fetched into a session. **The rejection was not wrong about
   what it measured; it measured the wrong thing.** Corrected in place rather than deleted (rule 7).
-- **The scene check is done and it holds (job 1751): 13.61% in static Ordon against 11.42% in the heavy area**, so
-  this is not a heavy-area artifact and it is the second-largest self-contained subtree in both scenes.
+- **CORRECTED the same day, before anything was built: it is ~5.2-5.5%, not ~11-13%.** `recursiveCalc` is recursive
+  and `stack_funcs.py` counts a function once per nesting level, so its inclusive share is inflated by its depth -
+  the tool's own docstring says so and I quoted it and then ignored it. A child cannot exceed its parent, and the
+  non-recursive parent `J3DJointTree::calc` reads **5.17%** in the heavy area and **5.47%** in static Ordon, with
+  `calcAnmMtx` at 5.26 / 5.60%. **So the joint calc tree is ~5.2-5.5%**, which is still the third-largest
+  self-contained subtree and still holds across both scenes - but it is half what the first write-up claimed, and
+  the claim would have justified more work than the target deserves.
+- **The scene check is done and it holds (job 1751): 5.47% in static Ordon against 5.17% in the heavy area**, so
+  this is not a heavy-area artifact.
 - **First steps, cheapest first:** (1) done - the share holds; (2) read `J3DJoint::recursiveCalc` and `J3DJointTree::calc` in zeldaret's sources and
   size the subtree the way C53's J2DPicture half was sized - which functions, how many bytes, which branches have
   to become give-ups; (3) only then write anything.
-- **Expected:** unknown, deliberately. The honest upper bound is the 11.42%, and the honest discount is that ports
+- **Expected:** unknown, deliberately. The honest upper bound is the corrected ~5.2-5.5%, and the honest discount is that ports
   have repeatedly delivered a fraction of their inclusive share (the ports as a *set* are +10.6% against ~3.7% for
   their parts, and PNGP cost 5.8% of core 0 to deliver -0.03%).
-- **Re-evaluate when:** the source sizing is done. The scene comparison is complete and favourable, so C54 now sits
-  second behind C53 on evidence (C53 is 17.31% in Ordon and 11.09% in the heavy area, and its component is already
-  built).
+- **The sizing, from zeldaret's sources (2026-10-31):** `J3DModel::calc` is a short sequence - flags,
+  `syncJ3DSysFlags`, `mVertexBuffer.frameInit`, four *optional virtual* hooks (`mUnkCalc2`, `mDeformData->deform`,
+  `mVtxColorCalc`, `mUnkCalc1`), then `calcAnmMtx`. The joint walk's work is a **virtual call** on `J3DMtxCalc`,
+  so a port has to recognise which implementation is in play exactly as the pane walk recognises pane classes - and
+  that is where it would refuse. The whole `J3DMtxCalc` family is only **30 functions and 2.5 KB**, with three
+  `calcTransform` strategies (Basic 0x120, Softimage 0x16C, Maya 0x180 bytes), so the code to reproduce is small;
+  the open question is how many of the optional hooks and which transform strategies TP actually uses, which is a
+  counter on the device rather than a guess.
+- **Re-evaluate when:** a device counter says which `J3DMtxCalc` implementations and optional hooks TP exercises.
+  C54 now sits clearly behind C53 (which is <=9.5% in the heavy area and <=14.8% in Ordon with its component already
+  built and exact), and ahead of nothing else large.
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 

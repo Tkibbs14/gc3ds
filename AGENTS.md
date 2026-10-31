@@ -324,10 +324,14 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   2026-10-31).** `stack_funcs.py` needs zeldaret's symbol map, which lives outside the repository and had never been
   fetched into a session, so inclusive time per subsystem had never been read. Past the framework spine the tree is
   ~50% under the actor method dispatch and ~36% under the painter, and the self-contained subtrees are:
-  **`J3DJoint::recursiveCalc` 11.42% inclusive / 0.90% leaf (C54, unexplored)**, **`J2DPane::draw` 11.09% / 5.49%
-  (C53 - and that 5.49% is the largest single leaf in the profile)**, `dMeter2Draw_c::draw` 9.53%,
+  **`J2DPane::draw` <=9.5% inclusive / 5.49% leaf (C53 - and that 5.49% is the largest single leaf in the
+  profile)**, **the J3D joint calc tree ~5.2% (C54, unexplored)**, `dMeter2Draw_c::draw` 9.53%,
   `J3DDrawBuffer::draw` 10.0%, `J2DScreen::draw` 8.49%, the minimap ~6.9%, `J3DShapePacket::drawFast` 6.92%.
-  **Two consequences.** First, **C53's prize is ~11% of core 0, not the ~2.2% on its ledger line**: a taken call
+  **Read a recursive function's inclusive share as an upper bound inflated by its nesting depth and quote its
+  nearest non-recursive ancestor instead** - `recursiveCalc` read 11.42% against its parent's 5.17%, and C54 was
+  opened at twice its real size before the parent was checked (corrected the same day; `stack_funcs.py`'s docstring
+  now says this where it cannot be missed).
+  **Two consequences.** First, **C53's prize is several percent of core 0, not the ~2.2% on its ledger line**: a taken call
   produces no guest samples, so `J2DPane::draw`'s inclusive share *is* the refused walks, and the +2.2% measured
   what the walk captures at ~29% coverage rather than what the rest is worth. Second, **inclusive and leaf profiles
   answer different questions** - a subsystem that is 11% inclusive and 0.9% leaf is a subtree port, and it is

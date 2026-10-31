@@ -8,6 +8,10 @@ that made the call, so a function's share here is the share of samples taken som
 (inclusive time), which says which subsystem is worth running natively as one piece. Shares are averaged over the
 reports after --skip seconds. A function that called two different children in one sample (recursion through two call
 sites) is counted twice, so a share can exceed its true value there; the leaf's own time is in '# hot guest code'.
+**So a recursive function's share is an upper bound inflated by its nesting depth, and the number to quote is its
+nearest non-recursive ancestor's.** This is not a footnote: on 2026-10-31 `J3DJoint::recursiveCalc` read 11.42%
+while its parent `J3DJointTree::calc` read 5.17%, and a candidate was opened at twice its real size before the
+parent was checked. A child cannot exceed its parent, so any child above its parent here is telling you it recursed.
 SYMBOLS.txt: zeldaret/tp config/GZ2E01/symbols.txt (outside the repository), as hot_funcs.py takes.
 """
 import bisect, re, sys
