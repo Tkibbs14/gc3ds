@@ -201,9 +201,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7%), the
   J2DPane::draw walk, all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%) and the
   minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 243` since 2026-10-30, when the PNGP matrix load and the minimap decoration came off: together +0.71% in static Ordon, +0.55% in the heavy area); bits 2, 3, 8
-  (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off; **9 and 10
-  measure +0.9-1.0% and +0.8-0.9% each, +1.3% together, on a gameplay scene that takes no input** (jobs 1491-1497;
-  their old Ordon losses were the walk diverging, C41). Each is checked
+  (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off. **Bits 9 and
+  10's +1.3% is withdrawn (2026-10-31):** re-measured at the current default they are **-0.46%** in TP's heavy area
+  (jobs 1667-1668), where they read +0.64% with `--psflush` off - a sign flip from C49's interaction, since the old
+  +0.9-1.0% / +0.8-0.9% figures (jobs 1491-1497) were taken at a baseline that no longer exists. **Wind Waker's
+  +3.2% for 243 over 503 is also withdrawn:** it came from one run truncated by a full card (8 scored windows of
+  15), and clean runs make it neutral (jobs 1669-1672). 243 is still right, now on the heavy area's +0.42% at the
+  current default. Each is checked
   exact on the 2DS itself with `--port check` (every call also run by the interpreter and compared; `--port plant`
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1

@@ -2733,9 +2733,15 @@ never completed and were cancelled.
 | `--port-hooks 243` (vs 503) | +0.71% | **-0.80%** | +0.18% | **+3.2%** |
 | `--psflush off` (vs on) | +0.33% | **-0.96%** | **-0.44%** | ~0% |
 
-- **`--port-hooks 243` is vindicated.** Wind Waker's +3.2% pays for the heavy-area loss several times over, so it is
-  a real scene-dependent trade-off and keeping it is right. (References: Mario Party 4 9.278 / 9.279 / 9.259 against
-  `--port-hooks 503` 9.273 / 9.238; Wind Waker 6.241 / 6.236 against 6.044.)
+- ~~**`--port-hooks 243` is vindicated.** Wind Waker's +3.2% pays for the heavy-area loss several times over~~
+  **- WITHDRAWN 2026-10-31. Wind Waker's +3.2% came from one truncated run.** Job 1628 read 6.044 with **8 scored
+  windows instead of 15** and `runs.py`'s own note "dropped 4 rows and 4 frame windows": it is from the batch the
+  full card cut short. Re-measured on one build with two runs an arm at the current default (jobs 1669-1672,
+  `--psflush on`): Wind Waker `--port-hooks 243` **6.215 / 6.214** against 503 **6.213 / 6.213** - **neutral
+  (-0.02%)**. The clean runs are 2.8% above the truncated one, which is the whole of the supposed effect.
+  **243 is still the right default, but for a different reason:** at the current default it is +0.42% in TP's heavy
+  area (B against D above) and neutral in Wind Waker. Mario Party 4 and static Ordon are being measured the same way
+  (jobs 1673-1680); the Ordon +0.71% on record is pre-filter and unverified.
 - **`--psflush off`: the provisional -0.44% in Mario Party 4 was noise from a truncated log, and the switch is
   simply neutral in both of those games.** Re-run properly on build `dbac5779b30d8a92`, two runs an arm with
   references on the same build (jobs 1644-1651): Mario Party 4 off 9.188 / 9.180 against on 9.187 / 9.187
@@ -2752,6 +2758,25 @@ never completed and were cancelled.
   default settings read Mario Party 4 9.184 on `dbac5779b30d8a92` against 9.278 on `103456ecbdfe9264` (-1.0%) and
   Wind Waker 6.214 against 6.238 (-0.4%). That is the documented ~0.8% a rebuild moves a baseline, and it is larger
   than the effect being chased.
+
+### Port bits 9 and 10 are a loss at the current default, and their +1.3% is withdrawn (jobs 1667-1668, 2026-10-31)
+
+The skinned-shape matrix load (bit 9) and HUD text (bit 10) were recorded at **+0.9-1.0% and +0.8-0.9% each, +1.3%
+together** on a no-input gameplay scene (jobs 1491-1497). Re-measured on TP's heavy area, build
+`dbac5779b30d8a92`, two runs an arm:
+
+| `--port-hooks` | `--psflush` | frames/s | vs the default |
+|---|---|---|---|
+| 243 (default) | **on** (the current default) | 7.277 / 7.274 | - |
+| 1779 (bits 9+10 on) | **on** | 7.249 / 7.234 | **-0.46%** |
+| 243 | off | 7.216 / 7.212 | - |
+| 1779 (bits 9+10 on) | off | 7.263 / 7.257 | **+0.64%** |
+
+**The same two bits are +0.64% with `--psflush` off and -0.46% with it on** - another sign flip from the interaction
+C49 measured, and a direct demonstration of why a figure taken at an older baseline is not evidence about today's.
+The +1.3% is **withdrawn** (it was measured at a baseline that no longer exists) and bits 9 and 10 **stay off**. The
+1779 arm's spread is 0.21%, wider than the 0.04-0.10% elsewhere, so the magnitude is soft - but the sign is not, and
+the sign is what decides a default.
 
 ### What other projects on this hardware did, and what transfers (survey, 2026-10-30)
 
