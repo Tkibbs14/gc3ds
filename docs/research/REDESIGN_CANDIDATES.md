@@ -440,6 +440,34 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** the J2DTextBoxEx half is folded into the walk. Until then `--port-picture` stays off and its
   "0 differed" must not be quoted as evidence of anything - it covers only walks that skip hidden pictures.
 
+## C54. The J3D joint and animation calc tree: ~11% of core 0, never looked at (2026-10-31)
+
+- **Status:** **next**, alongside C53, and the first new large target in some time.
+- **What the measurement says** (job 1750, the first decoded guest *stack* profile, TP heavy area):
+  `recursiveCalc__8J3DJoint` is **11.42% of core 0 inclusive** and only **0.90% leaf**, with
+  `J3DModel::calc` 6.03%, `calcAnmMtx__8J3DModel` 5.26% and `J3DJointTree::calc` 5.17% nested under or beside it.
+  Time spread across a tree rather than concentrated in one function is the signature of a **subtree port**, not a
+  stand-in - which is the direction AGENTS already ranks first.
+- **Why it is a good shape:** it is the skeletal animation calc - recursive over the joint hierarchy, pure matrix
+  work over guest structures, and it produces **no GX output at all**. Nothing to reproduce in the pipe, no TEV
+  state, no texture objects; just matrices in guest memory. That is the easiest kind of port to make exact, and the
+  paired-single matrix library it leans on (`PSMTX*`) is already a native stand-in (`hle_ps.c`).
+- **Why nobody saw it.** AGENTS records "matrix-chain HLE (flat profile - **but see C54: that was a leaf profile, and the inclusive one shows an 11% joint-calc subtree it could not see**)" as *rejected*. That judgement came from a
+  **leaf** profile, where this tree is 0.90% and looks like nothing. An 11% subtree spread thinly across dozens of
+  functions is invisible to a leaf profile by construction - and the inclusive profile needed zeldaret's symbol map,
+  which lives outside the repository and had never been fetched into a session. **The rejection was not wrong about
+  what it measured; it measured the wrong thing.** Corrected in place rather than deleted (rule 7).
+- **First steps, cheapest first:** (1) `stack_funcs.py` on static Ordon and the title (job 1751 is queued) to see
+  whether the share holds outside the heavy area, since a subsystem that is 11% in one scene and 2% elsewhere is
+  worth less than it looks; (2) read `J3DJoint::recursiveCalc` and `J3DJointTree::calc` in zeldaret's sources and
+  size the subtree the way C53's J2DPicture half was sized - which functions, how many bytes, which branches have
+  to become give-ups; (3) only then write anything.
+- **Expected:** unknown, deliberately. The honest upper bound is the 11.42%, and the honest discount is that ports
+  have repeatedly delivered a fraction of their inclusive share (the ports as a *set* are +10.6% against ~3.7% for
+  their parts, and PNGP cost 5.8% of core 0 to deliver -0.03%).
+- **Re-evaluate when:** the scene comparison and the source sizing are done. If the share collapses outside the
+  heavy area, it drops below C53.
+
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
 - **Status:** parked (2026-10-13).

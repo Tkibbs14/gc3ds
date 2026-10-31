@@ -320,6 +320,18 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   first because ARM->VFP transfers are already 8.5% of modelled stalls and it may lose outright; **C52** the pacer's
   systematic overshoot. **A result that kills one of these is as valuable as one that builds it** - the point is that
   none of them is currently knowable.
+- **Where core 0's guest time actually goes, by subsystem (job 1750, the first decoded guest *stack* profile,
+  2026-10-31).** `stack_funcs.py` needs zeldaret's symbol map, which lives outside the repository and had never been
+  fetched into a session, so inclusive time per subsystem had never been read. Past the framework spine the tree is
+  ~50% under the actor method dispatch and ~36% under the painter, and the self-contained subtrees are:
+  **`J3DJoint::recursiveCalc` 11.42% inclusive / 0.90% leaf (C54, unexplored)**, **`J2DPane::draw` 11.09% / 5.49%
+  (C53 - and that 5.49% is the largest single leaf in the profile)**, `dMeter2Draw_c::draw` 9.53%,
+  `J3DDrawBuffer::draw` 10.0%, `J2DScreen::draw` 8.49%, the minimap ~6.9%, `J3DShapePacket::drawFast` 6.92%.
+  **Two consequences.** First, **C53's prize is ~11% of core 0, not the ~2.2% on its ledger line**: a taken call
+  produces no guest samples, so `J2DPane::draw`'s inclusive share *is* the refused walks, and the +2.2% measured
+  what the walk captures at ~29% coverage rather than what the rest is worth. Second, **inclusive and leaf profiles
+  answer different questions** - a subsystem that is 11% inclusive and 0.9% leaf is a subtree port, and it is
+  invisible to a leaf profile, which is how "matrix-chain HLE (flat profile)" came to be rejected (C54).
 - **Open directions, in the order the budget supports them:** removing guest code wholesale - **larger ports where a
   whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`) - but
   **"other TEV block types" has never actually been sized, and the number that looked like its size was a label

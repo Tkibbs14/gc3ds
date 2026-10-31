@@ -2821,6 +2821,51 @@ The +1.3% is **withdrawn** (it was measured at a baseline that no longer exists)
 1779 arm's spread is 0.21%, wider than the 0.04-0.10% elsewhere, so the magnitude is soft - but the sign is not, and
 the sign is what decides a default.
 
+### Where core 0's guest time goes, by subsystem (job 1750, `--profile on`, TP heavy area, 2026-10-31)
+
+**The first guest *stack* profile this project has decoded.** `stack_funcs.py` has existed for weeks but needs
+zeldaret/tp's symbol map, which lives outside the repository; a cloud session now has a copy (fetched to /tmp, not
+committed), so inclusive time per subsystem is readable at last. A function's inclusive share is every sample taken
+anywhere below it, which is the metric for "what is worth replacing as one piece"; `hot_funcs.py` on the same run
+gives leaf time, and **the two together separate a port candidate from a stand-in candidate**.
+
+Past the framework spine (`fpcM_Management` 82.6% down to `main01` 79.2%, inclusive by construction), the tree
+splits about **50% under the actor method dispatch** (`cTgIt_MethodCall`, `fpcMtd_Method`, the node-list iterators)
+and **~36% under the painter** (`cAPIGph_Painter`, `mDoGph_Painter`). The self-contained subtrees below that:
+
+| subsystem | inclusive | leaf | state |
+|---|---|---|---|
+| `recursiveCalc__8J3DJoint` (+ `J3DModel::calc` 6.03, `calcAnmMtx` 5.26, `J3DJointTree::calc` 5.17) | **11.42%** | 0.90% | **unexplored** |
+| `draw__7J2DPane` - the pane walk's tree | **11.09%** | **5.49%** | C53, ~29% of calls captured |
+| `draw__13dMeter2Draw_c` - the HUD meter | **9.53%** | - | related to port bit 10 |
+| `draw__13J3DDrawBuffer` / `drawHead` | 10.0 / 9.9% | - | - |
+| `draw__9J2DScreen` | 8.49% | - | above the pane walk |
+| `drawOpaDrawList__12dDlst_list_c` | 8.05% | - | - |
+| the minimap (`renderingAmap_c::draw` 6.90, `renderingDAmap_c` 6.89, `dRenderingMap_c::renderingMap` 6.74) | **~6.9%** | 1.00% | bit 8 ported part of it, **-0.26%** |
+| `drawFast__14J3DShapePacket` / `drawFast__8J3DShape` | 6.92 / 6.60% | - | - |
+| `load__26J3DShapeMtxMultiConcatView` | 4.78% | 1.19% | bit 9, off, -0.46% |
+
+**Two findings worth acting on.**
+
+1. **C53's prize is ~11% of core 0, not the ~2.2% on its ledger line.** When the walk *takes* a call the guest code
+   does not run, so it contributes no guest samples; when it *refuses*, the guest tree runs and is sampled. So
+   `draw__7J2DPane`'s **11.09% inclusive is the refused walks**, and its **5.49% leaf is the largest single leaf in
+   the whole profile**. Finishing the walk - the `J2DTextBoxEx` half, already built and exact as bit 10 - attacks
+   the biggest identified item on core 0. The +2.2% credited to the pane walk measured what it captures *today* at
+   ~29% coverage, not what the rest is worth.
+2. **The J3D joint and animation calc tree is ~11% and nobody has touched it.** `recursiveCalc__8J3DJoint` is
+   11.42% inclusive but only **0.90% leaf**, so its time is spread across the tree rather than sitting in one hot
+   function: **a subtree port, not a stand-in**, and it is pure matrix work over guest structures with no GX output,
+   which is the easiest shape to make exact. Note that AGENTS records "matrix-chain HLE (flat profile)" as rejected
+   - that was matrix *chains* judged on a leaf profile, which is exactly the measurement that cannot see an 11%
+   subtree spread thin. The inclusive profile is what makes this visible.
+
+**What the leaf profile also says about the existing ports:** the biggest leaves after the pane walk are
+`J3DMaterial::diff` 2.85% (bit 6, on - so this is its give-up residue), `loadMtxConcatView_PNGP` 2.30% (bit 2, off,
+measured neutral), `reinitGX` 2.21% (bit 7, on) and `GXBegin` 2.12%. Every one of those is a port that already
+exists, running on the calls it refuses - so the residue is give-ups, not unported subsystems, which is the same
+conclusion the give-up histogram reached from the other direction.
+
 ### The baseline on devkitARM 16.1.0 (jobs 1723-1732, 2026-10-31)
 
 Two runs an arm, one session, one build (commit `088fb0df6610`, relay build `c23935942a982a7a`), 240 s each and
