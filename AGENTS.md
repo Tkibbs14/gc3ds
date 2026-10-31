@@ -207,7 +207,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   walk is mostly replayed (C32) and each triangle's path runs natively in a fast form (C32b): the stand-in is replay
   ~7% + path ~10-11% of core 0 there, plus the native callback; the cutscene's moving shadows cost under 0.2%.
 - **Native library ports** (`core/src/cpu/port_j2d.c`, `docs/research/LIBRARY_PORTS.md`): J2DMaterial::setGX,
-  J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7%), the
+  J2DPictureEx::drawSelf, J3DShapeMtxConcatView's matrix load, the J3D lights (`diffLightObj`, heavy area +2.7% -
+  **superseded, do not add it to bit 6's: with `J3DMaterial::diff` on, this hook runs 84 times in 240 s, exactly the
+  cases bit 6 declines, so its credit is inside bit 6's +3.0%; it stays on because it is exact and free**), the
   J2DPane::draw walk, all of J3DMaterial::diff (heavy area and Ordon +3.0%), J3DSys::reinitGX (Ordon +3.9%) and the
   minimap's renderingDecoration (Ordon +3.1%, heavy area -0.4%), on by default (`--port-hooks 243` since 2026-10-30, when the PNGP matrix load and the minimap decoration came off: together +0.71% in static Ordon, +0.55% in the heavy area); bits 2, 3, 8
   (`__GXSendFlushPrim`), 9 (the skinned-shape matrix load) and 10 (HUD text) are built, exact and off. **Bits 9 and

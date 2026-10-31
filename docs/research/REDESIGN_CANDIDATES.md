@@ -1204,6 +1204,15 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
   0.68 points). TP heavy area: the parts predict **-1.26%**, the set delivers **-0.17%** (short by 1.09). The ports
   are the opposite - superadditive as a set, +10.6% against ~3.7% for the parts, which is understood (the set keeps
   guest code out of the compiled footprint).
+- **A second mechanism, found 2026-10-31 and much more mundane than the cache: one option can subsume another's
+  work.** The J3D light port (bit 4) is credited +2.7% in TP's heavy area, measured with hooks 39 against 55 -
+  before `J3DMaterial::diff` (bit 6) existed. Bit 6 does the whole material diff *including* the light block, so with
+  it on the light hook now runs **84 times in a 240 s run**, and the counters show why: it fires **exactly** as many
+  times as bit 6 declines (84/84, 84/84, 84/84, 84/84, 85/85 across jobs 1700, 1701, 1692, 1693, 1702). Its credit
+  is *inside* bit 6's +3.0%. No cache argument is needed - the work simply moved. **So before quoting any entry in
+  the ledger, check that its option still runs at the current default** (`port_cost.py` prints call counts). This is
+  cheap to check and it has now caught two entries this way (`hlegd`'s stand-in group ran 0 times; this one runs
+  0.35 times a second).
 - **Why it matters more than its size:** every default in this project is decided by measuring one switch against a
   baseline. If effects routinely do not compose, then a stack of individually-measured gains is not the sum of its
   parts and the ledger overstates the whole. It would also explain why the headline numbers have moved far less over

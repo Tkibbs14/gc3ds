@@ -2405,6 +2405,26 @@ done
 - **On by default since 2026-10-24** (James; `--port check` on the 2DS with it on, job 1323: 0 differed). The whole of `J3DMaterial::diff` then followed
   by the same method (next section: +3.0% in both scenes).
 
+> **Correction, 2026-10-31: this credit is superseded, not wrong, and it must not be added to bit 6's.** The +2.7%
+> was measured with `--port-hooks 39 against 55`, *before* `J3DMaterial::diff` (bit 6) existed. Bit 6's port does
+> the whole material diff **including the light block**, so once it is on the light hook is only reached when bit 6
+> declines - and that is not an estimate, the counters track 1:1 in every run at today's default:
+>
+> | job | `J3DMaterial::diff` taken / not taken | `diffLightObj` taken |
+> |---|---|---|
+> | 1700 | 236,556 / **84** | **84** |
+> | 1701 | 236,846 / **84** | **84** |
+> | 1692 | 236,556 / **84** | **84** |
+> | 1693 | 236,556 / **84** | **84** |
+> | 1702 | 236,555 / **85** | **85** |
+>
+> So in TP's heavy area the light port now runs **84 times in 240 s** - 0.35 calls a second, 0.0005% of core 0 at
+> its measured 14.6 us a call - exactly the cases bit 6 gave up on. Its +2.7% is **inside bit 6's +3.0%**, and the
+> ledger listing both invites double counting. **It stays on:** it is exact, it costs nothing, and it covers the 84
+> give-ups. What changes is the bookkeeping, and the general lesson - **one port can subsume another's work, which
+> is a second mechanism for the ledger being sub-additive, quite apart from the shared cache budget (C49).** When a
+> port's credit is quoted, check its call count at the *current* default first; `port_cost.py` prints it.
+
 ### J3DMaterial::diff as one native port (`--port-hooks` bit 6, 119 with the defaults; jobs 1324-1347, 2026-10-24)
 
 - **What (commit 023e0c5, `port_j2d.c` `j3d_material_diff`):** the material's display-list diff (9.1% of the heavy area's
