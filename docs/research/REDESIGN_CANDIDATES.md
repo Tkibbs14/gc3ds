@@ -1079,6 +1079,18 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
   4. **the GX ring and the FIFO mirror** (C40 already prices the mirror's duplicate copy).
   If 2-4 are a meaningful share they are addressable; if 1 dominates, the data half is a wall like the fetch half and
   should be recorded as such so nobody chases it.
+- **The instrument already exists and the regions were the missing half.** `core/tools/qemu-plugins/dcache.c` is a
+  qemu TCG plugin that simulates the ARM11's 16 KB 4-way L1 D and the 3DS's 2 MB 16-way L2 at 32-byte lines, counts
+  misses per cache line, and `dcache_report.py` maps the lines back to regions from the emulator's own
+  `JIT_RANGES=1` output. But that output named only **jit / mem1 / jitstate / gekko** - the two tables the
+  dispatcher actually reads were not in it, so a miss in them could not be attributed and the biggest suspects were
+  invisible. `fasttable` and `blocktable` are now printed too (2026-10-31), after the allocations rather than with
+  the other ranges, since the allocations happen in between and emitting them earlier would have printed NULL and
+  had the report attribute misses confidently to nothing.
+- **And the static size alone is a finding, no device needed:** `FastEntry` is 8 bytes, `FAST_SIZE` is 65,536 and
+  `FAST_TABLES` is 4, so the indirect-branch tables are **2 MB - exactly the size of the shared L2** that core 0
+  divides with cores 2 and 3, probed at a pc-derived index on every `blr` / `bctr`. Whatever share of the data
+  stalls that turns out to be, nothing about the number is reassuring (C48).
 - **Cheapest measurement first:** the PC build already has a data-cache simulator (`dcache.c`, whose own header calls
   its L2 misses a lower bound). Tag each simulated access with which of the four regions it fell in and report the
   miss counts by region - no device time, no new hardware probe. Only if that says 2-4 matter is a device
@@ -1092,8 +1104,9 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
 ## C48. The indirect-branch table's cache and TLB cost (2026-10-30)
 
 - **Status:** next; it also unblocks C46 and prices OPT_IND2, which was adopted on +0.9% with no idea why.
-- **The unknown:** `FAST_BITS` is **16**, so the indirect table is 65,536 entries of 8 bytes = **512 KB**, spanning
-  **128 pages**, and `blr` / `bctr` probe it at a pc-derived index - effectively a random offset in a structure 32x
+- **The unknown:** `FAST_BITS` is **16**, so each indirect table is 65,536 entries of 8 bytes = **512 KB**, and
+  `FAST_TABLES` is 4 (one per recent block key), so the allocation is **2 MB - the size of the entire shared L2**,
+  spanning 512 pages. `blr` / `bctr` probe it at a pc-derived index - effectively a random offset in a structure 32x
   the 16 KB L1 D-cache and a quarter of the shared 2 MB L2. Every indirect branch is therefore a likely L1 D miss, a
   plausible L2 miss and a plausible data micro-TLB miss (C50). **None of this has ever been measured**, and the table
   was sized without a measurement of the trade.

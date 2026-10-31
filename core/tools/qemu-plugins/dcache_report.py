@@ -3,7 +3,8 @@
 
     python3 dcache_report.py dcache.txt run_stderr.txt build-arm/gcemu [--top 30]
 
-run_stderr.txt: the emulator's stderr with JIT_RANGES=1 (range jit / mem1 / jitstate / gekko lines and the regions
+run_stderr.txt: the emulator's stderr with JIT_RANGES=1 (range jit / mem1 / jitstate / gekko / fasttable /
+  blocktable lines and the regions
 line with jit_create's address). Static data comes from the ELF's symbols (nm), moved by the load offset that
 jit_create's printed address gives. Everything else is heap (between the ELF's end and the stack) or stack.
 """

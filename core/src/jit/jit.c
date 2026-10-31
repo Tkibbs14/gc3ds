@@ -6925,6 +6925,19 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     jit_invalidate_all(j);
     g_jit = j;
 #ifndef __3DS__
+    if (getenv("JIT_RANGES")) {
+        // The two big tables the dispatcher reads. They were missing from the range list until 2026-10-31, so
+        // dcache_report.py could not attribute a miss to them - which is part of why the data half of core 0's
+        // stalls (22.1%) had no breakdown at all (C47). Printed here and not with the ranges above because the
+        // allocations happen in between: emitted there they would have been NULL, and the report would have
+        // attributed misses confidently to nothing.
+        // `fasttable` is the one to watch: FAST_TABLES * FAST_SIZE * sizeof(FastEntry) = **2 MB, the size of the
+        // whole shared L2**, probed at a pc-derived index on every blr / bctr (C48).
+        fprintf(stderr, "range fasttable %08x-%08x\n", (u32)(uintptr_t)j->fast,
+                (u32)(uintptr_t)j->fast + (u32)(FAST_TABLES * FAST_SIZE * sizeof(FastEntry)));
+        fprintf(stderr, "range blocktable %08x-%08x\n", (u32)(uintptr_t)j->table,
+                (u32)(uintptr_t)j->table + (u32)(MAX_ENTRIES * sizeof(Entry)));
+    }
     if (getenv("JIT_RANGES")) {  // for core/tools/qemu-plugins/icache.c's report: the buffer's regions and the text's base
         fprintf(stderr, "range regions stubs %08x hot %08x cold %08x end %08x text jit_create %08x\n",
                 (u32)(uintptr_t)j->code, (u32)(uintptr_t)(j->code + j->stubWords), (u32)(uintptr_t)(j->code + j->coldStart),
