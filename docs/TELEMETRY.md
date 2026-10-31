@@ -54,8 +54,10 @@ Each of these was learned the hard way, and a submission that ignores them canno
   without the game getting faster. Frames a second is what the game delivers.
 - **The device drifts ~2% between days** and a rebuild moves a baseline by up to ~0.8%. A baseline from last week
   against a change from today measures the weather.
-- **Two runs an arm.** On a state that takes no input they agree to ~0.1% **in a short batch**, which is how a 0.5%
-  effect becomes believable. Single runs have reversed on repeat in this project more than once.
+- **Two runs an arm, and know your scene's own noise floor.** On a state that takes no input they agree to ~0.1% -
+  but that is `tp_area2`'s figure (0.02-0.10%). **Static Ordon repeats only to ~0.25-0.31%** on clean runs with
+  nothing filtered (2026-10-31), so the same difference is a result in one scene and noise in the other. Quote the
+  spread and let a reader judge. Single runs have reversed on repeat in this project more than once.
 - **Score with `runs.py`, and quote the spread it prints.** What looked like 2.5-3% session drift on 2026-10-30 was
   the program's own periodic screenshot stealing 4-86% of one second, five times a run; 17 of 136 logs lost 0.5-3.2%
   that way with nothing in the log saying so. `runs.py` now leaves those seconds out by default (and says how many

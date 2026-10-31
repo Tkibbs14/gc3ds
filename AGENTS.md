@@ -30,8 +30,11 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    setting can depend on another's: with `--psflush` off, `--port-hooks 503` beats 243 by +0.37%; with `--psflush`
    on, 503 *loses* to 243 by 0.42% (C49, measured 2026-10-30). A figure taken at an older baseline is not evidence
    about today's, and **the ledger's entries must not be added up** - where they share the cache budget some of them
-   cancel, which is why the headline numbers have moved far less than the entries suggest. Such runs agree to **0.07%** once the seconds core 0 did not get are left out, which `runs.py` does by
-   default: the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
+   cancel, which is why the headline numbers have moved far less than the entries suggest. Such runs agree to **0.07% in the heavy area** once the seconds core 0 did not get are left out, which `runs.py`
+   does by default - but **the scene sets the floor, not the method**: `tp_area2` repeats to 0.02-0.10%, while
+   **static Ordon repeats only to ~0.25-0.31%** on clean runs with nothing dropped (jobs 1673-1676), so a 0.3%
+   claim from Ordon is not a result while the same claim from the heavy area is. Use the heavy area to decide
+   anything small. the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
    and a run that caught several severe ones read up to **3.2% slow with nothing saying so** (17 of 136 logs on
    disk; it is what looked like "session drift" on 2026-10-30 until `pmu_mcyc` named it). The periodic shot is off
    by default now (`--shots N`). **Always quote the within-arm spread** - a difference smaller than it is not a

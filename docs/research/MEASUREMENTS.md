@@ -2759,6 +2759,29 @@ never completed and were cancelled.
   Wind Waker 6.214 against 6.238 (-0.4%). That is the documented ~0.8% a rebuild moves a baseline, and it is larger
   than the effect being chased.
 
+### `--port-hooks 243` confirmed at the current default, in every scene (jobs 1669-1680, 2026-10-31)
+
+Completed at the current default (`--psflush on`), build `dbac5779b30d8a92`, two runs an arm:
+
+| scene | 243 | 503 | 243 vs 503 | within-arm spread |
+|---|---|---|---|---|
+| static Ordon | 10.550 / 10.524 | 10.443 / 10.475 | **+0.75%** | 0.25% / 0.31% |
+| TP heavy area | 7.277 / 7.274 | 7.248 / 7.242 | **+0.42%** | 0.04% / 0.08% |
+| Mario Party 4 | 9.188 / 9.184 | 9.186 / 9.188 | -0.01% | 0.04% / 0.02% |
+| Wind Waker | 6.215 / 6.214 | 6.213 / 6.213 | -0.02% | 0.02% / 0.00% |
+
+**No scene prefers 503**, so the default is right - and the Ordon **+0.71%** on record reproduces at **+0.75%**, the
+one pre-filter figure of 2026-10-30 that survived re-measurement. Note that at the *old* default (`--psflush off`)
+the heavy area preferred 503 by +0.37%: fixing one default made the other unambiguous, which is C49 cutting the
+useful way for once.
+
+**And the benchmark scenes do not repeat equally well.** These are clean runs with nothing dropped by the
+stolen-second filter, yet static Ordon's two runs differ by 0.25-0.31% while the heavy area's differ by 0.02-0.10%.
+The 0.07% figure rule 3 quotes is the heavy area's, not a property of the method: **a 0.3% claim measured in static
+Ordon is inside its own noise.** The heavy area is the scene to decide anything small in. (Ordon's `fields per copy`
+also differs slightly between the arms - 1:61 2:1589 against 1:63 2:1587 - so its pacing is not quite identical
+run to run, which is the likely source.)
+
 ### Port bits 9 and 10 are a loss at the current default, and their +1.3% is withdrawn (jobs 1667-1668, 2026-10-31)
 
 The skinned-shape matrix load (bit 9) and HUD text (bit 10) were recorded at **+0.9-1.0% and +0.8-0.9% each, +1.3%
