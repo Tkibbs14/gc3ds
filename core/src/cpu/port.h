@@ -32,6 +32,11 @@ extern PortStats g_portStats;
 #ifndef __3DS__
 bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): the give-up histogram's own check
 #endif
+// Why walk_scan refuses a pane subtree, by line (port_j2d.c walk_no): the pane walk is refused more often than it
+// runs in TP's heavy area and the give-up histogram traced all of it to that one call, but walk_scan has five ways
+// to say no and only some are worth extending.
+extern u32 g_portWalkLine[6];
+extern u64 g_portWalkLineN[6], g_portWalkOther;
 extern u32 g_portWhyLine[8][6];
 extern u64 g_portWhyLineN[8][6], g_portWhyOther[8];
 extern const char* const g_portNames[PORT_N];

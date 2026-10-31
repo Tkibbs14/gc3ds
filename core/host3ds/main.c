@@ -1885,6 +1885,26 @@ static const char* run_body(const char* path) {
                             static u64 lastWl[8][6], lastWo[8];
                             static const char* kWhy[8] = { "setup", "memory", "floats", "texregion", "palette",
                                                            "unrecognised", "texgens", "indirect" };
+                            {   // why walk_scan refused a pane subtree, by line: it is the single biggest refusal
+                                // in the heavy area and has five ways to say no, only some worth extending
+                                static u64 lastWk[6], lastWkO;
+                                bool any = g_portWalkOther != lastWkO;
+                                for (int i = 0; i < 6 && !any; i++) any = g_portWalkLineN[i] != lastWk[i];
+                                if (any) {
+                                    fprintf(g_perf, "# port walk-scan 10s: ");
+                                    for (int i = 0; i < 6; i++) {
+                                        if (!g_portWalkLine[i]) break;
+                                        u64 d = g_portWalkLineN[i] - lastWk[i];
+                                        lastWk[i] = g_portWalkLineN[i];
+                                        if (d) fprintf(g_perf, "port_j2d.c:%lu x%llu  ", (unsigned long)g_portWalkLine[i],
+                                                       (unsigned long long)d);
+                                    }
+                                    if (g_portWalkOther != lastWkO)
+                                        fprintf(g_perf, "other lines x%llu", (unsigned long long)(g_portWalkOther - lastWkO));
+                                    lastWkO = g_portWalkOther;
+                                    fprintf(g_perf, "\n");
+                                }
+                            }
                             for (int r = 0; r < 8; r++) {
                                 bool any = g_portWhyOther[r] != lastWo[r];
                                 for (int i = 0; i < 6 && !any; i++) any = g_portWhyLineN[r][i] != lastWl[r][i];

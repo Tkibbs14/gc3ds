@@ -153,14 +153,25 @@ typedef struct {
 u32 g_portWhyLine[8][kWhyLines];
 u64 g_portWhyLineN[8][kWhyLines];
 u64 g_portWhyOther[8];   // give-ups past the kWhyLines distinct lines a reason can hold
+static void line_hist(u32* lines, u64* counts, u64* other, u32 line) {
+    for (u32 i = 0; i < kWhyLines; i++) {
+        if (lines[i] == line) { counts[i]++; return; }
+        if (!lines[i]) { lines[i] = line; counts[i] = 1; return; }
+    }
+    (*other)++;
+}
 static void why_line(u32 why, u32 line) {
     u32 w = why & 7;
-    for (u32 i = 0; i < kWhyLines; i++) {
-        if (g_portWhyLine[w][i] == line) { g_portWhyLineN[w][i]++; return; }
-        if (!g_portWhyLine[w][i]) { g_portWhyLine[w][i] = line; g_portWhyLineN[w][i] = 1; return; }
-    }
-    g_portWhyOther[w]++;
+    line_hist(g_portWhyLine[w], g_portWhyLineN[w], &g_portWhyOther[w], line);
 }
+// Why the pane walk's scan refuses a subtree. The give-up histogram named one line - `walk_scan` failing - as
+// **2,950 refusals per 10 s in TP's heavy area against 2,320 calls taken** (job 1725), i.e. the walk is refused more
+// often than it runs, all at one place. But walk_scan has five ways to say no (depth, unreadable memory, a vtable
+// that is not J2DPane or J2DPictureEx, more than 512 panes, a child that refused), and extending the wrong one is
+// wasted work - so it gets the same treatment the reason codes got. Reported as `# port walk-scan 10s`.
+u32 g_portWalkLine[kWhyLines];
+u64 g_portWalkLineN[kWhyLines], g_portWalkOther;
+static bool walk_no(u32 line) { line_hist(g_portWalkLine, g_portWalkLineN, &g_portWalkOther, line); return false; }
 static inline void give_up_at(Pc* c, u32 why, u32 line) {
     if (!c->fail) { c->fail = why; why_line(why, line); }
 }
@@ -1042,14 +1053,17 @@ static void graf_set_scissor(Pc* c, const u32* s) {
 // Whether the subtree at p (depth d) is the walk's: J2DPane or J2DPictureEx drawing throughout; counts the panes.
 #define WALK_DEPTH 24
 static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
-    if (d > WALK_DEPTH || !in_mem1(p, 344)) return false;
+    if (d > WALK_DEPTH) return walk_no(__LINE__);
+    if (!in_mem1(p, 344)) return walk_no(__LINE__);
     u32 vt = f32(p);
-    if (!in_mem1(vt, 92)) return false;
+    if (!in_mem1(vt, 92)) return walk_no(__LINE__);
     u32 ds = f32(vt + 56), ra = f32(vt + 88);
-    if ((ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) || (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA)) return false;
-    if (++*panes > 512) return false;
+    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) return walk_no(__LINE__);      // an unported pane class
+    if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA) return walk_no(__LINE__);
+    if (++*panes > 512) return walk_no(__LINE__);
     for (u32 l = f32(p + 220); l; l = f32(l + 12)) {
-        if (!in_mem1(l, 16) || !walk_scan(c, f32(l), d + 1, panes)) return false;
+        if (!in_mem1(l, 16)) return walk_no(__LINE__);
+        if (!walk_scan(c, f32(l), d + 1, panes)) return false;   // the child already counted its own reason
     }
     return true;
 }
