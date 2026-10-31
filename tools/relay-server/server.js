@@ -92,9 +92,18 @@ const routes = [
         saveJobs();
         text(res, 200, `job ${job.id}\n`);
     }],
-    // PC: the last 20 jobs, newest first: id, status, build, created, args (tab-separated).
+    // PC: the last 20 jobs, newest first: id, status, build, the commit that build was pushed from, created, args
+    // (tab-separated). The commit is the `note` push sent; it was written to disk and never served, so a build id in
+    // a measurement could not be resolved to source by anyone reading the repository (2026-10-31). Every figure in
+    // docs/research/MEASUREMENTS.md names a build id, and the project's method is "one build, one session", so that
+    // mapping is the difference between a reproducible measurement and a number.
     ['GET', /^\/jobs$/, async (req, res) => {
-        const rows = jobs.slice(-20).reverse().map(j => `${j.id}\t${j.status}\t${j.build || '-'}\t${j.created}\t${j.args}`);
+        const note = id => {
+            if (!id) return '-';
+            try { return fs.readFileSync(path.join(DATA, 'builds', `${id}.note`), 'utf8').trim() || '-'; }
+            catch { return '-'; }
+        };
+        const rows = jobs.slice(-20).reverse().map(j => `${j.id}\t${j.status}\t${j.build || '-'}\t${note(j.build)}\t${j.created}\t${j.args}`);
         text(res, 200, rows.join('\n') + '\n');
     }],
     // PC: cancel a queued job.

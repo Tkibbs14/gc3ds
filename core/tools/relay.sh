@@ -7,6 +7,10 @@
 #   bash core/tools/relay.sh log JOB               follow a job's log into core/out/relay_JOB.csv until it ends
 #   bash core/tools/relay.sh status                when the 2DS last polled for a job and last posted a log
 #   bash core/tools/relay.sh jobs | cancel JOB | push
+#     `jobs` prints id, status, build, **the commit that build was pushed from**, created, args. The commit column
+#     came in on 2026-10-31 (the relay stored it and never served it, so a build id in a measurement could not be
+#     resolved to source); an older relay leaves it out, so anything parsing this must find args by content - the
+#     build is column 3 either way.
 #   bash core/tools/relay.sh send FILE SDPATH | cat SDPATH   a file onto the SD card / a text file from it into a log
 #   bash core/tools/relay.sh native SECONDS [PRESS]   a native-mode run, logs back in the job (no hands)
 #   bash core/tools/relay.sh cmd JOB "set opt 1"     a live command for the running job (taken within ~2 s): shot,
@@ -105,11 +109,11 @@ case "$cmd" in
     # it first) for SECONDS, pressing PRESS (NAME@FROM-TO,... in frames: A B X Y START L R Z UP DOWN LEFT RIGHT, SUP
     # SDOWN SLEFT SRIGHT for the circle pad; - for none), optionally booting straight into STAGE (NAME,room,point[,layer],
     # Dusklight's boot-to-stage: e.g. F_SP121,0,0 Hyrule Field), and when it comes back posts perf.csv and trace.txt.
-    native) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"
+    native) b="$(api "$url/jobs" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^--/) break; if ($i != "--fetch-to" && $i != "--cat" && $i != "--native") {print $3; exit}}')"
             a="--native $1"; [ -n "${2:-}" ] && [ "$2" != "-" ] && a="$a --press $2"; [ -n "${3:-}" ] && a="$a --stage $3"
             printf '{"args": "%s", "build": "%s"}' "$a" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     # (the server wants a known build on every job: the latest machine job's, which the 2DS does not need for --cat)
-    cat) b="$(api "$url/jobs" | awk '$5 != "--fetch-to" && $5 != "--cat" && $5 != "--native" {print $3; exit}')"
+    cat) b="$(api "$url/jobs" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^--/) break; if ($i != "--fetch-to" && $i != "--cat" && $i != "--native") {print $3; exit}}')"
          printf '{"args": "--cat %s", "build": "%s"}' "$1" "$b" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$url/jobs" | sed -n 's/^job //p' ;;
     run) job="$(queue "$@")"; follow "$job" ;;
     log) follow "$1" ;;

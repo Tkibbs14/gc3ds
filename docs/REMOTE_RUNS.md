@@ -44,7 +44,7 @@ bash core/host3ds/build.sh                         # build core/host3ds/gc3ds.3d
 bash core/tools/relay.sh run --game Twilight --state sdmc:/gc3ds/states/tp850.state --seconds 300 --ab fcache
 bash core/tools/relay.sh queue <options>           # queue without following (prints the job id)
 bash core/tools/relay.sh log <job>                 # follow a job into core/out/relay_<job>.csv
-bash core/tools/relay.sh jobs                      # the last 20 jobs and their status
+bash core/tools/relay.sh jobs                      # the last 20 jobs: id, status, build, the build's commit, created, args
 bash core/tools/relay.sh cancel <job>              # a job still queued
 bash core/tools/relay.sh cmd <job> "set opt 1"     # a live command for the running job (see host3ds/main.c apply_cmd)
 bash core/tools/relay.sh frames <job>              # the job's top-screen frames (BMP, PNG when ImageMagick is there)
@@ -63,6 +63,15 @@ N fields) and `save sdmc:/gc3ds/states/NAME.state` (a save state at the next fie
 d-pad. That is how gameplay benchmark states are made: queue a long run, then press / shot / look until the game is
 where you want it, and save. `--press` takes the same buttons plus `SLEFT` / `SRIGHT` / `SUP` / `SDOWN` (the stick to
 an edge) for scripted runs; its fields count from the run's start.
+
+**Resolving a build id to source.** Every figure in `docs/research/MEASUREMENTS.md` names a build id (a content hash
+of the 3dsx), and the project's method is "one build, one session" - so being able to get from an id back to the code
+is the difference between a reproducible measurement and a number. `relay.sh push` has always sent the commit it was
+pushed from as the build's `note`, but until 2026-10-31 the relay **wrote it to disk and never served it**, so nobody
+reading the repository could make that mapping. `relay.sh jobs` now prints it as a column (id, status, build,
+**commit**, created, args); a `-dirty` suffix means that build had uncommitted changes and the id cannot be tied to
+source at all. An older relay leaves the column out, so anything parsing this output must find `args` by content
+rather than by position - the build is column 3 either way.
 
 ## On the console
 
