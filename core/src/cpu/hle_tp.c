@@ -271,7 +271,19 @@ static bool gfskip_skip(void) {
     // one that says skipping is dearer than drawing - skip one frame in kGfProbe so cs is measured again. The
     // accumulator gets its credit back, so the frame is only moved, not lost, and at one in 16 the cost is bounded
     // even if a scene really can never produce a usable sample.
-    if (!solvable && draw && g_gfSinceSkip >= kGfProbe) {
+    // Two ways to be stuck, and the second was found on hardware after the first was fixed (jobs 1718-1719,
+    // 2026-10-31). (1) The costs cannot be solved at all - no usable cs, or one claiming skipping is dearer than
+    // drawing. (2) **The costs look solvable but the solver is pinned at x = 1**, so nothing is skipped and cs goes
+    // stale exactly as before: job 1719 sat at `a skipped one 84.3 ms` against a true ~33 ms, which made the floor
+    // ask for 75% drawn, which snapping rounded to every frame, which meant cs could never be sampled again. The
+    // owner watched that run and reported it looked fine - it was the unpaced emulator.
+    // Case (2) is only a fault when the target says there is skipping to do (target < cd) *and* the floor is not
+    // itself demanding every frame (xfloor < 1): a floor above what the scene can show is correctly served by
+    // drawing everything, and probing there would drop a picture for nothing. It is probed four times more slowly
+    // than case (1), because there the cost estimate is merely suspect rather than unusable.
+    bool pinned = solvable && x >= 1.0 && target < g_gfskipCd && xfloor < 1.0;
+    u32 every = !solvable ? kGfProbe : kGfProbe * 4;
+    if ((!solvable || pinned) && draw && g_gfSinceSkip >= every) {
         draw = false;
         g_gfAcc += 1.0;
         g_gfskipProbed++;
@@ -420,6 +432,28 @@ bool hle_gfskip_selftest(void) {
                    g_gfTestMeanMs, want50); bad++;
         }
     }
+    g_gfskipMinFps = 5;
+    // 2d. **The second latch-up (jobs 1718-1719).** A stale cs that is merely *wrong* rather than impossible leaves
+    //     the solver looking healthy: with cd 96.5 and cs 84.3 against a true 33, the floor asked for 75% drawn,
+    //     snapping rounded that to every frame, and nothing was skipped again - so cs could never be corrected. The
+    //     first probe did not cover this, because it only fired when the costs were unsolvable. Here the warm-up's
+    //     skipped frames are made expensive (but still cheaper than a drawn one, so `cd > cs` holds and the solver
+    //     believes itself), and the run must still end up skipping and showing about the floor's rate.
+    gf_test_reset();
+    g_gfskipTarget = 95;             // 35.1 ms: far below a drawn frame, so there is skipping to do
+    g_gfskipMinFps = 8;
+    g_gfskipSnap = true;
+    g_gfTestPoisonMs = 84.3;         // the device's stale value: dear, but under the 96.5 ms drawn cost
+    g_gfTestPoisonN = 3;
+    drawn = gf_test_run(96.5, 33.0, 2000, &spread);
+    if (g_gfTestPicFps < 7.0) {
+        printf("gfskip selftest: stale-cs run showed %.2f pictures/s, floor was 8 (it never recovered)\n",
+               g_gfTestPicFps); bad++;
+    }
+    if (drawn >= 1500) {             // 1500 scored frames: drawing every one means the pacer did nothing
+        printf("gfskip selftest: stale-cs run drew %u of 1500 scored frames - it never skipped\n", drawn); bad++;
+    }
+    if (!g_gfskipProbed) { printf("gfskip selftest: a solver pinned at x=1 was never probed\n"); bad++; }
     g_gfskipMinFps = 5;
     // 3. A target nothing can reach (even a skipped frame costs more than the budget), with the picture-rate floor
     //    off: the ratio floor must hold, so the screen keeps updating instead of freezing. 1 in kGfMaxN.
