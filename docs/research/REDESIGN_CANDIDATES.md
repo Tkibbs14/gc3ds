@@ -245,6 +245,42 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
 - **Re-evaluate when:** the fixed-ratio trade curve is confirmed on the current build, and the owner has watched the
   paced version at a target that the scene can hold (Ordon 70% looks like the first thing worth trying).
 
+### C9c. The pacer latched up on hardware and paced nothing (jobs 1681-1688, 2026-10-31) - fixed
+
+Build `2ba59806b89d7a22`, the first runs with `--gfskip-minfps`. Four of the six runs **skipped not one frame** while
+reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the heavy area `game 7.97 drawn 7.97`.
+
+> **Correction to C9b's numbers, 2026-10-31.** The floor table above (jobs 1638-1643 and the follow-ups) was measured
+> with the old single-sample warm-up, so **any run of that build could silently be a no-skip run**. The figures that
+> show skipping happening (a drawn and a shown rate that differ) are still evidence; a run whose two rates are equal
+> measured nothing. The floor table's own runs all show skipping, so it stands, but no number from that build should
+> be trusted without checking that the two rates differ.
+
+- **What the report said:** `a drawn frame 94.6 ms, a skipped one 149.5 ms, wants to draw 1.000 of them; the floor
+  decided 0, the ratio backstop 0, drawing all 0`. A **skipped** frame costing more than a drawn one is physically
+  impossible: it is the same frame's logic minus the rendering.
+- **How it was caught, and the thing worth remembering:** not from the speed, which looked plausible, but because
+  `cs` read **exactly 149.5 in every ten-second window of a four-minute run** while `cd` moved (94.6 -> 94.1). A
+  learned value that never moves has only one sample. The pacer took one skip sample during warm-up, seeded the mean
+  with it, found `cs >= cd`, so the solver could not act; and because the solver then skipped nothing, `cs` could
+  never get another sample. **One bad frame disabled the feature permanently and nothing in the log said so.**
+- **It was luck, not a setting.** Job 1685 (Ordon, floor 4) got `drawn 92.4, skipped 33.3, wants 0.243` and paced
+  correctly; job 1642 on the older build got 33.3 too - but its *first* window read `drawn 363.6, skipped 34.1`, so
+  warm-up samples are wildly noisy and the single one could land anywhere.
+- **Fixed three ways** (`hle_tp.c`, the latch-up note above `gfskip_skip`): the means are incremental with weight
+  1/n up to 1/16, so no sample seeds them forever; a skip sample at or above the drawn cost is **rejected** as
+  impossible and counted; and while the costs cannot be solved, **one frame in 16 is skipped anyway** to re-sample
+  `cs`, with the accumulator credited so the frame is moved rather than lost. The probe is what makes the failure
+  impossible rather than unlikely. `# gfskip target 10s` now prints `probed` and `impossible samples`, so a latched
+  controller is visible in the log instead of inferred from a value that does not move.
+- **Self-tested with the failure itself:** the synthetic-clock case poisons **every** warm-up skip sample (400 ms
+  against a 95 ms drawn frame) and asserts the run still lands within 3% of its target, that samples were rejected
+  and that the probe fired. Removing the probe reproduces the device exactly - the scored mean comes back at 95.00 ms,
+  a drawn frame's own cost, against a 47.62 ms target. Accepting the impossible samples fails it too (the draws end
+  up uneven). The earlier cases did not reach either path.
+- **Re-evaluate when:** the fixed build's runs are in. The hardware answer to "does the floor look natural" is still
+  outstanding - everything measured so far at the floor came from the build that could latch.
+
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
 - **Status:** parked (2026-10-13).

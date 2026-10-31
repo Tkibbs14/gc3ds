@@ -140,7 +140,19 @@ GfskipOk g_gfskipOk[4];
 // reached at all (the heavy area cannot reach 100%: its asymptote with infinite skipping is ~69%); x is 1 whenever
 // the target is reachable while drawing everything, so a cheap scene is left alone; and the fade/fader guards above
 // still force a draw whichever way this comes out.
+//
+// Why the learned costs are guarded (jobs 1681-1688, 2026-10-31). The first build of this took exactly one skipped
+// frame's sample during warm-up and seeded cs with it. On the console that sample came back at 149.5 ms against a
+// drawn frame's 94.6 - a skipped frame reported as costing more than a drawn one, which cannot happen - so the
+// solver's `cd > cs` guard was false, x stayed 1, nothing was skipped, and because nothing was skipped cs never got
+// another sample. It latched: cs read 149.5 in every window of a four-minute run while cd moved. The pacer worked or
+// did not work depending on what landed on that one frame (job 1685 got 33.3 ms and paced correctly). Three things
+// stop it now: the means are incremental (weight 1/n up to 1/16, so an early sample is diluted instead of seeding
+// forever), a skip sample at or above the drawn cost is rejected as impossible, and while the costs are in a state
+// the solver cannot act on, one frame in kGfProbe is skipped anyway so cs is re-sampled. The probe is what makes the
+// failure impossible rather than unlikely: no sample, however bad, can be permanent.
 #define kGfMaxN 10u             // never fewer than one picture in this many game frames
+#define kGfProbe 16u            // while cd/cs cannot be solved, skip one frame in this many to re-sample cs
 u32 g_gfskipTarget;             // --gfskip-target PCT (0: use the fixed ratio instead)
 u64 (*g_gfskipClock)(void);     // host ticks, set by the front end; NULL falls back to the fixed ratio
 u32 g_gfskipHz = 30;            // --gfskip-hz: the game's own frame rate (TP and Wind Waker 30, Mario Party 4 60)
@@ -153,10 +165,13 @@ u64 g_gfskipFloored, g_gfskipFull;
 // 2026-10-31). 0 leaves only the ratio floor. g_gfskipMinned counts the frames where it, not the target, decided.
 u32 g_gfskipMinFps = 5;
 u64 g_gfskipMinned;
+u64 g_gfskipProbed, g_gfskipRejected;   // recovery skips forced, impossible skip samples thrown away
 static u64 g_gfLast;            // tick at the previous hook entry
 static bool g_gfDrew;           // ... and whether that frame drew
 static double g_gfAcc;
 static u32 g_gfWarm;
+static u32 g_gfNd, g_gfNs;      // samples in each mean so far (the weight is 1/n until it reaches 1/16)
+static u32 g_gfSinceSkip;       // frames drawn since the last skip, so a stuck solver can be prodded
 
 // Called when a frame drew (including a guarded draw), so the next gap is attributed to the right bucket.
 static void gfskip_drew(bool drew) { g_gfDrew = drew; }
@@ -170,21 +185,31 @@ static bool gfskip_skip(void) {
     u64 now = g_gfskipClock();
     if (g_gfLast && now > g_gfLast) {
         double dt = (double)(now - g_gfLast);
-        double* slot = g_gfDrew ? &g_gfskipCd : &g_gfskipCs;
-        *slot = *slot > 0 ? *slot + (dt - *slot) / 16.0 : dt;   // a 16-frame running mean
+        if (g_gfDrew) {
+            double w = g_gfNd < 16 ? (double)++g_gfNd : 16.0;
+            g_gfskipCd += (dt - g_gfskipCd) / w;      // w = 1 on the first sample, so it sets the mean exactly
+        } else if (g_gfskipCd <= 0 || dt < g_gfskipCd) {
+            double w = g_gfNs < 16 ? (double)++g_gfNs : 16.0;
+            g_gfskipCs += (dt - g_gfskipCs) / w;
+        } else {
+            g_gfskipRejected++;   // not skipping the rendering cannot cost more than doing it: the sample is noise
+        }
     }
     g_gfLast = now;
-    // Warm-up: draw four frames to learn cd, then skip one to learn cs. Without a cs sample there is no way to know
-    // what skipping buys, and guessing it made the first second oscillate.
-    if (g_gfWarm < 5) {
-        bool skip = g_gfWarm == 4;
+    // Warm-up: draw four frames to learn cd, then alternate so three skipped frames are sampled. Without a cs sample
+    // there is no way to know what skipping buys, and guessing it made the first second oscillate; without *several*
+    // the mean is whatever landed on one frame, which is how the latch-up above happened.
+    if (g_gfWarm < 9) {
+        bool skip = g_gfWarm >= 4 && (g_gfWarm & 1) == 0;
         g_gfWarm++;
         gfskip_drew(!skip);
+        g_gfSinceSkip = skip ? 0 : g_gfSinceSkip + 1;
         return skip;
     }
     double target = (double)g_gfskipTicksPerSec / (double)g_gfskipHz * 100.0 / (double)g_gfskipTarget;
     double x = 1.0;
-    if (g_gfskipCd > 0 && g_gfskipCs > 0 && g_gfskipCd > g_gfskipCs) {
+    bool solvable = g_gfskipCd > 0 && g_gfskipCs > 0 && g_gfskipCd > g_gfskipCs;
+    if (solvable) {
         if (target >= g_gfskipCd) { x = 1.0; g_gfskipFull++; }          // reachable while drawing every frame
         else {
             x = (target - g_gfskipCs) / (g_gfskipCd - g_gfskipCs);
@@ -214,6 +239,16 @@ static bool gfskip_skip(void) {
     g_gfAcc += x;
     bool draw = g_gfAcc >= 1.0;
     if (draw) g_gfAcc -= 1.0;
+    // The recovery probe (see the latch-up note above). While the costs cannot be solved - no usable cs sample, or
+    // one that says skipping is dearer than drawing - skip one frame in kGfProbe so cs is measured again. The
+    // accumulator gets its credit back, so the frame is only moved, not lost, and at one in 16 the cost is bounded
+    // even if a scene really can never produce a usable sample.
+    if (!solvable && draw && g_gfSinceSkip >= kGfProbe) {
+        draw = false;
+        g_gfAcc += 1.0;
+        g_gfskipProbed++;
+    }
+    g_gfSinceSkip = draw ? g_gfSinceSkip + 1 : 0;
     gfskip_drew(draw);
     return !draw;
 }
@@ -226,8 +261,12 @@ static bool gfskip_skip(void) {
 // (jobs 380-381 measured no added stutter and that must stay true), and the clamps behave at both ends.
 static u64 g_gfTestTick;
 static u64 gf_test_clock(void) { return g_gfTestTick; }
+static double g_gfTestPoisonMs;   // cost charged to the first g_gfTestPoisonN skipped frames (a planted bad sample)
+static u32 g_gfTestPoisonN;
 static void gf_test_reset(void) {
     g_gfLast = 0; g_gfDrew = false; g_gfAcc = 0; g_gfWarm = 0;
+    g_gfNd = g_gfNs = g_gfSinceSkip = 0; g_gfskipProbed = g_gfskipRejected = 0;
+    g_gfTestPoisonMs = 0; g_gfTestPoisonN = 0;
     g_gfskipCd = g_gfskipCs = g_gfskipX = 0; g_gfskipFloored = g_gfskipFull = g_gfskipMinned = 0; g_gfskipN = 0;
     g_gfTestTick = 1000;
     g_gfskipClock = gf_test_clock;
@@ -237,12 +276,15 @@ static void gf_test_reset(void) {
 // Runs `frames` frames where a drawn one costs cdMs and a skipped one csMs. Returns the drawn count and, through
 // `spread`, the difference between the longest and shortest run of skips between draws (0 or 1 means even).
 static double g_gfTestPicFps;   // the realised picture rate over the scored part of the last run
+static double g_gfTestMeanMs;   // ... and its mean frame cost, which is what a target is held against
 static u32 gf_test_run(double cdMs, double csMs, u32 frames, u32* spread) {
     u32 drawn = 0, gap = 0, lo = 0xFFFFFFFFu, hi = 0, settle = frames / 4;
     u64 t0 = 0;
     for (u32 i = 0; i < frames; i++) {
         bool skip = gfskip_skip();
-        g_gfTestTick += (u64)((skip ? csMs : cdMs) * 1000.0);
+        double cost = skip ? csMs : cdMs;
+        if (skip && g_gfTestPoisonN) { cost = g_gfTestPoisonMs; g_gfTestPoisonN--; }
+        g_gfTestTick += (u64)(cost * 1000.0);
         if (i < settle) { t0 = g_gfTestTick; continue; }   // the warm-up and the first means are not steady state
         if (skip) { gap++; continue; }
         drawn++;
@@ -251,6 +293,7 @@ static u32 gf_test_run(double cdMs, double csMs, u32 frames, u32* spread) {
     }
     double secs = (double)(g_gfTestTick - t0) / (double)g_gfskipTicksPerSec;
     g_gfTestPicFps = secs > 0 ? (double)drawn / secs : 0.0;
+    g_gfTestMeanMs = frames > settle ? secs * 1000.0 / (double)(frames - settle) : 0.0;
     *spread = (drawn > 1 && hi >= lo) ? hi - lo : 0;
     return drawn;
 }
@@ -274,6 +317,23 @@ bool hle_gfskip_selftest(void) {
     }
     if (spread > 1) { printf("gfskip selftest: draws unevenly spaced, skip runs differ by %u\n", spread); bad++; }
     if (!drawn) { printf("gfskip selftest: drew nothing on a reachable target\n"); bad++; }
+    // 2b. The latch-up of jobs 1681-1688: every warm-up skip measures *longer* than a drawn frame (a log flush, a
+    //     GPU stall, a scene change landing on it). The old controller took that one sample as truth, found cs >= cd,
+    //     stopped skipping, and so could never sample cs again - it paced nothing for a whole four-minute run while
+    //     reporting a healthy-looking target. The impossible samples must be thrown away, the probe must fire, and
+    //     the run must still land on its target. Nothing else in this test reaches either path.
+    gf_test_reset();
+    g_gfskipTarget = 70;
+    g_gfTestPoisonMs = 400.0;        // longer than a drawn frame, so every warm-up sample is impossible
+    g_gfTestPoisonN = 3;             // all three of them
+    drawn = gf_test_run(95.0, 20.0, 1200, &spread);
+    if (g_gfTestMeanMs < want * 0.97 || g_gfTestMeanMs > want * 1.03) {
+        printf("gfskip selftest: poisoned warm-up settled at %.2f ms, target %.2f ms (off %.1f%%)\n",
+               g_gfTestMeanMs, want, 100.0 * (g_gfTestMeanMs - want) / want); bad++;
+    }
+    if (!g_gfskipRejected) { printf("gfskip selftest: impossible skip samples accepted\n"); bad++; }
+    if (!g_gfskipProbed) { printf("gfskip selftest: stuck solver never probed for a new sample\n"); bad++; }
+    if (spread > 1) { printf("gfskip selftest: poisoned warm-up left draws uneven (%u)\n", spread); bad++; }
     // 3. A target nothing can reach (even a skipped frame costs more than the budget), with the picture-rate floor
     //    off: the ratio floor must hold, so the screen keeps updating instead of freezing. 1 in kGfMaxN.
     gf_test_reset();

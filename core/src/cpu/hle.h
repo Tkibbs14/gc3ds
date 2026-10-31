@@ -52,6 +52,9 @@ bool hle_gfskip_selftest(void);   // drives the pacer with a synthetic clock (hl
 extern u64 g_gfskipFloored, g_gfskipFull;          // frames pinned at the ratio floor / drawing everything
 extern u32 g_gfskipMinFps;   // --gfskip-minfps P: never fewer than P pictures a second (the game gives way instead)
 extern u64 g_gfskipMinned;   // frames where that floor, not the target, decided
+// Recovery from a bad cost sample (hle_tp.c's latch-up note): frames skipped to re-sample cs while the costs could
+// not be solved, and skip samples thrown away for claiming that skipping cost more than drawing.
+extern u64 g_gfskipProbed, g_gfskipRejected;
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

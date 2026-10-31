@@ -2026,18 +2026,26 @@ static const char* run_body(const char* path) {
                     if (g_gfskipTarget) {  // --gfskip-target: what the controller learned and whether it is pinned
                         static u64 lastFl, lastFu;
                         double tick = g_gfskipTicksPerSec ? 1000.0 / (double)g_gfskipTicksPerSec : 0.0;
-                        static u64 lastMin;
+                        static u64 lastMin, lastPr, lastRj;
+                        // probed / rejected tell a latched controller from a working one: a run that keeps rejecting
+                        // samples and probing is not pacing, which is what jobs 1681-1688 looked like with no column
+                        // saying so (hle_tp.c's latch-up note).
                         fprintf(g_perf, "# gfskip target 10s: %u%% of %u Hz, floor %u pictures/s; a drawn frame "
                                         "%.1f ms, a skipped one %.1f ms, wants to draw %.3f of them; the floor "
-                                        "decided %llu, the ratio backstop %llu, drawing all %llu\n",
+                                        "decided %llu, the ratio backstop %llu, drawing all %llu, probed %llu, "
+                                        "impossible samples %llu\n",
                                 (unsigned)g_gfskipTarget, (unsigned)g_gfskipHz, (unsigned)g_gfskipMinFps,
                                 g_gfskipCd * tick, g_gfskipCs * tick, g_gfskipX,
                                 (unsigned long long)(g_gfskipMinned - lastMin),
                                 (unsigned long long)(g_gfskipFloored - lastFl),
-                                (unsigned long long)(g_gfskipFull - lastFu));
+                                (unsigned long long)(g_gfskipFull - lastFu),
+                                (unsigned long long)(g_gfskipProbed - lastPr),
+                                (unsigned long long)(g_gfskipRejected - lastRj));
                         lastMin = g_gfskipMinned;
                         lastFl = g_gfskipFloored;
                         lastFu = g_gfskipFull;
+                        lastPr = g_gfskipProbed;
+                        lastRj = g_gfskipRejected;
                     }
                     lastGuarded = g_gfskipGuarded;
                     memcpy(lastGf, g_gfskipStats, sizeof lastGf);
