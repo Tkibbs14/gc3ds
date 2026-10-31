@@ -1902,6 +1902,13 @@ static const char* run_body(const char* path) {
                                     if (g_portWalkOther != lastWkO)
                                         fprintf(g_perf, "other lines x%llu", (unsigned long long)(g_portWalkOther - lastWkO));
                                     lastWkO = g_portWalkOther;
+                                    // and whose drawSelf it was, which is the only question left once the line
+                                    // histogram says every refusal is the pane-class test
+                                    fprintf(g_perf, "; unported drawSelf:");
+                                    for (int i = 0; i < 4 && g_portWalkDs[i]; i++)
+                                        fprintf(g_perf, " %08lx x%llu", (unsigned long)g_portWalkDs[i],
+                                                (unsigned long long)g_portWalkDsN[i]);
+                                    if (g_portWalkDsOther) fprintf(g_perf, " others x%llu", (unsigned long long)g_portWalkDsOther);
                                     fprintf(g_perf, "\n");
                                 }
                             }

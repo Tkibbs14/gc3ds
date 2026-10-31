@@ -172,6 +172,19 @@ static void why_line(u32 why, u32 line) {
 u32 g_portWalkLine[kWhyLines];
 u64 g_portWalkLineN[kWhyLines], g_portWalkOther;
 static bool walk_no(u32 line) { line_hist(g_portWalkLine, g_portWalkLineN, &g_portWalkOther, line); return false; }
+// Which pane class the walk does not know. The line histogram above said **100% of refusals are the `drawSelf`
+// vtable test** (port_j2d.c:1061, 2,950-4,661 per 10 s in TP's heavy area against 1,450-2,320 calls taken), so the
+// next question is the only one left: whose `drawSelf` is it? These are guest function addresses, to be named with
+// `core/tools/stack_funcs.py`. Four slots, because if the answer is a long tail there is nothing to port.
+u32 g_portWalkDs[4];
+u64 g_portWalkDsN[4], g_portWalkDsOther;
+static void walk_ds(u32 ds) {
+    for (u32 i = 0; i < 4; i++) {
+        if (g_portWalkDs[i] == ds) { g_portWalkDsN[i]++; return; }
+        if (!g_portWalkDs[i]) { g_portWalkDs[i] = ds; g_portWalkDsN[i] = 1; return; }
+    }
+    g_portWalkDsOther++;
+}
 static inline void give_up_at(Pc* c, u32 why, u32 line) {
     if (!c->fail) { c->fail = why; why_line(why, line); }
 }
@@ -1058,7 +1071,7 @@ static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
     u32 vt = f32(p);
     if (!in_mem1(vt, 92)) return walk_no(__LINE__);
     u32 ds = f32(vt + 56), ra = f32(vt + 88);
-    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) return walk_no(__LINE__);      // an unported pane class
+    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) { walk_ds(ds); return walk_no(__LINE__); }  // which class?
     if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA) return walk_no(__LINE__);
     if (++*panes > 512) return walk_no(__LINE__);
     for (u32 l = f32(p + 220); l; l = f32(l + 12)) {

@@ -35,6 +35,10 @@ bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): th
 // Why walk_scan refuses a pane subtree, by line (port_j2d.c walk_no): the pane walk is refused more often than it
 // runs in TP's heavy area and the give-up histogram traced all of it to that one call, but walk_scan has five ways
 // to say no and only some are worth extending.
+// The unrecognised panes' drawSelf addresses (port_j2d.c walk_ds), since 100% of walk_scan's refusals are that one
+// test. Guest addresses: name them with core/tools/stack_funcs.py.
+extern u32 g_portWalkDs[4];
+extern u64 g_portWalkDsN[4], g_portWalkDsOther;
 extern u32 g_portWalkLine[6];
 extern u64 g_portWalkLineN[6], g_portWalkOther;
 extern u32 g_portWhyLine[8][6];
