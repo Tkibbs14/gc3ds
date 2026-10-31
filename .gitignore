@@ -46,3 +46,7 @@ core/tools/qemu-plugins/*.so
 # Scratch scripts and bytecode from measuring sessions (the two tracked _*.sh files stay tracked)
 **/__pycache__/
 core/tools/_*
+
+# core/host3ds/build.sh writes this: the build's commit, embedded in the perf.csv header
+core/host3ds/version.inc
+core/host3ds/version.inc.new

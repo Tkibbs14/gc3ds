@@ -13,6 +13,16 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include "../src/cpu/aot.h"
+// The build's commit, written by core/host3ds/build.sh. Absent when the build did not come from build.sh (a bare
+// `make`, or a fresh checkout), which is why it is optional rather than required.
+#if defined(__has_include)
+#  if __has_include("version.inc")
+#    include "version.inc"
+#  endif
+#endif
+#ifndef GC3DS_REV
+#define GC3DS_REV "unknown (not built by build.sh)"
+#endif
 #include "../src/cpu/hle.h"
 #include "../src/boot/boot.h"
 #include "../src/disc/disc.h"
@@ -905,6 +915,11 @@ static void perf_open(const char* path) {
     if (!g_opt.abName[0]) snprintf(ab, sizeof ab, "A/B off");
     else if (!g_opt.abKnown) snprintf(ab, sizeof ab, "A/B --ab %s UNKNOWN IN THIS BUILD: NO A/B RAN", g_opt.abName);
     else snprintf(ab, sizeof ab, "A/B --ab %s, 2 phases of %d rows", g_opt.abName, AB_SECS);
+    // The commit this build came from (build.sh writes version.inc). A log that cannot be tied to source is a
+    // number without a provenance, and every figure in MEASUREMENTS.md names a build id, so this goes in the header
+    // of every run. "unknown" means the build did not come from build.sh; a "-dirty" suffix means it had
+    // uncommitted changes and cannot be tied to source at all - treat such a run as unreproducible.
+    fprintf(g_perf, "# build: gc3ds %s\n", GC3DS_REV);
     long sdMb = sd_free_mb();
     if (sdMb >= 0)
         fprintf(g_perf, "# card: %ld MB free%s\n", sdMb,

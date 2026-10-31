@@ -43,7 +43,11 @@ def score(path, skip, keep_stolen=False):
     t = 0.0
     shot_at = None
     low_card = False
+    rev = ''          # '# build: gc3ds <commit>': which source produced this log (host3ds/build.sh writes it)
     for line in open(path, encoding='utf-8', errors='replace'):
+        if line.startswith('# build: gc3ds '):
+            rev = line.split('gc3ds', 1)[1].strip()
+            continue
         if line.startswith('# card:') and 'LOW' in line:
             low_card = True      # a full card truncates runs and fails build downloads (2026-10-30)
             continue
@@ -108,7 +112,11 @@ def score(path, skip, keep_stolen=False):
         ' '.join('%d:%d' % kv for kv in sorted(fh.items())),
         ('' if not (stolen or dropped_windows) else
          '  [dropped %d row(s) and %d frame window(s): core 0 lost the second]' % (stolen, dropped_windows))
-        + ('' if not low_card else '  *** the card was LOW on space: this run may be truncated ***'))
+        + ('' if not low_card else '  *** the card was LOW on space: this run may be truncated ***')
+        # The commit, when the build embedded one. 'dirty' is called out: such a run cannot be tied to source, so it
+        # is not reproducible and must not be quoted as a measurement.
+        + ('' if not rev else ('  [%s]' % rev if 'dirty' not in rev else
+                               '  *** build %s: uncommitted changes, this run cannot be tied to source ***' % rev)))
 
 
 def selftest():

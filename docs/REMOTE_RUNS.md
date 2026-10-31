@@ -66,12 +66,18 @@ an edge) for scripted runs; its fields count from the run's start.
 
 **Resolving a build id to source.** Every figure in `docs/research/MEASUREMENTS.md` names a build id (a content hash
 of the 3dsx), and the project's method is "one build, one session" - so being able to get from an id back to the code
-is the difference between a reproducible measurement and a number. `relay.sh push` has always sent the commit it was
-pushed from as the build's `note`, but until 2026-10-31 the relay **wrote it to disk and never served it**, so nobody
-reading the repository could make that mapping. `relay.sh jobs` now prints it as a column (id, status, build,
-**commit**, created, args); a `-dirty` suffix means that build had uncommitted changes and the id cannot be tied to
-source at all. An older relay leaves the column out, so anything parsing this output must find `args` by content
-rather than by position - the build is column 3 either way.
+is the difference between a reproducible measurement and a number. Two places carry it now (both added 2026-10-31):
+
+- **In the log itself.** `core/host3ds/build.sh` writes the commit into `version.inc`, and every run's perf.csv
+  header opens with `# build: gc3ds <commit>`. `runs.py` prints it beside the score, so a number you read is never
+  separated from the source that produced it. `unknown (not built by build.sh)` means a bare `make`; a **`-dirty`**
+  suffix means uncommitted changes, and `runs.py` says loudly that such a run cannot be tied to source - do not
+  quote it as a measurement.
+- **On the relay.** `relay.sh push` has always sent the same commit as the build's `note`, but the relay **wrote it
+  to disk and never served it**, so nobody reading the repository could make the mapping for any run on record.
+  `relay.sh jobs` now prints it as a column (id, status, build, **commit**, created, args). An older relay leaves
+  the column out, so anything parsing that output must find `args` by content rather than by position - the build is
+  column 3 either way.
 
 ## On the console
 
