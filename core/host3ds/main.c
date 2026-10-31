@@ -726,6 +726,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--memo")) o->memo = (u32)strtoul(v, NULL, 16);
         else if (!strcmp(a, "--port-parts")) g_portParts = !strcmp(v, "on");
         else if (!strcmp(a, "--port-picture")) g_portPicture = !strcmp(v, "on");  // C53, unchecked: see port.h
+        else if (!strcmp(a, "--port-walktext")) g_portWalkText = !strcmp(v, "on");  // C53's other half: see port.h
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--port-charge")) o->portCharge = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--fifomirror")) g_gpMirror = strcmp(v, "off") != 0;  // (measurement only: not exact)
@@ -1888,9 +1889,14 @@ static const char* run_body(const char* path) {
                                                            "unrecognised", "texgens", "indirect" };
                             {   // why walk_scan refused a pane subtree, by line: it is the single biggest refusal
                                 // in the heavy area and has five ways to say no, only some worth extending
-                                static u64 lastWk[6], lastWkO;
+                                static u64 lastWk[6], lastWkO, lastWkD[2];
                                 bool any = g_portWalkOther != lastWkO;
                                 for (int i = 0; i < 6 && !any; i++) any = g_portWalkLineN[i] != lastWk[i];
+                                // also when a C53 half drew something and nothing refused, which is the state the
+                                // fold is aiming at: the line must not go quiet exactly when it succeeds
+                                for (int i = 0; i < 2 && !any; i++) any = g_portWalkDrew[i] != lastWkD[i];
+                                lastWkD[0] = g_portWalkDrew[0];
+                                lastWkD[1] = g_portWalkDrew[1];
                                 if (any) {
                                     fprintf(g_perf, "# port walk-scan 10s: ");
                                     for (int i = 0; i < 6; i++) {
@@ -1910,6 +1916,11 @@ static const char* run_body(const char* path) {
                                         fprintf(g_perf, " %08lx x%llu", (unsigned long)g_portWalkDs[i],
                                                 (unsigned long long)g_portWalkDsN[i]);
                                     if (g_portWalkDsOther) fprintf(g_perf, " others x%llu", (unsigned long long)g_portWalkDsOther);
+                                    // and how many panes each C53 half actually *drew*. Without this the halves'
+                                    // "differed 0" is unreadable: the first J2DPicture draft reported it over zero
+                                    // calls, because every picture it accepted turned out to be hidden.
+                                    fprintf(g_perf, "; drew picture %llu text %llu (all time)",
+                                            (unsigned long long)g_portWalkDrew[0], (unsigned long long)g_portWalkDrew[1]);
                                     fprintf(g_perf, "\n");
                                 }
                             }

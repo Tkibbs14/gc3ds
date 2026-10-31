@@ -89,6 +89,11 @@
     { 0x803620AC, 0x5C, 0x92B88B15F3644346ull },  // __cvt_fp2unsigned
     { 0x8036BEBC, 0x144, 0x337948117E793B07ull },  // ceil
     { 0x80306A0C, 0x18, 0xFA4B40BD91D0801Eull },  // rewriteAlpha__12J2DPictureExFv
+    // Source-identical to the row above and *not* interchangeable with it: the two differ in their first word only,
+    // `lwz r4,0x138(r3)` against `lwz r4,0x150(r3)`, because mMaterial sits at +0x138 in J2DTextBoxEx and +0x150 in
+    // J2DPictureEx. Generated with porthash.py on a machine with the disc image, in the same run that reproduced the
+    // J2DPictureEx row above byte for byte as a calibration.
+    { 0x80308810, 0x18, 0xC77FD3DA0C07B686ull },  // rewriteAlpha__12J2DTextBoxExFv
     { 0x802F83CC, 0x4, 0x2F639DC45181817Full },  // rewriteAlpha__7J2DPaneFv
     { 0x802F83C8, 0x4, 0x2F639DC45181817Full },  // drawSelf__7J2DPaneFffPA3_A4_f
     { 0x802E9664, 0x8, 0x483349B35D8BA64Dull },  // getGrafType__14J2DGrafContextCFv

@@ -33,6 +33,7 @@ void port_set_memory(u8* mem1, u32 size) {
     // The PC build parses no options, so without this PORT_CHECK could not reach the J2DPicture path at all and
     // reported a vacuous "0 differed" (a peer's run on the owner's PC, 2026-10-31).
     if (getenv("GC3DS_PORT_PICTURE")) g_portPicture = strcmp(getenv("GC3DS_PORT_PICTURE"), "on") == 0;
+    if (getenv("GC3DS_PORT_WALKTEXT")) g_portWalkText = strcmp(getenv("GC3DS_PORT_WALKTEXT"), "on") == 0;
 #endif
     g_pm = mem1;
     g_psz = size;
@@ -72,6 +73,10 @@ enum {
     A_GDCURRENTDL = 0x80451980,  // (__GDCurrentDL: the GDLObj J3D's display-list writers append to)
     A_PANE_DRAW = 0x802F67E0, A_PANE_DRAWSELF = 0x802F83C8, A_PANE_REWRITEALPHA = 0x802F83CC,
     A_PICEX_REWRITEALPHA = 0x80306A0C, A_GRAFTYPE_ORTHO = 0x802E9C88, A_GRAFTYPE_CONTEXT = 0x802E9664,
+    // J2DTextBoxEx: the other half of C53, and the half that actually unblocks it. Its drawSelf is port bit 10's own
+    // hook (text_draw_self below); its rewriteAlpha is source-identical to J2DPictureEx's but compiles to different
+    // bytes, because mMaterial sits at +0x138 in J2DTextBoxEx and +0x150 in J2DPictureEx - hence its own hash row.
+    A_TEXT_DRAWSELF = 0x803075AC, A_TEXTEX_REWRITEALPHA = 0x80308810,
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -992,6 +997,15 @@ static void gx_set_tev_color(Pc* c, u32 id, u32 col);   // defined with the rest
 // that does, accepting these panes would change what the walk draws on the strength of code nobody has compared.
 bool g_portPicture;
 
+// --port-walktext (off, same reasoning): the pane walk accepts J2DTextBoxEx panes and draws them with bit 10's own
+// text_draw_self, which is already built and measured exact as a standalone entry hook. This is deliberately a
+// *separate* switch from `--port-hooks` bit 10 rather than the same one, because bit 10 as an entry hook measured
+// Ordon -4.3% (jobs 1491-1497): folding the same code into the walk is a different change and has to be measurable
+// without paying for the hook that lost.
+bool g_portWalkText;
+static void text_draw_self(Pc* c, u32 tb, u32 px, u32 py, u32 mtx);  // defined with the J2D text section, below
+u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively through the C53 halves: picture, text box
+
 // J2DPicture::getNewColor 0x802FEC64: the four corner colours, each alpha scaled by mColorAlpha unless it is 0xFF.
 static void picture_new_color(Pc* c, u32 p, u32* col) {
     for (u32 i = 0; i < 4; i++) col[i] = f32(p + 312 + 4 * i);
@@ -1231,11 +1245,13 @@ static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
     u32 vt = f32(p);
     if (!in_mem1(vt, 92)) return walk_no(__LINE__);
     u32 ds = f32(vt + 56), ra = f32(vt + 88);
-    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF && !(g_portPicture && ds == A_PICTURE_DRAWSELF)) {
-        walk_ds(ds); return walk_no(__LINE__);   // still unported: J2DTextBoxEx is the rest of C53
+    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF && !(g_portPicture && ds == A_PICTURE_DRAWSELF) &&
+        !(g_portWalkText && ds == A_TEXT_DRAWSELF)) {
+        walk_ds(ds); return walk_no(__LINE__);   // the histogram names whichever class is left
     }
     if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA &&
-        !(g_portPicture && ra == A_PICTURE_REWRITEALPHA)) return walk_no(__LINE__);
+        !(g_portPicture && ra == A_PICTURE_REWRITEALPHA) &&
+        !(g_portWalkText && ra == A_TEXTEX_REWRITEALPHA)) return walk_no(__LINE__);
     if (++*panes > 512) return walk_no(__LINE__);
     for (u32 l = f32(p + 220); l; l = f32(l + 12)) {
         if (!in_mem1(l, 16)) return walk_no(__LINE__);
@@ -1243,8 +1259,11 @@ static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
     }
     return true;
 }
-// J2DPane::draw (p, x, y, graph, clip, visible) for a pane with a parent; x and y are only read without one.
-static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d) {
+// J2DPane::draw (p, x, y, graph, clip, visible) for a pane with a parent. x and y reach the guest code in two places
+// only: the no-parent branch, which the walk refuses, and `drawSelf(x, y, &tmpGraf.mPosMtx)`. J2DPictureEx's and
+// J2DPicture's drawSelf ignore both, so the walk did not carry them until J2DTextBoxEx's, which adds them to the
+// print origin. Children are called `iter->draw(0, 0, ...)`, so they get +0.0f, not this pane's x and y.
+static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d, u32 x, u32 y) {
     if (c->fail || !span(c, p, 344)) return;
     c->n += 40;
     vis = vis && f8(p + 176);
@@ -1257,6 +1276,10 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d) {
         u32 vt = f32(p);
         if (f32(vt + 88) == A_PICEX_REWRITEALPHA) {  // J2DPictureEx::rewriteAlpha: 178 = the material's alpha
             u32 mat = f32(p + 336);
+            if (mat && span(c, mat, 20)) pw8(c, p + 178, f8(mat + 19));
+            c->n += 6;
+        } else if (f32(vt + 88) == A_TEXTEX_REWRITEALPHA) {  // the same body, with mMaterial at +312 instead of +336
+            u32 mat = f32(p + 312);
             if (mat && span(c, mat, 20)) pw8(c, p + 178, f8(mat + 19));
             c->n += 6;
         }
@@ -1301,11 +1324,19 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d) {
             } else if (g_portPicture && dself == A_PICTURE_DRAWSELF) {
                 if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
                 picture_draw_self(c, p, g + 128);
+                if (!c->fail) g_portWalkDrew[0]++;
+            } else if (g_portWalkText && dself == A_TEXT_DRAWSELF) {
+                // A string is up to 1,023 characters and text_draw_self emits a quad each, so the picture path's
+                // 2,048-byte margin is not enough; the walk's buffer is linear memory, so ask for a real margin.
+                if ((u32)(c->pp - c->pbase) + 16384 > c->pcap) { give_up(c, 1); return; }
+                text_draw_self(c, p, x, y, g + 128);
+                if (!c->fail) g_portWalkDrew[1]++;
             }
             c->n += 60;
         }
     }
-    for (u32 l = f32(p + 220); l && !c->fail; l = f32(l + 12)) walk_pane(c, f32(l), g, clip, vis, d + 1);
+    u32 z0 = 0;  // `iter->draw(0, 0, ...)`: +0.0f, which is not this pane's x and y
+    for (u32 l = f32(p + 220); l && !c->fail; l = f32(l + 12)) walk_pane(c, f32(l), g, clip, vis, d + 1, z0, z0);
 }
 u64 g_walkPanes;
 static void pane_walk(Pc* c, Gekko* g) {
@@ -1319,8 +1350,13 @@ static void pane_walk(Pc* c, Gekko* g) {
     if (gt != A_GRAFTYPE_ORTHO && gt != A_GRAFTYPE_CONTEXT) { give_up(c, 5); return; }
     if (gt != A_GRAFTYPE_ORTHO) clip = false;
     if (!span(c, g->gpr[2] - 14520u, 180)) return;
+    // x and y, which only a J2DTextBoxEx pane reads (see walk_pane). The prototype's parameters are f32, so every
+    // caller has already narrowed them and the round trip through float is exact; if some caller ever does not, the
+    // walk refuses rather than drawing a rounded origin.
+    float fx = (float)g->fpr[1].ps0, fy = (float)g->fpr[2].ps0;
+    if ((double)fx != g->fpr[1].ps0 || (double)fy != g->fpr[2].ps0) { give_up(c, 2); return; }
     c->wt = true;
-    walk_pane(c, p, gr, clip, vis, 0);
+    walk_pane(c, p, gr, clip, vis, 0, bitsf(fx), bitsf(fy));
     if (!c->fail) g_walkPanes += panes;
 }
 static void walk_undo(Pc* c) {
@@ -2198,7 +2234,7 @@ static void j3d_multi_concat_load(Pc* c, u32 self) {
 // ASCII (no escape codes, control characters or lead bytes), ~4 characters, with JUTResFont; a string with any byte
 // below 0x20 or from 0x80, another font class, a code map that converts Shift-JIS or a font page change gives up. ----
 enum {
-    A_TEXT_DRAWSELF = 0x803075AC, A_JUTRESFONT_VT = 0x803CC5A0, A_LEAD_1BYTE = 0x802E0108, A_LEAD_SJIS = 0x802E0118,
+    A_JUTRESFONT_VT = 0x803CC5A0, A_LEAD_1BYTE = 0x802E0108, A_LEAD_SJIS = 0x802E0118,  // (A_TEXT_DRAWSELF: the first enum)
     A_FONT_CODETBL = 0x8039D35C, A_GX_TEVOP_TBL = 0x803D27C0,
 };
 static inline u32 i2f(s32 v) { return bitsf((float)v); }  // (the int-to-double trick, then fsubs: exact here)
