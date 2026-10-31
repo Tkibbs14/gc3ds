@@ -55,6 +55,12 @@ extern u64 g_gfskipMinned;   // frames where that floor, not the target, decided
 // Recovery from a bad cost sample (hle_tp.c's latch-up note): frames skipped to re-sample cs while the costs could
 // not be solved, and skip samples thrown away for claiming that skipping cost more than drawing.
 extern u64 g_gfskipProbed, g_gfskipRejected;
+// --gfskip-snap on|off (on): draw one frame in a whole number of them, so every gap between pictures is the same
+// length. Without it the gaps alternate by a whole skipped-frame cost and read as jitter (32% of the mean gap at
+// target 50; the owner watching job 1717 called it "very jittery", 2026-10-31). g_gfskipSnapped counts the frames
+// where it moved the fraction the solver asked for.
+extern bool g_gfskipSnap;
+extern u64 g_gfskipSnapped;
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

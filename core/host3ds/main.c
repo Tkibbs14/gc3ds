@@ -763,6 +763,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--gfskip-hz")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipHz = k >= 1 && k <= 120 ? k : 30; }
         // --gfskip-minfps P: never show fewer than P pictures a second; the game speed gives way instead of the
         // display (the owner, 2026-10-31: "I want smoother over choppy"). 0 leaves only the ratio floor.
+        else if (!strcmp(a, "--gfskip-snap")) g_gfskipSnap = strcmp(v, "off") != 0;  // one picture in a whole number of frames
         else if (!strcmp(a, "--gfskip-minfps")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipMinFps = k <= 60 ? k : 60; }
         else if (!strcmp(a, "--skipfn")) {
             const char* q = v;
@@ -2075,26 +2076,28 @@ static const char* run_body(const char* path) {
                     if (g_gfskipTarget) {  // --gfskip-target: what the controller learned and whether it is pinned
                         static u64 lastFl, lastFu;
                         double tick = g_gfskipTicksPerSec ? 1000.0 / (double)g_gfskipTicksPerSec : 0.0;
-                        static u64 lastMin, lastPr, lastRj;
+                        static u64 lastMin, lastPr, lastRj, lastSn;
                         // probed / rejected tell a latched controller from a working one: a run that keeps rejecting
                         // samples and probing is not pacing, which is what jobs 1681-1688 looked like with no column
                         // saying so (hle_tp.c's latch-up note).
                         fprintf(g_perf, "# gfskip target 10s: %u%% of %u Hz, floor %u pictures/s; a drawn frame "
                                         "%.1f ms, a skipped one %.1f ms, wants to draw %.3f of them; the floor "
                                         "decided %llu, the ratio backstop %llu, drawing all %llu, probed %llu, "
-                                        "impossible samples %llu\n",
+                                        "impossible samples %llu, snapped %llu (snap %s)\n",
                                 (unsigned)g_gfskipTarget, (unsigned)g_gfskipHz, (unsigned)g_gfskipMinFps,
                                 g_gfskipCd * tick, g_gfskipCs * tick, g_gfskipX,
                                 (unsigned long long)(g_gfskipMinned - lastMin),
                                 (unsigned long long)(g_gfskipFloored - lastFl),
                                 (unsigned long long)(g_gfskipFull - lastFu),
                                 (unsigned long long)(g_gfskipProbed - lastPr),
-                                (unsigned long long)(g_gfskipRejected - lastRj));
+                                (unsigned long long)(g_gfskipRejected - lastRj),
+                                (unsigned long long)(g_gfskipSnapped - lastSn), g_gfskipSnap ? "on" : "off");
                         lastMin = g_gfskipMinned;
                         lastFl = g_gfskipFloored;
                         lastFu = g_gfskipFull;
                         lastPr = g_gfskipProbed;
                         lastRj = g_gfskipRejected;
+                        lastSn = g_gfskipSnapped;
                     }
                     lastGuarded = g_gfskipGuarded;
                     memcpy(lastGf, g_gfskipStats, sizeof lastGf);

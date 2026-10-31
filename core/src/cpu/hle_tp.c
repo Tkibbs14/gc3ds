@@ -166,6 +166,11 @@ u64 g_gfskipFloored, g_gfskipFull;
 u32 g_gfskipMinFps = 5;
 u64 g_gfskipMinned;
 u64 g_gfskipProbed, g_gfskipRejected;   // recovery skips forced, impossible skip samples thrown away
+// --gfskip-snap (default on): draw one frame in a whole number of them. See the reasoning in gfskip_skip - without
+// it the gaps between pictures alternate by a whole skipped-frame cost, which reads as jitter (32% of the mean gap
+// at target 50, device job 1715). g_gfskipSnapped counts the frames where snapping moved the asked-for fraction.
+bool g_gfskipSnap = true;
+u64 g_gfskipSnapped;
 static u64 g_gfLast;            // tick at the previous hook entry
 static bool g_gfDrew;           // ... and whether that frame drew
 static double g_gfAcc;
@@ -207,7 +212,7 @@ static bool gfskip_skip(void) {
         return skip;
     }
     double target = (double)g_gfskipTicksPerSec / (double)g_gfskipHz * 100.0 / (double)g_gfskipTarget;
-    double x = 1.0;
+    double x = 1.0, xfloor = 0.0;
     bool solvable = g_gfskipCd > 0 && g_gfskipCs > 0 && g_gfskipCd > g_gfskipCs;
     if (solvable) {
         if (target >= g_gfskipCd) { x = 1.0; g_gfskipFull++; }          // reachable while drawing every frame
@@ -229,10 +234,33 @@ static bool gfskip_skip(void) {
                 double xmin = den > 1e-9 ? (double)g_gfskipMinFps * cs / den : 1.0;
                 if (xmin > 1.0) xmin = 1.0;
                 if (x < xmin) { x = xmin; g_gfskipMinned++; }
+                xfloor = xmin;
             }
             // The ratio floor stays as the backstop: it needs no learned costs, so it covers the first frames and
             // anything that makes the expression above degenerate.
             if (x < 1.0 / (double)kGfMaxN) { x = 1.0 / (double)kGfMaxN; g_gfskipFloored++; }
+            // --gfskip-snap (on): draw one frame in a whole number of them, so every gap between pictures is the
+            // same length. **This is the fix for "very jittery"** (the owner, watching job 1717 on 2026-10-31).
+            // A picture can only land on a game-frame boundary, and a frame costs cd drawn or cs skipped, so the
+            // only gaps the hardware can produce are cd + n*cs: with the measured 92 and 33 ms that is 92, 125,
+            // 158, 191, 224 ms and nothing between. A fractional x therefore makes the accumulator alternate
+            // between n and n+1 skips, and **neighbouring gaps differ by a whole cs**. Measured on the device: at
+            // target 70 the ideal is ~3 skips and it mostly lands there, so the middle 80% of gaps span 7% of the
+            // mean (job 1713); at target 50 the ideal is ~1.8 skips, it alternates every picture between 92 and
+            // 125 ms, and the spread is **32%** (job 1715) - which is what an eye calls jitter. Snapping gives up
+            // hitting the target exactly in exchange for gaps that are all identical, which is the trade the owner
+            // asked for ("smoother over choppy"). Rounding is to nearest, except that it never crosses the picture
+            // floor: the floor is a promise about what is shown, so when snapping down the rate would break it, the
+            // period is truncated instead and slightly more is drawn than asked.
+            if (g_gfskipSnap && x > 0.0 && x < 1.0) {
+                double period = 1.0 / x;                    // game frames a picture, fractional
+                u32 n = (u32)(period + 0.5);
+                if (n < 1) n = 1;
+                if (n > kGfMaxN) n = kGfMaxN;
+                if (xfloor > 0.0) while (n > 1 && 1.0 / (double)n < xfloor) n--;
+                if (1.0 / (double)n != x) g_gfskipSnapped++;
+                x = 1.0 / (double)n;
+            }
         }
     }
     g_gfskipX = x;
@@ -265,7 +293,8 @@ static double g_gfTestPoisonMs;   // cost charged to the first g_gfTestPoisonN s
 static u32 g_gfTestPoisonN;
 static void gf_test_reset(void) {
     g_gfLast = 0; g_gfDrew = false; g_gfAcc = 0; g_gfWarm = 0;
-    g_gfNd = g_gfNs = g_gfSinceSkip = 0; g_gfskipProbed = g_gfskipRejected = 0;
+    g_gfNd = g_gfNs = g_gfSinceSkip = 0; g_gfskipProbed = g_gfskipRejected = 0; g_gfskipSnapped = 0;
+    g_gfskipSnap = true;   // each case sets it explicitly where it matters
     g_gfTestPoisonMs = 0; g_gfTestPoisonN = 0;
     g_gfskipCd = g_gfskipCs = g_gfskipX = 0; g_gfskipFloored = g_gfskipFull = g_gfskipMinned = 0; g_gfskipN = 0;
     g_gfTestTick = 1000;
@@ -277,23 +306,39 @@ static void gf_test_reset(void) {
 // `spread`, the difference between the longest and shortest run of skips between draws (0 or 1 means even).
 static double g_gfTestPicFps;   // the realised picture rate over the scored part of the last run
 static double g_gfTestMeanMs;   // ... and its mean frame cost, which is what a target is held against
+static double g_gfTestGapPct;   // ... and the spread of the gaps between pictures, in percent of the mean gap
 static u32 gf_test_run(double cdMs, double csMs, u32 frames, u32* spread) {
     u32 drawn = 0, gap = 0, lo = 0xFFFFFFFFu, hi = 0, settle = frames / 4;
-    u64 t0 = 0;
+    u64 t0 = 0, lastDraw = 0;
+    double gLo = 1e30, gHi = 0, gSum = 0;   // picture gaps in TIME, which is what an eye judges
+    u32 gN = 0;
     for (u32 i = 0; i < frames; i++) {
         bool skip = gfskip_skip();
         double cost = skip ? csMs : cdMs;
         if (skip && g_gfTestPoisonN) { cost = g_gfTestPoisonMs; g_gfTestPoisonN--; }
         g_gfTestTick += (u64)(cost * 1000.0);
-        if (i < settle) { t0 = g_gfTestTick; continue; }   // the warm-up and the first means are not steady state
+        if (i < settle) { t0 = g_gfTestTick; lastDraw = g_gfTestTick; continue; }
         if (skip) { gap++; continue; }
         drawn++;
-        if (drawn > 1) { if (gap < lo) lo = gap; if (gap > hi) hi = gap; }
+        if (drawn > 1) {
+            if (gap < lo) lo = gap;
+            if (gap > hi) hi = gap;
+            double dt = (double)(g_gfTestTick - lastDraw) / 1000.0;   // ms between this picture and the last
+            if (dt < gLo) gLo = dt;
+            if (dt > gHi) gHi = dt;
+            gSum += dt; gN++;
+        }
+        lastDraw = g_gfTestTick;
         gap = 0;
     }
     double secs = (double)(g_gfTestTick - t0) / (double)g_gfskipTicksPerSec;
     g_gfTestPicFps = secs > 0 ? (double)drawn / secs : 0.0;
     g_gfTestMeanMs = frames > settle ? secs * 1000.0 / (double)(frames - settle) : 0.0;
+    // The gap spread as a share of the mean gap. This, not the skip-count spread below, is what "looks natural"
+    // means: a frame costs 92 ms drawn and 33 ms skipped, so an even number of *skips* between pictures is not an
+    // even amount of *time*. The owner watched a paced run on 2026-10-31 and called it "very jittery" while the
+    // skip-count spread was 0 and this one was 32% (device job 1715, gaps alternating 92 and 125 ms).
+    g_gfTestGapPct = (gN && gSum > 0) ? 100.0 * (gHi - gLo) / (gSum / (double)gN) : 0.0;
     *spread = (drawn > 1 && hi >= lo) ? hi - lo : 0;
     return drawn;
 }
@@ -307,6 +352,8 @@ bool hle_gfskip_selftest(void) {
     // 2. A target that needs skipping: the realised frame cost must land on it, evenly.
     gf_test_reset();
     g_gfskipTarget = 70;             // 70% of 30 Hz = 47.62 ms a frame
+    g_gfskipSnap = false;            // this case measures the *solver's* tracking; snapping deviates from the
+                                     // target on purpose (case 2c), so it is tested there instead
     u64 t0 = g_gfTestTick;
     drawn = gf_test_run(95.0, 20.0, 1200, &spread);   // drawn 95 ms, skipped 20 ms -> wants x = 0.368
     double meanMs = (double)(g_gfTestTick - t0) / 1000.0 / 1200.0;
@@ -324,6 +371,7 @@ bool hle_gfskip_selftest(void) {
     //     the run must still land on its target. Nothing else in this test reaches either path.
     gf_test_reset();
     g_gfskipTarget = 70;
+    g_gfskipSnap = false;            // as case 2: this is about recovering the solver, not about spacing
     g_gfTestPoisonMs = 400.0;        // longer than a drawn frame, so every warm-up sample is impossible
     g_gfTestPoisonN = 3;             // all three of them
     drawn = gf_test_run(95.0, 20.0, 1200, &spread);
@@ -334,6 +382,45 @@ bool hle_gfskip_selftest(void) {
     if (!g_gfskipRejected) { printf("gfskip selftest: impossible skip samples accepted\n"); bad++; }
     if (!g_gfskipProbed) { printf("gfskip selftest: stuck solver never probed for a new sample\n"); bad++; }
     if (spread > 1) { printf("gfskip selftest: poisoned warm-up left draws uneven (%u)\n", spread); bad++; }
+    // 2c. **The jitter case.** The owner watched a paced run and called it "very jittery" (2026-10-31), and the
+    //     device logs said why: a picture lands only on a frame boundary, so the achievable gaps are cd + n*cs and
+    //     nothing between. At target 50 with these costs the ideal is ~1.8 skips a picture, so an accumulator
+    //     alternates 92 ms and 125 ms gaps - a 32% swing (job 1715). What an eye judges is the spread of the gaps
+    //     **in time**, and the older case below only checked the spread in *skip counts*, which was 0 while the time
+    //     spread was 32%: it protected the wrong invariant. Snapping to a whole number of frames a picture makes
+    //     every gap identical, at the cost of hitting the target exactly.
+    gf_test_reset();
+    g_gfskipTarget = 50;
+    g_gfskipMinFps = 0;              // the floor off, so this is purely about the solver's own choice
+    g_gfskipSnap = false;            // first show the problem is real and this test sees it
+    drawn = gf_test_run(92.0, 33.0, 1200, &spread);
+    double unsnapped = g_gfTestGapPct;
+    gf_test_reset();
+    g_gfskipTarget = 50;
+    g_gfskipMinFps = 0;
+    g_gfskipSnap = true;
+    drawn = gf_test_run(92.0, 33.0, 1200, &spread);
+    if (g_gfTestGapPct > 1.0) {
+        printf("gfskip selftest: snapped gaps still vary by %.1f%% of the mean (jitter)\n", g_gfTestGapPct); bad++;
+    }
+    if (unsnapped < 10.0) {
+        printf("gfskip selftest: the un-snapped case should jitter (it read %.1f%%): this test cannot see the bug\n",
+               unsnapped); bad++;
+    }
+    if (!g_gfskipSnapped) { printf("gfskip selftest: snapping engaged but not reported\n"); bad++; }
+    if (!drawn) { printf("gfskip selftest: snapped run drew nothing\n"); bad++; }
+    // The trade has to be *bounded*, or "smoother" becomes a licence to ignore the target. Snapping moves the
+    // period to the nearest whole frame, so the realised frame cost can be out by at most one skipped frame's
+    // worth over the period - here cs/period = 33/1.8 = 18 ms on a 66.7 ms target, i.e. 28%. Anything beyond that
+    // is a bug in the snap, not the trade.
+    {
+        double want50 = 1000.0 / 30.0 * 100.0 / 50.0;
+        if (g_gfTestMeanMs < want50 * 0.72 || g_gfTestMeanMs > want50 * 1.28) {
+            printf("gfskip selftest: snapped run landed at %.2f ms, more than a frame from the %.2f ms target\n",
+                   g_gfTestMeanMs, want50); bad++;
+        }
+    }
+    g_gfskipMinFps = 5;
     // 3. A target nothing can reach (even a skipped frame costs more than the budget), with the picture-rate floor
     //    off: the ratio floor must hold, so the screen keeps updating instead of freezing. 1 in kGfMaxN.
     gf_test_reset();
