@@ -40,6 +40,7 @@ bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): th
 // --port-picture on: the pane walk accepts J2DPicture panes and draws them natively (C53). **Off by default until
 // the disc-image checks have run** - porthash entries and PORT_CHECK / --port check against the interpreter.
 extern bool g_portPicture;
+extern u64 g_portFloatSite[6];
 extern u32 g_portWalkDs[4];
 extern u64 g_portWalkDsN[4], g_portWalkDsOther;
 extern u32 g_portWalkLine[6];

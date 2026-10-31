@@ -202,7 +202,13 @@ static inline void give_up_at(Pc* c, u32 why, u32 line) {
     if (!c->fail) { c->fail = why; why_line(why, line); }
 }
 #define give_up(c, why) give_up_at((c), (why), __LINE__)
-u64 g_portFloatSite[5];  // which float check gave up (reports): NaN/inf, psq GQR, denormal or NaN, drawSelf f7, FPU off
+// Which float check gave up (reports): NaN/inf, psq GQR, **denormal**, drawSelf f7, FPU off, **NaN/inf in plain()**.
+// Slot 2 used to count "denormal or NaN" together, which is the same fault as the "tev block" label: 100% of the
+// ports' float give-ups land in it (18,592 in Ordon, 12,720 in the heavy area - jobs 1750/1751) and the two cases
+// need completely different work. A denormal is a value the port could handle, since the host float model already
+// flushes denormals as a documented difference; a NaN or infinity is not. Split on 2026-10-31 so CONTRIBUTOR_TASKS
+// item 9 ("do the denormal give-up first") can be sized instead of guessed at.
+u64 g_portFloatSite[6];
 static inline bool in_mem1(u32 a, u32 len) { return a >= 0x80000000u && a - 0x80000000u + len <= g_psz; }
 static inline u32* gxw(Pc* c, u32 i) {
     if (!c->have[i]) {
@@ -882,7 +888,8 @@ static inline u32 bitsf(float f) { u32 v; memcpy(&v, &f, 4); return v; }
 // A single the VFP and the Gekko treat alike: zero or normal (denormals, infinities and NaNs are not taken).
 static inline bool plain(Pc* c, u32 v) {
     u32 e = (v >> 23) & 0xFF;
-    if ((e == 0 && (v & 0x7FFFFF)) || e == 0xFF) { if (!c->fail) g_portFloatSite[2]++; give_up(c, 2); return false; }
+    if (e == 0 && (v & 0x7FFFFF)) { if (!c->fail) g_portFloatSite[2]++; give_up(c, 2); return false; }  // a denormal
+    if (e == 0xFF) { if (!c->fail) g_portFloatSite[5]++; give_up(c, 2); return false; }                  // NaN / inf
     return true;
 }
 // PSMTXConcat 0x803464E4: ab = a * b (3x4), as its paired-single code computes it (multiply-adds rounded once).
