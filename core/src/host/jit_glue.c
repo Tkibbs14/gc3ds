@@ -118,6 +118,13 @@ void host_jit_report(void) {
         (unsigned long long)g_psFastCalls[0], (unsigned long long)g_psFastCalls[1],
         (unsigned long long)g_psFastCalls[2], (unsigned long long)g_psFastRefused[0],
         (unsigned long long)g_psFastRefused[1], (unsigned long long)g_psFastRefused[2]);
+    if (jit_opt(g_hostJit) & OPT_INDSTAT)  // GC3DS_OPT with OPT_INDSTAT (C48): the probe counters, for qemu runs
+        fprintf(stderr, "JIT indirect: probes %lu (first slot %lu, second %lu, missed %lu); from blr %lu, bctr %lu; "
+                "hits out of budget %lu\n",
+                (unsigned long)(g_jitIndStat[JIT_IND_HIT1] + g_jitIndStat[JIT_IND_HIT2] + g_jitIndStat[JIT_IND_MISS]),
+                (unsigned long)g_jitIndStat[JIT_IND_HIT1], (unsigned long)g_jitIndStat[JIT_IND_HIT2],
+                (unsigned long)g_jitIndStat[JIT_IND_MISS], (unsigned long)g_jitIndStat[JIT_IND_LR],
+                (unsigned long)g_jitIndStat[JIT_IND_CTR], (unsigned long)g_jitIndStat[JIT_IND_SPENT]);
     const JitStats* js = jit_stats(g_hostJit);
     fprintf(stderr, "JIT tier: regions %llu, failed %llu, flushes %llu, blocks compiled %llu; nursery recycles %llu, retired %llu, settled %llu, tenured %llu, moved %llu\n",
         (unsigned long long)js->tierUps, (unsigned long long)js->tierFails, (unsigned long long)js->flushes,

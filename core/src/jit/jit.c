@@ -923,6 +923,22 @@ static void rs_emit_count(Emit* e, u32* counter) {  // ++*counter in compiled co
     str_imm(e, LR, R12, 0);
     g_ctrWords += e->n - n0;
 }
+// --indstat (OPT_INDSTAT, C48): count indirect-branch table probes by kind. The probe rate has never been measured
+// and the two available guesses differ by eight times, so nothing about the 2 MB of tables can be estimated - not
+// their cache cost, not OPT_IND2's worth, not C46. The counting lives in the shared stub only (five sites, not one
+// per block), and uses r0 and r12, which ST_INDIRECT clobbers unconditionally on entry (`ldmia r12, {r0, r1}`) and
+// so are dead at every site. Flags are untouched. **A counted run is slower, so read these per guest instruction,
+// never per real second.** 32-bit on purpose: the front end reads them every row and accumulates the wrap-safe
+// deltas, which keeps the stub at four instructions.
+enum { IND_LR = JIT_IND_LR, IND_CTR = JIT_IND_CTR, IND_HIT1 = JIT_IND_HIT1, IND_HIT2 = JIT_IND_HIT2,
+       IND_MISS = JIT_IND_MISS, IND_SPENT = JIT_IND_SPENT };
+u32 g_jitIndStat[JIT_IND_N];
+static void ind_emit_count(Emit* e, u32 k) {  // ++g_jitIndStat[k] (r0, r12; flags kept)
+    load_const(e, R12, (u32)(uintptr_t)&g_jitIndStat[k]);
+    ldr_imm(e, R0, R12, 0);
+    dp_imm(e, ADD, 0, R0, R0, 1);
+    str_imm(e, R0, R12, 0);
+}
 static void rx_add(Cg* c, int kind, u32 target, u32 from);
 
 static void dop_add(u32 key, u32 hot) {
@@ -6155,10 +6171,13 @@ static void emit_stubs(Jit* j) {
     bx_reg_c(e, C_AL, LR);
     // ST_INDCTR / ST_INDLR (OPT_RETSTUB): bctr / blr, entered with a plain branch: the target from CTR / LR, then as
     // ST_INDIRECT, which writes g->pc only when the lookup misses (its other callers have written it already).
+    bool ic = (j->opt & OPT_INDSTAT) != 0;
     j->stub[ST_INDCTR] = e->n;
+    if (ic) ind_emit_count(e, IND_CTR);
     ldr_imm(e, R2, RG, OFF_CTR);
     u32 indCtr = branch_c(e, C_AL, 0);
     j->stub[ST_INDLR] = e->n;
+    if (ic) ind_emit_count(e, IND_LR);
     ldr_imm(e, R2, RG, OFF_LR);
     patch_branch(e, indCtr, e->n);
     dp_imm(e, BIC, 0, R2, R2, 3);
@@ -6172,6 +6191,7 @@ static void emit_stubs(Jit* j) {
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     u32 miss1 = branch_c(e, C_NE, 0);
+    if (ic) ind_emit_count(e, IND_HIT1);
     dp_imm(e, CMP, 1, 0, RDC, 0);
     bx_reg_c(e, C_GT, R1);
     u32 spent1 = branch_c(e, C_AL, 0);
@@ -6180,13 +6200,16 @@ static void emit_stubs(Jit* j) {
     ldmia(e, R12, (1u << R0) | (1u << R1));
     dp_reg(e, CMP, 1, 0, R0, R2);
     u32 miss2 = branch_c(e, C_NE, 0);
+    if (ic) ind_emit_count(e, IND_HIT2);
     dp_imm(e, CMP, 1, 0, RDC, 0);
     bx_reg_c(e, C_GT, R1);
     patch_branch(e, spent1, e->n);
+    if (ic) ind_emit_count(e, IND_SPENT);   // a hit (counted above too) that could not go on: budget spent
     str_imm(e, R2, RG, OFF_PC);  // no budget left: as ST_DYN
     dp_imm(e, MOV, 0, R0, 0, 0);
     branch_c(e, C_AL, j->stub[ST_EXIT]);
     patch_branch(e, miss2, e->n);
+    if (ic) ind_emit_count(e, IND_MISS);
     str_imm(e, R2, RG, OFF_PC);
     dp_imm(e, MOV, 0, R0, 0, 1);  // 1: a miss in the table (the dispatcher counts it)
     branch_c(e, C_AL, j->stub[ST_EXIT]);
@@ -6502,23 +6525,27 @@ static void deopt_block(Jit* j, u32 pc, u32 key) {
 }
 
 #ifndef __3DS__
-// JIT_STUBCHECK=1 (debugging): the shared stubs never change after jit_create; abort naming the step that changed them.
+// JIT_STUBCHECK=1 (debugging): the shared stubs never change while code runs; abort naming the step that changed
+// them. They are emitted again in exactly one place - jit_set_opt, when OPT_INDSTAT flips - which calls
+// stub_check_reset() so that legitimate change is not an abort.
+static u32 g_stubSum;
 static void stub_check(Jit* j, const char* what, u32 pc) {
     static int on = -1;
-    static u32 sum;
     if (on < 0) on = getenv("JIT_STUBCHECK") != NULL;
     if (!on) return;
     u32 x = 0;
     for (u32 k = 0; k < j->stubWords; k++) x = x * 31u + j->code[k];
-    if (!sum) { sum = x; return; }
-    if (x == sum) return;
+    if (!g_stubSum) { g_stubSum = x; return; }
+    if (x == g_stubSum) return;
     for (u32 k = 0; k < j->stubWords; k++) fprintf(stderr, "%s", "");
     fprintf(stderr, "STUBS CHANGED after %s at pc %08x", what, pc);
     fputc(10, stderr);
     abort();
 }
+static void stub_check_reset(void) { g_stubSum = 0; }
 #else
 static void stub_check(Jit* j, const char* what, u32 pc) { (void)j; (void)what; (void)pc; }
+static void stub_check_reset(void) {}
 #endif
 static Entry* entry_find(Jit* j, u32 pc, u32 msrBits) {  // a compiled block, without compiling
     for (u32 i = j->buckets[bucket_of(pc, msrBits)]; i != NO_ENTRY; i = j->table[i].next)
@@ -7088,8 +7115,10 @@ volatile bool jit_skip_on;
 void jit_set_opt(Jit* j, u32 mask) {
     if (GC_SWAPRAM) mask &= ~(u32)OPT_BEFLOAT;  // (its stubs read big-endian RAM in big-endian data mode)
     if (j->opt == mask) return;
-    j->opt = mask;
-    jit_invalidate_all(j);
+    bool stubs = ((j->opt ^ mask) & OPT_INDSTAT) != 0;  // OPT_INDSTAT lives in the shared stubs, which are emitted
+    j->opt = mask;                                      // once at jit_create - so they have to be emitted again, or
+    jit_invalidate_all(j);                              // the option set after create would silently count nothing
+    if (stubs) { emit_stubs(j); jit_fill_fns(j); jit_invalidate_all(j); stub_check_reset(); }
 }
 u32 jit_opt(const Jit* j) { return j->opt; }
 

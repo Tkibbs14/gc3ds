@@ -1139,7 +1139,24 @@ reporting a healthy-looking controller. Ordon read `game 11.00 drawn 11.00`, the
 
 ## C48. The indirect-branch table's cache and TLB cost (2026-10-30)
 
-- **Status:** next; it also unblocks C46 and prices OPT_IND2, which was adopted on +0.9% with no idea why.
+- **Status:** **the counter is built** (`--indstat`, OPT_INDSTAT, 2026-10-31) and waiting on a device build; the
+  `FAST_BITS` sweep is next after it. It also unblocks C46 and prices OPT_IND2, which was adopted on +0.9% with no
+  idea why.
+- **The instrument** (`jit.c`, `ind_emit_count`): five counting sites in the **shared stub only**, so hot code does
+  not grow - `blr` entries, `bctr` entries, a hit in the first slot, a hit in the second, a miss, and a hit that ran
+  out of budget. Four instructions a probe, using r0 and r12, which `ST_INDIRECT` clobbers unconditionally on entry
+  and so are provably dead at every site. Reported as `# jit indirect 10s` **per 1,000 guest instructions**: the
+  counting slows core 0, so a rate per real second would be depressed by the instrument itself. Cross-checked under
+  qemu against the dispatcher's own independent miss counter - `callloop.S` gives 128 probes, all misses, all from
+  `blr`, against the dispatcher's "indirect-table misses 128". One trap found while building it: the stubs are
+  emitted once at `jit_create`, *before* the front end calls `jit_set_opt`, so the first version of this counted
+  **zero** with the option on; `jit_set_opt` now re-emits them when the bit flips.
+- **First reading, which the device must confirm or refute:** in `callloop.S` (a two-caller leaf called 24 M times)
+  the table is probed only **128 times in 486 M guest instructions** - the returns are resolved as *links* instead.
+  If the device shows anything like that, the 2 MB of tables is nearly cold and shrinking `FAST_BITS` is close to
+  free; if it shows millions of probes a second, the tables are a live cache cost. **Either answer kills or builds
+  this candidate, which is the point.** A synthetic loop is not the game's call graph (one leaf, two callers; the
+  game has many), so this is a prediction to test, not a result.
 - **The unknown:** `FAST_BITS` is **16**, so each indirect table is 65,536 entries of 8 bytes = **512 KB**, and
   `FAST_TABLES` is 4 (one per recent block key), so the allocation is **2 MB - the size of the entire shared L2**,
   spanning 512 pages. `blr` / `bctr` probe it at a pc-derived index - effectively a random offset in a structure 32x

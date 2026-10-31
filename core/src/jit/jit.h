@@ -157,7 +157,7 @@ enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
        OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_PIPEPS = 131072,
        OPT_GPRINLINE = 262144, OPT_ZGPR = 524288, OPT_ZGX = 1048576, OPT_ZXYZ = 2097152, OPT_ALL = 4194303,
-       OPT_REGION = 4194304, OPT_TIER = 8388608, OPT_FDIRECT = 16777216 };  // OPT_FDIRECT: float arithmetic writes frD's lane register, not a scratch one and a vmov (jit.c compile_fc)  // OPT_TIER: blocks that run often are recompiled as regions of what ran (jit.c tier_block)  // OPT_REGION: blocks continue past forward branches inside them (jit.c region_scan), not in OPT_ALL
+       OPT_REGION = 4194304, OPT_TIER = 8388608, OPT_FDIRECT = 16777216, OPT_INDSTAT = 33554432 };  // OPT_INDSTAT: count indirect-table probes by kind in the shared stub (--indstat, C48; a measurement, not an optimization - a counted run is slower, so read g_jitIndStat per guest instruction)  // OPT_FDIRECT: float arithmetic writes frD's lane register, not a scratch one and a vmov (jit.c compile_fc)  // OPT_TIER: blocks that run often are recompiled as regions of what ran (jit.c tier_block)  // OPT_REGION: blocks continue past forward branches inside them (jit.c region_scan), not in OPT_ALL
 // X3: word-recognised GPR save/restore inlining, and selective native-call ABI for GPR/GX/cXyz sets. All default off.
 // OPT_PIPEPS: the shared psq_st stubs (plain float and known singles) append to the write-gather pipe's buffer themselves
 // when the address is the pipe's and the burst has room (GXLoadPosMtxImm and its kin), instead of failing to the site's
@@ -177,6 +177,12 @@ void jit_set_opt(Jit* j, u32 mask);
 void jit_set_mem_stamps(Jit* j, void* stamps);
 u32 jit_opt(const Jit* j);
 // Measurement only: functions at these addresses return at once while jit_skip_on (drop compiled code after a change).
+// --indstat (OPT_INDSTAT, C48): indirect-table probes counted in the shared stub - blr entries, bctr entries, hits
+// in the first slot, hits in the second (OPT_IND2), misses, and hits that could not go on for want of budget (a
+// subset of the hits). Total probes = hits1 + hits2 + misses. 32-bit and wrap-safe: read them every row and
+// accumulate the deltas. Zero unless the option is on, and a counted run is slower, so divide by guest instructions.
+enum { JIT_IND_LR, JIT_IND_CTR, JIT_IND_HIT1, JIT_IND_HIT2, JIT_IND_MISS, JIT_IND_SPENT, JIT_IND_N };
+extern u32 g_jitIndStat[JIT_IND_N];
 extern u32 jit_skip_fn[4];
 extern volatile bool jit_skip_on;
 // Memory slow paths: shared stubs (default) or the old per-site code (true), for A/B; drops all compiled code.

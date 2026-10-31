@@ -550,6 +550,7 @@ typedef struct {
     bool abFlip;              // --ab-flip on: a JIT-option A/B starts in its "on" arm (arm order swapped; MEASUREMENTS.md)
     bool latch, abLatch;      // --latch on|off (on since job 170), --ab latch: budget checks only in blocks that may close a loop (OPT_LATCH)
     bool fdirect, abFdirect;  // --fdirect on|off (off), --ab fdirect: float arithmetic writes frD's lane register
+    bool indstat;  // --indstat on (off): count indirect-table probes in the shared stub (C48; a counted run is slower)
                               // instead of a scratch one and a vmov (OPT_FDIRECT; a word a lane, bench psloop 8.9 -> 8.0)
     bool ind2, abInd2;        // --ind2 on|off (on: heavy area +0.85%, Ordon +0.9%, jobs 565-576), --ab ind2: a 2-way indirect-branch table (OPT_IND2)
     bool native2, abNative2;  // --native2 on|off (on), --ab native2: ps_cmp*, lmw / stmw, divw / divwu, sraw compiled (OPT_NATIVE2)
@@ -808,6 +809,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--fastfloat")) o->fastfloat = !strcmp(v, "on");
         else if (!strcmp(a, "--latch")) o->latch = !strcmp(v, "on");
         else if (!strcmp(a, "--fdirect")) o->fdirect = !strcmp(v, "on");
+        else if (!strcmp(a, "--indstat")) o->indstat = !strcmp(v, "on");  // C48: probes by kind, measurement only
         else if (!strcmp(a, "--icbi")) o->icbi = !strcmp(v, "on");
         else if (!strcmp(a, "--pipek")) o->pipek = !strcmp(v, "on");
         else if (!strcmp(a, "--pipeps")) o->pipeps = !strcmp(v, "on");
@@ -1275,6 +1277,7 @@ static const char* run_body(const char* path) {
                            (g_opt.fastfloat && !g_opt.abFastfloat ? OPT_FASTFLOAT : 0) |
                            (g_opt.latch && !g_opt.abLatch ? OPT_LATCH : 0) |
                            (g_opt.fdirect && !g_opt.abFdirect ? OPT_FDIRECT : 0) |  // --ab fdirect starts off
+                           (g_opt.indstat ? OPT_INDSTAT : 0) |  // --indstat: a counter, never a default (C48)
                            (g_opt.icbi && !g_opt.abIcbi ? OPT_ICBI : 0) |  // A/Bs start off,
                            (g_opt.pipek && !g_opt.abPipek ? OPT_PIPEK : 0) |
                            (g_opt.gprinline ? OPT_GPRINLINE : 0) | (g_opt.zgpr ? OPT_ZGPR : 0) | (g_opt.region ? OPT_REGION : 0) | (g_opt.tier ? OPT_TIER : 0) |
@@ -2566,6 +2569,28 @@ static const char* run_body(const char* path) {
                         fprintf(g_perf, "# jit words per guest instruction (all blocks kept so far): hot %.3f, exit stubs %.3f, "
                                 "cold %.3f\n", (double)js->wordsHot / kept, (double)js->wordsExit / kept,
                                 (double)js->wordsCold / kept);
+                        if (g_opt.indstat) {  // --indstat (C48): the indirect-table probe rate, never measured before
+                            // Per 1,000 guest instructions, not per second: the counting itself slows core 0, so a
+                            // rate per real second would be depressed by the instrument. The guest instruction count
+                            // (cpu.cycles, one cycle an instruction here) is the invariant denominator.
+                            static u32 lastInd[JIT_IND_N];
+                            static u64 lastIndCyc;
+                            u64 gi = g_sys.cpu.cycles - lastIndCyc;
+                            double per = gi ? 1000.0 / (double)gi : 0.0;
+                            u32 d[JIT_IND_N];
+                            for (int k = 0; k < JIT_IND_N; k++) { d[k] = g_jitIndStat[k] - lastInd[k]; lastInd[k] = g_jitIndStat[k]; }
+                            u32 probes = d[JIT_IND_HIT1] + d[JIT_IND_HIT2] + d[JIT_IND_MISS];
+                            fprintf(g_perf, "# jit indirect 10s: %.3f probes per 1k guest instructions (%.0f/s); of them "
+                                    "first slot %.1f%%, second slot %.1f%%, missed %.1f%%; entered from blr %.3f, bctr %.3f "
+                                    "per 1k; hits that ran out of budget %.3f per 1k\n",
+                                    (double)probes * per, (double)probes / 10.0,
+                                    probes ? 100.0 * (double)d[JIT_IND_HIT1] / (double)probes : 0.0,
+                                    probes ? 100.0 * (double)d[JIT_IND_HIT2] / (double)probes : 0.0,
+                                    probes ? 100.0 * (double)d[JIT_IND_MISS] / (double)probes : 0.0,
+                                    (double)d[JIT_IND_LR] * per, (double)d[JIT_IND_CTR] * per,
+                                    (double)d[JIT_IND_SPENT] * per);
+                            lastIndCyc = g_sys.cpu.cycles;
+                        }
                         // Returns to the C dispatcher per second over the last 10 s, by reason, and emulation slices.
                         // Indirect misses by what the target was: a polling or idle block (never in the table), a block that
                         // lookup compiled then, the slot held another target, the slot was empty, the block key changed.
