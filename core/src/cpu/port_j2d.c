@@ -1326,9 +1326,11 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d, u32 x, u3
                 picture_draw_self(c, p, g + 128);
                 if (!c->fail) g_portWalkDrew[0]++;
             } else if (g_portWalkText && dself == A_TEXT_DRAWSELF) {
-                // A string is up to 1,023 characters and text_draw_self emits a quad each, so the picture path's
-                // 2,048-byte margin is not enough; the walk's buffer is linear memory, so ask for a real margin.
-                if ((u32)(c->pp - c->pbase) + 16384 > c->pcap) { give_up(c, 1); return; }
+                // Enough for the preamble (J2DMaterial::setGX, the matrix load and ~40 setters) and the first
+                // character; the string itself needs no margin here because j2p_parse checks 2,600 bytes *per
+                // character* and gives up cleanly when the pipe fills. A larger margin here would only refuse whole
+                // subtrees that the per-character guard would have handled.
+                if ((u32)(c->pp - c->pbase) + 4096 > c->pcap) { give_up(c, 1); return; }
                 text_draw_self(c, p, x, y, g + 128);
                 if (!c->fail) g_portWalkDrew[1]++;
             }
