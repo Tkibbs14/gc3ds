@@ -457,16 +457,17 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   functions is invisible to a leaf profile by construction - and the inclusive profile needed zeldaret's symbol map,
   which lives outside the repository and had never been fetched into a session. **The rejection was not wrong about
   what it measured; it measured the wrong thing.** Corrected in place rather than deleted (rule 7).
-- **First steps, cheapest first:** (1) `stack_funcs.py` on static Ordon and the title (job 1751 is queued) to see
-  whether the share holds outside the heavy area, since a subsystem that is 11% in one scene and 2% elsewhere is
-  worth less than it looks; (2) read `J3DJoint::recursiveCalc` and `J3DJointTree::calc` in zeldaret's sources and
+- **The scene check is done and it holds (job 1751): 13.61% in static Ordon against 11.42% in the heavy area**, so
+  this is not a heavy-area artifact and it is the second-largest self-contained subtree in both scenes.
+- **First steps, cheapest first:** (1) done - the share holds; (2) read `J3DJoint::recursiveCalc` and `J3DJointTree::calc` in zeldaret's sources and
   size the subtree the way C53's J2DPicture half was sized - which functions, how many bytes, which branches have
   to become give-ups; (3) only then write anything.
 - **Expected:** unknown, deliberately. The honest upper bound is the 11.42%, and the honest discount is that ports
   have repeatedly delivered a fraction of their inclusive share (the ports as a *set* are +10.6% against ~3.7% for
   their parts, and PNGP cost 5.8% of core 0 to deliver -0.03%).
-- **Re-evaluate when:** the scene comparison and the source sizing are done. If the share collapses outside the
-  heavy area, it drops below C53.
+- **Re-evaluate when:** the source sizing is done. The scene comparison is complete and favourable, so C54 now sits
+  second behind C53 on evidence (C53 is 17.31% in Ordon and 11.09% in the heavy area, and its component is already
+  built).
 
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 

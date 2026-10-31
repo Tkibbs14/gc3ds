@@ -2860,6 +2860,25 @@ and **~36% under the painter** (`cAPIGph_Painter`, `mDoGph_Painter`). The self-c
    - that was matrix *chains* judged on a leaf profile, which is exactly the measurement that cannot see an 11%
    subtree spread thin. The inclusive profile is what makes this visible.
 
+**Confirmed in a second scene (job 1751, static Ordon), where both targets are *larger*:**
+
+| subsystem | heavy area | static Ordon |
+|---|---|---|
+| `draw__7J2DPane` (C53) | 11.09% | **17.31%** |
+| `draw__13dMeter2Draw_c` (the HUD meter) | 9.53% | **14.83%** |
+| `recursiveCalc__8J3DJoint` (C54) | 11.42% | **13.61%** |
+| `draw__9J2DScreen` | 8.49% | 13.24% |
+| `draw__13J3DDrawBuffer` | 10.0% | 10.67% |
+
+So neither candidate is a heavy-area artifact - the check that had to come before any code. And note how the HUD
+sits in the tree: `dMeter2Draw_c::draw` at 14.83% draws through `J2DScreen::draw` and `J2DPane::draw`, so **the HUD
+largely *is* the pane tree**, and C53 attacks it rather than needing a separate HUD port. (`J2DPane::draw`'s 17.31%
+exceeds `J2DScreen::draw`'s 13.24%, so panes also hang under other parents - the minimap and other screens.)
+
+**The pane walk's own cost per call, for the arithmetic that decides C53** (job 1752, `--port-parts on`):
+**131.11 us building, 31.38 us committing.** That is the most expensive port in the project by a wide margin - which
+is the *point* of a subtree port, and the reason it still pays while the PNGP matrix load at 7.74 us a call does not.
+
 **What the leaf profile also says about the existing ports:** the biggest leaves after the pane walk are
 `J3DMaterial::diff` 2.85% (bit 6, on - so this is its give-up residue), `loadMtxConcatView_PNGP` 2.30% (bit 2, off,
 measured neutral), `reinitGX` 2.21% (bit 7, on) and `GXBegin` 2.12%. Every one of those is a port that already
