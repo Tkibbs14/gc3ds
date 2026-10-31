@@ -37,6 +37,9 @@ bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): th
 // to say no and only some are worth extending.
 // The unrecognised panes' drawSelf addresses (port_j2d.c walk_ds), since 100% of walk_scan's refusals are that one
 // test. Guest addresses: name them with core/tools/stack_funcs.py.
+// --port-picture on: the pane walk accepts J2DPicture panes and draws them natively (C53). **Off by default until
+// the disc-image checks have run** - porthash entries and PORT_CHECK / --port check against the interpreter.
+extern bool g_portPicture;
 extern u32 g_portWalkDs[4];
 extern u64 g_portWalkDsN[4], g_portWalkDsOther;
 extern u32 g_portWalkLine[6];

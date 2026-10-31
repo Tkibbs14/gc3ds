@@ -53,6 +53,10 @@ enum {
     A_CHAN_MAPPING = 0x803A1C00,  // J2DColorBlock::setGX's {GX_COLOR0, GX_ALPHA0, GX_COLOR1, GX_ALPHA1}
     A_TEV_C2R = 0x803D2810,       // GXSetTevOrder's channel -> rasterizer colour table
     A_PICEX_DRAWSELF = 0x80303AB4, A_PICEX_DRAWFULLSET = 0x80303B80, A_PICEX_DRAWTEXCOORD = 0x80303BDC,
+    // J2DPicture, the base class PictureEx derives from (so all the field offsets below are shared). The pane walk
+    // refused every subtree containing one of these until C53: 100% of walk_scan's refusals were this vtable, split
+    // J2DPicture ~1,184 and J2DTextBoxEx ~3,182 a 10 s window in TP's heavy area (job 1740).
+    A_PICTURE_DRAWSELF = 0x802FDB90, A_PICTURE_DRAWFULLSET = 0x802FDBFC, A_PICTURE_DRAWTEXCOORD = 0x802FE380,
     A_J3D_PNGP = 0x80313828, A_J3DCONCATVIEW_LOADNRM = 0x80313D28, A_J3DMULTICONCATVIEW_LOADNRM = 0x8031419C,
     A_J3DSYS = 0x80434AC8,  // (j3dSys)
     A_GX_SENDFLUSHPRIM = 0x8035C834, A_J3D_DIFFLIGHTOBJ = 0x8031A8E0, A_J3D_MATDIFF = 0x803167D8, A_J3D_REINITGX = 0x8031073C,
@@ -954,6 +958,146 @@ static void picex_draw_tex_coord(Pc* c, u32 p, u32 w, u32 h, u32 mtx) {
     gx_set_vtx_attr_fmt(c, 0, 9, 1, 3, 0);
     c->n += 150;
 }
+// ---- J2DPicture, the class PictureEx derives from (libs/JSystem/src/J2DGraph/J2DPicture.cpp) ----
+// C53: 100% of the pane walk's refusals were its drawSelf vtable test, and J2DPicture was ~1,184 of ~4,366 a 10 s
+// window in TP's heavy area (job 1740). PictureEx draws through a J2DMaterial, which `material_set_gx` already
+// ports; plain J2DPicture loads its own textures and builds its own TEV program instead, which is what follows.
+// Field offsets are J2DPicture's and shared with PictureEx (it derives from it): mTexture[2] 256, mTextureNum 264,
+// the texture corners 266, mWhite 304, mBlack 308, mCornerColor[4] 312, mBlendKonstColor 328, mBlendKonstAlpha 332,
+// and mColorAlpha 179 in J2DPane - the same byte the walk already writes through `pw8(c, p + 179, a)`, which is a
+// check on the offsets rather than a coincidence. GX enum values are the SDK's, taken from GXEnum.h and not guessed:
+// a first draft had GX_CA_A2, the three TEVREGs, GX_CA_A1 and GX_LO_SET all wrong, which renders silently.
+
+static void gx_set_tev_color(Pc* c, u32 id, u32 col);   // defined with the rest of the TEV setters, below
+
+// --port-picture (off). **Off until it is checked**, per AGENTS rule 5 and rule 2: the two checks this port needs -
+// `porthash.py` entries for every guest function it follows, and `PORT_CHECK=1` / `--port check` against the
+// interpreter - both require the disc image, which a cloud session does not have. Until they have run on a machine
+// that does, accepting these panes would change what the walk draws on the strength of code nobody has compared.
+bool g_portPicture;
+
+// J2DPicture::getNewColor 0x802FEC64: the four corner colours, each alpha scaled by mColorAlpha unless it is 0xFF.
+static void picture_new_color(Pc* c, u32 p, u32* col) {
+    for (u32 i = 0; i < 4; i++) col[i] = f32(p + 312 + 4 * i);
+    u32 ca = f8(p + 179);
+    if (ca != 0xFF)
+        for (u32 i = 0; i < 4; i++) col[i] = (col[i] & ~0xFFu) | (((s32)((col[i] & 0xFF) * ca) / 255) & 0xFF);
+    c->n += 30;
+}
+
+// J2DPicture::setTevMode 0x802FE5D0. Its 0x490 bytes are **not** a switch over modes - straight-line GX writes whose
+// only branches are mTextureNum and each texture's alphaEnabled, so this is one fixed program parameterised by them.
+static void picture_set_tev_mode(Pc* c, u32 p, u32 nTex, const bool* tr) {
+    for (u32 i = 0; i < nTex; i++) gx_set_tev_order(c, i, i, i, 255);   // stage i: coord i, map i, GX_COLOR_NULL
+    gx_set_tev_color(c, 3, 0xFFFFFFFFu);                                // GX_TEVREG2 = white
+    gx_set_tev_color_in(c, 0, 8, 15, 15, 15);                           // TEXC, ZERO, ZERO, ZERO
+    gx_set_tev_alpha_in(c, 0, tr[0] ? 4 : 3, 7, 7, 7);                  // TEXA or A2, then ZERO x3
+    gx_set_tev_op(c, 304, 0, 0, 0, 0, 1, 0);                            // ColorOp: ADD, TB_ZERO, SCALE_1, clamp, TEVPREV
+    gx_set_tev_op(c, 368, 0, 0, 0, 0, 1, 0);                            // AlphaOp: the same
+    gx_set_tev_kcolor(c, 0, f32(p + 328));                              // GX_KCOLOR0 = mBlendKonstColor
+    gx_set_tev_kcolor(c, 2, f32(p + 332));                              // GX_KCOLOR2 = mBlendKonstAlpha
+    u32 i = 1;
+    for (; i < nTex; i++) {
+        gx_set_tev_ksel(c, i, 0x20 - i * 4, false);
+        gx_set_tev_ksel(c, i, 0x22 - i * 4, true);
+        gx_set_tev_color_in(c, i, 0, 8, 14, 15);                        // CPREV, TEXC, KONST, ZERO
+        gx_set_tev_alpha_in(c, i, 0, tr[i] ? 4 : 3, 6, 7);              // APREV, TEXA or A2, KONST, ZERO
+        gx_set_tev_op(c, 304, i, 0, 0, 0, 1, 0);
+        gx_set_tev_op(c, 368, i, 0, 0, 0, 1, 0);
+    }
+    if (f32(p + 308) != 0 || f32(p + 304) != 0xFFFFFFFFu) {             // mBlack / mWhite are not the identity pair
+        gx_set_tev_order(c, i, 255, 255, 255);                          // TEXCOORD_NULL, TEXMAP_NULL, COLOR_NULL
+        gx_set_tev_color(c, 1, f32(p + 308));                           // GX_TEVREG0 = mBlack
+        gx_set_tev_color(c, 2, f32(p + 304));                           // GX_TEVREG1 = mWhite
+        gx_set_tev_color_in(c, i, 2, 4, 0, 15);                         // C0, C1, CPREV, ZERO
+        gx_set_tev_alpha_in(c, i, 1, 2, 0, 7);                          // A0, A1, APREV, ZERO
+        gx_set_tev_op(c, 304, i, 0, 0, 0, 1, 0);
+        gx_set_tev_op(c, 368, i, 0, 0, 0, 1, 0);
+        i++;
+    }
+    bool tinted = f8(p + 179) != 0xFF;
+    for (u32 k = 0; k < 4 && !tinted; k++) tinted = f32(p + 312 + 4 * k) != 0xFFFFFFFFu;
+    if (tinted) {
+        gx_set_tev_order(c, i, 255, 255, 4);                            // GX_COLOR0A0
+        gx_set_tev_color_in(c, i, 15, 0, 10, 15);                       // ZERO, CPREV, RASC, ZERO
+        gx_set_tev_alpha_in(c, i, 7, 0, 5, 7);                          // ZERO, APREV, RASA, ZERO
+        gx_set_tev_op(c, 304, i, 0, 0, 0, 1, 0);
+        gx_set_tev_op(c, 368, i, 0, 0, 0, 1, 0);
+        i++;
+    }
+    gx_set_num_tev_stages(c, i);
+    gx_set_blend_mode(c, 1, 4, 5, 15);                                  // BM_BLEND, SRCALPHA, INVSRCALPHA, LO_SET
+    for (u32 k = 0; k < nTex; k++) gx_set_tex_coord_gen2(c, k, 1, 4, 60, 0, 125);  // TG_MTX2x4, TG_TEX0, GX_IDENTITY
+    gx_set_num_chans(c, 1);
+    c->n += 120 + nTex * 20;
+}
+
+// J2DPicture::drawTexCoord 0x802FE380, reached through drawSelf 0x802FDB90 and drawFullSet 0x802FDBFC (both of which
+// only forward: drawFullSet ignores its first two arguments and passes mBounds, so the walk's x/y offsets do not
+// enter, exactly as in PictureEx). The GX order below is the guest's and must stay in it.
+static void picture_draw_self(Pc* c, u32 p, u32 mtx) {
+    c->n += 20;
+    if (!span(c, p, 344)) return;
+    u32 nTex = f8(p + 264);
+    if (!nTex || nTex > 2) { give_up(c, 5); return; }      // load() itself only handles i < 2
+    u32 tex[2];
+    bool tr[2] = { false, false };
+    for (u32 i = 0; i < nTex; i++) {
+        tex[i] = f32(p + 256 + 4 * i);
+        if (!tex[i] || !span(c, tex[i], 48)) { give_up(c, 1); return; }
+        if (f32(tex[i] + 44)) { give_up(c, 5); return; }   // field_0x2c: a palette load, not ported
+        u32 info = f32(tex[i] + 32);                       // mTexInfo
+        if (!info || !span(c, info, 2)) { give_up(c, 1); return; }
+        tr[i] = f8(info + 1) != 0;                         // ResTIMG::alphaEnabled
+    }
+    if (!tex[0]) return;                                   // drawSelf's own mTexture[0] test
+    u32 vt = f32(p);
+    if (!span(c, vt + 320, 8)) return;
+    if (f32(vt + 320) != A_PICTURE_DRAWFULLSET || f32(vt + 324) != A_PICTURE_DRAWTEXCOORD) { give_up(c, 5); return; }
+    u32 x0 = f32(p + 32), y0 = f32(p + 36), x1b = f32(p + 40), y1b = f32(p + 44);
+    if (!plain(c, x0) || !plain(c, y0) || !plain(c, x1b) || !plain(c, y1b)) return;
+    u32 w = bitsf(fbits(x1b) - fbits(x0)), h = bitsf(fbits(y1b) - fbits(y0));   // getWidth / getHeight (fsubs)
+    if (!plain(c, w) || !plain(c, h)) return;
+    u32 x1 = bitsf(fbits(x0) + fbits(w)), y1 = bitsf(fbits(y0) + fbits(h));     // fadds, as the guest does
+    if (!plain(c, x1) || !plain(c, y1)) return;
+    for (u32 i = 0; i < nTex; i++) gx_load_tex_obj(c, tex[i], i);               // JUTTexture::load: mTexObj at +0
+    gx_set_num_tex_gens(c, nTex);
+    u32 col[4];
+    picture_new_color(c, p, col);
+    picture_set_tev_mode(c, p, nTex, tr);
+    if (c->fail) return;
+    u32 m[12];
+    psmtx_concat(c, mtx, p + 128, m);                                           // MTXConcat(param, mGlobalMtx)
+    if (c->fail) return;
+    gx_load_pos_mtx_imm(c, m, 0);
+    gx_clear_vtx_desc(c);
+    gx_set_vtx_desc(c, 9, 1);
+    gx_set_vtx_desc(c, 11, 1);
+    gx_set_vtx_desc(c, 13, 1);
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 4, 0);
+    gx_set_vtx_attr_fmt(c, 0, 13, 1, 3, 8);
+    u32 zr = c->g->gpr[2] - 14140u;                                             // the z the J2D quads use
+    if (!span(c, zr, 4)) return;
+    u32 z = f32(zr);
+    if (!plain(c, z)) return;
+    gx_begin(c, 128, 0, 4);
+    if (c->fail) return;
+    static const u8 kCorner[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+    static const u8 kCol[4] = { 0, 1, 3, 2 };
+    static const u16 kTc[4] = { 266, 270, 278, 274 };
+    for (u32 v = 0; v < 4; v++) {
+        p32(c, kCorner[v][0] ? x1 : x0);
+        p32(c, kCorner[v][1] ? y1 : y0);
+        p32(c, z);
+        p32(c, col[kCol[v]]);
+        p16(c, f16(p + kTc[v]));
+        p16(c, f16(p + kTc[v] + 2));
+    }
+    gx_set_vtx_attr_fmt(c, 0, 13, 1, 2, 15);                                    // the guest's restore pair
+    gx_set_vtx_attr_fmt(c, 0, 9, 1, 3, 0);
+    c->n += 150;
+}
+
 static void picex_draw_self(Pc* c, u32 p, u32 mtx) {  // J2DPictureEx::drawSelf 0x80303AB4
     c->n += 20;
     if (!span(c, p, 344)) return;
@@ -1071,7 +1215,9 @@ static bool walk_scan(Pc* c, u32 p, u32 d, u32* panes) {
     u32 vt = f32(p);
     if (!in_mem1(vt, 92)) return walk_no(__LINE__);
     u32 ds = f32(vt + 56), ra = f32(vt + 88);
-    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF) { walk_ds(ds); return walk_no(__LINE__); }  // which class?
+    if (ds != A_PANE_DRAWSELF && ds != A_PICEX_DRAWSELF && !(g_portPicture && ds == A_PICTURE_DRAWSELF)) {
+        walk_ds(ds); return walk_no(__LINE__);   // still unported: J2DTextBoxEx is the rest of C53
+    }
     if (ra != A_PANE_REWRITEALPHA && ra != A_PICEX_REWRITEALPHA) return walk_no(__LINE__);
     if (++*panes > 512) return walk_no(__LINE__);
     for (u32 l = f32(p + 220); l; l = f32(l + 12)) {
@@ -1131,9 +1277,13 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d) {
         if ((fge(c2, c0) && fge(c3, c1)) || !clip) {
             if (clip) graf_set_scissor(c, box);
             gx_set_cull_mode(c, f8(p + 177));
-            if (f32(f32(p) + 56) == A_PICEX_DRAWSELF) {
+            u32 dself = f32(f32(p) + 56);
+            if (dself == A_PICEX_DRAWSELF) {
                 if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
                 picex_draw_self(c, p, g + 128);  // (the stack copy's matrix is the graph's at +128)
+            } else if (g_portPicture && dself == A_PICTURE_DRAWSELF) {
+                if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
+                picture_draw_self(c, p, g + 128);
             }
             c->n += 60;
         }
