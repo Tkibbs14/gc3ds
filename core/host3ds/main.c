@@ -750,6 +750,9 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         // gfskip_skip). 0 or unset keeps the fixed ratio. --gfskip-hz is the game's own rate (TP 30, Mario Party 4 60).
         else if (!strcmp(a, "--gfskip-target")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipTarget = k <= 100 ? k : 100; }
         else if (!strcmp(a, "--gfskip-hz")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipHz = k >= 1 && k <= 120 ? k : 30; }
+        // --gfskip-minfps P: never show fewer than P pictures a second; the game speed gives way instead of the
+        // display (the owner, 2026-10-31: "I want smoother over choppy"). 0 leaves only the ratio floor.
+        else if (!strcmp(a, "--gfskip-minfps")) { u32 k = (u32)strtoul(v, NULL, 0); g_gfskipMinFps = k <= 60 ? k : 60; }
         else if (!strcmp(a, "--skipfn")) {
             const char* q = v;
             for (int k = 0; k < 4 && *q; k++) { jit_skip_fn[k] = (u32)strtoul(q, (char**)&q, 16); if (*q == ',') q++; }
@@ -2023,11 +2026,16 @@ static const char* run_body(const char* path) {
                     if (g_gfskipTarget) {  // --gfskip-target: what the controller learned and whether it is pinned
                         static u64 lastFl, lastFu;
                         double tick = g_gfskipTicksPerSec ? 1000.0 / (double)g_gfskipTicksPerSec : 0.0;
-                        fprintf(g_perf, "# gfskip target 10s: %u%% of %u Hz; a drawn frame %.1f ms, a skipped one "
-                                        "%.1f ms, wants to draw %.3f of them; floored %llu, drawing all %llu\n",
-                                (unsigned)g_gfskipTarget, (unsigned)g_gfskipHz, g_gfskipCd * tick, g_gfskipCs * tick,
-                                g_gfskipX, (unsigned long long)(g_gfskipFloored - lastFl),
+                        static u64 lastMin;
+                        fprintf(g_perf, "# gfskip target 10s: %u%% of %u Hz, floor %u pictures/s; a drawn frame "
+                                        "%.1f ms, a skipped one %.1f ms, wants to draw %.3f of them; the floor "
+                                        "decided %llu, the ratio backstop %llu, drawing all %llu\n",
+                                (unsigned)g_gfskipTarget, (unsigned)g_gfskipHz, (unsigned)g_gfskipMinFps,
+                                g_gfskipCd * tick, g_gfskipCs * tick, g_gfskipX,
+                                (unsigned long long)(g_gfskipMinned - lastMin),
+                                (unsigned long long)(g_gfskipFloored - lastFl),
                                 (unsigned long long)(g_gfskipFull - lastFu));
+                        lastMin = g_gfskipMinned;
                         lastFl = g_gfskipFloored;
                         lastFu = g_gfskipFull;
                     }

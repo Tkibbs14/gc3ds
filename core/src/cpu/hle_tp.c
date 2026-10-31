@@ -149,6 +149,10 @@ u64 g_gfskipTicksPerSec;        // the clock's rate, set with g_gfskipClock
 // pinned at a clamp (so a run that cannot reach its target says so instead of looking like a tuning choice).
 double g_gfskipCd, g_gfskipCs, g_gfskipX;
 u64 g_gfskipFloored, g_gfskipFull;
+// --gfskip-minfps P: never show fewer than P pictures a second, letting the game speed give way instead (the owner,
+// 2026-10-31). 0 leaves only the ratio floor. g_gfskipMinned counts the frames where it, not the target, decided.
+u32 g_gfskipMinFps = 5;
+u64 g_gfskipMinned;
 static u64 g_gfLast;            // tick at the previous hook entry
 static bool g_gfDrew;           // ... and whether that frame drew
 static double g_gfAcc;
@@ -184,8 +188,26 @@ static bool gfskip_skip(void) {
         if (target >= g_gfskipCd) { x = 1.0; g_gfskipFull++; }          // reachable while drawing every frame
         else {
             x = (target - g_gfskipCs) / (g_gfskipCd - g_gfskipCs);
+            if (x > 1.0) x = 1.0;
+            // The picture-rate floor (--gfskip-minfps), the owner's choice of 2026-10-31 ("I want smoother over
+            // choppy"). The ratio floor below keeps the screen alive but says nothing about how often: in the heavy
+            // area the solver asks for less than one picture in ten at every target, which is 1.4 pictures a second.
+            // A floor in pictures a second instead makes the game give way rather than the display. With P pictures
+            // a second wanted and the learned costs cd and cs, the drawn fraction must satisfy
+            //     x / (x*cd + (1 - x)*cs) >= P   ->   x >= P*cs / (1 - P*(cd - cs)),
+            // and that expression reaches 1 exactly at P = 1/cd, the most the scene can show, so an impossible floor
+            // asks for every frame and no more. It is a floor, never a cap: a scene that can do better still does.
+            if (g_gfskipMinFps && g_gfskipTicksPerSec) {
+                double cd = g_gfskipCd / (double)g_gfskipTicksPerSec;   // seconds
+                double cs = g_gfskipCs / (double)g_gfskipTicksPerSec;
+                double den = 1.0 - (double)g_gfskipMinFps * (cd - cs);
+                double xmin = den > 1e-9 ? (double)g_gfskipMinFps * cs / den : 1.0;
+                if (xmin > 1.0) xmin = 1.0;
+                if (x < xmin) { x = xmin; g_gfskipMinned++; }
+            }
+            // The ratio floor stays as the backstop: it needs no learned costs, so it covers the first frames and
+            // anything that makes the expression above degenerate.
             if (x < 1.0 / (double)kGfMaxN) { x = 1.0 / (double)kGfMaxN; g_gfskipFloored++; }
-            else if (x > 1.0) x = 1.0;
         }
     }
     g_gfskipX = x;
@@ -206,7 +228,7 @@ static u64 g_gfTestTick;
 static u64 gf_test_clock(void) { return g_gfTestTick; }
 static void gf_test_reset(void) {
     g_gfLast = 0; g_gfDrew = false; g_gfAcc = 0; g_gfWarm = 0;
-    g_gfskipCd = g_gfskipCs = g_gfskipX = 0; g_gfskipFloored = g_gfskipFull = 0; g_gfskipN = 0;
+    g_gfskipCd = g_gfskipCs = g_gfskipX = 0; g_gfskipFloored = g_gfskipFull = g_gfskipMinned = 0; g_gfskipN = 0;
     g_gfTestTick = 1000;
     g_gfskipClock = gf_test_clock;
     g_gfskipTicksPerSec = 1000000;   // 1 tick = 1 us, so a "ms" below is 1000 ticks
@@ -214,17 +236,21 @@ static void gf_test_reset(void) {
 }
 // Runs `frames` frames where a drawn one costs cdMs and a skipped one csMs. Returns the drawn count and, through
 // `spread`, the difference between the longest and shortest run of skips between draws (0 or 1 means even).
+static double g_gfTestPicFps;   // the realised picture rate over the scored part of the last run
 static u32 gf_test_run(double cdMs, double csMs, u32 frames, u32* spread) {
     u32 drawn = 0, gap = 0, lo = 0xFFFFFFFFu, hi = 0, settle = frames / 4;
+    u64 t0 = 0;
     for (u32 i = 0; i < frames; i++) {
         bool skip = gfskip_skip();
         g_gfTestTick += (u64)((skip ? csMs : cdMs) * 1000.0);
-        if (i < settle) continue;          // the warm-up and the first means are not the steady state
+        if (i < settle) { t0 = g_gfTestTick; continue; }   // the warm-up and the first means are not steady state
         if (skip) { gap++; continue; }
         drawn++;
         if (drawn > 1) { if (gap < lo) lo = gap; if (gap > hi) hi = gap; }
         gap = 0;
     }
+    double secs = (double)(g_gfTestTick - t0) / (double)g_gfskipTicksPerSec;
+    g_gfTestPicFps = secs > 0 ? (double)drawn / secs : 0.0;
     *spread = (drawn > 1 && hi >= lo) ? hi - lo : 0;
     return drawn;
 }
@@ -248,17 +274,50 @@ bool hle_gfskip_selftest(void) {
     }
     if (spread > 1) { printf("gfskip selftest: draws unevenly spaced, skip runs differ by %u\n", spread); bad++; }
     if (!drawn) { printf("gfskip selftest: drew nothing on a reachable target\n"); bad++; }
-    // 3. A target nothing can reach (even a skipped frame costs more than the budget): the floor must hold, so the
-    //    screen keeps updating instead of freezing. 1 in kGfMaxN, and the run must say it was floored.
+    // 3. A target nothing can reach (even a skipped frame costs more than the budget), with the picture-rate floor
+    //    off: the ratio floor must hold, so the screen keeps updating instead of freezing. 1 in kGfMaxN.
     gf_test_reset();
+    g_gfskipMinFps = 0;
     g_gfskipTarget = 100;            // 33.33 ms a frame; a skipped frame alone costs 60 ms
     drawn = gf_test_run(200.0, 60.0, 600, &spread);
     u32 expect = 450 / kGfMaxN;      // 450 frames scored, one drawn in kGfMaxN
     if (drawn < expect - 2 || drawn > expect + 2) {
-        printf("gfskip selftest: floor drew %u, expected ~%u (1 in %u)\n", drawn, expect, kGfMaxN); bad++;
+        printf("gfskip selftest: ratio floor drew %u, expected ~%u (1 in %u)\n", drawn, expect, kGfMaxN); bad++;
     }
-    if (!g_gfskipFloored) { printf("gfskip selftest: floor engaged but not reported\n"); bad++; }
+    if (!g_gfskipFloored) { printf("gfskip selftest: ratio floor engaged but not reported\n"); bad++; }
     if (spread > 1) { printf("gfskip selftest: floored draws unevenly spaced (%u)\n", spread); bad++; }
+    // 3b. The same unreachable target WITH a picture-rate floor: the promise is a floor on what is shown, so the
+    //     realised picture rate must not fall below it - the game speed gives way instead. This is the case the
+    //     owner asked for (2026-10-31), so it is the one the test has to protect.
+    for (u32 P = 4; P <= 6; P++) {
+        gf_test_reset();
+        g_gfskipMinFps = P;
+        g_gfskipTarget = 100;        // unreachable: the target alone would ask for almost no drawing
+        drawn = gf_test_run(131.1, 63.2, 1200, &spread);   // the heavy area's measured costs
+        if (g_gfTestPicFps < (double)P * 0.97) {
+            printf("gfskip selftest: floor %u pictures/s but showed %.2f\n", P, g_gfTestPicFps); bad++;
+        }
+        if (!g_gfskipMinned) { printf("gfskip selftest: picture floor %u engaged but not reported\n", P); bad++; }
+        if (spread > 1) { printf("gfskip selftest: floor %u draws unevenly spaced (%u)\n", P, spread); bad++; }
+    }
+    // 3b-ii. A floor nothing can reach, which is the branch where the expression's denominator turns negative
+    //        (P >= 1/(cd - cs), here 14.7 pictures a second). It must ask for every frame - the most the scene can
+    //        show - and not for none. Without this case that branch had no test at all, and a planted 0.0 in place
+    //        of the 1.0 passed everything else.
+    gf_test_reset();
+    g_gfskipMinFps = 30;             // impossible: a drawn frame alone costs 131.1 ms, so 7.63 a second is the most
+    g_gfskipTarget = 100;
+    drawn = gf_test_run(131.1, 63.2, 800, &spread);
+    if (drawn != 600) {              // 800 frames, a quarter dropped as warm-up: every scored frame must draw
+        printf("gfskip selftest: unreachable floor drew %u of 600 (it must draw every frame)\n", drawn); bad++;
+    }
+    // 3c. It is a floor, not a cap: a scene that can hold its target above the floor must be left alone.
+    gf_test_reset();
+    g_gfskipMinFps = 4;
+    g_gfskipTarget = 50;             // 66.67 ms a frame; drawing every 20 ms frame already beats it
+    drawn = gf_test_run(20.0, 8.0, 400, &spread);
+    if (drawn != 300) { printf("gfskip selftest: floor capped an easy scene, drew %u of 300\n", drawn); bad++; }
+    g_gfskipMinFps = 5;
     // 4. With no target set, the fixed ratio must be untouched: one drawn in g_gfskipEvery.
     gf_test_reset();
     g_gfskipTarget = 0;

@@ -49,7 +49,9 @@ extern double g_gfskipCd, g_gfskipCs, g_gfskipX;   // learned costs of a drawn /
 #ifndef __3DS__
 bool hle_gfskip_selftest(void);   // drives the pacer with a synthetic clock (hle_tp.c); GC3DS_GFSKIP_SELFTEST=1
 #endif
-extern u64 g_gfskipFloored, g_gfskipFull;          // frames pinned at the picture-rate floor / drawing everything
+extern u64 g_gfskipFloored, g_gfskipFull;          // frames pinned at the ratio floor / drawing everything
+extern u32 g_gfskipMinFps;   // --gfskip-minfps P: never fewer than P pictures a second (the game gives way instead)
+extern u64 g_gfskipMinned;   // frames where that floor, not the target, decided
 bool hle_enabled(void);
 // Counters for the frontends: stand-in runs and guest instructions stood in for (all stand-ins).
 extern u64 g_hleRuns, g_hleInsns;

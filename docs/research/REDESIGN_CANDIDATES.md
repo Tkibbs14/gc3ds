@@ -210,11 +210,29 @@ Build `dbac5779b30d8a92`, 240 s each, `--gfskip-target PCT` with the fader guard
 - **Pacing stays even, which was the other claim.** Gap standard deviation 10.2 ms on a 127.8 ms mean in Ordon at
   target 50 and 5.3 ms on 699 ms in the heavy area, with the largest gap only 8-9% over the mean and no spikes -
   against 5.3 ms on 95.3 ms and 3.7 ms on 137.4 ms with no skipping at all. Relatively jitterier, absolutely small.
-- **The open design question, for the owner.** The floor is a *ratio* (never fewer than one picture in ten), which is
-  what produces 1.4 pictures a second in the heavy area. An **absolute picture-rate floor** (never below ~4 a second)
-  would instead make a heavy scene abandon the target: a slower game you can watch rather than a correctly paced
-  slideshow. Both are a line of code; which is right is a taste question about what should give way when a scene is
-  too heavy, and nobody has looked at either on a screen yet.
+- **ANSWERED by the owner, 2026-10-31: "I want smoother over choppy."** Built as `--gfskip-minfps P`, default **5
+  pictures a second**: the drawn fraction is at least what P requires, so a heavy scene gives up *game speed* rather
+  than the display. With the learned costs cd and cs, `x / (x*cd + (1-x)*cs) >= P` gives
+  `x >= P*cs / (1 - P*(cd - cs))`, which reaches 1 exactly at `P = 1/cd` - the most the scene can show - so an
+  impossible floor asks for every frame and no more. It is a floor and not a cap; the ratio floor stays as the
+  backstop for the first frames, before any costs are learned.
+
+  | floor | Ordon: game speed / pictures a second | heavy area: game speed / pictures a second |
+  |---|---|---|
+  | the ratio floor (1 in 10) | 82.5% / **2.48** | 47.6% / **1.43** |
+  | **5 pictures/s (the default)** | 67.3% / 5.00 | 34.8% / 5.00 |
+  | 7 pictures/s | 55.3% / 7.00 | 27.7% / 7.00 |
+
+  Note what the floor does to the *shape* of the trade: it makes the **picture rate** the constant across scenes and
+  lets the game speed vary - the mirror image of what `--gfskip-target` alone does. The two together are the useful
+  pair: the target governs a scene that can afford it, the floor takes over in one that cannot.
+- **Self-tested, with the promise as the assertion.** The synthetic-clock case now asserts the *realised* picture
+  rate never falls below the floor at P = 4, 5 and 6 with the heavy area's measured costs, that an impossible floor
+  (P = 30, where the expression's denominator turns negative) draws **every** frame rather than none, and that an
+  easy scene is left alone. Three planted bugs fail it: the floor doing nothing (showed 1.43 against a floor of 4),
+  the floor acting as a cap (an easy scene throttled, mean frame 32 ms against a 48 ms target), and the degenerate
+  branch returning 0 instead of 1 (drew 60 frames of 600). **That third one passed every earlier case** - the
+  branch had no test until the P = 30 case was added, which is the rule about self-tests doing its work.
 - **Re-evaluate when:** the owner has watched Ordon at target 60-70 (6.6 and 5.0 pictures a second, the band worth
   seeing) and said which floor he wants.
 
