@@ -2961,9 +2961,14 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > valid. `runs.py` now prints the state on every line and warns when the logs scored together do not share one,
 > with a planted self-test. The relay-restart lead is **falsified**: a peer's deploy log puts a restart at 00:24:14,
 > inside job 1764, which stayed slow, and no log contains a failed-request line.
+> **The withdrawal measured properly, which is how it should have been done first** (jobs 1781-1784, old / new / old
+> / new interleaved, all in the 7.1 MB state): `088fb0df6610` **10.612 / 10.614** against `8aa6dc7` **10.587 /
+> 10.592**, within-arm spreads of 0.02% and 0.05%. **-0.22%**, at or inside static Ordon's ~0.25% floor. So the
+> session's 21 commits are neutral, and the "-5.6%" was the state and nothing else.
 > **What survives:** C53's A/B, because its arms were interleaved and each repeated an hour apart (off 10.030 /
-> 10.020, on 10.367 / 10.376 - a reproducible split, not a trend). Its *ratio* stands; its absolute figures belong to
-> the pre-boundary state and must not be differenced against anything after it.
+> 10.020, on 10.367 / 10.376 - a reproducible split, not a trend) **and all eight of its arms are in the 9.0 state**.
+> Its *ratio* stands; its absolute figures belong to that state and must not be differenced against anything after
+> the boundary.
 
 ### The original (wrong) entry, kept per rule 3: a -5.6% regression nearly filed as device drift (jobs 1768-1770)
 
