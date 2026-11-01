@@ -57,7 +57,14 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    1700/1701, two hours apart), where the two adjacent *pairs* inside that span read 0.01% and 0.17%. Static Ordon
    repeats only to ~0.25-0.31% (jobs 1673-1676). So **the heavy area's floor is ~0.2%, not the 0.07% a lucky pair
    showed**: a claim under ~0.4% needs more than two runs an arm, or the arms interleaved rather than batched, and
-   a 0.3% claim from static Ordon is not a result at all. Use the heavy area to decide anything small. the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
+   a 0.3% claim from static Ordon is not a result at all.
+   **The floor depends on how far apart the runs are, even inside one launch rung** (2026-11-01, from logs already
+   on disk). Four runs of one configuration two hours apart span **0.25%** (jobs 1692/1693 and 1700/1701 - and all
+   four are on the 2.9 MB rung, so that span is *not* a rung artifact: that hypothesis was checked and killed).
+   Four runs of one configuration queued back to back span **0.11-0.15%** (`--port-softfloat`'s two arms, jobs
+   1797-1804, heavy area). So **adjacency buys about a factor of two on the floor** and is what makes a 0.2% claim
+   decidable: soft float's +0.20% was settled by four adjacent runs an arm with complete rank separation, where arms
+   hours apart could not have carried it. Use the heavy area to decide anything small. the program's own periodic screenshot used to steal **4-86% of one second** five times in a 240 s run,
    and a run that caught several severe ones read up to **3.2% slow with nothing saying so** (17 of 136 logs on
    disk; it is what looked like "session drift" on 2026-10-30 until `pmu_mcyc` named it). The periodic shot is off
    by default now (`--shots N`). **Always quote the within-arm spread** - a difference smaller than it is not a
