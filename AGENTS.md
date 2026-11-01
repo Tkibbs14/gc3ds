@@ -343,7 +343,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   C48):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
   +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
   EFB copies hashed only when reused (`--copystamp`, on: TP +0.7-0.9%), the J2D pane walk (on: Ordon +2.2%). Built, off:
-  pre-decoded display lists (`--g2 on`, exact, no speed change: TP and Wind Waker are core-0-bound), `--nskeep`
+  pre-decoded display lists (`--g2 on`, exact - **and its "no speed change" is withdrawn: TP's heavy area reads
+  +0.53% at the current default**, jobs 1867-1870, rank-separated with a 0.01% on-arm spread. The old reading came
+  from the pre-filter method with `--profile on`, *and* the baseline moved in g2's favour: core 0 waited on the GX
+  thread 0.4-1.2% in October, so 1.3-2.5 points off GX busy had nowhere to go, where now it does. C49's interaction
+  with the sign positive for once. Not a default yet - this is GX-side work and the cloud toolchain must not size
+  GX-side work), `--nskeep`
   (Mario Party 4 +1.9%, owner's call), fault mode (`--faultmem`, +2-5% but crashes the kernel in svc 0x94), and the
   region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
   tool).

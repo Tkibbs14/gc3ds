@@ -3072,9 +3072,14 @@ losses are hygiene work; a contributor should know which is which (CONTRIBUTOR_T
 > doubles, so a GX-side switch's *relative* value there is not trustworthy either. So `--nskeep` stays parked, now
 > with a reason that is a measurement limit rather than a missing measurement, and it needs the owner's toolchain.
 > `--g2 on` is in the same block (jobs 1867-1870) and recorded below.
-> The verdict above therefore stands harder than when it was written: **seven re-tests, seven moved or confirmed
-> figures, no gains.** The one entry whose claim might still hold is the one entry a cloud session is forbidden to
-> test.
+> **And `--g2 on` broke the streak: it is +0.53% in TP's heavy area** (on 7.247 / 7.246 against off 7.206 / 7.210,
+> complete rank separation, on-arm spread 0.01%), recorded in full as a correction under the G2a section below.
+> So the final count is **seven re-tests, six moved-or-confirmed figures and one gain** - and the verdict above
+> needs amending rather than hardening. The seam is not a reliable source of speed, but it is not barren either,
+> and the one entry that produced a gain is the one that was *not* recorded as a loss. **That is the rule worth
+> keeping: re-test the entries recorded as "no change", not the ones recorded as losses.** A loss that moves is
+> usually still a loss; a null result taken by a method that has since been replaced is a different thing
+> entirely, and g2's was taken with the pre-filter method *and* at a baseline that has since moved in its favour.
 Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`, `crstub`, `calls`, `traces`,
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
@@ -4117,6 +4122,26 @@ they vary ~12%, which is the sampled profile clock's own spread and the reason t
   does not move** in any scene (within 0.1%): TP and Wind Waker are core-0-bound (core 0 waits on the GX thread
   0.4-1.2% of the time), and Mario Party 4's GX thread waits on the vertex worker (`vwalloc` + `vwqueue` ~25%), so the
   decoder's saving there became waiting (busy -0.6 points). Kept off (owner's call); it is the base G2b builds on.
+
+> **Correction, 2026-11-01: "speed does not move" is withdrawn for TP's heavy area - it is +0.53%** (jobs
+> 1867-1870, build `e91e46f4a0d6`, 9.0 rung, two runs an arm adjacent and reversed). On **7.247 / 7.246** against
+> off **7.206 / 7.210**: complete rank separation, on-arm spread 0.01%, off-arm 0.06%, against a heavy-area floor of
+> 0.11-0.15% for adjacent arms. The switch is demonstrably doing its work in those runs - `# g2 10s` reads 45,806
+> of 66,822 list calls replayed (68.5%, 15.8 ops each), table full 0, not decodable 0, given up 0 - so this is not
+> a vacuous on-arm.
+> **Two reasons the old reading was wrong, and only one of them is about g2.** First, **it was measured with the
+> pre-filter method**: `speed_pct` from runs that still had the periodic screenshot stealing 4-86% of a second five
+> times a run, and with `--profile on`, which loads the GX thread differently from a normal run. That method is
+> what produced eight phantom per-port figures and frame skip's "+10%" (AGENTS rule 3). Second, and more
+> interesting, **the baseline moved under it in g2's favour**: on 2026-10-23 core 0 waited on the GX thread only
+> 0.4-1.2% of the time, so 1.3-2.5 points off GX busy had nowhere to go; since then C53 (+2.3 to +3.5%), the ports
+> as a set and the soft-float concat have all made core 0 faster, and GX-side slack is worth more than it was.
+> That is C49's interaction - a candidate's value depends on which other options are on - **with the sign positive
+> for once**, and it is the first time re-ranking after a default landed has found a gain rather than removed one.
+> **Not a default yet, for a stated reason**: this is GX-side work and the cloud toolchain is the one thing AGENTS
+> says must not be used to measure GX-side or vertex work. The figure is almost certainly real in direction (g2
+> removes the decoder's parse, which gcc 16 does not change the existence of) but its size needs the owner's
+> toolchain, and `--g2 check` needs re-running on the current build before anything is turned on.
 - **Where a converted run's time goes (jobs 1162, 1164, `# shapes phases 10s`, 1 `ns_draw` in 16 timed, GX thread
   ms/s):**
 

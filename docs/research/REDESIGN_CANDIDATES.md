@@ -1336,6 +1336,19 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** after G2a's device runs (whether decoding is worth replaying at all), and whenever the GX
   thread becomes the limit again (core 0 gains, Mario Party 4's minigame, the title cutscene).
 
+> **That trigger fired, and it was right (2026-11-01).** "Whenever the GX thread becomes the limit again (core 0
+> gains)" is exactly what happened - C53, the port set and the soft-float concat all made core 0 faster - and
+> re-measured at the current default `--g2 on` reads **+0.53%** in TP's heavy area (on 7.247 / 7.246 against off
+> 7.206 / 7.210, complete rank separation, on-arm spread 0.01%; jobs 1867-1870, MEASUREMENTS' G2a correction has
+> the whole thing). The October reading of "no speed change" was taken with the pre-filter method and
+> `--profile on`, so part of the difference is method rather than baseline, but the mechanism the trigger named is
+> real: 1.3-2.5 points off GX busy had nowhere to go when core 0 waited on the GX thread 0.4-1.2% of the time.
+> **This is the first time a "re-evaluate when" trigger on this list has paid out**, which is an argument for
+> rule 4 that was not available before. **Status moves to: built, exact, off, +0.53% in TP's heavy area at the
+> current default - a default candidate pending `--g2 check` on the current build and a figure from the owner's
+> toolchain** (it is GX-side work, which a cloud session must not size). **Re-evaluate when:** that confirmation
+> comes in, or core 0 gains again - the trigger has proven itself and stays.
+
 ## C37. Textures re-checked by page stamps instead of a once-a-frame re-hash (2026-10-24)
 
 - **Status:** **built, measured as a gain** (`--texfast 2`; bit 1, a hint table in front of the texture table,
