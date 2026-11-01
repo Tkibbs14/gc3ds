@@ -3445,9 +3445,9 @@ static void port_report(void) {
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
 u32 g_portCharge = 100;
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165, 100 };  // (C56: the only calls checked so far were empty draw buffers - 613.3 interpreter instructions against the
-// port's 451.5, job 1872 - so 100 is still a placeholder, to be calibrated once check mode runs calls with
-// content in them)  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165, 124 };  // (C56: 3,010.6 interpreter instructions a call against the port's 2,430.1, over 180 checked calls that drew
+// 920 mat packets and 1,640 shape draws, job 1875. The earlier 613.3/451.5 was taken over empty draw buffers
+// only and was not a calibration at all)  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
