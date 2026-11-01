@@ -305,7 +305,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
   lanes of f14, f15, f31) and not run where the guest would take an exception (MSR.FP off).
-- **Defaults that measured as gains:** **PSMTXConcat exactly in soft float for a denormal / NaN / infinity input
+- **Defaults that measured as gains:** **a contiguous run of pipe bursts moved at once rather than 32 bytes at a
+  time (`--gpruns`: TP heavy area +0.47%, static Ordon +0.43%, both rank-separated with spreads 0.01-0.11%;
+  jobs 1889-1897. `--port check` differed 0, and Wind Waker is a clean negative control - the run path never
+  qualifies there, 0 of 8.87 M bursts, and the speed moves -0.01%. The gain is core-0 work and the mechanism
+  is streaming: C40's PMU split blames data stalls on the FIFO mirror, a large always-cold ring, and one
+  contiguous memcpy into it beats 476 interleaved 32-byte ones)**, **PSMTXConcat exactly in soft float for a denormal / NaN / infinity input
   instead of giving up (`--port-softfloat`: heavy area +0.20% with all four on-runs above all four off-runs, Ordon
   +0.31%; jobs 1797-1808 - it also removes the give-up class entirely, 60 refusals a window to 0)**, **C53's
   pane-walk subtree - `--port-picture` and `--port-walktext` together

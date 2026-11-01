@@ -1,5 +1,58 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-11-01)
 
+> **> 2026-11-01 (latest): a new default, `--gpruns`, +0.47% in TP's heavy area and +0.43% in static Ordon - found
+> by reading an instrument that already existed rather than by writing one.** Build `6e1a7c33c5e6`.
+>
+> **How it was found, because the route matters more than the switch.** After C56 and `--g2` both failed on speed,
+> the lesson was "look for work that can be *skipped or done differently*, not the same work faster". So instead of
+> another port, `port_cost.py` - which had not been read since C53 and the soft-float concat landed - was run over a
+> default heavy-area log already on disk. It says **12.64% of core 0 is inside the ports**, with **~3.0% in
+> `port_commit`**: the pane walk 7.27% (run 1,471.77 us, commit 345.98 us a call), `J3DMaterial::diff` 3.03%,
+> `J3DSys::reinitGX` 2.33%. That ~3% is the figure AGENTS has carried since job 1569 as "the technique is proven
+> and the next place to apply it has to be found rather than assumed" - **and it is not a copy to remove from the
+> commit.** The walk commits 15,210 bytes in 345.98 us and reinitGX 1,705 in 39.16 us: **44.0 and 43.5 bytes a
+> microsecond**. Two unrelated ports, different call rates, different byte counts, agreeing on the per-byte rate to
+> 1% - which is what says the commit *is* `gp_fifo_write`, at ~18 cycles a byte.
+> **Then the log's own counters gave the shape**: 352 MB of pipe bytes in 7.9 M writes, 44.6 a write - but the
+> ports' 963 KB a second arrives in ~250 calls, so **46% of every pipe byte comes through 0.5% of the calls**, and
+> those runs were being chopped into **30,095 bursts a second** and reassembled into 512-byte ring records.
+>
+> **`--gpruns` moves a qualifying run at once** - one mirror copy, one ring feed, the per-burst wrap arithmetic,
+> CP-control read and counters done once. TP heavy **+0.47%** (7.228/7.226 against 7.197/7.189), static Ordon
+> **+0.43%** (10.404/10.407 against 10.361/10.360), both rank-separated with spreads 0.01-0.11%, two runs an arm
+> adjacent and reversed. `--port check` differed 0. **On by default.**
+> **And Wind Waker is a negative control that behaves like one, which is the strongest line here:** its `# gp pipe`
+> reads **runs 0 moving 0 bursts of 8,874,827 - 0.0%** (no pane walk, no reinitGX, all `gp_wgp_put` single stores),
+> and the speed moves **-0.01%**. Where the instrument reads zero the effect reads zero, which rules out a rebuild
+> artifact, a rung step and one-run noise together - none of those would have politely vanished in the one scene
+> where the switch does nothing.
+>
+> **The mechanism I first wrote was wrong, and C40 corrected it.** I assumed the per-burst arithmetic was the cost.
+> C40 already carried a PMU split (jobs 1371-1374) reading the same rate a third way - 19.7 and 20.1 cycles a byte
+> - and blaming **data stalls**: the FIFO mirror is a large always-cold ring, so every line is a write-allocate
+> miss. So what the run buys is **streaming**: one contiguous 15 KB memcpy into the mirror beats 476 interleaved
+> 32-byte ones. Three instruments agree on the number; the oldest of them had the explanation all along.
+> **Consequence: C40 is now over-priced and says so.** Its `--fifomirror off` upper bound (Ordon +1.6%, heavy
+> +0.5%) was measured when every mirror write was a separate 32-byte store, and 37% of them are now contiguous -
+> so re-run that pair before anyone builds C40's "let core 2 write the mirror" design, which is the most involved
+> idea in that entry.
+>
+> **C57** is the new entry (the pipe path per byte), with what is left in order: the ring copy for a run (the bytes
+> are already in the mirrored FIFO, so a record could reference them - a design, not a tweak), `--feeddirect`
+> re-tested now that records are 15 KB rather than 512 bytes (but it is GX-thread work, and `--g2` has just priced
+> that), and C40's re-pricing. **The run path cannot reach the other 63% of bursts**: those are `gp_wgp_put`
+> assembling 32 bytes one guest store at a time, so 36.7% is close to this idea's ceiling.
+>
+> **One label fixed, and it is what made this visible.** `# port give-ups 10s, memory: port_j2d.c:1515 x255`
+> against 255 taken calls reads exactly like the walk running out of pipe or undo room - I read it that way for a
+> minute. It is not: 100% of it is **a pane with no children**, declined on purpose. The line conflated three
+> conditions, one of which *is* a memory refusal, so they now carry different reasons, and **reason 0 is documented
+> as "declined on purpose"** - a reason 0 is not a gap to close, reasons 1-7 may be.
+>
+> **And the headline is now stale by this too.** AGENTS and README still read 10.55 / 7.28 / 6.23 / 9.27 from build
+> `2ba59806b89d7a22` on the owner's toolchain; C53, `--port-softfloat` and now `--gpruns` have all landed since.
+> A refresh needs the owner's toolchain and a known launch rung, so it cannot be done from a cloud session.
+
 > **▶ 2026-11-01 (latest): C56 is exact and a LOSS (-0.79%), `--g2 on` turns out to be a GAIN (+0.53%), and the
 > headline direction needs restating.** Builds `1a971528b25c` (C56) and `e91e46f4a0d6` (g2).
 >

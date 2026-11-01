@@ -1460,6 +1460,50 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** a game shows many `made again after a stamp` with `# nskeep 10s` "unchanged" high (the
   switch's case), or the GX thread limits a scene that converts after stamps.
 
+## C57. The pipe path per byte: a run of bursts at once, then the ring copy (2026-11-01)
+
+- **Status: part built and ON by default (`--gpruns`), part open.**
+- **What the measurement found.** `port_cost.py` on a default heavy-area run (job 1878) puts **12.64% of core 0
+  inside the ports**, with **~3.0% in `port_commit`** - the figure AGENTS has carried since job 1569 as "the
+  technique is proven and the next place to apply it has to be found rather than assumed". It is found, and it is
+  not a copy to remove from the commit: the pane walk commits 15,210 bytes in 345.98 us and `J3DSys::reinitGX`
+  1,705 in 39.16 us, **44.0 and 43.5 bytes a microsecond** - two unrelated ports with different call rates and
+  byte counts agreeing on the per-byte rate to 1%, which is what says the commit *is* `gp_fifo_write`.
+- **Three independent routes to ~19 cycles a byte.** Today's profile timers give 18.3; C40's PMU split from a week
+  earlier (jobs 1371-1374) gives **19.7** for the walk (43,800 cycles for 2,221 bytes) and **20.1** for reinitGX.
+  C40 also supplies the attribution, which is the part that matters: **data stalls**, because the FIFO mirror is a
+  large always-cold ring and every line is a write-allocate miss that evicts core 0's data too.
+- **The traffic's shape, from the log's own counters.** 352,182,478 pipe bytes in 7,896,116 writes, 44.6 bytes a
+  write - but the ports' 963 KB a second arrives in ~250 calls a second, so **46% of every pipe byte comes through
+  0.5% of the calls**, and those runs were being chopped into **30,095 bursts a second** and reassembled into
+  512-byte ring records by `ringbatch`.
+- **Built: `--gpruns` (hw/gx.c `gp_run`), ON since 2026-11-01.** A qualifying run is moved at once - one mirror
+  copy, one ring feed, the per-burst wrap arithmetic, CP-control read and counters done once. **TP heavy area
+  +0.47%, static Ordon +0.43%** (jobs 1889-1897, rank-separated, spreads 0.01-0.11%), `--port check` differed 0,
+  and **Wind Waker is a negative control that behaves like one**: 0 of 8.87 M bursts qualify there and the speed
+  moves -0.01%. The mechanism is streaming, not arithmetic - one contiguous memcpy into the mirror beats 476
+  interleaved 32-byte ones.
+- **Still open, and in order.**
+  1. **The ring copy, for a run.** `ringbatch` copies the bytes into the ring record, but for a run they are
+     already in the mirrored FIFO in MEM1, so a record that *references* them needs no copy - which is what the
+     hardware does. Cost: lifetime safety, since the GX thread must stay inside the FIFO's unread region. A design,
+     not a tweak.
+  2. **`--feeddirect` re-tested with `--gpruns` on.** It removes a *third* copy (the GX thread's pending buffer)
+     and measured "even" when records were 512 bytes; `--gpruns` has just made them up to 15 KB, so the copy it
+     removes is now one large memcpy per record instead of thirty small ones. A genuinely new condition, and
+     exactly the "re-rank after every default lands" case. **But it is GX-thread work**, and `--g2` has just shown
+     what GX-thread savings are worth when core 0 is the limit, so expect little.
+  3. **C40 should be re-priced before anyone builds its "let core 2 write the mirror" design** (below): its
+     measured upper bound (`--fifomirror off`, Ordon +1.6%, heavy +0.5%, jobs 1375-1380) was taken when every
+     mirror write was a separate 32-byte store, and 37% of them are now contiguous.
+- **What the run path cannot reach.** The other 63% of bursts are `gp_wgp_put`'s single-store path - the JIT
+  assembling 32 bytes one guest store at a time - which cannot be batched without changing the JIT's store path.
+  So 36.7% is close to this idea's ceiling.
+- **Owed:** the PC state-hash check over 400 fields that `g_gpBulk` itself was validated with. The session that
+  built this had no disc image, no devkitPPC and no built test DOLs, so the exactness evidence is `--port check`,
+  the counter reconciliation, the negative control and the construction argument - not that check.
+- **Re-evaluate when:** item 1 is designed, or C40 is re-priced.
+
 ## C40. The pipe's FIFO mirror in guest RAM without polluting core 0's caches (2026-10-24)
 
 - **Status:** parked (measured upper bound). `--fifomirror off` (hw/gx.c `g_gpMirror`) is MEASUREMENT ONLY: not exact.
@@ -1488,6 +1532,15 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
     else reads those pages.
   - **Worth:** the mirror is Ordon 1.6% and the heavy area 0.5% of core 0 measured directly (`--fifomirror off`,
     jobs 1375-1380), every game, plus whatever the write-allocate misses cost the shared L2.
+- **2026-11-01: this entry's own PMU split turned out to be the key to C57, and C57 has now changed this entry's
+  price.** The split (jobs 1371-1374: the pane walk 43,800 cycles a commit for 2,221 bytes, reinitGX 34,200 for
+  1,705) is **19.7 and 20.1 cycles a byte**, which two later instruments reproduce as 18.3 - and the "mostly data
+  stalls" attribution here is what identified the mirror rather than bookkeeping as the cost. `--gpruns` (C57, on
+  by default) now makes **37% of mirror writes contiguous** instead of separate 32-byte stores, and is worth
+  +0.47% / +0.43% on its own. **So the 1.6% / 0.5% upper bound above was measured in a world that no longer
+  exists and is now an over-estimate.** **Re-evaluate when:** `--fifomirror off` is re-run with `--gpruns` on -
+  four runs, no new code - which should happen before anyone builds the "let core 2 write the mirror" design, since
+  that design is the most involved idea in this entry and its payoff is exactly what that re-run prices.
   - **Cost:** hw/gx.c, the GX thread's ring consumer, the save-state path and the JIT's page classification; a check
     mode that compares the mirror against the eager version over a run, with a plant.
 - **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer

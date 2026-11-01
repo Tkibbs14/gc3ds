@@ -109,9 +109,12 @@ static void gp_burst(System* s, const u8* data) {
 //
 // Exactness: the run is taken only when it neither leaves MEM1 nor reaches the FIFO's end, so no burst inside it
 // wraps; `fifoWrite`, `bytesReceived`, `g_gpLinked`/`g_gpUnlinked` and the stamped pages all end up where the
-// per-burst loop would leave them, and the GP is handed the identical byte stream. The CP control register cannot
-// change inside one call, so the linked test is made once.
-bool g_gpRun = false;  // --gpruns on|off (off until measured, rule 5)
+// per-burst loop would leave them, and the GP is handed the identical byte stream.
+// **The one step that is not obvious is the single CP-control read**, where the per-burst loop reads it n/32 times.
+// It is sound, and checked rather than assumed: `s->gx.cpRegs` is written *only* by `cp_write16`, which only the
+// guest's MMIO store path reaches (`system.c`) - the FIFO decoder's own `cp_write` writes `gx->cp[]`, a different
+// array. The guest CPU is inside this call, so nothing can change it here, on either build.
+bool g_gpRun = true;  // --gpruns on|off. On: see opts_default in main.c for the jobs
 u64 g_gpRunBursts, g_gpRunCalls;   // bursts moved by the run path, and how many runs they came in (reports)
 static u32 gp_run(System* s, const u8* data, u32 len) {
     PIState* pi = &s->pi;

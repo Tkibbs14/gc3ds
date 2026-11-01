@@ -3109,9 +3109,26 @@ feed, the per-burst wrap arithmetic, CP-control read and counters done once for 
 | TP heavy area (jobs 1889-1892) | 7.228 / 7.226 | 7.197 / 7.189 | **+0.47%** | 0.03% / 0.11% |
 | static Ordon (jobs 1894-1897) | 10.404 / 10.407 | 10.361 / 10.360 | **+0.43%** | 0.03% / 0.01% |
 
-Complete rank separation in both, every spread at or under 0.11% against a heavy-area floor of 0.11-0.15% for
-adjacent arms. **Two scenes agreeing to 0.04 points is the part that matters**: `--g2` read +0.53% in the heavy
-area on the same day and **-0.28%** in Ordon, which is why one scene is no longer enough to call something a gain.
+| Wind Waker, Outset (jobs 1898-1901) | 5.987 / 5.981 | 5.983 / 5.986 | **-0.01%** | 0.10% / 0.05% |
+
+Complete rank separation in both TP scenes, every spread at or under 0.11% against a heavy-area floor of
+0.11-0.15% for adjacent arms. **Two scenes agreeing to 0.04 points is the part that matters**: `--g2` read +0.53%
+in the heavy area on the same day and **-0.28%** in Ordon, which is why one scene is no longer enough to call
+something a gain.
+
+**And Wind Waker is a negative control that behaves like one, which is the strongest line in this entry.** Its
+`# gp pipe` reads **runs 0 moving 0 bursts of 8,874,827 - 0.0%**: the run path never qualifies there, because
+Wind Waker does not run TP's J2D pane walk or `J3DSys::reinitGX` and its pipe traffic is all `gp_wgp_put`
+single stores. **Where the instrument reads zero the effect reads zero** (-0.01%, well inside both arms' spreads).
+That rules out a rebuild artifact, a rung step and noise in one run - none of which would have politely vanished
+in the one scene where the switch does nothing - and it confirms the TP gain is port-driven, which is what
+`port_cost.py` predicted from the other direction.
+
+**On by default since 2026-11-01.** The one step in the construction that is not obvious - the CP-control register
+read once per run where the per-burst loop reads it n/32 times - was checked rather than assumed: `s->gx.cpRegs` is
+written only by `cp_write16`, reached only from the guest's MMIO store path, while the FIFO decoder's own
+`cp_write` writes `gx->cp[]`, a different array. The guest CPU is inside the call, so nothing can change it there,
+on either build.
 
 **Exact:** `--port check` with the run path active reads **differed 0** (job 1893).
 

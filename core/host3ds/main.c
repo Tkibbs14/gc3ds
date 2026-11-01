@@ -614,6 +614,11 @@ static void opts_default(RunOpts* o) {
     o->idlewait = -1;    // the idle hook syncs fully with the GX thread (Dolphin's SyncOnSkipIdle)
     o->ringbatch = true; // bursts batched into 512-byte ring records: heavy area +2.6%, Ordon +1.6% (jobs 505-506)
     o->gpbulk = true;    // pipe bursts with one copy (hw/gx.c): heavy area +3.2%, Ordon +4.5% (jobs 477-478), byte-identical
+    // A contiguous run of whole bursts moved at once (hw/gx.c gp_run). TP heavy area +0.47% (jobs 1889-1892),
+    // static Ordon +0.43% (1894-1897), both rank-separated with spreads 0.01-0.11%; `--port check` differed 0
+    // (1893). Wind Waker is the negative control and behaves like one: the run path never qualifies there
+    // (0 of 8,874,827 bursts) and the speed moves -0.01% (1898-1901).
+    o->gpruns = true;
     o->dblframe = true;  // overlapped GPU frames (pica.c, C30): heavy area +1.9% frames, Ordon even (jobs 548-560)
     o->fcache = true;    // float lanes (OPT_FCACHE, C11): heavy area +1.5%, Ordon +1.6%, title +0.6-2.4% (separate runs, jobs 567-576)
     o->ind2 = true;      // 2-way indirect-branch table (OPT_IND2): heavy area +0.85%, Ordon +0.9%, title +0.3-0.8% (jobs 565-576)
