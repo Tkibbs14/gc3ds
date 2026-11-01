@@ -97,16 +97,34 @@ static u64 code_hash(u32 addr, u32 size) {
     for (u32 i = 0; i < size; i += 4) h = (h ^ ram_rd32(g_pm, addr - 0x80000000u + i)) * 0x100000001B3ull;
     return h;
 }
+// A row recorded with hash 0 is one `porthash.py` has not been run on yet, because that needs the disc image and a
+// cloud session has none. Such a row keeps **every** port off, exactly as a mismatch does - it must never be the
+// weaker check - and its real hash is published here so one console run yields the line to paste. Reported as
+// `# port hashes` and cleared the moment the rows are filled in.
+#define kPortHashWanted 8
+u32 g_portHashWantedN;
+u64 g_portHashWanted[kPortHashWanted][2];   // address, the hash the console computed
 static bool port_valid(void) {
     if (g_portValid >= 0) return g_portValid;
     if (!g_pm) return false;
     g_portValid = 1;
-    for (u32 i = 0; i < sizeof kFns / sizeof kFns[0]; i++)
-        if (code_hash(kFns[i].addr, kFns[i].size) != kFns[i].hash) {
+    for (u32 i = 0; i < sizeof kFns / sizeof kFns[0]; i++) {
+        u64 h = code_hash(kFns[i].addr, kFns[i].size);
+        if (!kFns[i].hash) {
+            g_portValid = 0;
+            if (g_portHashWantedN < kPortHashWanted) {
+                g_portHashWanted[g_portHashWantedN][0] = kFns[i].addr;
+                g_portHashWanted[g_portHashWantedN][1] = h;
+                g_portHashWantedN++;
+            }
+            continue;
+        }
+        if (h != kFns[i].hash) {
             g_portValid = 0;
             if (!g_portStats.badHash) g_portStats.badHash = kFns[i].addr;
             fprintf(stderr, "port: guest function %08lx differs: the ports stay off\n", (unsigned long)kFns[i].addr);
         }
+    }
     return g_portValid;
 }
 
@@ -267,6 +285,13 @@ static void wr32(Pc* c, u32 a, u32 v) {
     c->log[c->nlog][0] = a;
     c->log[c->nlog][1] = v;
     c->nlog++;
+}
+// A byte of guest memory, through the word it sits in so the other three are kept. The J3D subtree sets several
+// single-byte statics that share a word with their neighbours (sNBTFlag and sLODFlag are adjacent), so a bare
+// word store would clobber one while writing the other.
+static void wr8(Pc* c, u32 a, u32 v) {
+    u32 w = a & ~3u, sh = 8 * (3 - (a & 3));
+    wr32(c, w, (rd32(c, w) & ~(0xFFu << sh)) | ((v & 0xFF) << sh));
 }
 // Fields of the structures the port only reads (materials, blocks, matrices, the SDK's tables): plain loads after one
 // range check per structure (span).
@@ -1482,64 +1507,6 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d, u32 x, u3
     u32 z0 = 0;  // `iter->draw(0, 0, ...)`: +0.0f, which is not this pane's x and y
     for (u32 l = f32(p + 220); l && !c->fail; l = f32(l + 12)) walk_pane(c, f32(l), g, clip, vis, d + 1, z0, z0);
 }
-// ---- C56: the J3D packet-draw subtree (J3DDrawBuffer::drawHead 0x80325500) ----
-// **The scan only.** It makes exactly the all-or-nothing test a port of this subtree would make and then declines,
-// so the coverage is measured through the port's own guarded read path before a line of drawing code exists - the
-// order C53 went in (walk_scan before walk_pane), and the reason its value was knowable in advance.
-// Rule 8's cross-check: hle_tp.c's `--j3dstat` scan walks the same structure through a different read path and
-// reports the same quantities (`# j3d scan 10s`). The two must agree; when the first version of that one disagreed
-// with the entry-point census - 1.8 mat packets a call against 6.3 - the fault was in the scan, not the game.
-// Offsets, from zeldaret's headers (docs/research/LIBRARY_PORTS.md has the full design):
-//   J3DDrawBuffer +0x00 mpBuffer, +0x04 mEntryTableSize
-//   J3DPacket     +0x00 vtable, +0x04 mpNextPacket
-//   J3DMatPacket  +0x2C mpShapePacket
-//   J3DShapePacket +0x28 mpShape
-//   J3DShape      +0x0A mMtxGroupNum (low half of the word at +8), +0x38 mShapeMtx
-u64 g_j3dDrawScan[4];   // calls, would-be-taken, refused on a packet class, refused on a matrix class
-static bool j3d_draw_scan(Pc* c, u32 db) {
-    if (!span(c, db, 8)) return false;
-    u32 buf = f32(db), n = f32(db + 4);
-    if (n > (1u << 16)) { give_up(c, 1); return false; }   // a Z-sort bucket array: ~56 buckets, only a wild size is bad
-    if (n && !span(c, buf, 4 * n)) return false;
-    for (u32 i = 0; i < n; i++) {
-        for (u32 pk = f32(buf + 4 * i), guard = 0; pk && guard < 4096; guard++) {
-            if (!span(c, pk, 48)) return false;
-            if (f32(pk) != A_VT_MATPACKET) { g_j3dDrawScan[2]++; give_up(c, 5); return false; }
-            for (u32 sp = f32(pk + 0x2C), sg = 0; sp && sg < 4096; sg++) {
-                if (!span(c, sp, 60)) return false;
-                u32 shape = f32(sp + 0x28);
-                if (shape) {
-                    if (!span(c, shape, 104)) return false;
-                    u32 mg = f32(shape + 8) & 0xFFFF, mtx = f32(shape + 0x38);
-                    if (mg > 1024) { give_up(c, 1); return false; }
-                    if (mg && !span(c, mtx, 4 * mg)) return false;
-                    for (u32 k = 0; k < mg; k++) {
-                        u32 sm = f32(mtx + 4 * k);
-                        if (!sm) continue;             // drawFast skips a null entry
-                        if (!span(c, sm, 4)) return false;
-                        u32 vt = f32(sm);
-                        if (vt != A_VT_SHAPEMTX_CONCATVIEW && vt != A_VT_SHAPEMTX_MULTICONCATVIEW) {
-                            g_j3dDrawScan[3]++; give_up(c, 5); return false;   // the census says this never fires
-                        }
-                    }
-                }
-                sp = f32(sp + 4);
-            }
-            pk = f32(pk + 4);
-        }
-    }
-    return true;
-}
-static void j3d_draw_head(Pc* c, Gekko* g) {
-    g_j3dDrawScan[0]++;
-    if (!j3d_draw_scan(c, g->gpr[3])) return;       // (the scan has already recorded why, and given up)
-    g_j3dDrawScan[1]++;
-    // The drawing is not written yet. Declining here keeps the hook honest: the scan's coverage is real and
-    // measured, and nothing is drawn by code nobody has compared. C56's design (LIBRARY_PORTS) is the transcription
-    // job that goes here, and every one of its guest functions is already hashed.
-    give_up(c, 0);
-}
-
 u64 g_walkPanes;
 static void pane_walk(Pc* c, Gekko* g) {
     u32 p = g->gpr[3], gr = g->gpr[4], panes = 0;
@@ -2431,6 +2398,366 @@ static void j3d_multi_concat_load(Pc* c, u32 self) {
     }
 }
 
+// ---- C56: the J3D packet-draw subtree (J3DDrawBuffer::drawHead 0x80325500) ----
+// The scan makes exactly the all-or-nothing test the drawing needs and is measured on its own (it landed a day
+// before the drawing did, the order C53 went in: walk_scan before walk_pane, which is why its value was knowable
+// in advance).
+// Rule 8's cross-check: hle_tp.c's `--j3dstat` scan walks the same structure through a different read path and
+// reports the same quantities (`# j3d scan 10s`). The two must agree; when the first version of that one disagreed
+// with the entry-point census - 1.8 mat packets a call against 6.3 - the fault was in the scan, not the game.
+// Offsets, from zeldaret's headers (docs/research/LIBRARY_PORTS.md has the full design):
+//   J3DDrawBuffer +0x00 mpBuffer, +0x04 mEntryTableSize
+//   J3DPacket     +0x00 vtable, +0x04 mpNextPacket, +0x08 mpFirstChild
+//   J3DDrawPacket +0x10 mFlags, +0x20 mpDisplayListObj, +0x24 mpTexMtxObj
+//   J3DMatPacket  +0x2C mpShapePacket, +0x30 mpMaterial
+//   J3DShapePacket +0x28 mpShape, +0x2C mpMtxBuffer, +0x30 mpBaseMtxPtr, +0x38 mpModel
+//   J3DShape      +0x0A mMtxGroupNum (low half of the word at +8), +0x0C mFlags, +0x2C mVcdVatCmd,
+//                 +0x34 mHasNBT, +0x38 mShapeMtx, +0x3C mShapeDraw, +0x40 mCurrentMtx, +0x48 mHasPNMTXIdx,
+//                 +0x54 mScaleFlagArray, +0x58 mDrawMtx, +0x5C mNrmMtx, +0x60 mCurrentViewNo, +0x64 mBumpMtxOffset
+//   J3DMaterial   +0x10 mMaterialMode, +0x28 mTexGenBlock
+//   J3DShapeDraw  +0x04 mDisplayListSize, +0x08 mDisplayList
+//   J3DDisplayListObj +0x00 mpDisplayList[0], +0x08 mSize
+//   J3DModel      +0x04 mModelData, +0x08 mFlags, +0x84 mMtxBuffer, +0x88 mVertexBuffer
+//                 (so mCurrentVtxPos/Nrm/Col, at +0x2C/+0x30/+0x34 of the buffer, are +0xB4/+0xB8/+0xBC)
+//   J3DMtxBuffer  +0x04 mpScaleFlagArr, +0x18 mpDrawMtxArr[1], +0x20 mpNrmMtxArr[1], +0x28 mpBumpMtxArr[1],
+//                 +0x30 mCurrentViewNo, +0x34 mpUserAnmMtx
+//   J3DModelData  +0x08 mFlags
+//   j3dSys        +0x34 mFlags, +0x38 mModel, +0x40 mShapePacket, +0x54 mMaterialMode, +0x104 mModelDrawMtx,
+//                 +0x108 mModelNrmMtx, +0x10C mVtxPos, +0x110 mVtxNrm, +0x114 mVtxCol, +0x118 mNBTScale
+//
+// The statics J3DShape and J3DShapeMtx keep, from zeldaret's symbol map (.sbss). The two matrix-load ports already
+// here address the same words off r13, so the absolute and the relative form are the same claim made twice;
+// j3d_draw_head checks them against each other once per call rather than leaving that to a reader.
+enum {
+    A_SJ3D_PIPELINE = 0x804515A8,    // J3DShapeMtx::sCurrentPipeline   (r13 - 28632)
+    A_SJ3D_SCALEFLAG = 0x804515AC,   // J3DShapeMtx::sCurrentScaleFlag  (r13 - 28628)
+    A_SJ3D_NBTFLAG = 0x804515B0,     // J3DShapeMtx::sNBTFlag, one byte (r13 - 28624)
+    A_SJ3D_LODFLAG = 0x804515B1,     // J3DShapeMtx::sLODFlag, one byte (r13 - 28623)
+    A_SJ3D_TEXMTXLOAD = 0x804515B4,  // J3DShapeMtx::sTexMtxLoadType    (r13 - 28620)
+    A_SJ3D_MTXPTRTBL = 0x804515B8,   // J3DShapeMtxConcatView::sMtxPtrTbl[2] (r13 - 28616)
+    A_SJ3D_TEXGENBLOCK = 0x804515C0, // J3DDifferedTexMtx::sTexGenBlock (r13 - 28608)
+    A_SJ3D_TEXMTXOBJ = 0x804515C4,   // J3DDifferedTexMtx::sTexMtxObj   (r13 - 28604)
+    A_SJ3D_OLDVCDVAT = 0x804515D0,   // J3DShape::sOldVcdVatCmd         (r13 - 28592)
+    A_SJ3D_ENVELOPE = 0x804515D4,    // J3DShape::sEnvelopeFlag, a byte (r13 - 28588)
+    A_SJ3D_MTXLOADCACHE = 0x80434C80,// J3DShapeMtx::sMtxLoadCache[10]  (.bss)
+    A_J3D_SDA = 0x80458580,          // r13 itself, implied by the two above being the same words
+    kVcdVatDLSize = 0xC0,            // J3DShape::kVcdVatDLSize
+};
+u64 g_j3dDrawScan[5];   // calls, would-be-taken, refused on a packet class, on a matrix class, on a texture matrix
+u64 g_j3dDrawn[3];      // taken calls, mat packets drawn, shape draws emitted (rule 8: a port must say it ran)
+// GXCallDisplayList 0x8035FEF0: the dirty state made current, then a flush prim when nothing has been drawn since
+// the last one (`*(u32*)&vNumNot == 0`, which is both halves of __GXData word 0), then the call. The guest writes
+// the pointer whole (GX_WRITE_U32(list)); fifo.c's 0x40 masks it with 0x03FFFFE0 exactly as the hardware does.
+static void gx_call_dl(Pc* c, u32 list, u32 nbytes) {
+    gx_sync(c);
+    if (GX(DIRTY)) gx_dirty_state(c);
+    if (!GX(0)) { gx_send_flush_prim(c); gx_sync(c); }
+    p8(c, 0x40); p32(c, list); p32(c, nbytes);
+    c->n += 26;
+}
+// J3DLoadArrayBasePtr (static in J3DShape.cpp, inlined into loadVtxArray 0x80314EEC) through J3DLoadCPCmd:
+// GX_LOAD_CP_REG, 0xA0 + the attribute's index, the pointer with bit 31 cleared. Note the mask: GXSetArray uses
+// 0x3FFFFFFF, this uses 0x7FFFFFFF, and the difference is the guest's, not a simplification.
+static void j3d_array_base(Pc* c, u32 idx, u32 ptr) {
+    p8(c, 0x08); p8(c, 0xA0 + idx); p32(c, ptr & 0x7FFFFFFF);
+    c->n += 7;
+}
+// J3DShape::loadVtxArray 0x80314EEC: position, normal unless the shape has NBT, colour 0.
+static void j3d_load_vtx_array(Pc* c, u32 shape) {
+    const u32 sys = A_J3DSYS;
+    j3d_array_base(c, 0, rd32(c, sys + 0x10C));
+    if (!f8(shape + 0x34)) j3d_array_base(c, 1, rd32(c, sys + 0x110));
+    j3d_array_base(c, 2, rd32(c, sys + 0x114));
+    c->n += 10;
+}
+// J3DCurrentMtx::load (inline, J3DShape.h): the two CP matrix-index registers and then the same two words as an
+// XF pair at GX_XF_REG_MATRIXINDEX0.
+static void j3d_current_mtx_load(Pc* c, u32 shape) {
+    u32 a = f32(shape + 0x40), b = f32(shape + 0x44);
+    p8(c, 0x08); p8(c, 0x30); p32(c, a);
+    p8(c, 0x08); p8(c, 0x40); p32(c, b);
+    p8(c, 0x10); p16(c, 1); p16(c, 0x1018); p32(c, a); p32(c, b);
+    c->n += 22;
+}
+// J3DShape::setArrayAndBindPipeline 0x80315398: the pipeline from the shape's flags, the vertex arrays, j3dSys's
+// draw and normal matrices for this view (each of those setters also emits a GXSetArray), and four statics.
+static void j3d_set_array_and_bind(Pc* c, u32 shape) {
+    const u32 sys = A_J3DSYS;
+    u32 flags = f32(shape + 0x0C);
+    wr32(c, A_SJ3D_PIPELINE, (flags & 0x1C) >> 2);
+    j3d_load_vtx_array(c, shape);
+    u32 vno = f32(shape + 0x60), dm = f32(shape + 0x58), nm = f32(shape + 0x5C);
+    if (!span(c, vno, 4)) return;
+    u32 v = f32(vno);
+    if (v > 16 || !span(c, dm + 4 * v, 4) || !span(c, nm + 4 * v, 4)) { give_up(c, 1); return; }
+    u32 dmp = f32(dm + 4 * v), nmp = f32(nm + 4 * v);
+    wr32(c, sys + 0x104, dmp);
+    gx_set_array(c, 21, dmp, 48);        // GX_POS_MTX_ARRAY, sizeof(Mtx)
+    wr32(c, sys + 0x108, nmp);
+    gx_set_array(c, 22, nmp, 36);        // GX_NRM_MTX_ARRAY, sizeof(Mtx33)
+    wr32(c, A_SJ3D_SCALEFLAG, f32(shape + 0x54));
+    wr8(c, A_SJ3D_NBTFLAG, f8(shape + 0x34));
+    wr8(c, A_SJ3D_ENVELOPE, f8(shape + 0x48));
+    wr32(c, A_SJ3D_TEXMTXLOAD, flags & 0xF000);
+    c->n += 48;
+}
+// J3DShapeMtxConcatView::load 0x80313C54: the single-matrix case of what port bit 9 does per used matrix. The
+// pipeline's member pointer must be loadMtxConcatView_PNGP, as bit 9 requires - the same table, the same test.
+static bool j3d_mtx_pipeline_pngp(Pc* c, u32* pipe_out) {
+    u32 pipe = A_J3D_LOADPIPE + 12 * rd32(c, A_SJ3D_PIPELINE);
+    if (!span(c, pipe, 12) || f32(pipe) != 0 || (s32)f32(pipe + 4) >= 0 || f32(pipe + 8) != A_J3D_PNGP) {
+        give_up(c, 5);
+        return false;
+    }
+    if (pipe_out) *pipe_out = pipe;
+    return true;
+}
+// sMtxPtrTbl, which both concat-view loads set from the model before dispatching.
+static bool j3d_mtx_ptr_tbl(Pc* c, u32* t0, u32* t1, u32* md) {
+    const u32 sys = A_J3DSYS;
+    u32 model = rd32(c, sys + 0x38);
+    if (!model || !span(c, model, 140) || !span(c, f32(model + 0x84), 56) || !span(c, f32(model + 4), 80)) return false;
+    u32 mb = f32(model + 0x84);
+    *t0 = f32(mb + 0x34);   // getMtxBuffer()->getUserAnmMtx(0)
+    *t1 = f32(mb + 0x10);   // getWeightAnmMtx(0)
+    *md = f32(model + 4);
+    wr32(c, A_SJ3D_MTXPTRTBL, *t0);
+    wr32(c, A_SJ3D_MTXPTRTBL + 4, *t1);
+    return !c->fail;
+}
+static void j3d_concat_view_load(Pc* c, u32 self) {
+    const u32 sys = A_J3DSYS;
+    u32 t0, t1, md;
+    if (!span(c, self, 8)) return;
+    if (!j3d_mtx_ptr_tbl(c, &t0, &t1, &md)) return;
+    if (!j3d_mtx_pipeline_pngp(c, NULL)) return;
+    u32 k = f16(self + 4), dmi = f32(md + 76), dmf = f32(md + 72);
+    if (!span(c, dmi + 2 * k, 2) || !span(c, dmf + k, 1)) return;
+    u32 f = f8(dmf + k);
+    if (f > 1) { give_up(c, 5); return; }   // (sMtxPtrTbl has two entries)
+    u32 ptr = f ? t1 : t0;
+    wr32(c, sys + 0x104, ptr);
+    gx_set_array(c, 21, ptr, 48);
+    j3d_load_mtx_concat_view_pngp(c, self, 0, f16(dmi + 2 * k));
+    c->n += 40;
+}
+// J3DShapeMtx::resetMtxLoadCache 0x803130A8: ten u16 set to 0xFFFF.
+static void j3d_reset_mtx_load_cache(Pc* c) {
+    for (u32 i = 0; i < 5; i++) wr32(c, A_SJ3D_MTXLOADCACHE + 4 * i, 0xFFFFFFFFu);
+    c->n += 13;
+}
+// J3DShape::drawFast 0x8031544C: the vcd/vat list when it changed, the current matrix when the envelope flag is on
+// and this shape has no PNMTX index, the arrays and pipeline, then either each matrix group's load and draw or -
+// with J3DShpFlag_NoMtx - the base matrix loaded once and only the draws.
+static void j3d_shape_draw_fast(Pc* c, u32 shape) {
+    const u32 sys = A_J3DSYS;
+    u32 vcd = f32(shape + 0x2C);
+    if (rd32(c, A_SJ3D_OLDVCDVAT) != vcd) {
+        if (!span(c, vcd, kVcdVatDLSize)) return;
+        gx_call_dl(c, vcd, kVcdVatDLSize);
+        wr32(c, A_SJ3D_OLDVCDVAT, vcd);
+    }
+    if (rd8(c, A_SJ3D_ENVELOPE) && !f8(shape + 0x48)) j3d_current_mtx_load(c, shape);
+    j3d_set_array_and_bind(c, shape);
+    if (c->fail) return;
+    u32 flags = f32(shape + 0x0C), mg = f32(shape + 8) & 0xFFFF;
+    u32 mtx = f32(shape + 0x38), drw = f32(shape + 0x3C);
+    if (mg && !span(c, drw, 4 * mg)) return;
+    bool nomtx = (flags & 0x200) != 0;   // J3DShpFlag_NoMtx
+    if (!nomtx) {
+        if (rd8(c, A_SJ3D_LODFLAG)) j3d_reset_mtx_load_cache(c);
+    } else {
+        u32 sp = rd32(c, sys + 0x40);
+        if (!span(c, sp, 52)) return;
+        // `*j3dSys.getShapePacket()->getBaseMtxPtr()` is a Mtx, which decays straight back to the pointer: the
+        // twelve floats are *at* mpBaseMtxPtr, not at the word it points to. Port bit 2 reads it the same way
+        // (`psmtx_concat(c, f32(m0 + 48), ...)`), which is how the extra dereference here was caught.
+        u32 base = f32(sp + 0x30);
+        if (!span(c, base, 48)) return;
+        u32 m[12];
+        for (u32 i = 0; i < 12; i++) m[i] = f32(base + 4 * i);
+        j3d_load_pos_mtx(c, m, 0);       // GX_PNMTX0
+        j3d_load_nrm_mtx(c, m, 4, 0);
+    }
+    for (u32 i = 0; i < mg && !c->fail; i++) {
+        if ((u32)(c->pp - c->pbase) + 512 > c->pcap) { give_up(c, 1); return; }
+        if (!nomtx) {
+            u32 sm = f32(mtx + 4 * i);
+            if (sm) {
+                u32 vt = f32(sm);        // (the scan has already restricted this to the two classes)
+                if (vt == A_VT_SHAPEMTX_CONCATVIEW) j3d_concat_view_load(c, sm);
+                else j3d_multi_concat_load(c, sm);
+                if (c->fail) return;
+            }
+        }
+        u32 sd = f32(drw + 4 * i);
+        if (!sd) continue;
+        if (!span(c, sd, 12)) return;
+        gx_call_dl(c, f32(sd + 8), f32(sd + 4));   // J3DShapeDraw::draw 0x80314AD4
+        g_j3dDrawn[2]++;
+        c->n += 12;
+    }
+    c->n += 24;
+}
+// J3DShapePacket::prepareDraw 0x80312E08: the vertex arrays into j3dSys, the model and packet recorded, the LOD
+// flag, the two CPU-skinning flags copied from the model onto the shape, the matrix buffer's pointers onto the
+// shape, and the model data's post-texture-matrix flag synced. All of it guest-memory stores, none of it GX.
+static void j3d_prepare_draw(Pc* c, u32 sp) {
+    const u32 sys = A_J3DSYS;
+    u32 model = f32(sp + 0x38), shape = f32(sp + 0x28), mb = f32(sp + 0x2C);
+    if (!model || !mb || !shape) { give_up(c, 1); return; }
+    if (!span(c, model, 192) || !span(c, mb, 56) || !span(c, shape, 104)) return;
+    wr32(c, sys + 0x10C, f32(model + 0xB4));       // J3DVertexBuffer::setArray 0x8031106C
+    wr32(c, sys + 0x110, f32(model + 0xB8));
+    wr32(c, sys + 0x114, f32(model + 0xBC));
+    wr32(c, sys + 0x38, model);
+    wr32(c, sys + 0x40, sp);
+    u32 mf = f32(model + 8);
+    wr8(c, A_SJ3D_LODFLAG, (mf & 0x10) != 0);      // J3DMdlFlag_EnableLOD
+    u32 sf = f32(shape + 0x0C);
+    sf = (mf & 0x04) ? sf | 0x04 : sf & ~0x04u;    // SkinPosCpu
+    sf = ((mf & 0x08) && !(sf & 0x100)) ? sf | 0x08 : sf & ~0x08u;   // SkinNrmCpu, unless J3DShpFlag_EnableLod
+    wr32(c, shape + 0x0C, sf);
+    wr32(c, shape + 0x60, mb + 0x30);              // setCurrentViewNoPtr(&mCurrentViewNo)
+    wr32(c, shape + 0x54, f32(mb + 0x04));         // setScaleFlagArray
+    wr32(c, shape + 0x58, f32(mb + 0x18));         // setDrawMtx(mpDrawMtxArr[1])
+    if (!f8(shape + 0x34)) {
+        wr32(c, shape + 0x5C, f32(mb + 0x20));     // setNrmMtx(mpNrmMtxArr[1])
+    } else {
+        u32 ba = f32(mb + 0x28), off = f32(shape + 0x64);
+        if (!span(c, ba + 4 * off, 4)) return;
+        wr32(c, shape + 0x5C, f32(ba + 4 * off));  // mpBumpMtxArr[1][getBumpMtxOffset()]
+    }
+    u32 md = f32(model + 4);
+    if (!span(c, md, 12)) return;
+    u32 sys_f = rd32(c, sys + 0x34);               // J3DModelData::syncJ3DSysFlags 0x803260F8
+    wr32(c, sys + 0x34, (f32(md + 8) & 0x20) ? sys_f | 0x40000000u : sys_f & ~0x40000000u);
+    c->n += 70;
+}
+// J3DShapePacket::drawFast 0x80312FBC: hidden or shapeless packets are skipped; otherwise prepareDraw, the
+// differed-texture-matrix statics, then the shape. A packet with a texture-matrix object is refused in the scan,
+// so sTexGenBlock is only ever cleared here - which is also what bit 2's matrix load demands.
+static void j3d_shape_packet_draw_fast(Pc* c, u32 sp) {
+    if (f32(sp + 0x10) & 0x10) { c->n += 8; return; }   // J3DShpFlag_Hidden
+    u32 shape = f32(sp + 0x28);
+    if (!shape) { c->n += 8; return; }
+    j3d_prepare_draw(c, sp);
+    if (c->fail) return;
+    wr32(c, A_SJ3D_TEXGENBLOCK, 0);
+    j3d_shape_draw_fast(c, shape);
+    c->n += 10;
+}
+// J3DMaterial::load 0x8031668C: the material mode into j3dSys and, unless j3dSys flag 2 is set, the texgen
+// block's NBT scale. The second half is refused for now and counted: J3DTexGenBlockPatched - the class the
+// material census found on every material in both scenes - does not override getNBTScale, so the guest would be
+// dereferencing the base class's NULL there, which says flag 2 must be set whenever this runs. That is a
+// prediction, not a reading, so the port declines rather than assuming it and the counter settles it in one run
+// (rule 8: a second view of the quantity before believing the first).
+u64 g_j3dNbtRefused;
+static void j3d_material_load(Pc* c, u32 mat) {
+    const u32 sys = A_J3DSYS;
+    if (!span(c, mat, 48)) return;
+    wr32(c, sys + 0x54, f32(mat + 0x10));
+    if (!(rd32(c, sys + 0x34) & 2)) { g_j3dNbtRefused++; give_up(c, 5); return; }
+    c->n += 12;
+}
+// J3DMatPacket::draw 0x80312A9C: the material, the packet's own display list, the first shape's pre-draw setting,
+// then every shape packet in the chain, then the vcd/vat cache reset.
+static void j3d_mat_packet_draw(Pc* c, u32 pk) {
+    u32 dlo = f32(pk + 0x20);
+    j3d_material_load(c, f32(pk + 0x30));
+    if (c->fail) return;
+    if (!dlo || !span(c, dlo, 12)) { give_up(c, 1); return; }   // J3DMatPacket::draw calls callDL unconditionally
+    gx_call_dl(c, f32(dlo), f32(dlo + 8));
+    u32 sp0 = f32(pk + 0x2C);
+    if (!sp0) { give_up(c, 1); return; }                        // ...and then dereferences the first shape packet
+    u32 shape0 = f32(sp0 + 0x28);
+    if (!shape0 || !span(c, shape0, 104)) { give_up(c, 1); return; }
+    // J3DShape::loadPreDrawSetting 0x80315300: the vcd/vat list when it changed, then the current matrix.
+    u32 vcd = f32(shape0 + 0x2C);
+    if (rd32(c, A_SJ3D_OLDVCDVAT) != vcd) {
+        if (!span(c, vcd, kVcdVatDLSize)) return;
+        gx_call_dl(c, vcd, kVcdVatDLSize);
+        wr32(c, A_SJ3D_OLDVCDVAT, vcd);
+    }
+    j3d_current_mtx_load(c, shape0);
+    for (u32 sp = sp0, guard = 0; sp && guard < 4096 && !c->fail; guard++) {
+        if (!span(c, sp, 60)) return;
+        u32 dl = f32(sp + 0x20);
+        if (dl) {
+            if (!span(c, dl, 12)) return;
+            gx_call_dl(c, f32(dl), f32(dl + 8));
+        }
+        j3d_shape_packet_draw_fast(c, sp);
+        sp = f32(sp + 4);
+        c->n += 12;
+    }
+    wr32(c, A_SJ3D_OLDVCDVAT, 0);   // J3DShape::resetVcdVatCache (inline)
+    c->n += 20;
+}
+static bool j3d_draw_scan(Pc* c, u32 db) {
+    if (!span(c, db, 8)) return false;
+    u32 buf = f32(db), n = f32(db + 4);
+    if (n > (1u << 16)) { give_up(c, 1); return false; }   // a Z-sort bucket array: ~56 buckets, only a wild size is bad
+    if (n && !span(c, buf, 4 * n)) return false;
+    for (u32 i = 0; i < n; i++) {
+        for (u32 pk = f32(buf + 4 * i), guard = 0; pk && guard < 4096; guard++) {
+            if (!span(c, pk, 48)) return false;
+            if (f32(pk) != A_VT_MATPACKET) { g_j3dDrawScan[2]++; give_up(c, 5); return false; }
+            for (u32 sp = f32(pk + 0x2C), sg = 0; sp && sg < 4096; sg++) {
+                if (!span(c, sp, 60)) return false;
+                // A shape packet with a texture-matrix object makes drawFast set J3DDifferedTexMtx::sTexGenBlock,
+                // and the concat-view matrix load then takes its differed path - the one bit 2's port has always
+                // refused. Refusing it here instead of three functions deeper keeps the reason legible and avoids
+                // undoing a half-written subtree. Counted separately, since it was not in the scan that measured
+                // 1,558 of 1,722 calls takeable: the difference between the two numbers is this class's share.
+                if (f32(sp + 0x24)) { g_j3dDrawScan[4]++; give_up(c, 7); return false; }
+                u32 shape = f32(sp + 0x28);
+                if (shape) {
+                    if (!span(c, shape, 104)) return false;
+                    u32 mg = f32(shape + 8) & 0xFFFF, mtx = f32(shape + 0x38);
+                    if (mg > 1024) { give_up(c, 1); return false; }
+                    if (mg && !span(c, mtx, 4 * mg)) return false;
+                    for (u32 k = 0; k < mg; k++) {
+                        u32 sm = f32(mtx + 4 * k);
+                        if (!sm) continue;             // drawFast skips a null entry
+                        if (!span(c, sm, 4)) return false;
+                        u32 vt = f32(sm);
+                        if (vt != A_VT_SHAPEMTX_CONCATVIEW && vt != A_VT_SHAPEMTX_MULTICONCATVIEW) {
+                            g_j3dDrawScan[3]++; give_up(c, 5); return false;   // the census says this never fires
+                        }
+                    }
+                }
+                sp = f32(sp + 4);
+            }
+            pk = f32(pk + 4);
+        }
+    }
+    return true;
+}
+static void j3d_draw_head(Pc* c, Gekko* g) {
+    g_j3dDrawScan[0]++;
+    // The statics above are addressed absolutely while port bits 2 and 9 address the same words off r13. One
+    // comparison makes that the same claim rather than two, for good: if the small-data base is ever not what the
+    // symbol map implies, both conventions stop here instead of one of them reading the wrong words.
+    if (g->gpr[13] != A_J3D_SDA) { give_up(c, 5); return; }
+    if (!j3d_draw_scan(c, g->gpr[3])) return;       // (the scan has already recorded why, and given up)
+    g_j3dDrawScan[1]++;
+    u32 db = g->gpr[3], buf = f32(db), n = f32(db + 4);
+    c->wt = true;
+    for (u32 i = 0; i < n && !c->fail; i++) {
+        for (u32 pk = f32(buf + 4 * i), guard = 0; pk && guard < 4096 && !c->fail; guard++) {
+            j3d_mat_packet_draw(c, pk);
+            pk = f32(pk + 4);
+            if (!c->fail) g_j3dDrawn[1]++;
+            c->n += 10;
+        }
+        c->n += 6;
+    }
+    c->n += 14;
+    if (!c->fail) g_j3dDrawn[0]++;
+}
+
 // ---- J2D text: J2DTextBoxEx::drawSelf 0x803075AC with J2DPrint (printReturn, parse) and JUTResFont (the font's code map,
 // widths, page and character quads). Census (jobs 1415-1416): every HUD string in Ordon and the heavy area is plain
 // ASCII (no escape codes, control characters or lead bytes), ~4 characters, with JUTResFont; a string with any byte
@@ -2740,7 +3067,10 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->wt = false;
     c->pbase = c->pipe;
     c->pcap = PIPE_CAP;
-    if (hook == PORT_PANEWALK || hook == PORT_DECO || hook == PORT_TEXT) {  // the walk's buffers (and the minimap's long lines): linear memory on the
+    // The J3D packet draw is a subtree like the pane walk: it stores into guest memory (prepareDraw) and the code
+    // after each store reads it back, so it needs the write-through path with an undo list, and its pipe bytes are
+    // far more than PIPE_CAP (~7 shapes a call, each a matrix load and a display-list call).
+    if (hook == PORT_PANEWALK || hook == PORT_DECO || hook == PORT_TEXT || hook == PORT_J3DDRAW) {  // the walk's buffers (and the minimap's long lines): linear memory on the
         // 3DS (the heap is nearly full in gameplay)
         static u8* walkPipe;
         static u32 (*walkUndo)[3];

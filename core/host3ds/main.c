@@ -2249,15 +2249,32 @@ static const char* run_body(const char* path) {
                                       d[1] ? (double)d[7] / (double)d[1] : 0.0,
                                       d[0] ? (double)d[8] / (double)d[0] : 0.0);
                           } }
-                        { extern u64 g_j3dDrawScan[4];   // C56: the port-framework scan, to difference against
-                          static u64 lastJd[4];            // --j3dstat's (rule 8 - two read paths, same quantity)
-                          if (g_j3dDrawScan[0] != lastJd[0]) {
-                              u64 d[4];
-                              for (int k = 0; k < 4; k++) { d[k] = g_j3dDrawScan[k] - lastJd[k]; lastJd[k] = g_j3dDrawScan[k]; }
+                        { extern u64 g_j3dDrawScan[5], g_j3dDrawn[3], g_j3dNbtRefused;   // C56: the port-framework
+                          static u64 lastJd[5], lastDr[3], lastNbt;  // scan, to difference against --j3dstat's
+                          if (g_j3dDrawScan[0] != lastJd[0]) {        // (rule 8 - two read paths, one quantity)
+                              u64 d[5], r[3];
+                              for (int k = 0; k < 5; k++) { d[k] = g_j3dDrawScan[k] - lastJd[k]; lastJd[k] = g_j3dDrawScan[k]; }
+                              for (int k = 0; k < 3; k++) { r[k] = g_j3dDrawn[k] - lastDr[k]; lastDr[k] = g_j3dDrawn[k]; }
+                              u64 nbt = g_j3dNbtRefused - lastNbt; lastNbt = g_j3dNbtRefused;
+                              // `drew` is what says the code *ran*: three ports in this project reported "0
+                              // differed" over zero executed calls, so a scan figure alone is not evidence.
                               fprintf(g_perf, "# j3d port scan 10s: %llu calls, %llu would be taken (%.1f%%); refused: "
-                                      "packet class %llu, matrix class %llu\n", (unsigned long long)d[0],
+                                      "packet class %llu, matrix class %llu, tex mtx obj %llu, nbt scale %llu; "
+                                      "drew %llu calls, %llu mat packets, %llu shape draws\n", (unsigned long long)d[0],
                                       (unsigned long long)d[1], d[0] ? 100.0 * (double)d[1] / (double)d[0] : 0.0,
-                                      (unsigned long long)d[2], (unsigned long long)d[3]);
+                                      (unsigned long long)d[2], (unsigned long long)d[3], (unsigned long long)d[4],
+                                      (unsigned long long)nbt, (unsigned long long)r[0], (unsigned long long)r[1],
+                                      (unsigned long long)r[2]);
+                          } }
+                        { extern u32 g_portHashWantedN; extern u64 g_portHashWanted[8][2];
+                          static bool said;
+                          if (g_portHashWantedN && !said) {   // the rows porthash.py has not been run on: paste-ready
+                              said = true;
+                              fprintf(g_perf, "# port hashes (recorded as 0, every port off until filled in):");
+                              for (u32 k = 0; k < g_portHashWantedN; k++)
+                                  fprintf(g_perf, " { 0x%08llX, 0x%016llXull }", (unsigned long long)g_portHashWanted[k][0],
+                                          (unsigned long long)g_portHashWanted[k][1]);
+                              fprintf(g_perf, "\n");
                           } }
                         { extern bool g_paneStat; extern u32 g_paneVt[32], g_paneN[32], g_paneOther;
                           if (g_paneStat) {

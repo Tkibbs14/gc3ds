@@ -24,6 +24,7 @@ What it checks:
 Planted-bug self-test: `--selftest` runs each check against text with a known fault and fails if the check passes.
 A check whose self-test cannot fail proves nothing (AGENTS, "Checks").
 """
+import glob
 import os
 import re
 import sys
@@ -116,10 +117,21 @@ def check_switches_exist(agents, parsers):
     named -= {'ab', 'press', 'help', 'from', 'skip', 'by', 'cols', 'split', 'end', 'col', 'selftest',
               'game', 'state', 'seconds', 'out', 'frames', 'load-state', 'profile', 'disasm', 'cycles', 'top',
               'arm', 'max-findings', 'comment', 'fix', 'name'}
+    # An option of a tool in core/tools/ counts as parsed too, read from the tools themselves rather than added to
+    # the hand-kept list above - which is how `rungs.py --by-rung` came to be reported as a missing *program*
+    # switch the day it was documented.
+    tools = ''
+    for p in sorted(glob.glob(os.path.join(ROOT, 'core', 'tools', '*.py'))):
+        with open(p) as f:
+            tools += f.read()
     bad = []
     for s in sorted(named):
-        if not any(('"--%s"' % s) in p for p in parsers):
-            bad.append('AGENTS names --%s but neither main.c nor pc_main.c parses it (renamed or removed?)' % s)
+        if any(('"--%s"' % s) in p for p in parsers):
+            continue
+        if ("'--%s'" % s) in tools or ('"--%s"' % s) in tools:
+            continue
+        bad.append('AGENTS names --%s but neither main.c nor pc_main.c nor a core/tools script parses it '
+                   '(renamed or removed?)' % s)
     return bad
 
 

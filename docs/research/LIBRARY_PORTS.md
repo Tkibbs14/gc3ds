@@ -267,8 +267,57 @@ image and therefore a machine that has one. Everything else above is settled.
   base pointers, matrix loads). That is the pane walk's shape, which is the strongest reason to expect it to behave
   the same way.
 
-**What is left to write** is the spine only, ~1.2 KB of guest behaviour: the two loops, `J3DMatPacket::draw`,
+**What was left to write** was the spine only, ~1.2 KB of guest behaviour: the two loops, `J3DMatPacket::draw`,
 `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
 `setArrayAndBindPipeline`, `J3DShapeDraw::draw`, and a `J3DShapeMtxConcatView::load` wrapper around port bit 2's
 existing `loadMtxConcatView_PNGP`. **Write it with `--port check` and a `drew N` counter from the first commit:**
 two ports in this session reported "0 differed" over zero executed calls, and one of them took a peer's run to catch.
+
+### Written, 1 November 2026 - port bit 11, off, not yet checked or measured
+
+The drawing is in `port_j2d.c` behind `--port-hooks` bit 11 (2048), and it absorbs **both** matrix loads: a
+`J3DShapeMtxConcatView` matrix goes through the new single-matrix `j3d_concat_view_load`, which wraps bit 2's
+`j3d_load_mtx_concat_view_pngp`, and a `J3DShapeMtxMultiConcatView` matrix goes straight through bit 9's existing
+`j3d_multi_concat_load`. That is the absorption the entry hooks could not pay for: bit 2 measures **-0.94%** and
+bit 9 **+0.08%** on their own (jobs 1840-1848), and inside a subtree neither pays a hook entry or a commit.
+
+**The gap the design left is closed.** `J3DDifferedTexMtx::sTexGenBlock` and `sTexMtxObj` *are* in zeldaret's map,
+at **0x804515C0** and **0x804515C4**; the earlier search missed them by mangling the class name as `16J3D...`
+when it is 17 characters. The find is self-checking: port bit 2 already refuses on `f32(r13 - 28608)`, and
+r13 - 28608 is 0x804515C0 exactly, so the symbol map and code written months earlier agree on the address. Every
+other static resolves the same way, and `j3d_draw_head` now compares `r13` against the value the symbol map
+implies (0x80458580) once per call, so the absolute form used by C56 and the r13-relative form used by bits 2 and
+9 can never drift apart silently.
+
+**Three things the port refuses, each counted, because each was a prediction rather than a reading:**
+- **A shape packet with a texture-matrix object** (`mpTexMtxObj != 0`). It makes `drawFast` set `sTexGenBlock`,
+  and the concat-view load then takes its differed path - the one bit 2 has always refused. Refused in the *scan*
+  rather than three functions deep, so the reason stays legible and no half-written subtree needs undoing. This is
+  new since the scan measured 1,558 of 1,722 calls takeable, so **that figure is now an upper bound** and the gap
+  between the two numbers is this class's share.
+- **`J3DMaterial::load`'s NBT-scale half**, when `j3dSys` flag 2 is clear. `J3DTexGenBlockPatched` - the class the
+  material census found on every material in both scenes - does **not** override `getNBTScale`, so it inherits the
+  base class's `return NULL` and the guest would be dereferencing it. That says flag 2 must be set whenever this
+  runs, which is a prediction from the headers, so the port declines and `nbt scale N` settles it in one run
+  instead.
+- **The pipeline being anything but `loadMtxConcatView_PNGP`**, and `sMtxPtrTbl` holding more than two entries -
+  both inherited from bit 9, unchanged.
+
+**One bug the writing produced, and what caught it:** `J3DShape::drawFast`'s no-matrix branch loads
+`*j3dSys.getShapePacket()->getBaseMtxPtr()`, and a `Mtx` decays straight back to its pointer, so the twelve floats
+are *at* `mpBaseMtxPtr` and not at the word it points to. The first draft dereferenced twice. It was caught by
+differencing against bit 2, which reads the same field as `psmtx_concat(c, f32(m0 + 48), ...)` - rule 8 applied to
+a field offset rather than to an instrument.
+
+**The four new guest functions are recorded with hash 0 on purpose.** `porthash.py` needs the disc image and a
+cloud session has none, so a guessed hash would be worse than none. `port_valid()` treats a zero row exactly as a
+mismatch - **every** port off, so C53 and the soft-float concat cannot be silently re-enabled by a bad row - and
+publishes the hash the console computed as a paste-ready `# port hashes` line. One console run fills them in. The
+rows are `loadVtxArray` 0x80314EEC, `J3DLoadCPCmd` 0x80314E98, `resetMtxLoadCache` 0x803130A8 and
+`GXCallDisplayList` 0x8035FEF0.
+
+**So the next three steps are, in order:** harvest the four hashes from one short console run (the build has every
+port off until then, so it must not be used for speed); then `--port check` with `--port-hooks 2291`, which must
+report 0 differed **and** a non-zero `drew` (the J2DPicture port and the soft-float concat both reported "0
+differed" over zero executed calls, which is why `drew` is in the report line at all); then calibrate `kInsScale`
+for the hook from check mode's instructions per call, which is still the placeholder 100; and only then measure.

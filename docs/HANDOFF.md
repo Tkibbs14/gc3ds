@@ -1,5 +1,56 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-11-01)
 
+> **▶ 2026-11-01 (later): C56's drawing code is written - the J3D packet-draw subtree, port bit 11, off and not yet
+> checked.** The design had one open gap, "`J3DDifferedTexMtx::sTexGenBlock` and `sTexMtxObj` are not in zeldaret's
+> map", and it was never a gap: they are at **0x804515C0** and **0x804515C4**, and the earlier search missed them by
+> mangling a 17-character class name as 16. **The find checks itself with no disc image**: port bit 2 has refused on
+> `f32(r13 - 28608)` since long before the symbol map was first fetched into a session, and r13 - 28608 *is*
+> 0x804515C0. Every other static resolves the same way, so `j3d_draw_head` now compares r13 against the implied
+> 0x80458580 once per call and the absolute form C56 uses can never drift from the r13-relative form bits 2 and 9
+> use.
+>
+> **What the port does.** `drawHead`'s two loops, `J3DMatPacket::draw`, `J3DShapePacket::drawFast`, `prepareDraw`,
+> `J3DShape::drawFast` with both matrix branches, `loadPreDrawSetting`, `J3DMaterial::load`,
+> `setArrayAndBindPipeline`, `loadVtxArray`, `J3DCurrentMtx::load`, `resetMtxLoadCache` and `J3DShapeDraw::draw` -
+> about 1.2 KB of guest behaviour, mostly guest-memory stores through the walk's undo list plus a handful of GX
+> emissions (`0x40` display-list calls, CP array bases, matrix loads). **Both matrix loads are delegated, not
+> rewritten:** a `J3DShapeMtxConcatView` matrix goes through a new single-matrix wrapper around port bit 2's
+> `j3d_load_mtx_concat_view_pngp`, and a `J3DShapeMtxMultiConcatView` matrix straight through bit 9. That is the
+> whole argument for this port in one line - those two measure **-0.94%** and **+0.08%** as standalone entry hooks
+> at the current default (jobs 1840-1848) and inside a subtree neither pays a hook entry or a commit.
+>
+> **It is not checked and not measured, and three gates stand in front of that, in order.**
+> 1. **Four new hash rows are recorded as `0ull` on purpose.** `porthash.py` needs the disc image and a cloud
+>    session has none; a guessed hash would be worse than none. `port_valid()` treats a zero row *exactly* as a
+>    mismatch - every port off, so a bad row can never silently re-enable C53 and the soft-float concat - and the
+>    console publishes the hash it computed as a paste-ready `# port hashes` line. **So the build that harvests
+>    them has no ports at all and must not be used for speed.** The rows: `loadVtxArray` 0x80314EEC,
+>    `J3DLoadCPCmd` 0x80314E98, `resetMtxLoadCache` 0x803130A8, `GXCallDisplayList` 0x8035FEF0.
+> 2. **`--port check` with `--port-hooks 2291`, needing 0 differed *and* a non-zero `drew`.** The report line
+>    carries `drew N calls, N mat packets, N shape draws` for exactly that reason: the J2DPicture port and the
+>    soft-float concat both reported "0 differed" over zero executed calls this week, and one of them took a peer's
+>    run to catch.
+> 3. **`kInsScale[11]`, still the placeholder 100**, to be calibrated from check mode's instructions per call.
+>
+> **Two refusals the port adds are counted rather than reasoned about.** A shape packet with `mpTexMtxObj != 0`
+> (refused in the scan, because it sends the matrix load down bit 2's differed path) - which makes the scan's
+> measured 1,558-of-1,722 an upper bound, and the gap between the two numbers is this class's share. And
+> `J3DMaterial::load`'s NBT-scale half: `J3DTexGenBlockPatched`, the class the material census found on every
+> material in both scenes, does **not** override `getNBTScale`, so it inherits the base class's `return NULL` and
+> the guest would be dereferencing it - which says `j3dSys` flag 2 must be set whenever this runs. That is a
+> prediction from a header, so the port declines and `nbt scale N` settles it in one run.
+>
+> **One bug the writing produced, and what caught it.** `J3DShape::drawFast`'s no-matrix branch loads
+> `*j3dSys.getShapePacket()->getBaseMtxPtr()`, and a `Mtx` decays straight back to its pointer: the twelve floats
+> are *at* `mpBaseMtxPtr`, not at the word it points to. The first draft dereferenced twice. Caught by differencing
+> against bit 2, which reads the same field as `f32(m0 + 48)` - rule 8 applied to a field offset rather than to an
+> instrument, and the fourth time this week that two views of one quantity found a fault that reading the code did
+> not.
+>
+> **Also: `docs_stale.py` was failing on `rungs.py --by-rung`** - its switch check only knew about `main.c` and
+> `pc_main.c`, so documenting a *tool* option reported it as a missing *program* switch. It now reads the options
+> out of `core/tools/*.py` as well, rather than growing the hand-kept exclusion list again.
+
 > **▶ 2026-11-01: C53 is a default (+3.4%), and the 2DS turns out to launch into one of several memory states ~5%
 > apart.** Build `8a873bf3c7c0da39`. **Read C55 before trusting any absolute figure in this file.**
 >

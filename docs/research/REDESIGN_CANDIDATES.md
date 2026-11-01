@@ -609,14 +609,30 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   buffers. The entry table averages **56** buckets, *below* that guard, so **the mean hid the tail**: a guard has to
   be set against the distribution, not the average. Caught by differencing against the census (6.3 a call against
   the scan's 1.8), which is rule 8 and is why the census was written first.
-- **What is left to write:** the spine only - `drawHead`'s two loops, `J3DMatPacket::draw`,
-  `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
-  `setArrayAndBindPipeline`, `J3DShapeDraw::draw` and the `J3DShapeMtxConcatView::load` wrapper around bit 2's
-  helper. Roughly 1.2 KB of guest behaviour, with the two expensive leaves already done.
-- **Re-evaluate when:** the port is written. **Status: next, and now the best-evidenced entry on this list** - ahead
-  of C54 (5.15%) on size, and ahead of where C53 stood before it was built, because its two costliest callees exist
-  and only need a context to pay in. Write it with `--port check` and a `drew N` counter from the start: two ports
-  this session reported "0 differed" over zero executed calls.
+- **The drawing is written** (2026-11-01, `--port-hooks` bit 11 / 2048, off): `drawHead`'s two loops,
+  `J3DMatPacket::draw`, `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast` with both its matrix
+  branches, `loadPreDrawSetting`, `J3DMaterial::load`, `setArrayAndBindPipeline`, `loadVtxArray`,
+  `J3DCurrentMtx::load`, `resetMtxLoadCache`, `J3DShapeDraw::draw` and the single-matrix
+  `J3DShapeMtxConcatView::load` wrapping bit 2's helper, with a `J3DShapeMtxMultiConcatView` matrix delegated to
+  bit 9's existing port. **It is neither checked nor measured yet**, and three things gate that, in order:
+  the four new hash rows (recorded as 0, which keeps every port off until a console run publishes them -
+  `# port hashes`); `--port check` with 0 differed **and** a non-zero `drew`; and `kInsScale[11]`, still the
+  placeholder 100. `docs/research/LIBRARY_PORTS.md` has the whole write-up.
+- **The design's one open gap closed itself, and self-checked.** `J3DDifferedTexMtx::sTexGenBlock` and
+  `sTexMtxObj` are in zeldaret's map after all, at 0x804515C0 and 0x804515C4 - the earlier search mangled the
+  17-character class name as 16. The confirmation needed no disc image: port bit 2 has always refused on
+  `f32(r13 - 28608)`, which is 0x804515C0 exactly, so the symbol map and code written months before it agree.
+  `j3d_draw_head` now checks r13 against the implied 0x80458580 once per call so the absolute and relative forms
+  cannot drift apart unnoticed.
+- **One refusal the drawing adds that the scan did not model**, so the 90.5% above is now an upper bound: a shape
+  packet with `mpTexMtxObj != 0` sets `sTexGenBlock` and sends the matrix load down bit 2's refused differed path.
+  Refused in the scan, counted as `tex mtx obj N`. The bullet above established that bit 2's *own* texgen refusal
+  fires once in ten thousand calls - but that was measured with bit 2 as an entry hook, where `sTexGenBlock` is
+  whatever the guest's `drawFast` left; inside the subtree the port sets it, so the two are not the same question
+  and the new counter is the one that answers it.
+- **Re-evaluate when:** the three gates above are through. **Status: built, off, unmeasured** - still the
+  best-evidenced entry on this list, and the evidence strengthened while it was being written, because bit 2's
+  standalone cost went from -0.03% to -0.94% and this is the context that removes it.
 
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 

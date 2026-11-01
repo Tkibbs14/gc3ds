@@ -53,7 +53,9 @@ extern bool g_portPictureDraw;
 // `--port-hooks` bit 10: that bit is the standalone entry hook, which measured Ordon -4.3%.
 extern bool g_portWalkText;
 extern u64 g_portWalkDrew[2];
-extern u64 g_j3dDrawScan[4];   // C56's scan: calls, would-be-taken, refused on a packet class, refused on a matrix class
+// C56's scan: calls, would-be-taken, refused on a packet class, on a matrix class, on a texture-matrix object; then
+// what the drawing actually did (taken calls, mat packets, shape draws) and the one refusal the drawing adds.
+extern u64 g_j3dDrawScan[5], g_j3dDrawn[3], g_j3dNbtRefused;
 // --port-size-refused MASK (check mode only, measurement): interpreter instructions summed over refused calls whose
 // reason is in MASK, per hook and reason, so a refusal's cost is the subtree it abandons rather than a count of
 // calls. A mask and not a flag because sizing a refusal means executing it, which hides its children from the hook:

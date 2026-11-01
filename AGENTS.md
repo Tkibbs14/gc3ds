@@ -192,7 +192,7 @@ on the console.
 | TEV / combiners | `bash core/tests/tev/run_tev_tests.sh` |
 | Draw merging | `MERGE_CHECK=1` on the PC build |
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
-| Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call |
+| Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call. **A session with no disc image cannot run `porthash.py`: record the row with hash `0ull`, never a guess.** A zero row is treated exactly as a mismatch - every port off, so it can never be the weaker check - and the console publishes the hash it computed as a paste-ready `# port hashes` line (one short run fills them in; that build has no ports and must not be used for speed) |
 | The ports' give-up histogram (`port_j2d.c` `why_line`) | `GC3DS_PORTWHY_SELFTEST=1 core/build/gcemu`, also run by `run_tests.sh`: it cannot be exercised without a disc image (the ports only hook TP's code), so the histogram has its own check - a repeated line increments its own slot rather than taking a new one, the slots fill in order, and give-ups past them are counted in `other` rather than lost. Planted bugs that must fail it: a repeated line taking a new slot, and the overflow dropped. The thing it protects is that **`# port give-ups 10s` says which line refused**: the reason codes are coarse (reason 5 has 21 sites and its old "tev block" label was sizing the top open direction from a bucket of unrelated causes) |
 | Measurement tools (`runs.py`) | `python3 core/tools/runs.py --selftest`: a synthetic log with a planted steal must be recovered exactly, a merely busy scene must **not** be filtered (an absolute threshold dropped half a tp850 run and kept only its easiest seconds - that mistake has its own planted test), and a frame window containing a screenshot must be dropped. |
 | **Any change at all** | `python3 core/tools/docs_stale.py` (rule 7: headline speeds agree across AGENTS and README, one build id with a not-comparable note, frames against `speed_pct`, every option the docs name is really parsed, every `CNN` referenced exists and every shelved one keeps its trigger). Mechanical only - rule 7's table is the part done by hand. `--selftest` plants a fault per check. |
@@ -460,9 +460,21 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   through its containers. **`J3DDrawBuffer::draw` is 9.88% and untouched**, with `drawFast` 6.87% inside it; C54's
   joint tree is second at 5.15%. C56 has the pane walk's exact shape (two loops, a virtual `packet->draw()`, **four**
   packet classes with no tail), a spine of only ~1,730 bytes, and the strongest argument of any candidate on this
-  list: **its inner loop calls port bits 2 and 9**, the matrix loads that measure -0.03% and -0.46% as standalone
-  entry hooks, so a subtree context would absorb them the way the pane walk absorbed bit 10 (-4.3% alone, part of
-  +3.4% folded in).
+  list: **its inner loop calls port bits 2 and 9**, the matrix loads that measure **-0.94% and +0.08%** as standalone
+  entry hooks at the post-C53 default (jobs 1840-1848; they read -0.03% and -0.46% at the older one), so a subtree
+  context would absorb them the way the pane walk absorbed bit 10 (-4.3% alone, part of +3.4% folded in).
+  **The drawing is now written** (1 November 2026, `--port-hooks` bit 11 / 2048, off), with both matrix loads
+  delegated to those two ports rather than rewritten, and the design's one open gap closed - the two
+  `J3DDifferedTexMtx` statics are at 0x804515C0 / 0x804515C4, and port bit 2 has been reading the first of them off
+  r13 since long before the symbol map was fetched, which is how the address checked itself. **It is neither
+  checked nor measured**, and three gates stand in front of that, in order: four new hash rows are **recorded as 0
+  on purpose** (no disc image in a cloud session, and a guessed hash is worse than none), which keeps *every* port
+  off until one console run publishes them as a paste-ready `# port hashes` line; then `--port check` must read 0
+  differed **and** a non-zero `drew`; then `kInsScale[11]` must be calibrated from check mode, since it is still the
+  placeholder 100. So **the build that harvests the hashes has no ports at all and must not be used for speed**.
+  Two refusals the port adds are counted rather than assumed - a shape packet carrying a texture-matrix object, and
+  `J3DMaterial::load`'s NBT-scale half, which the headers say is unreachable (`J3DTexGenBlockPatched` does not
+  override `getNBTScale`, so the guest would dereference the base class's NULL) but only a counter can show.
 - **Guest frame skip: built, exact, off, and shelved as a *speed strategy* - a user option instead (C9d, the
   owner's decision of 2026-10-31 after watching six runs: "let's just get things at native speed and keep working
   at improving performance").** The first human look at it settled three things the arithmetic could not.
