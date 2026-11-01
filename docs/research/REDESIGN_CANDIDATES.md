@@ -488,6 +488,41 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** the speed runs land. If the fold does not pay despite replacing 7.6x the guest work a call,
   that is a result about subtree ports in general and belongs here with its numbers, not a reason to retry blind.
 
+## C56. J3DDrawBuffer::drawHead as a subtree port - 9.88%, and it absorbs the hooks that lose alone (2026-11-01)
+
+- **The target.** `J3DDrawBuffer::draw` is **9.88% inclusive** of core 0 in TP's heavy area at the current defaults
+  (job 1821, after C53), the largest unexplored subtree in the profile, with `drawHead` 9.77%,
+  `drawOpaDrawList__12dDlst_list_c` 7.89% and `J3DShapePacket::drawFast` **6.87%** nested inside it. It is the "J3D
+  packet draw" direction AGENTS has named for weeks, now sized.
+- **It is the pane walk's shape exactly.** `drawHead` is two loops - over an entry table, then over each bucket's
+  linked list - calling a **virtual `packet->draw()`**, so a port recognises packet classes the way the pane walk
+  recognises pane classes. There are **four, with no tail**: `J3DMatPacket` (the real work), `J3DShapePacket`,
+  `J3DDrawPacket`, and `J3DPacket` whose `draw()` is empty. C53's two-class test is the precedent.
+- **The spine is small, ~1,730 bytes over eleven functions** (sizes from zeldaret's map):
+  `J3DDrawBuffer::draw` 0x54, `drawHead` 0x78, `J3DMatPacket::draw` 0x84, `J3DShapePacket::drawFast` 0x88,
+  `J3DShapePacket::draw` 0x98, `prepareDraw` 0x11C, `J3DShape::drawFast` 0x194, `loadPreDrawSetting` 0x98,
+  `J3DMaterial::load` 0x50, `setArrayAndBindPipeline` 0xB4, `J3DShapeDraw::draw` 0x2C, `J3DShapeMtx::load` 0x5C.
+  For comparison, the pane walk's `J2DPane::draw` was 334 instructions (~1,336 bytes).
+- **The strongest argument for it: it absorbs the hooks that lose on their own.** `J3DShape::drawFast`'s inner loop is
+  `mShapeMtx[i]->load(); mShapeDraw[i]->draw();` and `mShapeMtx[i]->load()` *is* port bits 2 and 9 - the concat-view
+  and multi-concat-view matrix loads, which measured **-0.03%** and **-0.46%** as standalone entry hooks even though
+  bit 2 is the most-called port in the scene (1.53 M calls, ~5.8% of core 0 by its own timers). A subtree port has no
+  per-call entry or commit, which is exactly what turned port bit 10 from **-4.3% standalone** into part of C53's
+  **+3.4%**. The same structure would also absorb `J3DMaterial::load`, the VCD/VAT display-list call,
+  `setArrayAndBindPipeline` and the shape draws into one context with one commit.
+- **Expected, with C53's two discounts attached.** C53 converted a <=9.5% inclusive subsystem into +3.4%, so the
+  honest order of magnitude here is similar - but **a subtree is all-or-nothing** (all four packet classes have to be
+  accepted or the subtree is refused), and **coverage is not value** (C53's J2DPicture half accepts 412 panes a
+  window and draws none). Expect less than the inclusive share, and do not quote a figure before a run.
+- **First steps, cheapest first.** (1) Read `J3DMaterial::load` and `setArrayAndBindPipeline` in the sources and list
+  which branches would have to refuse - that is where an unbounded tail would show up, and it is the one thing that
+  could kill the entry. (2) A per-class counter at the `drawHead` hook, as `walk_ds` does for panes, to confirm the
+  four classes are really all of them in both scenes before writing anything. (3) Only then the port, with
+  `--port check` and a `drew N` counter from the start, because two ports this session reported "0 differed" over
+  zero executed calls.
+- **Re-evaluate when:** step (2) reports. **Status: next**, ahead of C54 (the joint tree, 5.15%) on size and because
+  its two biggest callees are already written and only need a context to pay in.
+
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 
 - **The measurement.** Static Ordon at unchanged defaults read **10.020** frames a second at ~00:33 (job 1766) and

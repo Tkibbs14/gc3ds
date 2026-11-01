@@ -407,6 +407,15 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   place to apply it has to be found rather than assumed); C40
   (~1.6% of Ordon in every game); the ShdwDraw stand-in's code footprint (C32b); GPU-resident vertex data for
   repeated display lists (C1).
+- **The next subtree port is sized and it is `J3DDrawBuffer::drawHead` (C56).** Re-ranked after C53 landed (job 1821):
+  the J2D side has given what it has - `dMeter2Draw_c::draw` fell 9.53% -> 7.05% and `J2DScreen::draw` 8.49% -> 5.93%,
+  which is C53's +2.31% seen from the other side, and those two were never independent prizes but the pane walk
+  through its containers. **`J3DDrawBuffer::draw` is 9.88% and untouched**, with `drawFast` 6.87% inside it; C54's
+  joint tree is second at 5.15%. C56 has the pane walk's exact shape (two loops, a virtual `packet->draw()`, **four**
+  packet classes with no tail), a spine of only ~1,730 bytes, and the strongest argument of any candidate on this
+  list: **its inner loop calls port bits 2 and 9**, the matrix loads that measure -0.03% and -0.46% as standalone
+  entry hooks, so a subtree context would absorb them the way the pane walk absorbed bit 10 (-4.3% alone, part of
+  +3.4% folded in).
 - **Guest frame skip: built, exact, off, and shelved as a *speed strategy* - a user option instead (C9d, the
   owner's decision of 2026-10-31 after watching six runs: "let's just get things at native speed and keep working
   at improving performance").** The first human look at it settled three things the arithmetic could not.
