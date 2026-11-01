@@ -2873,6 +2873,12 @@ u32 port_run_hook(Gekko* g) {
     hs->pipe += c->pn + c->pnSent;
     g->pc = g->lr;
     if (!c->n) return 1;
-    u64 n = (u64)c->n * kInsScale[hook] * g_portCharge / 10000;  // --port-charge: 100 leaves the calibrated estimate
+    // The walk's calibration is for the subtrees it took *before* C53: taking text subtrees changes its shape, not
+    // just its volume - 104,292.4 real against 77,142.2 estimated a call with --port-walktext on (job 1757) where it
+    // was 13,377 against 10,400 without it (job 1080), so the same scale would under-charge the emulated clock by 5%
+    // of the walk's own work. Conditional rather than a new constant, so the off arm of an A/B is charged exactly as
+    // it is today and only the on arm moves; it folds into kInsScale[PORT_PANEWALK] if the switch becomes a default.
+    u32 scale = hook == PORT_PANEWALK && g_portWalkText ? 135 : kInsScale[hook];
+    u64 n = (u64)c->n * scale * g_portCharge / 10000;  // --port-charge: 100 leaves the calibrated estimate
     return n ? (u32)n : 1;
 }
