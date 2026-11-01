@@ -166,6 +166,7 @@ static bool g_psflushOn;  // on: heavy area +1.7%, Ordon +0.8% (separate runs, j
 // heavy area's core 0 between them (job 630). --psxyz on: heavy area -0.9%, Ordon even (jobs 660-663): off.
 static const char kPsXyz[] = "__pl,__mi,__ml";
 extern bool g_gpBulk;     // hw/gx.c: pipe bursts with one copy
+extern bool g_gpRun;      // hw/gx.c: a run of whole bursts moved at once (--gpruns)
 extern bool g_gpMirror;   // hw/gx.c: --fifomirror off (measurement only)
 extern bool g_ringBatch;  // gxthread.c: bursts batched into larger ring records
 extern bool g_feedDirect;  // gx/fifo.c: GX commands parsed in place
@@ -540,6 +541,10 @@ typedef struct {
     bool psxyz;  // --psxyz on|off (off): the cXyz operator stand-ins (hle_ps.c, direct mode)
     bool psflush, abPsflush;  // --psflush on|off (on), --ab psflush: the __GXSendFlushPrim stand-in (psflush column)
     bool gpbulk, abGpbulk;    // --gpbulk on|off (on), --ab gpbulk: pipe bursts moved with one copy (hw/gx.c g_gpBulk; gpbulk column)
+    // --gpruns on|off (off), --ab gpruns: a contiguous run of whole bursts moved at once instead of 32
+    // bytes at a time (hw/gx.c g_gpRun). Sized from job 1878's own counters before it was written: the
+    // ports hand over 46% of every pipe byte in 0.5% of the calls, as 30,095 bursts a second.
+    bool gpruns, abGpruns;
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
     bool trifast;  // --trifast on|off (on): the triangle path's fast form (hle_tp.c tri_run v4)
     bool panestat;  // --panestat on (measurement): count J2DPane::draw's pane classes ('# pane types 10s')
@@ -671,7 +676,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
             o->saveAt = (u32)strtoul(v, NULL, 10);
             snprintf(o->savePath, sizeof o->savePath, "%s", c + 1);
         } else if (!strcmp(a, "--seconds")) o->seconds = (u32)strtoul(v, NULL, 10);
-        else if (!strcmp(a, "--ab")) { snprintf(o->abName, sizeof o->abName, "%s", v); AB(abTraces, "traces"); AB(abHle, "hle"); AB(abMerge, "merge"); AB(abVwmem, "vwmem"); AB(abSplit, "splitopen"); AB(abPld, "pld"); AB(abFault, "faultmem"); AB(abSched, "sched"); AB(abOpt, "opt"); AB(abVtrim, "vtrim"); AB(abDlcache, "dlcache"); AB(abVw2, "vw2"); AB(abFskip, "fskip"); AB(abKstore, "kstore"); AB(abFcache, "fcache"); AB(abAot, "aot"); AB(abCalls, "calls"); AB(abRetstub, "retstub"); AB(abSyscall, "syscall"); AB(abHlelink, "hlelink"); AB(abStack, "stack"); AB(abCrstub, "crstub"); AB(abRotmask, "rotmask"); AB(abNative2, "native2"); AB(abInd2, "ind2"); AB(abSteal, "steal"); AB(abBefloat, "befloat"); AB(abFastfloat, "fastfloat"); AB(abLatch, "latch"); AB(abIcbi, "icbi"); AB(abPipek, "pipek"); AB(abRelayout, "relayout"); AB(abVin, "vin"); AB(abInlmem, "inlmem"); AB(abHlegd, "hlegd"); AB(abShapes, "shapes"); AB(abVoices, "voices"); AB(abThp, "thp"); AB(abPs, "ps"); AB(abLean, "lean"); AB(abRawdraw, "rawdraw"); AB(abCmdpld, "cmdpld"); AB(abRawstate, "rawstate"); AB(abPipeps, "pipeps"); AB(abPsgx, "psgx"); AB(abSkipfn, "skipfn"); AB(abGfskip, "gfskip"); AB(abTexdiv, "texdiv"); AB(abGpudiag, "gpudiag"); AB(abDeflit, "deflit"); AB(abShlight, "shlight"); AB(abVscache, "vscache"); AB(abBlacklit, "blacklit"); AB(abVramtex, "vramtex"); AB(abGxdiag, "gxdiag"); AB(abProfclock, "profclock"); AB(abSplitverts, "splitverts"); AB(abL2pf, "l2pf"); AB(abQbig, "qbig"); AB(abCmdbuf, "cmdbuf"); AB(abPsflush, "psflush"); AB(abMips, "mips"); AB(abSmalltex, "smalltex"); AB(abTevver, "tevver"); AB(abPort, "port"); AB(abGpbulk, "gpbulk"); AB(abPichook, "pichook"); AB(abJ3dhook, "j3dhook"); AB(abFlushhook, "flushhook"); AB(abLighthook, "lighthook"); AB(abRingbatch, "ringbatch"); AB(abIdlewait, "idlewait"); AB(abFeeddirect, "feeddirect"); AB(abTevenv, "tevenv"); AB(abDblframe, "dblframe"); AB(abShdwmemo, "shdwmemo"); AB(abShdwtri, "shdwtri"); AB(abPortcharge, "portcharge"); AB(abFdirect, "fdirect"); }
+        else if (!strcmp(a, "--ab")) { snprintf(o->abName, sizeof o->abName, "%s", v); AB(abTraces, "traces"); AB(abHle, "hle"); AB(abMerge, "merge"); AB(abVwmem, "vwmem"); AB(abSplit, "splitopen"); AB(abPld, "pld"); AB(abFault, "faultmem"); AB(abSched, "sched"); AB(abOpt, "opt"); AB(abVtrim, "vtrim"); AB(abDlcache, "dlcache"); AB(abVw2, "vw2"); AB(abFskip, "fskip"); AB(abKstore, "kstore"); AB(abFcache, "fcache"); AB(abAot, "aot"); AB(abCalls, "calls"); AB(abRetstub, "retstub"); AB(abSyscall, "syscall"); AB(abHlelink, "hlelink"); AB(abStack, "stack"); AB(abCrstub, "crstub"); AB(abRotmask, "rotmask"); AB(abNative2, "native2"); AB(abInd2, "ind2"); AB(abSteal, "steal"); AB(abBefloat, "befloat"); AB(abFastfloat, "fastfloat"); AB(abLatch, "latch"); AB(abIcbi, "icbi"); AB(abPipek, "pipek"); AB(abRelayout, "relayout"); AB(abVin, "vin"); AB(abInlmem, "inlmem"); AB(abHlegd, "hlegd"); AB(abShapes, "shapes"); AB(abVoices, "voices"); AB(abThp, "thp"); AB(abPs, "ps"); AB(abLean, "lean"); AB(abRawdraw, "rawdraw"); AB(abCmdpld, "cmdpld"); AB(abRawstate, "rawstate"); AB(abPipeps, "pipeps"); AB(abPsgx, "psgx"); AB(abSkipfn, "skipfn"); AB(abGfskip, "gfskip"); AB(abTexdiv, "texdiv"); AB(abGpudiag, "gpudiag"); AB(abDeflit, "deflit"); AB(abShlight, "shlight"); AB(abVscache, "vscache"); AB(abBlacklit, "blacklit"); AB(abVramtex, "vramtex"); AB(abGxdiag, "gxdiag"); AB(abProfclock, "profclock"); AB(abSplitverts, "splitverts"); AB(abL2pf, "l2pf"); AB(abQbig, "qbig"); AB(abCmdbuf, "cmdbuf"); AB(abPsflush, "psflush"); AB(abMips, "mips"); AB(abSmalltex, "smalltex"); AB(abTevver, "tevver"); AB(abPort, "port"); AB(abGpbulk, "gpbulk"); AB(abGpruns, "gpruns"); AB(abPichook, "pichook"); AB(abJ3dhook, "j3dhook"); AB(abFlushhook, "flushhook"); AB(abLighthook, "lighthook"); AB(abRingbatch, "ringbatch"); AB(abIdlewait, "idlewait"); AB(abFeeddirect, "feeddirect"); AB(abTevenv, "tevenv"); AB(abDblframe, "dblframe"); AB(abShdwmemo, "shdwmemo"); AB(abShdwtri, "shdwtri"); AB(abPortcharge, "portcharge"); AB(abFdirect, "fdirect"); }
         else if (!strcmp(a, "--voices")) o->noVoices = !strcmp(v, "off");
         else if (!strcmp(a, "--thp")) o->noThp = !strcmp(v, "off");
         else if (!strcmp(a, "--ps")) o->noPs = !strcmp(v, "off");
@@ -693,6 +698,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--zxyz")) o->zxyz = !strcmp(v, "on");
         else if (!strcmp(a, "--psxyz")) o->psxyz = !strcmp(v, "on");
         else if (!strcmp(a, "--gpbulk")) o->gpbulk = !strcmp(v, "on");
+        else if (!strcmp(a, "--gpruns")) o->gpruns = !strcmp(v, "on");
         else if (!strcmp(a, "--ringbatch")) o->ringbatch = !strcmp(v, "on");
         else if (!strcmp(a, "--idlewait")) o->idlewait = atoi(v);
         else if (!strcmp(a, "--feeddirect")) o->feeddirect = !strcmp(v, "on");
@@ -1380,6 +1386,7 @@ static const char* run_body(const char* path) {
         hle_ps_set_group(kPsGx, g_psgxOn);
         g_psflushOn = g_opt.psflush && !g_opt.abPsflush;  // --ab psflush starts off
         g_gpBulk = g_opt.gpbulk && !g_opt.abGpbulk;  // --ab gpbulk starts off
+        g_gpRun = g_opt.gpruns && !g_opt.abGpruns;   // --ab gpruns starts off
         g_ringBatch = g_opt.ringbatch && !g_opt.abRingbatch;  // --ab ringbatch starts off
         g_idleWaitUs = g_opt.abIdlewait ? -1 : g_opt.idlewait;  // --ab idlewait starts with the full sync
         g_feedDirect = g_opt.feeddirect && !g_opt.abFeeddirect;  // --ab feeddirect starts off
@@ -1709,6 +1716,7 @@ static const char* run_body(const char* path) {
                     jit_invalidate_all(g_jit);
                 }
                 if (g_opt.abGpbulk && perfRows % AB_SECS == 0) g_gpBulk = !g_gpBulk;  // (read per burst: no code to drop)
+                if (g_opt.abGpruns && perfRows % AB_SECS == 0) g_gpRun = !g_gpRun;    // (likewise)
                 if (g_opt.abRingbatch && perfRows % AB_SECS == 0) g_ringBatch = !g_ringBatch;  // (read per burst)
                 if (g_opt.abIdlewait && perfRows % AB_SECS == 0) g_idleWaitUs = g_idleWaitUs < 0 ? g_opt.idlewait : -1;
                 if (g_opt.abFeeddirect && perfRows % AB_SECS == 0) g_feedDirect = !g_feedDirect;  // (read per feed)
@@ -2061,9 +2069,19 @@ static const char* run_body(const char* path) {
                     fprintf(g_perf, "# frames ended early 10s (/s): queue %.1f, arena %.1f, cmdbuf %.1f, indices %.1f, grave %.1f, "
                             "staging %.1f, shape grave %.1f, shape cmds %.1f\n", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
                     {
-                        extern u64 g_gpWrites, g_gpWriteBytes;
-                        fprintf(g_perf, "# gp pipe (all time): writes %llu, bytes %llu, open burst %u bytes\n", (unsigned long long)g_gpWrites, (unsigned long long)g_gpWriteBytes, (unsigned)g_sys.gx.wgpLen);
-                        extern u64 g_gpUnlinked, g_gpLinked, g_peFinishPosted, g_peFinishApplied, g_peFinishRaised;
+                        extern u64 g_gpWrites, g_gpWriteBytes, g_gpRunBursts, g_gpRunCalls;
+                        extern u64 g_gpUnlinked, g_gpLinked;
+                        // The run path says it ran, and says it is the same bursts: g_gpRunBursts must be a
+                        // share of linked+unlinked, never more. Without that line "--gpruns on" and
+                        // "--gpruns on but it never qualified" look identical - the mistake three
+                        // instruments made this week.
+                        fprintf(g_perf, "# gp pipe (all time): writes %llu, bytes %llu, open burst %u bytes; runs %llu moving %llu bursts of %llu (%.1f%%, %.0f bursts a run)\n",
+                                (unsigned long long)g_gpWrites, (unsigned long long)g_gpWriteBytes, (unsigned)g_sys.gx.wgpLen,
+                                (unsigned long long)g_gpRunCalls, (unsigned long long)g_gpRunBursts,
+                                (unsigned long long)(g_gpLinked + g_gpUnlinked),
+                                (g_gpLinked + g_gpUnlinked) ? 100.0 * (double)g_gpRunBursts / (double)(g_gpLinked + g_gpUnlinked) : 0.0,
+                                g_gpRunCalls ? (double)g_gpRunBursts / (double)g_gpRunCalls : 0.0);
+                        extern u64 g_peFinishPosted, g_peFinishApplied, g_peFinishRaised;
                         fprintf(g_perf, "# pe finish (all time): posted %llu, applied %llu, raised %llu; PE control %04x; PI intsr %08lx intmr %08lx\n", (unsigned long long)g_peFinishPosted, (unsigned long long)g_peFinishApplied, (unsigned long long)g_peFinishRaised, (unsigned)g_sys.gx.peRegs[5], (unsigned long)g_sys.pi.intsr, (unsigned long)g_sys.pi.intmr);
                         static u64 lastU, lastL;
                         fprintf(g_perf, "# gp link 10s: bursts to the GP %llu, held in RAM (CP control bit 4 clear) %llu; CP control %04x\n",

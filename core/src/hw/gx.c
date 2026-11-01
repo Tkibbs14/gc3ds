@@ -88,6 +88,45 @@ static void gp_burst(System* s, const u8* data) {
     else gxcore_feed(s, &s->gx.core, data, 32);
 }
 
+// A run of whole bursts moved at once (g_gpRun, --gpruns): the same bytes, in the same order, to the same two
+// places, with the per-burst work done once for the run instead of once per 32 bytes.
+//
+// **Why this is worth a switch at all, measured before it was written** (job 1878, TP's heavy area, from the log's
+// own counters): the pipe carries 352 MB in 7.9 M writes over the run, 44.6 bytes a write - but that average hides
+// the shape. The *ports* alone hand over 963 KB a second (the pane walk 15,210 bytes a call at 40 calls a second,
+// J3DSys::reinitGX 1,705 at 208) in about **250 calls a second**, which is **46% of every pipe byte in 0.5% of the
+// calls**. Those runs were being chopped into **30,095 bursts a second** and then reassembled into 512-byte ring
+// records by `ringbatch`. The two ports' commits time at ~44 bytes a microsecond each - independently, which is
+// what says the commit *is* this path - i.e. ~18 cycles a byte, where two 32-byte copies should be two or three.
+//
+// Exactness: the run is taken only when it neither leaves MEM1 nor reaches the FIFO's end, so no burst inside it
+// wraps; `fifoWrite`, `bytesReceived`, `g_gpLinked`/`g_gpUnlinked` and the stamped pages all end up where the
+// per-burst loop would leave them, and the GP is handed the identical byte stream. The CP control register cannot
+// change inside one call, so the linked test is made once.
+bool g_gpRun = false;  // --gpruns on|off (off until measured, rule 5)
+u64 g_gpRunBursts, g_gpRunCalls;   // bursts moved by the run path, and how many runs they came in (reports)
+static u32 gp_run(System* s, const u8* data, u32 len) {
+    PIState* pi = &s->pi;
+    if (!g_gpRun || GC_SWAPRAM || len < 64) return 0;   // (under two bursts there is nothing to amortise)
+    u32 wp = pi->fifoWrite & 0x03FFFFFF, wrap = pi->fifoWrite & (1u << 29), start = wp;
+    u32 n = len & ~31u;
+    if (wp + n > PA_MEM1_END) return 0;
+    if (pi->fifoEnd && wp + n > pi->fifoEnd) return 0;  // the run would wrap: the per-burst loop handles that
+    if (g_gpMirror) memcpy(s->mem1 + wp, data, n);
+    wp += n;
+    if (pi->fifoEnd && wp >= pi->fifoEnd) { wp = pi->fifoBase; wrap = 1u << 29; }
+    pi->fifoWrite = wp | wrap;
+    s->gx.bytesReceived += n;
+    g_gpRunBursts += n / 32;
+    g_gpRunCalls++;
+    u16 cr = s->gx.cpRegs[0x02 / 2];
+    if (cr && !(cr & 0x10)) { g_gpUnlinked += n / 32; mem_dirty(start, n); return n; }
+    g_gpLinked += n / 32;
+    if (s->gxAsync) s->gxAsync->feed(s, data, n);
+    else gxcore_feed(s, &s->gx.core, data, n);
+    return n;
+}
+
 // CPU stores to the write-gather pipe. As on the hardware, the GP sees them only in whole 32-byte bursts; programs
 // end a command batch with GXFlush, which pads the last burst. (Feeding every 1-4 byte store separately cost a
 // parse attempt and two clock reads each, tens of thousands per field in Twilight Princess.)
@@ -100,6 +139,10 @@ void gp_fifo_write(System* s, const u8* data, u32 len) {
     GXState* gx = &s->gx;
     if (g_gpBulk) {
         while (len) {
+            if (!gx->wgpLen && len >= 64) {
+                u32 n = gp_run(s, data, len);   // 0: the run did not qualify, fall through to the burst loop
+                if (n) { data += n; len -= n; continue; }
+            }
             if (!gx->wgpLen && len >= 32) { gp_burst(s, data); data += 32; len -= 32; continue; }
             u32 n = 32 - gx->wgpLen < len ? 32 - gx->wgpLen : len;
             memcpy(gx->wgp + gx->wgpLen, data, n);
