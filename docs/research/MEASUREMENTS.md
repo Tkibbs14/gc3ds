@@ -3026,6 +3026,28 @@ to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself
 `scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
 evidence available about what the step actually is, and the place for anyone investigating it to start.
 
+### Port bit 2 re-measured at the new default: -0.03% becomes -0.94% (jobs 1840-1843, 2026-11-01)
+
+`--port-hooks 247` against the default 243 - the J3DShapeMtxConcatView PNGP matrix load as a standalone entry hook -
+on build `787ed3743e11`, 9.0 MB rung, TP's heavy area, arms adjacent and reversed:
+
+| | runs | mean |
+|---|---|---|
+| bit 2 on | 7.161 / 7.163 | **7.1620** |
+| default | 7.229 / 7.231 | **7.2300** |
+
+**-0.94%**, within-arm spreads 0.03%, both on-runs below both off-runs. It measured **-0.03%** at the pre-C53
+baseline (jobs 1700-1711), so the same hook is now about thirty times worse. It stays off, as it was, but for a far
+stronger reason than "neutral".
+
+**Two things this is evidence for.** It is another instance of the rule this week keeps producing - **a candidate's
+value depends on which other options are on** (C49 with the sign reversed, the two re-pricings of
+CONTRIBUTOR_TASKS 9, C53's own +2.31% becoming +1.97% a build later). And it **strengthens C56**: that port's
+argument is that a subtree context absorbs the matrix loads which lose as entry hooks, and bit 2's cost as an entry
+hook has just gone from nothing to about a point, so there is now more to win by removing the per-call entry than
+when the figure was zero. Bit 9, the other matrix load in the same subtree, read -0.46% at the old baseline and is
+the next to re-measure.
+
 ### C49's first clean test: two defaults ADD, and the shortfall was a cross-build artifact (jobs 1828-1839, 2026-11-01)
 
 All three configurations of C53 (`--port-picture` + `--port-walktext`) and `--port-softfloat`, on **one build**
