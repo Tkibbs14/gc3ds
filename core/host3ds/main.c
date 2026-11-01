@@ -2233,19 +2233,21 @@ static const char* run_body(const char* path) {
                               // Would C56's port take the call, and for how much work? The scan is the same
                               // all-or-nothing test the port would make, run read-only, so the coverage is known
                               // before any drawing code exists (C53 went walk_scan first for the same reason).
-                              extern u64 g_j3dScan[8];
-                              static u64 lastS[8];
-                              u64 d[8];
-                              for (int k = 0; k < 8; k++) { d[k] = g_j3dScan[k] - lastS[k]; lastS[k] = g_j3dScan[k]; }
+                              extern u64 g_j3dScan[9];
+                              static u64 lastS[9];
+                              u64 d[9];
+                              for (int k = 0; k < 9; k++) { d[k] = g_j3dScan[k] - lastS[k]; lastS[k] = g_j3dScan[k]; }
                               fprintf(g_perf, "# j3d scan 10s: %llu calls, %llu would be taken (%.1f%%); refused: "
                                       "packet class %llu, matrix class %llu, unreadable %llu; a taken call covers "
-                                      "%.1f mat packets, %.1f shape packets, %.1f matrix groups\n",
+                                      "%.1f mat packets, %.1f shape packets, %.1f matrix groups; entry table %.0f "
+                                      "buckets a call\n",
                                       (unsigned long long)d[0], (unsigned long long)d[1],
                                       d[0] ? 100.0 * (double)d[1] / (double)d[0] : 0.0,
                                       (unsigned long long)d[2], (unsigned long long)d[3], (unsigned long long)d[4],
                                       d[1] ? (double)d[5] / (double)d[1] : 0.0,
                                       d[1] ? (double)d[6] / (double)d[1] : 0.0,
-                                      d[1] ? (double)d[7] / (double)d[1] : 0.0);
+                                      d[1] ? (double)d[7] / (double)d[1] : 0.0,
+                                      d[0] ? (double)d[8] / (double)d[0] : 0.0);
                           } }
                         { extern bool g_paneStat; extern u32 g_paneVt[32], g_paneN[32], g_paneOther;
                           if (g_paneStat) {

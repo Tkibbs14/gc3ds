@@ -573,8 +573,12 @@ const u32* hle_j3dstat_pcs(void) { return kJ3dStatPc; }
 // every shape-matrix in every shape is one of the two classes the census found. This counts how often that holds and
 // how much work each accepted call would cover. Nothing is written and the guest code always runs.
 // g_j3dScan: [0] calls, [1] accepted, [2] refused on a packet class, [3] refused on a matrix class, [4] refused as
-// unreadable, [5] mat packets, [6] shape packets, [7] matrix groups (the last three over accepted calls only).
-u64 g_j3dScan[8];
+// unreadable, [5] mat packets, [6] shape packets, [7] matrix groups (the last three over accepted calls only),
+// [8] the sum of mEntryTableSize over all calls - printed as a mean, because the first version of this scan
+// rejected `mEntryTableSize > 64` as a bad read and so threw away 24% of calls. J3DDrawBuffer's entry table is a
+// Z-sort bucket array and is routinely far larger than that, and the calls being thrown away were the big ones: the
+// scan reported 1.8 mat packets a taken call where the census counts 6.3, which is how the fault was found.
+u64 g_j3dScan[9];
 enum {
     VT_MATPACKET = 0x803CD954,          // the only packet class the census sees (jobs 1822-1823)
     VT_SHAPEMTX_CONCATVIEW = 0x803CDC1C,      // port bit 2's family
@@ -590,7 +594,8 @@ static void j3d_scan(const Gekko* g) {
     u32 db = g->gpr[3];
     u32 buf = j3d_rd(db + 0, &ok), n = j3d_rd(db + 4, &ok);
     g_j3dScan[0]++;
-    if (!ok || n > 64) { g_j3dScan[4]++; return; }   // (the entry table is small; a wild size means a bad read)
+    g_j3dScan[8] += n;
+    if (!ok || n > (1u << 16)) { g_j3dScan[4]++; return; }   // a Z-sort bucket array: only a wild size is a bad read
     u64 mats = 0, shapes = 0, groups = 0;
     for (u32 i = 0; i < n; i++) {
         for (u32 pk = j3d_rd(buf + 4 * i, &ok), guard = 0; ok && pk && guard < 4096; pk = j3d_rd(pk + 4, &ok), guard++) {
