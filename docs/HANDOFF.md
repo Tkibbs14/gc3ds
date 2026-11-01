@@ -1,5 +1,52 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-11-01)
 
+> **> 2026-11-01 (latest): C48 answered, its sweep says keep the table size, and a launch rung turned a 0.71%
+> regression into an apparent 1% gain.** Commit `8c39063a4703`.
+>
+> **C48 is answered.** `--indstat` had been built since 2026-10-31 and "waiting on a device build"; it ran (job
+> 1916, TP's heavy area): **798,300 probes a second, 6.16 per 1,000 guest instructions, first slot 80.9%, second
+> 14.0%, missed 5.2%** - a 94.9% hit rate - with **84% of probes from `blr`** and budget-exhausted hits at nothing.
+> Cross-checked exactly as the entry designed it: the dispatcher's own miss counter reads **41,134 a second**
+> against 5.2% of 798,300 = **41,512**, 0.9% apart. **OPT_IND2's +0.9%, adopted "with no idea why", is thereby
+> explained** - the second slot serves ~112,000 probes a second that would otherwise miss.
+>
+> **The `FAST_BITS` sweep: keep 16.** A number this project had wrong first - the allocation is
+> `FAST_TABLES * FAST_SIZE * sizeof(FastEntry)` = **4 x 512 KB = 2 MB, the whole shared L2**, not 512 KB, which is
+> one table of four. That made "shrink it" look obvious. It is not: **FAST_BITS 13 misses 44% less (2.9% against
+> 5.2%, at identical probe rates) and is 0.71% slower** (jobs 1922-1925, both arms on the 7.1 rung,
+> rank-separated, spreads 0.15% and 0.01%). So the size is not a cache-footprint problem and the miss rate is not
+> what costs. The likely reason the small table misses less is the **247 table resets a second**: 65,536 entries
+> cannot warm up between resets where 8,192 can, so that miss rate measures warm-up, not capacity.
+>
+> **The part to remember is how nearly this shipped backwards.** The naive comparison - fb13 against the unpadded
+> default, same commit, two runs an arm, **0.04% spreads, complete rank separation** - read **+0.96%**. The true
+> figure is **-0.71%**. The whole 1.7-point error was the **launch rung**: FAST_BITS 13 allocates 1.75 MB less, so
+> it is a different heap, and it landed on rung **8.8** where 16 landed on **8.9**, each *reproducibly across two
+> runs*. Every signal that usually means a sound measurement was present and the sign was still wrong. `runs.py`
+> refused to score the logs together and was right to.
+> **So a change that alters allocation sizes moves the rung, and the rung is not separable by re-running** - it is
+> a property of the build. The fix used here: **pad the allocation** so only the quantity under test varies
+> (`jit.c` now malloc's the indirect tables at the FAST_BITS 16 size whatever FAST_BITS is - a no-op in the default
+> build). Both arms then land on 7.1. **Any A/B of an allocation size needs that treatment**, and it is now in
+> rule 3.
+>
+> **Two rungs priced directly, which came free from the same pair of builds.** Padded and unpadded fb16 differ
+> only by that no-op line, so they are effectively one binary on two rungs: **rung 7.1 reads 7.352 / 7.341 and
+> rung 8.9 reads 7.226 / 7.223 - 7.1 is +1.69% faster**. The ladder now has a measured middle: **7.1 fast, 8.9
+> ~1.7% below, 9.0 ~5% below**, with 2.9 performing like 7.1. So the absolutes of everything measured on 8.9
+> today (`--gpruns`'s 7.19-7.23, C40's re-pricing, C56's -0.79%) sit ~1.7% low - each of those compared arms
+> *within* one rung, so their differences stand. And both halves of C55 are now demonstrated at once: the same
+> binary on two launches differs 1.7%, *and* a build that allocates less lands on a different rung reproducibly.
+>
+> **Still open from this stretch, in order of evidence.** **C40 at ~1% in both TP scenes** (re-priced today:
+> Ordon +1.24%, heavy +0.96%) with its exact design already written - the best-evidenced unbuilt idea on the list,
+> but it defers guest-memory writes to core 2 and wants the PC state-hash check, so it is the wrong build for a
+> session with no disc image. **C57's remaining items** (the ring copy for a run; `--feeddirect` now that records
+> are 15 KB). And **the sampler's `dispatch` bucket at 8.6-8.7% of core 0** - about 1,600 cycles per dispatcher
+> entry over 43,352 block runs a second, which is not credible, so it holds more than the loop (most likely the
+> JIT's C helpers, which run with `g_where` left at `WH_DISPATCH`). That is the largest unattributed number in
+> core 0's budget and wants `g_where` set in the helpers.
+
 > **> 2026-11-01 (latest): a new default, `--gpruns`, +0.47% in TP's heavy area and +0.43% in static Ordon - found
 > by reading an instrument that already existed rather than by writing one.** Build `6e1a7c33c5e6`.
 >

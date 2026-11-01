@@ -669,6 +669,21 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 
+> **Two rungs priced directly, 2026-11-01 (jobs 1920-1925).** C48's `FAST_BITS` sweep produced a pair of builds
+> that differ *only* by a no-op line (the indirect tables are malloc'd at the FAST_BITS 16 size, which at
+> FAST_BITS 16 is the size they already were), so they are effectively one binary on two rungs:
+> **rung 7.1 reads 7.352 / 7.341 and rung 8.9 reads 7.226 / 7.223 - rung 7.1 is +1.69% faster**, with within-arm
+> spreads of 0.15% and 0.04%.
+> So the ladder now has a measured middle: **7.1 fast, 8.9 about 1.7% below it, 9.0 about 5% below** (and 2.9
+> performs like 7.1). That also means the absolutes of everything measured on 8.9 today - `--gpruns`'s
+> 7.19-7.23, C40's re-pricing, C56's -0.79% - sit ~1.7% low, though each of those compared arms *within* one rung
+> and so their differences stand.
+> **What it does not tell us is why**, and the obvious guess is wrong: the 8.9 build allocates *the same* as the
+> 7.1 one. Same code, same allocations, two launches, 1.7% apart - so the rung really is a property of the launch
+> and not only of the build's footprint, exactly as this entry says. The `FAST_BITS` arms show the other half of
+> it: a build that allocates 1.75 MB less lands on a *different* rung reproducibly. **Both halves are true, which
+> is why the only safe rule is the one `runs.py` enforces - compare within a rung, never across.**
+
 - **The measurement.** Static Ordon at unchanged defaults read **10.020** frames a second at ~00:33 (job 1766) and
   **10.592** at ~01:3x on the identical commit (job 1781). Seven commits were built and run across that boundary and
   the profile is flat on each side: everything before reads ~10.03, everything after reads **10.54-10.62**. It is a
