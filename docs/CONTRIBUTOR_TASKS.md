@@ -129,8 +129,18 @@ needs none - and nobody knows yet which of the two these are.
 > `gekko_fpu.c mulc` does, and `sf_double_to_single_ftz` for the psq_st store so a NaN payload survives. It needed
 > `Pc.l14/l15/l31` widened from `float` to double bit patterns - those are the ps1 halves PSMTXConcat leaves in
 > f14/f15/f31, and a float would mangle a NaN there; they could be floats only while `plain()` made a NaN
-> unreachable. **What is left to do is the check, not the code:** `--port check` with it on, 0 differed, plus the
-> `--port plant` control.
+> unreachable.
+> **It is not finished, and job 1774 says why: the give-up moved downstream 1:1 instead of going away.** In TP's
+> heavy area with the switch on, `plain nan/inf` falls to 0 and `# port float give-ups`' first slot picks up the
+> identical 640-720 a window - that slot is `psq_copy`'s refusal, reached from `gx_load_pos_mtx_imm`, because the
+> exact concat now produces a NaN matrix and the *next* function will not store it. The subtree is still abandoned,
+> one function later, so **refusals are unchanged and its `differed 0` is vacuous**: when `psq_copy` gives up the
+> whole call is refused and the guest code runs, so none of the exact path's output is ever compared. (Same trap as
+> the J2DPicture half. Check the counter that says the new code *ran*, not only the one that says nothing differed.)
+> **So what is left is both:** let a NaN through `psq_copy` only when it came from the exact path - the fast path's
+> give-up there is real protection that must stay, since plain inputs can overflow to infinity and the VFP's
+> two-rounding model (HLE_FASTFLOAT) disagrees with Gekko at that boundary - and then `--port check` with 0 differed
+> and a non-zero count of exact-path calls, plus the `--port plant` control.
 
 ### 10. A port of a whole subtree
 **Why:** the ports as a set are worth +10.6% while their parts sum to ~3.7% - the difference is the guest code the set
