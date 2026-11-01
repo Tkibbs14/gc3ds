@@ -514,14 +514,46 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   honest order of magnitude here is similar - but **a subtree is all-or-nothing** (all four packet classes have to be
   accepted or the subtree is refused), and **coverage is not value** (C53's J2DPicture half accepts 412 panes a
   window and draws none). Expect less than the inclusive share, and do not quote a figure before a run.
-- **First steps, cheapest first.** (1) Read `J3DMaterial::load` and `setArrayAndBindPipeline` in the sources and list
-  which branches would have to refuse - that is where an unbounded tail would show up, and it is the one thing that
-  could kill the entry. (2) A per-class counter at the `drawHead` hook, as `walk_ds` does for panes, to confirm the
-  four classes are really all of them in both scenes before writing anything. (3) Only then the port, with
-  `--port check` and a `drew N` counter from the start, because two ports this session reported "0 differed" over
-  zero executed calls.
-- **Re-evaluate when:** step (2) reports. **Status: next**, ahead of C54 (the joint tree, 5.15%) on size and because
-  its two biggest callees are already written and only need a context to pay in.
+- **Step 1 done: there is no unbounded tail**, which was the one thing that could have killed the entry.
+  `J3DMaterial::load` is four lines (`setMaterialMode`, then `loadNBTScale` unless `j3dSys` flag 2 is set) and
+  `setArrayAndBindPipeline` is seven stores plus `loadVtxArray`, which is three `J3DLoadArrayBasePtr` calls - FIFO
+  writes gc3ds already stands in for. Both class sets are closed.
+- **Step 2 done, and it is better than the sizing suggested** (`--j3dstat`, jobs 1822-1823, 10 s windows):
+
+  | entry point | heavy area | static Ordon |
+  |---|---|---|
+  | `J3DDrawBuffer::draw` = `drawHead` | 1,680 | 2,310 |
+  | **`J3DMatPacket::draw`** | **10,560** | **5,280** |
+  | `J3DShapePacket::draw` | **0** | **0** |
+  | `J3DDrawPacket::draw` | **0** | **0** |
+  | `J3DPacket::draw` | **0** | **0** |
+  | `J3DShapePacket::drawFast` | 11,600 | 7,260 |
+  | `J3DShapeMtx::load` | **0** | **0** |
+  | **`J3DShapeMtxConcatView::load`** | **10,160** | **5,390** |
+  | `J3DShapeMtxMulti::load` | **0** | **0** |
+  | **`J3DShapeMtxMultiConcatView::load`** | **10,320** | **14,410** |
+  | `J3DShapeMtxBBoardConcatView::load` | **0** | **0** |
+  | `J3DShapeMtxYBBoardConcatView::load` | **0** | **0** |
+
+  **Only one packet class of four and two matrix classes of six occur at all**, in either scene - so the port is
+  *simpler* than the pane walk, which had two pane classes, and three quarters of the ~3.3 KB sizing need not be
+  written. Better still, **both surviving matrix loads are already written**: `J3DShapeMtxMultiConcatView::load`
+  (0x80313FA4) *is* port bit 9, complete and exact, and the inner `loadMtxConcatView_PNGP` (0x80313828) that
+  `J3DShapeMtxConcatView::load` calls *is* port bit 2. Those are the two hooks that measure -0.46% and -0.03% alone.
+  **The absorption is large:** one `drawHead` call covers ~6.3 material loads, ~6.9 shape draws and ~12.2 matrix
+  loads in the heavy area (2.3 / 3.1 / 8.6 in Ordon), so a subtree context removes that many entry-and-commit pairs
+  per call. C53's equivalent was ~100 panes a walk.
+  Note Ordon runs **more** skinned loads than the heavy area (14,410 against 10,320) - Link and the NPCs - so the two
+  scenes exercise the two classes in opposite proportions, which is useful: a port that got either wrong would fail
+  a check in one of them.
+- **What is left to write:** the spine only - `drawHead`'s two loops, `J3DMatPacket::draw`,
+  `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
+  `setArrayAndBindPipeline`, `J3DShapeDraw::draw` and the `J3DShapeMtxConcatView::load` wrapper around bit 2's
+  helper. Roughly 1.2 KB of guest behaviour, with the two expensive leaves already done.
+- **Re-evaluate when:** the port is written. **Status: next, and now the best-evidenced entry on this list** - ahead
+  of C54 (5.15%) on size, and ahead of where C53 stood before it was built, because its two costliest callees exist
+  and only need a context to pay in. Write it with `--port check` and a `drew N` counter from the start: two ports
+  this session reported "0 differed" over zero executed calls.
 
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 
