@@ -823,6 +823,20 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   C54 now sits clearly behind C53 (which is <=9.5% in the heavy area and <=14.8% in Ordon with its component already
   built and exact), and ahead of nothing else large.
 
+> **2026-11-01: C54's ~5.15% is an inclusive profile share, and C56 has just shown that such a share does not size
+> a subtree port.** C56 was ranked first on 9.88% inclusive and delivered **-0.79%**; the arithmetic closes
+> independently (3,010.6 guest instructions a call at ~144 calls a second = 1.41% of core 0's block-code
+> instructions, ~2.7% for the whole subtree, which cannot be 9.88% of samples unless those instructions cost ~3.6x
+> an average one - and the port replaces them at 19.5 cycles each against compiled code's 21.2, so they do not).
+> The only two calibrations that exist are C53 at <=9.5% inclusive -> +2.3-3.5% realised and C56 at 9.88% -> below
+> zero, so the factor is somewhere between 3x and infinity.
+> **So C54 is unsized, not second-ranked.** What it needs before any code is written is the same number C56's check
+> mode produced: **guest instructions per call**, plus an answer to what the port could *skip or compute
+> differently* - because C56's loss was not a coverage problem (it covers ~53% and doubling that doubles cost and
+> saving alike) but a "the port does the same work" problem. **Status: parked, unsized.** **Re-evaluate when:**
+> someone has the instructions-per-call figure for the joint-calc tree *and* a reason it can do less than the
+> guest code, rather than an inclusive share.
+
 ## C10. Idle-loop skipping and an emulated-CPU underclock
 
 - **Status:** parked (2026-10-13).

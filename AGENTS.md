@@ -411,6 +411,28 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   what the walk captures at ~29% coverage rather than what the rest is worth. Second, **inclusive and leaf profiles
   answer different questions** - a subsystem that is 11% inclusive and 0.9% leaf is a subtree port, and it is
   invisible to a leaf profile, which is how "matrix-chain HLE (flat profile)" came to be rejected (C54).
+  **Third, added 2026-11-01 and the one that should change behaviour: an inclusive share is not a prize and is not
+  even a reliable upper bound.** There are now two cases where a subtree was ported and the realised figure can be
+  set against the share that motivated it, and they do not agree with each other:
+
+  | subtree | inclusive share | realised | ratio |
+  |---|---|---|---|
+  | `J2DPane::draw` (C53) | <=9.5% | **+2.3 to +3.5%** | ~3x over |
+  | `J3DDrawBuffer::draw` (C56) | 9.88% | **-0.79%** | no ratio exists |
+
+  C56's case is the instructive one, because the arithmetic can be closed independently: the subtree is
+  **3,010.6 guest instructions a call** (check mode, job 1875) at ~144 taken calls a second, which is **1.41%** of
+  core 0's block-code instructions (job 1569's budget: IPC 0.334, 80.9% block code, 7.07 host instructions a guest
+  instruction = 30.7 M guest instructions a second), or **~2.7%** for the whole subtree at the ~53% coverage
+  measured in jobs 1881-1882. For 2.7% of instructions to be 9.88% of samples those instructions must cost ~3.6x
+  an average one - and the port replaces them at **19.5 cycles each against compiled code's 21.2**, which says
+  they do not. **The measurement is ground truth, so the inclusive share is the instrument at fault**, by a factor
+  somewhere between 3x and infinity.
+  **So rank a subtree candidate by work per call and by what it can skip - never by its inclusive share** (which
+  AGENTS already said for *call count* after the PNGP matrix load, and the same correction now applies to the
+  profile). Before sizing a candidate off an inclusive share, get its guest instructions a call: check mode gives
+  it exactly for a port, and `--port-size-refused` gives it for a refusal. C54's 5.15% has had no such number
+  taken, so **C54 is currently unsized, not second-ranked.**
 - **Open directions, in the order the budget supports them:** removing guest code wholesale - **larger ports where a
   whole subtree is replaced** (other TEV block types, J3D packet draw; `docs/research/LIBRARY_PORTS.md`) - but
   **"other TEV block types" has never actually been sized, and the number that looked like its size was a label
