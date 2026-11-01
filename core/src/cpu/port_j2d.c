@@ -2448,7 +2448,12 @@ u64 g_j3dDrawn[3];      // taken calls, mat packets drawn, shape draws emitted (
 // GXCallDisplayList 0x8035FEF0: the dirty state made current, then a flush prim when nothing has been drawn since
 // the last one (`*(u32*)&vNumNot == 0`, which is both halves of __GXData word 0), then the call. The guest writes
 // the pointer whole (GX_WRITE_U32(list)); fifo.c's 0x40 masks it with 0x03FFFFE0 exactly as the hardware does.
+// Its own room check, because the flush prim it may emit is the one unbounded emission in the file: up to 256
+// words of zeroes plus a header, ~1,030 bytes, against the 9 bytes the call itself costs. A caller counting only
+// the call would overrun the walk buffer.
+#define CALL_DL_ROOM 1536
 static void gx_call_dl(Pc* c, u32 list, u32 nbytes) {
+    if ((u32)(c->pp - c->pbase) + CALL_DL_ROOM > c->pcap) { give_up(c, 1); return; }
     gx_sync(c);
     if (GX(DIRTY)) gx_dirty_state(c);
     if (!GX(0)) { gx_send_flush_prim(c); gx_sync(c); }
@@ -2551,6 +2556,8 @@ static void j3d_reset_mtx_load_cache(Pc* c) {
 // with J3DShpFlag_NoMtx - the base matrix loaded once and only the draws.
 static void j3d_shape_draw_fast(Pc* c, u32 shape) {
     const u32 sys = A_J3DSYS;
+    // setArrayAndBindPipeline and the no-matrix branch emit ~160 bytes before the per-group guard is reached.
+    if ((u32)(c->pp - c->pbase) + CALL_DL_ROOM + 256 > c->pcap) { give_up(c, 1); return; }
     u32 vcd = f32(shape + 0x2C);
     if (rd32(c, A_SJ3D_OLDVCDVAT) != vcd) {
         if (!span(c, vcd, kVcdVatDLSize)) return;
@@ -2580,7 +2587,8 @@ static void j3d_shape_draw_fast(Pc* c, u32 shape) {
         j3d_load_nrm_mtx(c, m, 4, 0);
     }
     for (u32 i = 0; i < mg && !c->fail; i++) {
-        if ((u32)(c->pp - c->pbase) + 512 > c->pcap) { give_up(c, 1); return; }
+        // A matrix load (94 bytes) and a display-list call (CALL_DL_ROOM, which checks itself again).
+        if ((u32)(c->pp - c->pbase) + CALL_DL_ROOM + 256 > c->pcap) { give_up(c, 1); return; }
         if (!nomtx) {
             u32 sm = f32(mtx + 4 * i);
             if (sm) {
@@ -2625,6 +2633,7 @@ static void j3d_prepare_draw(Pc* c, u32 sp) {
         wr32(c, shape + 0x5C, f32(mb + 0x20));     // setNrmMtx(mpNrmMtxArr[1])
     } else {
         u32 ba = f32(mb + 0x28), off = f32(shape + 0x64);
+        if (off > 1024) { give_up(c, 1); return; }   // (4 * off must not wrap past the span check)
         if (!span(c, ba + 4 * off, 4)) return;
         wr32(c, shape + 0x5C, f32(ba + 4 * off));  // mpBumpMtxArr[1][getBumpMtxOffset()]
     }
@@ -2658,7 +2667,11 @@ static void j3d_material_load(Pc* c, u32 mat) {
     const u32 sys = A_J3DSYS;
     if (!span(c, mat, 48)) return;
     wr32(c, sys + 0x54, f32(mat + 0x10));
-    if (!(rd32(c, sys + 0x34) & 2)) { g_j3dNbtRefused++; give_up(c, 5); return; }
+    if (!(rd32(c, sys + 0x34) & 2)) {
+        if (!c->fail) g_j3dNbtRefused++;   // (only the first reason per call, as the float sites do)
+        give_up(c, 5);
+        return;
+    }
     c->n += 12;
 }
 // J3DMatPacket::draw 0x80312A9C: the material, the packet's own display list, the first shape's pre-draw setting,
@@ -3375,6 +3388,18 @@ static void port_report(void) {
     if (g_portWalkDrew[0] || g_portWalkDrew[1] || g_portPicture || g_portWalkText)
         fprintf(stderr, "PORT: the walk drew picture %llu, text box %llu\n",
                 (unsigned long long)g_portWalkDrew[0], (unsigned long long)g_portWalkDrew[1]);
+    // C56's equivalent, and the same reason: a subtree port that drew nothing proves nothing.
+    if (g_j3dDrawScan[0])
+        fprintf(stderr, "PORT: j3d subtree %llu calls, %llu taken by the scan; drew %llu calls, %llu mat packets, "
+                "%llu shape draws; refused tex mtx obj %llu, nbt scale %llu\n",
+                (unsigned long long)g_j3dDrawScan[0], (unsigned long long)g_j3dDrawScan[1],
+                (unsigned long long)g_j3dDrawn[0], (unsigned long long)g_j3dDrawn[1],
+                (unsigned long long)g_j3dDrawn[2], (unsigned long long)g_j3dDrawScan[4],
+                (unsigned long long)g_j3dNbtRefused);
+    // A full capture table turns "0 differed" into a partial check: it must be read beside the verdict.
+    if (g_chkDropped)
+        fprintf(stderr, "PORT: **CHECK INCOMPLETE** %llu interpreter stores dropped, CHK_MAX (%u) full\n",
+                (unsigned long long)g_chkDropped, CHK_MAX);
     // Which line gave up, per reason: the reason codes are coarse (reason 5 has 21 sites), so this is what says
     // what to port next. Same histogram the device's '# port give-ups 10s' prints.
     {

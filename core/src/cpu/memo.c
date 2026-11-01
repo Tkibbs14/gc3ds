@@ -70,6 +70,7 @@ static void note_word(Gekko* g, u32 w, bool write, bool whole) {
 // with its value before, once.
 u32 g_chkW[CHK_MAX][2];
 u32 g_chkN;
+u64 g_chkDropped;
 bool g_chkOn;
 static u32 g_chkSet[CHK_MAX * 2], g_chkSetGen[CHK_MAX * 2], g_chkGen = 1;
 static void chk_note(Gekko* g, u32 ea, u32 size) {
@@ -78,7 +79,8 @@ static void chk_note(Gekko* g, u32 ea, u32 size) {
     for (u32 w = ea & ~3u, last = (ea + size - 1) & ~3u; w <= last; w += 4) {
         u32 k = (w >> 2) * 2654435761u & (CHK_MAX * 2 - 1);
         while (g_chkSetGen[k] == g_chkGen && g_chkSet[k] != w) k = (k + 1) & (CHK_MAX * 2 - 1);
-        if (g_chkSetGen[k] == g_chkGen || g_chkN >= CHK_MAX) continue;
+        if (g_chkSetGen[k] == g_chkGen) continue;
+        if (g_chkN >= CHK_MAX) { g_chkDropped++; continue; }   // reported, never dropped quietly
         g_chkSetGen[k] = g_chkGen;
         g_chkSet[k] = w;
         u8* h = GKP(g)->dmap->rhost[w >> GK_BLK_SHIFT];

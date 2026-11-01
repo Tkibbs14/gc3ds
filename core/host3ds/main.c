@@ -1868,6 +1868,12 @@ static const char* run_body(const char* path) {
                                     (unsigned long long)(h->refused - l->refused), (double)(h->pipe - l->pipe) / (double)(ran ? ran : 1),
                                     (unsigned long long)p.bad);
                             if (p.badHash) fprintf(g_perf, "; OFF: the code at %08lx differs from the ported", (unsigned long)p.badHash);
+                            // A full capture table makes "differed 0" a partial check rather than a pass, and a
+                            // subtree port runs tens of thousands of guest instructions, so this must be visible
+                            // beside the verdict and not left for someone to wonder about.
+                            { extern u64 g_chkDropped;
+                              if (g_chkDropped) fprintf(g_perf, "; **CHECK INCOMPLETE: %llu stores dropped, CHK_MAX full**",
+                                                        (unsigned long long)g_chkDropped); }
                             if (h->timed != l->timed) {
                                 double t = SYSCLOCK_ARM11 / 1e6 * (double)(h->timed - l->timed);
                                 fprintf(g_perf, "; us per call: building %.2f, committing %.2f", (double)(h->tRun - l->tRun) / t, (double)(h->tCommit - l->tCommit) / t);

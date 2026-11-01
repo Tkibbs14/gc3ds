@@ -3058,10 +3058,23 @@ gain" list was *recorded as a loss*, and a loss that moves is usually still a lo
 hygiene plus the occasional mechanism** - `--dlcache`'s 98.8% hit rate losing a point is worth more than a small
 gain would have been - but it should not be sold as a way to find speed, and the earlier framing of it as "a cheaper
 source of gains than writing new ports" was wrong.
-**Where a re-test could still find a gain** is the entries that were *not* recorded as losses: `--nskeep`
+**Where a re-test could still find a gain** was the entries that were *not* recorded as losses: `--nskeep`
 (Mario Party 4 **+1.9%**, parked on the owner's call rather than on a measurement), `--g2 on` (exact, no change
 measured - and it is display-list work, so C56 may move it), and anything whose sign was borderline. The recorded
 losses are hygiene work; a contributor should know which is which (CONTRIBUTOR_TASKS 1).
+
+> **Correction, 2026-11-01: both of those were run too, and the seam is now closed with zero gains in seven.**
+> `--nskeep` in TP's heavy area reads on **7.198 / 7.208** against off **7.192 / 7.210** = **+0.03%**, with the
+> off arm's own spread 0.25% - not a result (build `e91e46f4a0d6`, 9.0 rung, jobs 1863-1866, arms adjacent and
+> reversed). **But that does not test its recorded claim**, which is Mario Party 4, and **this session cannot**:
+> `--nskeep` is GX-side (`pica.c`'s shape hashing) and the cloud toolchain is the one thing AGENTS says must not
+> be used to measure GX-side or vertex work - devkitARM 16.1.0 is **-4.7%** on Mario Party 4 because `gxvtx_pct`
+> doubles, so a GX-side switch's *relative* value there is not trustworthy either. So `--nskeep` stays parked, now
+> with a reason that is a measurement limit rather than a missing measurement, and it needs the owner's toolchain.
+> `--g2 on` is in the same block (jobs 1867-1870) and recorded below.
+> The verdict above therefore stands harder than when it was written: **seven re-tests, seven moved or confirmed
+> figures, no gains.** The one entry whose claim might still hold is the one entry a cloud session is forbidden to
+> test.
 Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`, `crstub`, `calls`, `traces`,
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.

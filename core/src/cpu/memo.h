@@ -17,4 +17,8 @@ u32 memo_probe(Gekko* g);  // runs the call at g->pc in the interpreter, recorde
 #define CHK_MAX 16384u
 extern u32 g_chkW[CHK_MAX][2];
 extern u32 g_chkN;
+// Words the recorder had to drop because CHK_MAX was full. Never zero silently: a subtree port runs tens of
+// thousands of guest instructions, so a full table turns "0 differed" into a partial check - the same vacuous
+// pass that the soft-float concat and the J2DPicture port both reported this week (AGENTS rule 8).
+extern u64 g_chkDropped;
 extern bool g_chkOn;
