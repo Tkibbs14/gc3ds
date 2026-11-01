@@ -376,8 +376,10 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   nowhere to go). **Ordon loses while replaying more** - 90.5% of list calls against the heavy area's 68.5% - which
   is `--dlcache`'s lesson from the other side: where the GX thread already has slack, the saving has nowhere to go
   and the replay's own work lands on the core that is the limit. Net ~+0.1% across TP's two scenes, **stays
-  off**), `--nskeep`
-  (Mario Party 4 +1.9%, owner's call), fault mode (`--faultmem`, +2-5% but crashes the kernel in svc 0x94), and the
+  off**), `--nskeep` (**on by default since
+  2026-10-30, Mario Party 4 +1.2% - job 1559 against 1560; the +1.9% of 10-24 is superseded. This list said
+  "built, off ... owner's call" until an audit checked it against `pica.c:3366`, which has
+  `g_nsKeep = 1`**), fault mode (`--faultmem`, +2-5% but crashes the kernel in svc 0x94), and the
   region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
   tool).
 - **Built, off, measured without a clear gain:** display-list vertex cache, known-single stores (on; +1%), the

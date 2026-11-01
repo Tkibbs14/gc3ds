@@ -3491,6 +3491,16 @@ u32 port_run_hook(Gekko* g) {
     if (!reg) { reg = true; atexit(port_report); }
 #endif
     if (g_portMode >= 2) return port_check(g, (u32)hook);
+    // Tell the sampler it is in a port and not in the dispatcher. `WH_HLE` and `WH_INTERP` were declared in
+    // common.h and **never assigned anywhere in the tree**, so every port and stand-in C call was charged to
+    // `dispatch` - which is why that bucket reads 8.6-8.7% of core 0 and why dividing it by the dispatcher's
+    // entry count gave an incredible ~1,600 cycles an entry (C48 called it "the largest unattributed number in
+    // core 0's budget"; it was partly mis-attributed, not unattributed). Set after the early-outs so the common
+    // rejection path pays nothing, and restored rather than cleared, as jit.c's compile bracket already does.
+    // The independent second view is PortStats' own per-hook timers, which already measure the same thing
+    // (rule 8).
+    unsigned char was = g_where;
+    g_where = WH_HLE;
     Pc* c = &g_pc;
     PortHook* hs = &g_portStats.h[hook];
     u64 t0 = prof_begin();
@@ -3501,7 +3511,7 @@ u32 port_run_hook(Gekko* g) {
     bool took = port_run(c, g, (u32)hook);
     if (g_portPmuEnd && pmu) g_portPmuEnd();
     g_tOn = false;
-    if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }
+    if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; g_where = was; return 0; }
     u64 t1 = t0 ? g_profClock() : 0;
     if (g_portCommitBegin && pmu) g_portCommitBegin();
     port_commit(c);
@@ -3517,6 +3527,7 @@ u32 port_run_hook(Gekko* g) {
     hs->calls++;
     hs->pipe += c->pn + c->pnSent;
     g->pc = g->lr;
+    g_where = was;
     if (!c->n) return 1;
     // The walk's calibration is for the subtrees it took *before* C53: taking text subtrees changes its shape, not
     // just its volume - 104,292.4 real against 77,142.2 estimated a call with --port-walktext on (job 1757) where it

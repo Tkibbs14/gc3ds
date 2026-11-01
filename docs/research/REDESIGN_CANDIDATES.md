@@ -925,7 +925,19 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   words, inexact ~1.5-2%. Candidate 2 (OPT_RETSTUB) built: -2.1% hot words, +1.0% / +1.6% core 0 (job 148, trimmed
   means), default on together with OPT_SYSCALL and OPT_HLELINK (job 151: +2.2% / +4.2%). Shorter common sequences
   measured neutral on the 2DS: OPT_CRSTUB (compare CR updates in shared stubs, job 155), OPT_ROTMASK (rlwinm as shifts,
-  job 156); both off. Candidates 3 (float loads and stores, ~1% of hot words) and 4 (register pinning) are parked:
+  job 156); both off.
+  > **Correction, 2026-11-01 (an audit against the code): OPT_ROTMASK is ON by default and is not neutral.**
+  > `main.c:661` reads `o->rotmask = true` with "heavy area +0.6%, Ordon +0.3%, title -0.1 to +0.3%; with vin
+  > +1.3% / +1.2% (jobs 585-604)". So job 156's "neutral" was wrong by 0.3-0.6 points in the direction of nothing,
+  > and this line carried the wrong verdict for two weeks.
+  > **That makes its sibling the highest-yield re-test batch in the project, and for a stated reason**: OPT_CRSTUB
+  > (job 155) came from the same session by the same method, and that method - pooled A/B means over runs that
+  > recompile, before the stolen-second filter - is the one that also produced float lanes' rejection (reversed to
+  > +1.5%/+1.6% and a default) and `--dlcache`'s "no gain" (re-tested at -1.05%). C16's OPT_BEFLOAT ("-0.8% / +0.1%",
+  > signs disagreeing between scenes) and C27's OPT_PIPEPS ("+0.3% at 1.9 SE", an uncertainty six times the effect)
+  > are the other two. All three are built, exact, and need only separate whole runs: four adjacent an arm,
+  > `tp_area2`, one build, one rung, `icmiss_k` quoted, and the feature's own counter quoted for both arms to prove
+  > they differed. Candidates 3 (float loads and stores, ~1% of hot words) and 4 (register pinning) are parked:
   words shaved per instruction have stopped showing on the hardware (HANDOFF 2026-10-14 late night).
 - **Lesson:** executed hot words per guest instruction did not predict I-cache misses for this change: misses follow the
   hot code's footprint (distinct lines touched), not the words executed per instruction.
@@ -1047,7 +1059,10 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 ## C20. __save_gpr / __restore_gpr as in-place stand-ins
 
-- **Status:** legacy C form rejected 2026-10-17 (jobs 321-326); X3 native form still rejected, word-inline form positive/off (2026-10-20; result below); exact on the PC.
+- **Status:** legacy C form rejected 2026-10-17 (jobs 321-326); X3 native form still rejected; **the word-inline
+  form is ON by default** (`main.c:629`, `o->gprinline = true`, +0.80% Ordon / +0.57% heavy / +0.64% cutscene,
+  jobs 708-725) - this line read "positive/off" until an audit on 2026-11-01 checked it against the code.
+  **It also has no trigger of its own**: the one below covers only the rejected native-helper form.
 - **What:** the CodeWarrior runtime's register save and restore (2.5% of the cutscene, job 311), entered at each
   `_savegpr_N`, as C called in place of `bl` (ps_translate.py `__save_gpr.dis@K`).
 - **Result:** a small loss (job 322 with them: cutscene 28.29%, later 15.70%, against 28.98 / 16.35 without, job
@@ -1657,7 +1672,11 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 - **Status:** **on by default since 2026-10-30** (Wind Waker +2.6%, Mario Party 4 +0.7%, TP flat): static Ordon +0.20% with
   the on arm noisier than that, the heavy area +0.03%; the device's hot-words metric does not move. Float
-  arithmetic is too small a share of TP's compiled code. Kept off, with the bench numbers below for a scene
+  arithmetic is too small a share of TP's compiled code. **(That "kept off" is a leftover from the
+  pre-decision draft and is wrong: `main.c:648` has `o->fdirect = true` - the entry's own status line four
+  lines up says "on by default since 2026-10-30". Caught by an audit, 2026-11-01. It matters because it made
+  C43's trigger look unfired when it has fired twice - the A/B is in, and Wind Waker at +2.6% is the
+  float-dense scene C43 asked for.)** The bench numbers below are for a scene
   where float work dominates.
 - **What:** the float-lane path computed every result into a scratch single register and then moved it into frD's
   lane register - a word a lane on every float arithmetic instruction. With OPT_FDIRECT the arithmetic, or the
@@ -1750,6 +1769,54 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   bounded well below the table and should be parked.
 
 ## C46. A return stack buffer for blr, instead of the indirect table (prior art: emudev.org, 2026-10-30)
+
+> **TRIGGER FIRED, and the entry is now the best-evidenced JIT candidate on this list (2026-11-01).** Its trigger
+> was verbatim "a counter for indirect-table hits by kind (LR / CTR, first slot / second / miss) has run on the
+> device". C48's `# jit indirect 10s` is exactly that counter and it ran (job 1916): **798,300 probes a second**,
+> `blr` 5.02 per 1k against `bctr` 0.95, so **84% of probes are returns - about 670,000 a second**. The blocker this
+> entry recorded ("the two available estimates disagree by eight times") is gone, and the low end that would have
+> killed it is excluded: 670,000 a second is the *top* of the old range.
+>
+> **And the cost is now attached, which it never was.** Reconciling three counters already in the file:
+> misses are **41,134 a second** (the dispatcher's own count) or 41,512 (5.2% of 798,300) - 0.9% apart - and C48's
+> per-miss cost is on record at 480-820 cycles, the sampler's implied figure at ~1,600. At 804 MHz:
+>
+> | per-miss cost | share of core 0 |
+> |---|---|
+> | 480 cycles | **2.48%** |
+> | 820 cycles | **4.23%** |
+> | ~1,600 cycles (the sampler's implied figure) | **8.26%** |
+>
+> So indirect-table misses cost **2.5-4.2% of core 0** at the per-miss figure on record, which is this entry's
+> size and stands on the miss count alone.
+> **What they do *not* do is explain the sampler's 8.6-8.7% `dispatch` bucket, and I claimed they did for about
+> twenty minutes.** A code audit the same hour found the reason that comparison is invalid: **`WH_HLE` and
+> `WH_INTERP` appear only in the enum declaration in `common.h:51` and are never assigned anywhere in the tree**,
+> so every port and stand-in C call is charged to `dispatch` along with the dispatcher loop. The bucket is
+> `dispatcher + port_run + port_commit + stand-ins + the memory slow stubs`, and `jitsample.c` prints two buckets
+> named "hle" and "interp" that can only ever read 0. So the bucket cannot be used to price a dispatcher return,
+> and the ~1,600-cycles-per-entry figure derived from it is not a cost at all - it is an artifact of the
+> mis-attribution.
+> **The fix is one line at each entry point** (`g_where = WH_HLE` around `port_run_hook` and the `hle_*` entries,
+> restoring the previous value as `jit.c:6479` already does), it needs no new instrument, and `PortStats`' own
+> per-hook timers are the independent second view rule 8 asks for. Until it is run, **two explanations for that
+> bucket are live and only one can be mostly right**, which is exactly the state rule 8 says to resolve by
+> measurement rather than by argument.
+>
+> **The trade to resolve, and it is arithmetic before it is a build.** ~8 instructions saved on each of ~670,000
+> returns a second is ~5.4 M host instructions a second against core 0's ~217 M - about 2.5% - *plus* whatever
+> share of those 41,134 misses an RSB converts into hits. Against it: **+3 words at every linked `bl` site**, in a
+> project where every call-site growth has lost (OPT_CALLS -1.2%, traces -5.1%, relayout -7.6%) and where the
+> governing rule is that misses follow the hot code's *footprint*, not words executed (C13's lesson).
+> **Next step, no device time:** hand-emit the RSB sequence in `jitbench.py` on `core/tests/jit/bench/callmany.S`
+> (the many-caller leaf: 19.2 probes per 1k with `--tier` on, 153.8 with it off) and read **hot ARM words per
+> guest instruction** with and without it, plus `arm11_sched.py --cycles`. If words per guest instruction rise,
+> close this entry on that number rather than spending a device session - that is the cheap half of the answer and
+> it needs no disc image.
+> **One caution carried over:** C48's two readings of the miss rate differ 26-fold (0.2% from the 2026-10-31
+> instrument against 5.2% on the device), and the 480-820 cycle figure was derived from the 0.2% baseline. The
+> table above uses it anyway because it is the only per-miss cost on record, but it is the number most in need of
+> an independent second view before anything is built on it.
 
 - **Status:** parked pending an instrument - **its value cannot currently be estimated, which is itself the finding.**
 - **What:** `blr` goes through `ST_INDLR` into `ST_INDIRECT`: a 2-way address-indexed table probe (load LR, mask,
@@ -2052,6 +2119,28 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   per-switch defaults chosen before 2026-10-30 in particular.
 
 ## C50. The data micro-TLB: 3.09 M misses a second, never examined (2026-10-30)
+
+> **ANSWERED 2026-11-01, from logs already on disk and with no device time.** This entry's own stated measurement
+> was "sweep `FAST_BITS` with C48 and watch `dmtlb_k`". That sweep ran (C48), and neither write-up read the
+> counter. Reading it out of jobs 1922-1925 - the padded pair, so allocation and rung are held constant and only
+> the *touched* footprint changes - settles it:
+>
+> | | `dmtlb_k` | `dcrmiss_k` | `icmiss_k` | speed |
+> |---|---|---|---|---|
+> | `FAST_BITS` 16 (512 KB a table, 2 MB in all) | 3,367 | 1,438 | 7,668 | - |
+> | `FAST_BITS` 13 (64 KB a table) | 3,088 | 1,541 | 7,902 | **-0.71%** |
+> | | **-8.3%** | **+7.2%** | **+3.1%** | |
+>
+> **So the answer is yes-and-no, and the no is the useful half.** The indirect table *is* a measurable share of the
+> micro-TLB - shrinking the project's single largest JIT data structure eight-fold removes **8.3%** of the 3.09 M
+> misses a second - but that is all it is worth, and taking it makes **data read misses rise 7.2% and instruction
+> misses 3.1%**, which is why the net is -0.71%. **The micro-TLB is therefore not a handle on JIT metadata**: the
+> biggest piece of metadata there is accounts for under a tenth of it, and the remaining ~92% is guest memory and
+> Gekko state, which is C47's territory and not this entry's.
+> **Status: answered, closed as a lever.** It cost nothing because the data was already on disk - the general
+> lesson being that a sweep should read every counter its own entry names, not just the one it was run for.
+> **Re-evaluate when:** C47 attributes the other ~92%, or someone proposes a change that moves page *count* rather
+> than footprint (large pages are unavailable on this kernel, so that is unlikely).
 
 - **Status:** parked; cheap to size, and AGENTS already lists "whether the micro-TLB can be made to matter" as an
   open hardware question.

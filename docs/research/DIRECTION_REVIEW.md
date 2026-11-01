@@ -90,7 +90,23 @@ Replacing library work of share *f* with native code *s* times faster gives core
 Measured *s* for our ports: J2DMaterial::setGX ~15,700 cycles against the guest's ~1,920 instructions (~67,000 cycles at
 35 cycles each): **~4x**; isolated small functions **below 1x** (cXyz operators -0.9%, GPR save / restore, GX setters:
 the call boundary costs more than the function). So **subsystem ports at s ~ 4 on ~60% of core 0 give ~1.8x core 0 at
-best**, against the 4.3x the heavy area needs. And by consequence one, that 1.8x only shows as ~+15-19% until the GX
+best**, against the 4.3x the heavy area needs.
+
+> **Correction, 2026-11-01: that `s ~ 4` is computed from the 35 cycles per guest instruction this file retracts in
+> its own opening paragraph.** At the corrected **22**, the same arithmetic gives 1,920 x 22 = 42,240 against
+> 15,700, i.e. **s = 2.69, not 4.28** - and Amdahl at f = 0.6 then reads **1.61x, not 1.85x**.
+> **A second, independent measurement agrees and is worse.** C56 is the only in-situ measurement of a port
+> replacing guest work inside the running emulator: 58,612 ARM cycles for 3,010.6 guest instructions = **19.5
+> cycles per guest instruction replaced, against compiled code's 21.2 - s = 1.09**, and it measured **-0.79%**.
+> So the measured range of *s* is **1.09 to 2.69**, and 4 is outside it.
+> **This propagates.** The `s ~ 4` figure is inherited by EMULATOR_CEILING ("native subsystems at ~4x (measured
+> for ports)", "ports reach ~4x on what they cover"), by GENERAL_ARCHITECTURE ("~50-60% of core 0 at ~4x ...
+> ~2.0-2.5x"), and by this file's own "ceiling ~1.8-2.4x core 0". **Every published ceiling rests on it**, so each
+> should be read with s = 2.7 at best and 1.1 at worst until re-derived. This file also still states the retracted
+> cost twice as current ("~35 host cycles per guest instruction"); those are the same error.
+> **What does not change:** the *ordering* of the strategy. Ports still beat codegen, and whole subtrees still beat
+> entry hooks. What changes is how much is there - and it says the gap to full speed in TP's gameplay is larger
+> than the headline ceilings imply, not smaller. And by consequence one, that 1.8x only shows as ~+15-19% until the GX
 side changes.
 
 **Verdict on the hypothesis:** library-level replacement is real and general enough to be part of the foundation, but

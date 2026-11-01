@@ -458,7 +458,11 @@ typedef struct {
     bool abFault;        // --ab faultmem: fault mode on and off (faultmem column; each switch drops all compiled code)
     bool sched;          // --sched on|off (on): code scheduled against interlocks (jit_set_sched SCHED_ALL)
     bool abSched;        // --ab sched: on and off (sched column; each switch drops all compiled code)
-    bool opt;            // --opt on|off (on): the optimizing JIT's stages (jit_set_opt OPT_ALL, docs/OPT_JIT_PLAN.md)
+    // --opt on|off (on). The comment here said "jit_set_opt OPT_ALL" until an audit on 2026-11-01: the mask
+    // built below sets **OPT_HOIST alone** for this flag, and OPT_ALL (jit.h:159) is defined and referenced
+    // nowhere in the tree. Every other stage has its own switch, so `--opt off` turns off check hoisting and
+    // nothing else - a reader following the old comment had the wrong model of what this does.
+    bool opt;
     bool abOpt;          // --ab opt: on and off (opt and deopts columns; each switch drops all compiled code)
     bool abVtrim;        // --ab vtrim: the vertex worker's job trim on and off (vtrim column)
     bool dlcache;        // --dlcache on|off (off): the display-list vertex cache (vfast.c, docs/DL_CACHE_PLAN.md)

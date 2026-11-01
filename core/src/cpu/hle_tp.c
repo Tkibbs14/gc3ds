@@ -2413,7 +2413,13 @@ u64 g_hleCost[3];  // calls, timed calls, ticks inside them
 u32 hle_run(Gekko* g, u32 budget) {
     u64 ports = g_clkN[CLK_PORT];
     u64 t0 = prof_begin();
+    // As in port_j2d.c's hook: the sampler had no way to tell a stand-in from the dispatcher, because WH_HLE was
+    // declared in common.h and never assigned. Restored rather than cleared, so a port called from inside a
+    // stand-in (which happens: the CLK_PORT check below is exactly that case) nests correctly.
+    unsigned char was = g_where;
+    g_where = WH_HLE;
     u32 n = hle_run_body(g, budget);
+    g_where = was;
     bool port = g_clkN[CLK_PORT] != ports;
     if (n && !port) {
         g_clkCyc[CLK_HLE] += n;

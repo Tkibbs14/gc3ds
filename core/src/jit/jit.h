@@ -156,7 +156,9 @@ extern int jit_fc_min;
 enum { OPT_HOIST = 1, OPT_KSTORE = 2, OPT_FCACHE = 4, OPT_CALLS = 8, OPT_RETSTUB = 16, OPT_SYSCALL = 32, OPT_HLELINK = 64,
        OPT_CRSTUB = 128, OPT_ROTMASK = 256, OPT_NATIVE2 = 512, OPT_IND2 = 1024, OPT_BEFLOAT = 2048, OPT_LATCH = 4096,
        OPT_ICBI = 8192, OPT_INLMEM = 16384, OPT_FASTFLOAT = 32768, OPT_PIPEK = 65536, OPT_PIPEPS = 131072,
-       OPT_GPRINLINE = 262144, OPT_ZGPR = 524288, OPT_ZGX = 1048576, OPT_ZXYZ = 2097152, OPT_ALL = 4194303,
+       OPT_GPRINLINE = 262144, OPT_ZGPR = 524288, OPT_ZGX = 1048576, OPT_ZXYZ = 2097152,
+       OPT_ALL = 4194303,  // defined and referenced nowhere (audited 2026-11-01); main.c's --opt sets OPT_HOIST alone
+
        OPT_REGION = 4194304, OPT_TIER = 8388608, OPT_FDIRECT = 16777216, OPT_INDSTAT = 33554432 };  // OPT_INDSTAT: count indirect-table probes by kind in the shared stub (--indstat, C48; a measurement, not an optimization - a counted run is slower, so read g_jitIndStat per guest instruction)  // OPT_FDIRECT: float arithmetic writes frD's lane register, not a scratch one and a vmov (jit.c compile_fc)  // OPT_TIER: blocks that run often are recompiled as regions of what ran (jit.c tier_block)  // OPT_REGION: blocks continue past forward branches inside them (jit.c region_scan), not in OPT_ALL
 // X3: word-recognised GPR save/restore inlining, and selective native-call ABI for GPR/GX/cXyz sets. All default off.
 // OPT_PIPEPS: the shared psq_st stubs (plain float and known singles) append to the write-gather pipe's buffer themselves
