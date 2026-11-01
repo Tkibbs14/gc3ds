@@ -418,7 +418,10 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   work accepts 412 panes a window and draws none, every one being hidden. **On by default since 2026-11-01**, after a
   second measurement on a different build with adjacent arms (+3.17%, jobs 1785-1788) and `--port check` on the
   default build itself. Its absolute figures belong to the 9.0 MB launch rung (C55): the device chainloaded into
-  that rung both times, so what C53 gives on the 7.1 rung is unmeasured. The
+  that rung both times, so what C53 gives on the 7.1 rung is unmeasured. **And its heavy-area figure is
+  build-specific: +2.31% on `8aa6dc7`, +1.97% on `787ed374`** (jobs 1836-1839, same scene and rung) - both right
+  where they were taken. That 0.34-point spread is what a rebuild moves, and reading it as sub-additivity is how
+  C49's first test went wrong before all three configurations were put on one build. The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
   **rank candidates by work per call, not by call count**. **The "denormal give-up" that CONTRIBUTOR_TASKS 9 called a
@@ -430,8 +433,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   now abandons a ~104,000-instruction subtree instead of a ~13,000-instruction one, so it is the walk's biggest
   addressable refusal and worth 2.2x its coverage. Both readings are right at their own time, which is the point:
   **a candidate's value depends on which other options are on, so re-rank after every default lands, not once** -
-  C49 with the sign reversed. The remedy is built and off (`--port-softfloat`, `psmtx_concat_exact`), and what is
-  left is its `--port check`;
+  C49 with the sign reversed. **The remedy is built, exact and ON by default since 2026-11-01**
+  (`--port-softfloat`, `psmtx_concat_exact`): heavy area **+0.20%**, Ordon **+0.31%**, and the give-up class is gone
+  (60 refusals a window to 0). **But its measured value is a tenth of what the re-pricing above predicted**, and the
+  reason is the recurring one: the refused calls never became taken calls, they vanished from the hook because walks
+  that already succeeded absorbed them, so coverage rose 1.4% rather than 2.2x. CONTRIBUTOR_TASKS 9 carries the whole
+  history - premise wrong, then size wrong twice in opposite directions - as the worked example of why only separate
+  whole runs settle a port's worth;
   the ports' `port_commit` (2.61% of core 0, and the J3D light
   port's one-copy commit turned it from negative to positive at the time, so the technique is proven and unapplied
   elsewhere - though that port's +2.7% is now inside bit 6's, and PNGP's commit is already one copy, so the next
