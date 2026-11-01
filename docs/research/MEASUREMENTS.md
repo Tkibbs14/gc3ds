@@ -3029,6 +3029,13 @@ sub-additivity running the other way - an option *raising* another's value rathe
 > a 289-line file growth, and a ~5% regression would dwarf a 3.5% gain, so **jobs 1768-1771 run `088fb0df6610` itself,
 > built in this session, before anything becomes a default.** The A/B above is unaffected either way: one build, one
 > session, interleaved.
+>
+> **And C53's own figure will have to be taken again once the regression is fixed.** The A/B is valid - one build,
+> one session, interleaved - but both of its arms sit on a baseline that is 5.6% below where the code was, and the
+> regression's mechanism is data-side misses, which is exactly the budget a port competes for. +3.46% measured on a
+> damaged baseline is not a prediction of what it gives on a sound one, in either direction. This is the same rule
+> that C49 and the re-pricing of CONTRIBUTOR_TASKS 9 both produced, applied to itself: **a number is only a number
+> at the configuration it was measured in.**
 
 ### The baseline on devkitARM 16.1.0 (jobs 1723-1732, 2026-10-31)
 
