@@ -252,6 +252,21 @@ followed by the same `mShapeDraw[i]->draw()` loop.
 (local statics, or named otherwise), so their addresses have to come from the machine code - which needs the disc
 image and therefore a machine that has one. Everything else above is settled.
 
+**Viability, checked before writing anything (2026-11-01) - the port can emit what the subtree emits.**
+- Most of what the subtree does to the GX side is `callDL()` on guest display lists, and the standard GX opcode
+  **`0x40`** (call display list: opcode, u32 address masked `& 0x03FFFFE0`, u32 size - 9 bytes) is fully decoded by
+  `fifo.c`, which only ignores such a call when already *inside* a list - and the port's pipe is not. So
+  `p8(0x40); p32(addr); p32(size)` is the emitter, and `gx_load_pos_mtx_imm` already exists in `port_j2d.c` for the
+  matrix loads. (Do not confuse this with `fifo.c`'s `0x0060`, a gc3ds extension for another path.)
+- **`prepareDraw` (284 bytes, the biggest single piece) is pure state plumbing, not GX**: stores into `j3dSys`,
+  flags on and off the shape, and pointers copied out of the matrix buffer into the shape, plus
+  `J3DVertexBuffer::setArray` (36 bytes) and `J3DModelData::syncJ3DSysFlags` (60 bytes). It **mutates guest memory**,
+  so those writes go through the undo list exactly as the pane walk writes pane fields through - the framework
+  already does this.
+- So the whole port is **a lot of guest-memory stores plus a handful of GX emissions** (display-list calls, array
+  base pointers, matrix loads). That is the pane walk's shape, which is the strongest reason to expect it to behave
+  the same way.
+
 **What is left to write** is the spine only, ~1.2 KB of guest behaviour: the two loops, `J3DMatPacket::draw`,
 `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
 `setArrayAndBindPipeline`, `J3DShapeDraw::draw`, and a `J3DShapeMtxConcatView::load` wrapper around port bit 2's
