@@ -258,7 +258,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   proves the checker reports a difference). A port pays only when it does less than the guest code, not when it copies
   the SDK step by step; it must also copy what the guest code leaves that the ABI does not promise (PSMTXConcat's ps1
   lanes of f14, f15, f31) and not run where the guest would take an exception (MSR.FP off).
-- **Defaults that measured as gains:** draw merging (+24%), check hoisting (core 0 +5%), the job-ring and TEV work in
+- **Defaults that measured as gains:** **C53's pane-walk subtree - `--port-picture` and `--port-walktext` together
+  (static Ordon +3.46% and +3.17% on two builds, heavy area +2.31%; jobs 1760-1767 and 1785-1788, every on-run above
+  every off-run, all arms inside one launch memory state)**, draw merging (+24%), check hoisting (core 0 +5%), the job-ring and TEV work in
   HANDOFF, matrix indices apart from vertex records (VIx), the native stand-ins (shadow scan with a leaf memo, the
   paired-single library, J3D display-list writers, THP decode), PE register reads that no longer wait for the GX thread
   (cutscene +3.2%), pipe stores at known addresses (`OPT_PIPEK`, gameplay +7.0%), raw draw calls and state, mipmaps

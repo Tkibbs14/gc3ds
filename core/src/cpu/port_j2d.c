@@ -1069,23 +1069,29 @@ static void picex_draw_tex_coord(Pc* c, u32 p, u32 w, u32 h, u32 mtx) {
 
 static void gx_set_tev_color(Pc* c, u32 id, u32 col);   // defined with the rest of the TEV setters, below
 
-// --port-picture (off). **Off until it is checked**, per AGENTS rule 5 and rule 2: the two checks this port needs -
-// `porthash.py` entries for every guest function it follows, and `PORT_CHECK=1` / `--port check` against the
-// interpreter - both require the disc image, which a cloud session does not have. Until they have run on a machine
-// that does, accepting these panes would change what the walk draws on the strength of code nobody has compared.
-bool g_portPicture;
+// --port-picture (ON by default since 2026-11-01). The pane walk accepts J2DPicture panes, which is what lets it
+// take a subtree at all: a subtree is all-or-nothing, and TP's HUD mixes J2DPicture with J2DTextBoxEx. Measured
+// with `--port-walktext` as one change (C53), static Ordon **+3.46%** (jobs 1760-1767, build 8aa6dc7) and
+// **+3.17%** (jobs 1785-1788, build 0352f20e, arms adjacent), TP's heavy area **+2.31%** (jobs 1762-1765); every
+// on-run above every off-run in both rounds, within-arm spreads 0.02-0.10%, and all arms inside one launch memory
+// state (C55). Exact: `--port check` differed 0 on the device with text panes actually drawn (jobs 1757-1759) and
+// `--port plant` differed 29,442; a peer's PC `PORT_CHECK=1` over four title states differed 0 with 3,150 text
+// panes drawn at state 6590. Its *drawing* path for a visible picture stays behind `--port-picture-draw` and has
+// still never run (every picture reached is hidden), so the walk refuses at one rather than running unchecked code.
+bool g_portPicture = true;
 // --port-picture-draw (off): actually draw a *visible* J2DPicture pane with the code below, instead of refusing the
 // subtree at it. Separate from `--port-picture` because the two have completely different evidence behind them:
 // accepting the class in walk_scan is what unlocks the subtrees and is covered by every check run, while this code
 // has never executed in one - see the comment at its call site in walk_pane.
 bool g_portPictureDraw;
 
-// --port-walktext (off, same reasoning): the pane walk accepts J2DTextBoxEx panes and draws them with bit 10's own
-// text_draw_self, which is already built and measured exact as a standalone entry hook. This is deliberately a
-// *separate* switch from `--port-hooks` bit 10 rather than the same one, because bit 10 as an entry hook measured
-// Ordon -4.3% (jobs 1491-1497): folding the same code into the walk is a different change and has to be measurable
-// without paying for the hook that lost.
-bool g_portWalkText;
+// --port-walktext (ON by default since 2026-11-01, measured with --port-picture as one change: see above). The pane
+// walk accepts J2DTextBoxEx panes and draws them with bit 10's own text_draw_self. It stays a *separate* switch
+// from `--port-hooks` bit 10, because bit 10 is the standalone entry hook and lost 4.3% in Ordon (jobs 1491-1497):
+// the same code folded into the walk is a different change, and keeping them apart is what made it measurable.
+// What it bought: the walk's real guest instructions a call went from 13,377 to 104,292 and its pane-class test
+// now refuses nothing (an empty `# port walk-scan 10s` where job 1755 had 1,410 refusals a window).
+bool g_portWalkText = true;
 static void text_draw_self(Pc* c, u32 tb, u32 px, u32 py, u32 mtx);  // defined with the J2D text section, below
 u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively through the C53 halves: picture, text box
 // --port-size-refused MASK (0, check mode only): for refusals whose *reason* is in MASK, also run the call through

@@ -37,17 +37,18 @@ bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): th
 // to say no and only some are worth extending.
 // The unrecognised panes' drawSelf addresses (port_j2d.c walk_ds), since 100% of walk_scan's refusals are that one
 // test. Guest addresses: name them with core/tools/stack_funcs.py.
-// --port-picture on: the pane walk accepts J2DPicture panes and draws them natively (C53). **Off by default until
-// the disc-image checks have run** - porthash entries and PORT_CHECK / --port check against the interpreter.
+// --port-picture (ON by default since 2026-11-01): the pane walk accepts J2DPicture panes (C53). Measured with
+// --port-walktext as one change: Ordon +3.46% and +3.17% on two builds, heavy area +2.31%. The *drawing* path for a
+// visible picture is --port-picture-draw and is still unexercised, so the walk refuses at one.
 extern bool g_portPicture;
 // --port-picture-draw on: draw a *visible* J2DPicture pane natively instead of refusing the subtree at it. Its own
 // switch because `--port-picture`'s value is scan acceptance (covered by every check) while this code has never run
 // in one: `drew picture` is 0 in every checked state on both machines, every J2DPicture reached being hidden.
 extern bool g_portPictureDraw;
-// --port-walktext on: the pane walk accepts J2DTextBoxEx panes and draws them with port bit 10's own text_draw_self
-// (C53's other half, and the one that unblocks it: every *visible* J2DPicture in TP's HUD shares a subtree with a
-// J2DTextBoxEx, and a subtree is all-or-nothing). A separate switch from `--port-hooks` bit 10 on purpose: that bit
-// is the standalone entry hook, which measured Ordon -4.3%.
+// --port-walktext (ON by default since 2026-11-01): the pane walk accepts J2DTextBoxEx panes and draws them with
+// port bit 10's own text_draw_self (C53's other half, and the one that unblocks it: every *visible* J2DPicture in
+// TP's HUD shares a subtree with a J2DTextBoxEx, and a subtree is all-or-nothing). Still a separate switch from
+// `--port-hooks` bit 10: that bit is the standalone entry hook, which measured Ordon -4.3%.
 extern bool g_portWalkText;
 extern u64 g_portWalkDrew[2];
 // --port-size-refused MASK (check mode only, measurement): interpreter instructions summed over refused calls whose

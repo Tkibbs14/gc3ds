@@ -3063,11 +3063,20 @@ CONTRIBUTOR_TASKS 9 are right at their own time; what changed is what else is sw
 sub-additivity running the other way - an option *raising* another's value rather than subsuming it** - and it is why
 "rank the candidates" has to be redone after every default lands, not once.
 
-> **Not yet a default (2026-11-01).** Rule 5 turns a measured, exact gain on without asking, and this qualifies on
-> its ratio. What it needs first is one re-measurement in the device's current state: the figures above were taken
+> **ON BY DEFAULT since 2026-11-01**, after the re-measurement below. Rule 5 turns a measured, exact gain on without
+> asking, and this qualifies twice over.
+>
+> **Second measurement, a different build, arms adjacent** (jobs 1785-1788, build `0352f20e9554`, 180 s, on / off /
+> on / off, all four in the 9.0 MB launch memory state): on **10.381 / 10.389**, defaults **10.066 / 10.061**, spreads
+> 0.08% and 0.05% - **+3.17%**, against **+3.46%** from the first measurement. The 9.0 rung's own level also
+> reproduces (10.066 / 10.061 against 10.030 / 10.020), on a build 21 commits later. The device chainloaded into the
+> same rung by luck rather than choice, so a 7.1-rung figure for C53 is still unmeasured; two measurements in one rung
+> on two builds is what the gain rests on.
+>
+> **The original note, kept, and its reasoning was wrong:** the figures above were taken
 > on the far side of a 5.6% step (the withdrawn-regression section at the head of this file), so **+3.46% / +2.31%
 > as a ratio holds - interleaved arms, each repeated an hour apart - while 10.367 and 7.193 are not comparable with
-> anything measured after the boundary.** The reasoning that originally held it back is kept below and was wrong: Job 1753 (same defaults, the previous build, earlier the same day) reads 10.073, so the off arm is
+> anything measured after the boundary.** Job 1753 (same defaults, the previous build, earlier the same day) reads 10.073, so the off arm is
 > self-consistent and the gap is not C53's. `jit.c` is **unchanged** since `088fb0df6610`, which rules out the shared
 > stubs and `--indstat`; everything that did change is in `port_j2d.c`/`main.c` and gated off bar the refusal
 > histograms, which fire a few hundred times a second. That leaves the device's day or plain code-layout movement from
