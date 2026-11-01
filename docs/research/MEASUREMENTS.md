@@ -3069,6 +3069,11 @@ sub-additivity running the other way - an option *raising* another's value rathe
 
 > **ON BY DEFAULT since 2026-11-01**, after the re-measurement below. Rule 5 turns a measured, exact gain on without
 > asking, and this qualifies twice over.
+> **Checked on the default build itself** (jobs 1789-1790, build `8a873bf3c7c0da39`, no switches passed): `--port
+> check` **differed 0** over 50 checked walk calls a window with `drew picture 0 text 1000` - so the new code ran
+> and was compared, not vacuously passed - and `--port plant` **differed 29,442**, so the checker fires on this
+> build. That last pair is the point of running it again after the flip: the earlier checks were on builds where
+> the switches had to be passed by hand.
 >
 > **Second measurement, a different build, arms adjacent** (jobs 1785-1788, build `0352f20e9554`, 180 s, on / off /
 > on / off, all four in the 9.0 MB launch memory state): on **10.381 / 10.389**, defaults **10.066 / 10.061**, spreads
