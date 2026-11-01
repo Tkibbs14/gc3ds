@@ -347,14 +347,27 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   derived `J2DPictureEx` is already ported) and `J2DTextBoxEx::drawSelf`, **which is already built and exact as port
   bit 10** and is off only because it lost as a standalone *entry hook*. Folding it into the walk is the subtree
   direction with the component already written: coverage could go from 1,450 taken / 3,500 refused to near all of
-  them, ~3.4x, on a port credited +2.2%. **C53 is the next piece of work.** The
+  them, ~3.4x, on a port credited +2.2%. **C53 is now built, exact and measured: static Ordon +3.46%, heavy area
+  +2.31%** (jobs 1760-1767, two runs an arm, second round reversed; all four on-runs above all four off-runs, spreads
+  0.01-0.10%) - the largest single gain since the ports as a set, and the first completed instance of the subtree
+  direction. The walk went from 13,377 real guest instructions a call to **104,292** and its pane-class test now
+  refuses nothing. Two lessons generalise: **a subtree is all-or-nothing**, so the classes a walk refuses are not
+  independent quantities to attack one at a time, and **coverage is not value** - the J2DPicture half of the same
+  work accepts 412 panes a window and draws none, every one being hidden. It is not a default yet only because a ~5%
+  gap between today's defaults and the recorded cloud baseline is still unexplained (MEASUREMENTS, C53's note). The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
   **rank candidates by work per call, not by call count**. **The "denormal give-up" that CONTRIBUTOR_TASKS 9 called a
   prerequisite for big ports is not one** (corrected 2026-10-31, jobs 1753-1754): with the counter split, the ports'
   float give-ups are **100% NaN or infinity and zero denormals** (Ordon 13,216 all-time, heavy area 9,544, all in
   `psmtx_concat`), they are ~11% of give-ups against the pane-class test's 82%, and matching Gekko's NaN propagation
-  costs far more than flushing a denormal would have. Nothing waits on it;
+  costs far more than flushing a denormal would have. **But C53 re-priced it the same week, upward** (2026-11-01):
+  with C53 on, that same give-up refuses **37.5% of the pane walk's hook entries in both scenes** and each refusal
+  now abandons a ~104,000-instruction subtree instead of a ~13,000-instruction one, so it is the walk's biggest
+  addressable refusal and worth 2.2x its coverage. Both readings are right at their own time, which is the point:
+  **a candidate's value depends on which other options are on, so re-rank after every default lands, not once** -
+  C49 with the sign reversed. The remedy is built and off (`--port-softfloat`, `psmtx_concat_exact`), and what is
+  left is its `--port check`;
   the ports' `port_commit` (2.61% of core 0, and the J3D light
   port's one-copy commit turned it from negative to positive at the time, so the technique is proven and unapplied
   elsewhere - though that port's +2.7% is now inside bit 6's, and PNGP's commit is already one copy, so the next
