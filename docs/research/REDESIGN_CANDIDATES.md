@@ -569,6 +569,30 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   absorbed ~100 panes a walk and converted a <=9.5% inclusive subsystem into +3.4%; this subtree is 9.88% inclusive
   with ~90% of calls and ~80-95% of the work addressable. **That is an analogy and not a prediction** - C53 itself
   showed coverage over-stating value - but it is the best-evidenced entry this list has had before a port was built.
+- **Step 4 done: the scan is in the port framework and the two implementations agree exactly** (`PORT_J3DDRAW`, the
+  hook at `drawHead` 0x80325500, declining; job 1850 with both scans on):
+
+  | | calls | would be taken | packet-class refusals | matrix-class |
+  |---|---|---|---|---|
+  | the port framework's scan (`span`/`f32`, the port's guards) | 1,722 | 1,558 (90.5%) | 164 | **0** |
+  | `--j3dstat`'s scan in `hle_tp.c` (its own guarded reads) | 1,722 | 1,558 (90.5%) | 164 | **0** |
+
+  Identical in every figure, and the hook's own give-up line agrees too (reason 5 = 164, matching the packet-class
+  count). **So the 90.5% is established through the path the drawing will use**, not only through a side instrument -
+  which is why the scan went into the framework before the drawing rather than after.
+  **It also took a fix to get there, and the fault is instructive:** `--j3dstat`'s branch in `hle_run` *returned*,
+  and `drawHead` is one of its thirteen addresses, so enabling both gave the port hook 0 calls and no report line at
+  all. The instrument built to validate another instrument prevented it from running. The census counts and falls
+  through now. Rule 8 says to difference a new instrument against an existing one; it did not occur to me that the
+  two had to be able to run at once.
+- **The 13 hash rows are in and verified on their own** (job 1844): no "guest function differs" line, the pane walk
+  still taking 400 calls a window, speed 7.222 against the 7.229/7.231 it read without them. Done separately and
+  first because `port_valid()` turns **every** port off on one mismatch, which would have cost ~10% and looked like
+  a regression in whatever was committed next.
+- **And both matrix loads this port would absorb were re-measured as entry hooks at the current default** (jobs
+  1840-1848): bit 2 **-0.03% -> -0.94%**, bit 9 **-0.46% -> +0.08%**. Same kind of code in the same subtree, moving
+  a point apart in opposite directions, so "the baseline moved" does not explain it. Bit 2's cost as an entry hook
+  going from nothing to about a point is a direct strengthening of this entry's argument.
 - **The instrument fault worth keeping** (2026-11-01): the scan's first version read "66.7% taken, 1.8 mat packets a
   call" because a `mEntryTableSize > 64` guard rejected a quarter of all calls as unreadable - and they were the big
   buffers. The entry table averages **56** buckets, *below* that guard, so **the mean hid the tail**: a guard has to
