@@ -3049,11 +3049,22 @@ core does what FINDINGS already prices at **-6% to core 0**: it evicts core 0's 
 therefore not evidence that a cache is worth having. That applies directly to C1 (GPU-resident vertex data for
 repeated display lists) and is worth holding in mind for C56.
 
-**On the seam itself:** three of three re-tests so far have moved a recorded figure (bit 2 worse, bit 9 and `psxyz`
-better, `dlcache` from vague to a clear loss). None is a gain yet, but each removes a stale number, each costs four
-runs on code that already exists and is already exact, and the remaining list is long - `vwmem`, `pipeps`, `icbi`,
-`qbig`, `feeddirect`, `cmdpld`, `crstub`, `befloat`, `calls`, `fastfloat`, `traces`, `steal`, `sched off`,
-`--g2 on`, `--nskeep`, `--tier-nursery`.
+| `--befloat` (float stubs in big-endian data mode) | heavy area **-0.8%** | on 7.168 / 7.187, default 7.208 / 7.209 = **-0.43%** | **still a loss**, both on-runs below both off-runs; stays off. Its on-arm spread of 0.27% is itself the separation effect - those two runs were ~15 min apart, not adjacent |
+
+**What the seam is actually worth, after five re-tests - and it is not what I claimed at the start.** All five moved
+a recorded figure (bit 2 worse, bit 9 and `psxyz` to neutral, `dlcache` from vague to a clear loss, `befloat`
+halved) and **none produced a gain**. That is not bad luck: every entry on the "built, off, measured without a clear
+gain" list was *recorded as a loss*, and a loss that moves is usually still a loss. The seam's value is **ledger
+hygiene plus the occasional mechanism** - `--dlcache`'s 98.8% hit rate losing a point is worth more than a small
+gain would have been - but it should not be sold as a way to find speed, and the earlier framing of it as "a cheaper
+source of gains than writing new ports" was wrong.
+**Where a re-test could still find a gain** is the entries that were *not* recorded as losses: `--nskeep`
+(Mario Party 4 **+1.9%**, parked on the owner's call rather than on a measurement), `--g2 on` (exact, no change
+measured - and it is display-list work, so C56 may move it), and anything whose sign was borderline. The recorded
+losses are hygiene work; a contributor should know which is which (CONTRIBUTOR_TASKS 1).
+Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`, `crstub`, `calls`, `traces`,
+`relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
+not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
 ### Port bit 2 re-measured at the new default: -0.03% becomes -0.94% (jobs 1840-1843, 2026-11-01)
 
