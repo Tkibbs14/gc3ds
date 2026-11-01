@@ -6944,7 +6944,14 @@ Jit* jit_create(Gekko* g, u8* ram, u32 ramSize, u32 codeBytes) {
     }
 #endif
     j->buckets = malloc(DISPATCH_SIZE * sizeof(u32));
-    j->fastMem = malloc(FAST_TABLES * FAST_SIZE * sizeof(FastEntry) + 16);
+    // The indirect tables. **Allocated at the FAST_BITS 16 size whatever FAST_BITS is**, so that a sweep changes
+    // only the footprint the dispatcher *touches* and not the heap layout. Measured 2026-11-01 (C48): FAST_BITS 13
+    // and 16 of one commit land the device on different launch rungs (8.8 and 8.9 MB) *reproducibly*, because
+    // 1.75 MB less allocation is a different heap, and `runs.py` then refuses to compare them - correctly, since
+    // C55 says a rung can be worth ~5%. Padding the allocation makes the two arms the same heap, so the speed
+    // difference is the cache and warm-up effect alone. It costs address space in a build that does not need it,
+    // which is why it is tied to a sweep build rather than being how the default allocates.
+    j->fastMem = malloc(FAST_TABLES * (1u << 16) * sizeof(FastEntry) + 16);
     j->fast = j->fastMem ? (FastEntry*)(((uintptr_t)j->fastMem + 15) & ~(uintptr_t)15) : NULL;
     if (!j->code || !j->table || !j->buckets || !j->fast) { free(j->table); free(j->buckets); free(j->fastMem); free(j); return NULL; }
     j->linking = true;
