@@ -43,11 +43,25 @@
 > that), and C40's re-pricing. **The run path cannot reach the other 63% of bursts**: those are `gp_wgp_put`
 > assembling 32 bytes one guest store at a time, so 36.7% is close to this idea's ceiling.
 >
-> **One label fixed, and it is what made this visible.** `# port give-ups 10s, memory: port_j2d.c:1515 x255`
-> against 255 taken calls reads exactly like the walk running out of pipe or undo room - I read it that way for a
-> minute. It is not: 100% of it is **a pane with no children**, declined on purpose. The line conflated three
-> conditions, one of which *is* a memory refusal, so they now carry different reasons, and **reason 0 is documented
-> as "declined on purpose"** - a reason 0 is not a gap to close, reasons 1-7 may be.
+> **One label looked at on the way past - and "fixing" it broke the emulator, which is the more useful story.**
+> `# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls reads exactly like the walk running
+> out of pipe or undo room; I read it that way for a minute, and that misreading is what made this whole stretch's
+> finding visible. The reading is right - 100% of it is **a pane with no children**, declined on purpose.
+> **The fix was not.** The three conditions were split onto different *reason codes*, with the leaf-pane case given
+> `give_up(c, 0)` to mean "declined on purpose" - and **`c->fail` of 0 means no failure**, so `port_run` returned
+> true and the walk was reported as taken for every leaf-pane call while drawing nothing. `--port check` on the
+> default build read **differed 105 / 245 / 1140** where it had read 0 (job 1902), and jobs 1903/1904 corroborate
+> from the other side: **7.62 / 7.69 against the 7.19 baseline**, far too fast, because panes were not being drawn.
+> Jobs 1903-1906 are withdrawn (they were a C40 re-pricing on the broken build). **The `--gpruns` figures are
+> untouched** - jobs 1889-1901 all predate the label change, on build `6e1a7c33c5e6`.
+> **Fixed two ways:** the leaf-pane case goes back to reason 1, with the three conditions distinguished by **line
+> only** - which the give-up histogram already does, and which the coarse reason 1 was always relying on, so the
+> label was never worth a behaviour change; and `give_up_at` maps a `why` of 0 to 1 so nobody can walk into it
+> again, with `port_whyline_selftest` asserting it (verified to fail with the guard removed). **The lesson worth
+> keeping: "declined on purpose" and "could not do it" are different things this framework has no room to
+> distinguish** - all eight reason codes are in use and 0 is reserved for success - so that distinction belongs in
+> the line histogram. The comment reading "0 the set-up" invited exactly the wrong move and now says why 0 cannot
+> be used.
 >
 > **And the headline is now stale by this too.** AGENTS and README still read 10.55 / 7.28 / 6.23 / 9.27 from build
 > `2ba59806b89d7a22` on the owner's toolchain; C53, `--port-softfloat` and now `--gpruns` have all landed since.

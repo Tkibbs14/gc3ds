@@ -3198,14 +3198,29 @@ where the per-burst loop would leave them. `feed()` already had a one-record pat
 so the GX thread parses one record instead of thirty as well. **The PC state-hash check over 400 fields that
 `g_gpBulk` itself was validated with is owed**: this session has no disc image, no devkitPPC and no built test DOLs.
 
-**A label fixed on the way past, and it is the reason this was found at all.** The walk's refusals read
-`# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls, which looks exactly like the walk
-running out of pipe or undo room - and that is what I read it as. It is not: 100% of it is **a pane with no
-children**, declined on purpose because there is no subtree to absorb and a single pane's own `drawSelf` loses as
-an entry hook (bits 1 and 10 both measured that). The line conflated three conditions, one of which *is* a memory
-refusal, so they now carry different reasons, and **reason 0 is documented as "declined on purpose" rather than
-"the set-up"**: a reason 0 is not a gap to close, reasons 1-7 may be. Same fault as the "tev block" label, one
-scale down.
+**A label looked at on the way past - and "fixing" it caused a wrong-output regression, which is the more useful
+story.** The walk's refusals read `# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls,
+which looks exactly like the walk running out of pipe or undo room - and that is what I read it as. It is not: 100%
+of it is **a pane with no children**, declined on purpose because there is no subtree to absorb and a single pane's
+own `drawSelf` loses as an entry hook (bits 1 and 10 both measured that). That reading is right, and the mislabel
+is what made this whole stretch's finding visible.
+**But the fix was wrong.** The three conditions at that site were split onto different *reason codes*, with the
+leaf-pane case given `give_up(c, 0)` to mean "declined on purpose" - and **`c->fail` of 0 means no failure**, so
+`port_run` returned true and the walk was reported as taken for every leaf-pane call while having drawn nothing.
+`--port check` on the default build caught it as **differed 105 / 245 / 1140** where it had read 0 (job 1902), and
+jobs 1903/1904 corroborate from the other side: they ran at **7.62 / 7.69** against the 7.19 baseline, far too
+fast, because panes were not being drawn. **Jobs 1903-1906 are withdrawn for that reason** - they were a C40
+re-pricing measuring a scene with panes missing.
+**What it cost and what it bought.** One device run to find, and two fixes: the leaf-pane case goes back to reason
+1, with the three conditions distinguished by **line only** (which the give-up histogram already does, and which
+the coarse reason 1 was always relying on - the label was never worth a behaviour change); and `give_up_at` now
+maps a `why` of 0 to 1 so the trap cannot be walked into again, with `port_whyline_selftest` asserting it and
+verified to fail when the guard is removed. **The `--gpruns` figures are untouched**: jobs 1889-1901 all ran on
+build `6e1a7c33c5e6`, which predates the label change.
+**The generalisable part:** "declined on purpose" and "could not do it" are genuinely different things that this
+framework has no room to distinguish - all eight reason codes are in use and 0 is reserved for success - so the
+distinction belongs in the line histogram, not in the reason. A comment reading "0 the set-up" invited exactly the
+wrong move; it now says why 0 cannot be used.
 
 ### C56 built, exact, and a LOSS: the J3D packet-draw subtree is -0.79% (jobs 1875-1880, 2026-11-01)
 
