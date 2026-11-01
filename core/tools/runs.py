@@ -17,6 +17,15 @@ without those rows, three identical reference runs agree to 0.13% instead of 2.1
 count (`pmu_mcyc` below 800 M/s means core 0 lost time); with the PMU off, the row covering a `# shot` is dropped. Gameplay scenes: the heavy Ordon area (tp_area2.state, no presses: two runs of one
 build agree to ~0.1%) and the scripted Ordon walk (tp_ordon.state with the --press list in REMOTE_RUNS.md). For the
 title (tp850.state) use title_sections.py: its sections differ too much to pool.
+
+Each line ends with the build's commit and the **launch memory state** (`heap N MB`, from the log's
+'# heap: largest malloc block'). **The 2DS has more than one launch memory state, and they differ by ~5%** (C55,
+2026-11-01): at identical defaults on the same commit, static Ordon reads ~32.96% with `heap 9.0 MB` and ~34.6-34.9%
+with `heap 7.1 MB`, and the correlation is exact over every plain Ordon run on disk. In the 9.0 state the app holds
+1.9 MB *more* free heap - an allocation that size silently did not happen. **Runs in different states are not
+comparable whatever else matches**, so scoring several logs together prints a loud warning when they do not share
+one; group by the heap column and compare only within a group. This is the check that would have saved an hour on
+2026-11-01, when a device step became a "-5.6% regression" and was bisected across eight commits.
 """
 import re
 import sys
@@ -44,7 +53,17 @@ def score(path, skip, keep_stolen=False):
     shot_at = None
     low_card = False
     rev = ''          # '# build: gc3ds <commit>': which source produced this log (host3ds/build.sh writes it)
+    # '# heap: largest malloc block N MB' - the app's launch memory state, and the 2DS has more than one of them.
+    # Measured 2026-11-01 (C55): at identical defaults and on the same commit, static Ordon reads ~32.96% with
+    # 9.0 MB and ~34.6-34.9% with 7.1 MB, a ~5% step, and the correlation is exact over every plain Ordon run on
+    # disk. In the 9.0 state the app has 1.9 MB *more* free heap, i.e. an allocation that size did not happen. So
+    # two runs with different values here are not comparable, whatever else matches, and the arms of an A/B that
+    # straddle the step are measuring the state and not the change.
+    heap = ''
     for line in open(path, encoding='utf-8', errors='replace'):
+        if line.startswith('# heap: largest malloc block '):
+            heap = line.split('block', 1)[1].strip()
+            continue
         if line.startswith('# build: gc3ds '):
             rev = line.split('gc3ds', 1)[1].strip()
             continue
@@ -107,6 +126,8 @@ def score(path, skip, keep_stolen=False):
         sp.append(speed)
         fs.append(fields)
     f = sum(a * b for a, b in fr) / sum(b for a, b in fr) if fr else 0.0
+    score.heap_seen = getattr(score, 'heap_seen', {})
+    score.heap_seen[path] = heap
     return '%-22s speed %.3f fields/s %.3f frames/s %.3f (%d windows) fields per copy %s%s' % (
         path.replace('\\', '/').split('/')[-1], sum(sp) / max(len(sp), 1), sum(fs) / max(len(fs), 1), f, len(fr),
         ' '.join('%d:%d' % kv for kv in sorted(fh.items())),
@@ -116,7 +137,8 @@ def score(path, skip, keep_stolen=False):
         # The commit, when the build embedded one. 'dirty' is called out: such a run cannot be tied to source, so it
         # is not reproducible and must not be quoted as a measurement.
         + ('' if not rev else ('  [%s]' % rev if 'dirty' not in rev else
-                               '  *** build %s: uncommitted changes, this run cannot be tied to source ***' % rev)))
+                               '  *** build %s: uncommitted changes, this run cannot be tied to source ***' % rev))
+        + ('' if not heap else '  heap %s' % heap))
 
 
 def selftest():
@@ -125,9 +147,11 @@ def selftest():
     import os
     import tempfile
 
-    def write(path, rows, shots, med=803.0):
+    def write(path, rows, shots, med=803.0, heap=None):
         with open(path, 'w') as f:
             f.write('# run synthetic\n')
+            if heap:
+                f.write('# heap: largest malloc block %s MB\n' % heap)
             f.write('real_s,emu_s,speed_pct,fields_s,pmu_mcyc\n')
             for i, (sp, mc) in enumerate(rows):
                 t = 81.0 + i
@@ -176,7 +200,35 @@ def selftest():
         print('selftest: a window with a screenshot in it was kept: %s' % out); bad += 1
     if '(3 windows)' not in out:
         print('selftest: expected 3 of 4 windows kept: %s' % out); bad += 1
-    print('runs.py selftest: %s' % ('FAILED' if bad else 'ok (steal removed, busy scene kept, shot window dropped)'))
+    # 4. The launch memory state (C55): two logs from different states must be called out when scored together,
+    #    and two from the same state must not be. The planted fault is the pair that differs - without the warning
+    #    a 5% device step reads as a 5% result, which is exactly what happened on 2026-11-01.
+    import io
+    import contextlib
+
+    def scored_together(a, b):
+        score.heap_seen = {}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sys.argv = ['runs.py', a, b, '--skip', '80']
+            main()
+        return buf.getvalue()
+
+    rows = [(24.0, 803.0)] * 40
+    pa = os.path.join(d, 'relay_heap_a.csv')
+    pb = os.path.join(d, 'relay_heap_b.csv')
+    pc = os.path.join(d, 'relay_heap_c.csv')
+    write(pa, rows, shots=set(), heap='7.1')
+    write(pb, rows, shots=set(), heap='9.0')
+    write(pc, rows, shots=set(), heap='7.1')
+    if 'DIFFERENT launch memory states' not in scored_together(pa, pb):
+        print('selftest: two logs from different memory states were not called out'); bad += 1
+    if 'DIFFERENT launch memory states' in scored_together(pa, pc):
+        print('selftest: two logs from the SAME memory state were wrongly called out'); bad += 1
+    if 'heap 7.1 MB' not in score(pa, 80):
+        print('selftest: the heap state is missing from a log that reports one'); bad += 1
+    print('runs.py selftest: %s' % ('FAILED' if bad else 'ok (steal removed, busy scene kept, shot window dropped, '
+                                                        'mixed memory states called out)'))
     return 1 if bad else 0
 
 
@@ -203,6 +255,18 @@ def main():
         return
     for p in args:
         print(score(p, skip, keep))
+    # The launch memory state, loudly, when the runs being compared do not share it (C55). Scoring several logs
+    # together *is* the comparison, so this is the place to say it rather than leaving it to be noticed.
+    seen = getattr(score, 'heap_seen', {})
+    states = sorted({v for v in seen.values() if v})
+    if len(states) > 1:
+        print('*** these runs are in DIFFERENT launch memory states (%s): not comparable, whatever else matches.'
+              % ', '.join(states))
+        print('*** C55: at identical defaults the 2DS reads ~5% slower in the larger-free-heap state. Group the')
+        print('*** logs by the "heap" column and compare only within a group.')
+        for k, v in seen.items():
+            if v:
+                print('***   %-22s heap %s' % (k.replace(chr(92), '/').split('/')[-1], v))
     return 0
 
 

@@ -2950,9 +2950,14 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > artifact, which is the exact thing rule 3 forbids, and I had committed a correction to rule 3 an hour earlier.**
 > The cheap check that would have caught it is the one the bisect finally forced: re-run the *new* build late, not
 > only the old one.
-> **A lead, not a conclusion:** the relay server restarted at 00:34:51, inside the boundary, and AGENTS already
-> records that a second core reading through emulated RAM costs core 0 about -6% - the right magnitude if the relay
-> client on core 1 was busy-retrying against an unhealthy server. Unproven: nothing in the logs shows core 1 busier.
+> **CAUSE FOUND the same night, and the instrument was already in every log (C55).** `# heap: largest malloc block`
+> reads **7.1 MB** in the fast state and **9.0 MB** in the slow one, and the correlation with speed is exact over
+> every plain Ordon run on disk: 7.1 MB gives 34.45-34.87% at defaults, 9.0 MB gives 32.94-32.98%. In the 9.0 state
+> the app holds **1.9 MB more free heap** - an allocation of about that size silently did not happen - with VRAM and
+> linear memory identical on both sides. All eight of C53's arms are in the 9.0 state, which is why its A/B is
+> valid. `runs.py` now prints the state on every line and warns when the logs scored together do not share one,
+> with a planted self-test. The relay-restart lead is **falsified**: a peer's deploy log puts a restart at 00:24:14,
+> inside job 1764, which stayed slow, and no log contains a failed-request line.
 > **What survives:** C53's A/B, because its arms were interleaved and each repeated an hour apart (off 10.030 /
 > 10.020, on 10.367 / 10.376 - a reproducible split, not a trend). Its *ratio* stands; its absolute figures belong to
 > the pre-boundary state and must not be differenced against anything after it.
