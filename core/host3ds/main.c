@@ -543,6 +543,7 @@ typedef struct {
     bool tevenv, abTevenv;    // --tevenv on|off (off), --ab tevenv: TEV programs' citro3d stages cached with them (pica.c)
     bool trifast;  // --trifast on|off (on): the triangle path's fast form (hle_tp.c tri_run v4)
     bool panestat;  // --panestat on (measurement): count J2DPane::draw's pane classes ('# pane types 10s')
+    bool j3dstat;   // --j3dstat on (measurement, C56): count the J3DDrawBuffer::drawHead subtree's entry points
     u32 tribench;  // --tribench N (measurement): time the triangle path's pieces at its Nth run (hle_tp.c tri_bench)
     bool shdwcb;  // --shdwcb on|off (on): with --shdwtri, its shadow callback natively too (hle_tp.c)
     bool shdwtri, abShdwtri;  // --shdwtri on|off (on), --ab shdwtri: the ShdwDraw triangle path natively (hle_tp.c; shdwtri column)
@@ -702,6 +703,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--shdwcb")) o->shdwcb = !strcmp(v, "on");
         else if (!strcmp(a, "--tribench")) o->tribench = (u32)strtoul(v, NULL, 10);
         else if (!strcmp(a, "--panestat")) o->panestat = !strcmp(v, "on");
+        else if (!strcmp(a, "--j3dstat")) o->j3dstat = !strcmp(v, "on");  // C56's census: see hle_tp.c
         else if (!strcmp(a, "--trifast")) o->trifast = !strcmp(v, "on");
         else if (!strcmp(a, "--gxdiag")) o->gxdiag = !strcmp(v, "on");
         else if (!strcmp(a, "--nsonce")) pica_set_ns_once(!strcmp(v, "on") ? 1 : !strcmp(v, "check") ? 2 : !strcmp(v, "plant") ? 3 : 0);
@@ -1342,6 +1344,7 @@ static const char* run_body(const char* path) {
         hle_set_shdw_tri(g_opt.shdwtri && !g_opt.abShdwtri);  // --ab shdwtri starts off
         hle_set_shdw_cb(g_opt.shdwcb);
         { extern bool g_paneStat; g_paneStat = g_opt.panestat; }
+        { extern bool g_j3dStat; g_j3dStat = g_opt.j3dstat; }
         { extern bool g_triFast; g_triFast = g_opt.trifast; }
         if (g_opt.tribench) { extern u32 g_triBench; extern u64 (*hle_bench_clock)(void); g_triBench = g_opt.tribench; hle_bench_clock = svcGetSystemTick; }
         hle_gd_set_enabled(g_opt.hlegd && !g_opt.abHlegd);  // --ab hlegd starts off
@@ -2204,6 +2207,28 @@ static const char* run_body(const char* path) {
                                   "restore + reads", "+ getPolyCode", "+ first cross and dot", "+ scale, add, second cross and dot", "+ scale, add, GetTriPla" };
                               fprintf(g_perf, "# tri bench (core-0 cycles a run, 4000 runs each):");
                               for (int k = 0; k < 11; k++) fprintf(g_perf, " %s %.0f", nm[k], (double)g_triBenchT[k] * 3.0 / 4000.0);
+                              fprintf(g_perf, "\n");
+                          } }
+                        { extern bool g_j3dStat; extern u64 g_j3dStatN[13]; extern const u32* hle_j3dstat_pcs(void);
+                          if (g_j3dStat) {
+                              // C56: calls a 10 s window at each entry point of the drawHead subtree, in the order
+                              // hle_tp.c lists them. The two class sets a port must reproduce are the packet classes
+                              // (slots 2-6) and the J3DShapeMtx loads (slots 7-12); a slot that stays 0 is code that
+                              // need not be written at all.
+                              static u64 last[13];
+                              static const char* nm[13] = { "DrawBuffer::draw", "drawHead", "MatPacket::draw",
+                                                            "ShapePacket::draw", "ShapePacket::drawFast",
+                                                            "DrawPacket::draw", "Packet::draw", "ShapeMtx",
+                                                            "ShapeMtxConcatView", "ShapeMtxMulti",
+                                                            "ShapeMtxMultiConcatView", "ShapeMtxBBoardConcatView",
+                                                            "ShapeMtxYBBoardConcatView" };
+                              const u32* pcs = hle_j3dstat_pcs();
+                              fprintf(g_perf, "# j3d subtree 10s (calls; C56):");
+                              for (int k = 0; k < 13; k++) {
+                                  fprintf(g_perf, " %s(%08lx) %llu", nm[k], (unsigned long)pcs[k],
+                                          (unsigned long long)(g_j3dStatN[k] - last[k]));
+                                  last[k] = g_j3dStatN[k];
+                              }
                               fprintf(g_perf, "\n");
                           } }
                         { extern bool g_paneStat; extern u32 g_paneVt[32], g_paneN[32], g_paneOther;

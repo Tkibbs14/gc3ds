@@ -541,11 +541,42 @@ static void pane_note(const Gekko* g) {
     }
     g_paneOther++;
 }
+// --j3dstat on (measurement, C56): count the calls at each entry point of the J3DDrawBuffer::drawHead subtree and
+// let the guest code run. The subtree is 9.88% of core 0 in TP's heavy area (job 1821) and the largest unexplored
+// one, and a port of it has to reproduce two *closed* class sets - four packet classes and six J3DShapeMtx classes.
+// Which of those actually occur, and how often, decides how much of the ~3.3 KB of guest code has to be written at
+// all. Counting entry points needs no struct layout and cannot perturb anything, unlike walking the buffer.
+// The order here is the order the report prints; keep them in step.
+bool g_j3dStat;
+#define J3DSTAT_N 13
+static const u32 kJ3dStatPc[J3DSTAT_N] = {
+    0x803254AC,  // J3DDrawBuffer::draw          (the subtree's root)
+    0x80325500,  // J3DDrawBuffer::drawHead
+    0x80312A9C,  // J3DMatPacket::draw           packet class 1 of 4: the one that does the work
+    0x80312F24,  // J3DShapePacket::draw         2
+    0x80312FBC,  // J3DShapePacket::drawFast     (the 6.87% inside drawHead)
+    0x80312924,  // J3DDrawPacket::draw          3
+    0x80313044,  // J3DPacket::draw              4 (an empty body: a `blr`)
+    0x80313B94,  // J3DShapeMtx::load            matrix class 1 of 6
+    0x80313C54,  // J3DShapeMtxConcatView::load  2 (port bit 2's family: -0.03% as an entry hook)
+    0x80313E4C,  // J3DShapeMtxMulti::load       3
+    0x80313FA4,  // J3DShapeMtxMultiConcatView::load      4 (port bit 9: -0.46% as an entry hook)
+    0x803142D4,  // J3DShapeMtxBBoardConcatView::load     5
+    0x803143E4,  // J3DShapeMtxYBBoardConcatView::load    6
+};
+u64 g_j3dStatN[J3DSTAT_N];
+const u32* hle_j3dstat_pcs(void) { return kJ3dStatPc; }
+static int j3dstat_slot(u32 pc) {
+    for (int i = 0; i < J3DSTAT_N; i++) if (kJ3dStatPc[i] == pc) return i;
+    return -1;
+}
+
 bool hle_is_hook(Gekko* g, u32 pc) {
     (void)g;
     if (g_gfskipAddr && pc == g_gfskipAddr) return true;
     if (g_memoAddr && pc == g_memoAddr) return true;
     if (g_paneStat && pc == 0x802F67E0u) return true;
+    if (g_j3dStat && j3dstat_slot(pc) >= 0) return true;
     if (port_is_hook(pc)) return true;
     if (!g_on) return false;
 #ifndef __3DS__
@@ -2341,6 +2372,7 @@ static u32 hle_run_body(Gekko* g, u32 budget) {
     }
     if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
     if (g_paneStat && g->pc == 0x802F67E0u) { pane_note(g); return 0; }  // (counted; the guest code runs)
+    if (g_j3dStat) { int k = j3dstat_slot(g->pc); if (k >= 0) { g_j3dStatN[k]++; return 0; } }  // (likewise)
     if (port_is_hook(g->pc)) {  // (not taken: the guest code runs)
         u32 n = port_run_hook(g);
         if (n) { g_clkCyc[CLK_PORT] += n; g_clkN[CLK_PORT]++; return n; }
