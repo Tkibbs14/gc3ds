@@ -138,6 +138,16 @@ typedef struct {
     u32 fail;              // why it gives up (the first reason; PortStats.refusedBy)
     // FPR lanes the guest code leaves changed: PSMTXConcat saves f14, f15 and f31 with stfd and restores them with lfd,
     // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
+    // Set by psmtx_concat_exact when its result holds a NaN or an infinity (--port-softfloat). While it is set,
+    // psq_copy passes such a value through instead of giving up, because the bits are then exactly what the Gekko's
+    // psq_st would store - computed by the interpreter's own soft float, not by the host VFP. Without this the
+    // exact path only *moves* the give-up: the NaN matrix it produces is refused one function later, in
+    // gx_load_pos_mtx_imm, and the subtree is abandoned anyway (job 1774 measured that 1:1).
+    // Deliberately per call rather than per value: a fast-path result that overflowed to an infinity in the same
+    // call would also pass, and HLE_FASTFLOAT's two roundings can disagree with Gekko at that boundary. That is
+    // what `--port check` is for - it compares against the interpreter on exactly those calls - and it is the
+    // reason this switch stays off until a check run says 0 differed with the exact path actually taken.
+    bool sfNonPlain;
     bool leak;
     // The lanes PSMTXConcat leaves behind, as *double bit patterns* rather than floats: the exact path can produce a
     // NaN there, and a float would mangle its payload (these were floats while plain() made a NaN unreachable).
@@ -393,7 +403,9 @@ static bool psq_float_ok(Pc* c) { return c->g->spr[SPR_GQR0] == 0 && (c->g->msr 
 static u32 psq_copy(Pc* c, u32 bits) {
     u32 e = (bits >> 23) & 0xFF;
     if (e == 0) return bits & 0x80000000u;
-    if (e == 0xFF) { if (!c->fail) g_portFloatSite[0]++; give_up(c, 2); }  // (NaN / infinity: not taken here)
+    // A NaN or infinity. Refused by default; passed through when this call's concat was computed exactly (Pc.
+    // sfNonPlain above), since the bits are then the interpreter's own and not the host VFP's.
+    if (e == 0xFF && !c->sfNonPlain) { if (!c->fail) g_portFloatSite[0]++; give_up(c, 2); }
     return bits;
 }
 static void gx_load_tex_mtx_imm(Pc* c, u32 mtx, u32 id, u32 type) {  // 0x80360320
@@ -961,6 +973,9 @@ static void psmtx_concat_exact(Pc* c, const u32* in, u32* out) {
     for (u32 i = 0; i < 6; i++) {
         out[2 * i] = sf_double_to_single_ftz(r[i].p0);
         out[2 * i + 1] = sf_double_to_single_ftz(r[i].p1);
+        // Tell psq_copy downstream that a non-plain word in this call's matrices is exact rather than suspect.
+        for (u32 k = 0; k < 2; k++)
+            if (((out[2 * i + k] >> 23) & 0xFF) == 0xFF) c->sfNonPlain = true;
     }
     c->n += 52;
 }
@@ -2672,6 +2687,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
     c->fail = 0;
     c->leak = false;
     c->leak31 = false;
+    c->sfNonPlain = false;   // per call: an exact non-plain result does not licence the next call's
     if (!in_mem1(A_GXDATA_PTR, 4)) return false;
     c->gxd = ram_rd32(g_pm, A_GXDATA_PTR - 0x80000000u);
     if (c->gxd != ram_rd32(g_pm, g->gpr[2] - 13440u - 0x80000000u) || !in_mem1(c->gxd, GXD_BYTES) || (c->gxd & 3)) return false;
