@@ -244,7 +244,14 @@ static void walk_ds(u32 ds) {
     }
     g_portWalkDsOther++;
 }
+// A `why` of 0 is **not** a refusal: `c->fail` would stay 0, `port_run` would return true, and the port would be
+// reported as taken having drawn nothing - which is a silent wrong-output bug, not a decline. It happened once
+// (2026-11-01, the pane walk's leaf-pane case, caught by `--port check` reading `differed 105/245/1140` where it
+// had read 0), so it is made impossible here rather than left to every caller to remember. 1 is the coarse
+// "memory or buffers" bucket; which *line* refused is already in the histogram, so a site that wants a distinct
+// label gets it from the line, never from reason 0.
 static inline void give_up_at(Pc* c, u32 why, u32 line) {
+    if (!why) why = 1;
     if (!c->fail) { c->fail = why; why_line(why, line); }
 }
 #define give_up(c, why) give_up_at((c), (why), __LINE__)
@@ -1517,12 +1524,16 @@ static void pane_walk(Pc* c, Gekko* g) {
     // `# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls looked exactly like the walk
     // running out of pipe or undo room - it is what I read it as for a minute - when 100% of it is **a pane with
     // no children**, which the walk declines on purpose: there is no subtree to absorb, and a single pane's own
-    // drawSelf loses as an entry hook (bits 1 and 10 both measured that). One of the three conditions here *is* a
-    // memory refusal, so they get different reasons rather than a shared one (the "tev block" label, smaller).
+    // drawSelf loses as an entry hook (bits 1 and 10 both measured that).
+    // The split is now **lines only, not reason codes**: the first attempt gave the leaf-pane case `give_up(c, 0)`
+    // to mean "declined on purpose", and a why of 0 is not a refusal at all - the walk took every leaf-pane call
+    // and drew nothing, which `--port check` caught as differed 105/245/1140 where it had read 0. All eight reason
+    // codes are in use and 0 means "no failure", so a site that wants its own label gets it from the give-up
+    // histogram's line number, which already distinguishes these three.
     if (!in_mem1(p, 240)) { give_up(c, 1); return; }
     u32 node = f32(p + 236);
     if (node && !in_mem1(node, 16)) { give_up(c, 1); return; }      // the child list is not readable: memory
-    if (!node || !f32(node + 12)) { give_up(c, 0); return; }        // a leaf pane: the guest code draws it
+    if (!node || !f32(node + 12)) { give_up(c, 1); return; }        // a leaf pane: the guest code draws it
     if (!walk_scan(c, p, 0, &panes)) { give_up(c, 5); return; }
     if (!span(c, gr, 204) || !span(c, f32(gr), 36)) return;
     u32 gt = f32(f32(gr) + 32);
@@ -3386,10 +3397,24 @@ bool port_whyline_selftest(void) {
                (unsigned long long)g_portWhyOther[5], (unsigned long long)want); bad++;
     }
     if (g_portWhyLine[1][0] != 561 || g_portWhyLine[5][0] != 640) { printf("port whyline selftest: reasons share slots\n"); bad++; }
+    // **A refusal must actually refuse.** `c->fail` of 0 means "no failure", so a `give_up(c, 0)` would leave the
+    // port reported as taken having drawn nothing - a silent wrong-output bug. That happened once (2026-11-01, the
+    // pane walk's leaf-pane case; `--port check` read differed 105/245/1140 where it had read 0), and it cost a
+    // device run to find, so give_up_at maps 0 to 1 and this is the test that keeps it that way.
+    {
+        Pc t;
+        t.fail = 0;
+        give_up_at(&t, 0, 4242);
+        if (!t.fail) { printf("port whyline selftest: give_up with reason 0 did not refuse\n"); bad++; }
+        t.fail = 0;
+        give_up_at(&t, 3, 4243);
+        if (t.fail != 3) { printf("port whyline selftest: give_up changed a real reason\n"); bad++; }
+    }
     memset(g_portWhyLine, 0, sizeof g_portWhyLine);
     memset(g_portWhyLineN, 0, sizeof g_portWhyLineN);
     memset(g_portWhyOther, 0, sizeof g_portWhyOther);
-    printf("port whyline selftest: %s\n", bad ? "FAILED" : "ok (repeats merge, slots fill in order, overflow counted)");
+    printf("port whyline selftest: %s\n", bad ? "FAILED" : "ok (repeats merge, slots fill in order, overflow counted, "
+                                                           "a reason of 0 still refuses)");
     return bad == 0;
 }
 static void port_report(void) {
