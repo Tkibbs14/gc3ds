@@ -671,7 +671,24 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   spans 20:41 to 00:41 across many jobs and both states survive restarts into a resident build, so it is set
   outside a single run; the obvious suspects are system-level (extended memory, what was running before). (3)
   Whether the slow state can be refused at startup once it is identifiable from inside the program.
-- **Until (1) and (2):** group every comparison by the heap column, which `runs.py` now does for you.
+- **THE LEDGER IS SOUND ON THIS AXIS - audited, and nothing straddles a rung** (2026-11-01, `rungs.py`, from logs
+  on disk with no device time). Every decision set checked is internally one rung:
+
+  | entry | jobs | rung |
+  |---|---|---|
+  | the headline (all defaults, build 2ba59806) | 1690-1699 | all **2.9** |
+  | the port-bit apportionment (bit 8 -0.26%, bit 2 -0.03%, bit 3 +0.08%) | 1700-1711 | all **2.9** |
+  | bits 9 and 10's withdrawal (-0.46%) | 1667-1668 | all **2.9** |
+  | the cloud-session baseline | 1723-1732 | all **7.1** |
+  | rule 3's noise floor | 1692/1693, 1700/1701 | all **2.9** |
+  | everything measured on 2026-11-01 (C53, soft float, C49) | 1753-1839 | all **9.0** |
+
+  So C55 does **not** invalidate the recorded figures - it explains why tonight's absolutes sit below both
+  baselines (the 9.0 rung is the slow one) and why the two baselines are themselves comparable in rung terms (2.9
+  performs like 7.1), leaving the toolchain as the only difference between them, as documented. **The worry that
+  prompted this audit was reasonable and the answer is no.**
+- **Until (1) and (2):** group every comparison by the heap column, which `runs.py` now does for you, and
+  `rungs.py --by-rung` for everything at once.
 - **Re-evaluate when:** the allocation is named. **Status: next for the instrument side** - and note that the
   5%-wide state was invisible for at least one previous session (jobs 1753-1767 are all in it), so **old ledger
   entries whose arms straddle a state change are wrong by up to 5%**, and the heap column makes them re-checkable

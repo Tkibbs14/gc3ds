@@ -267,8 +267,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   **7.1 MB** rung, and tonight's default runs on the **9.0 MB** one read ~5% lower at unchanged defaults, so the two
   are not differenceable. Every figure in this project needs its rung, and **they are all recoverable from the logs
   already on disk** (`# heap: largest malloc block`, which `runs.py` now prints, and
-  `python3 core/tools/rungs.py --by-rung` for every run at once) with no device time - the single cheapest piece of
-  work available here.
+  `python3 core/tools/rungs.py --by-rung` for every run at once) with no device time.
+  **That audit is done and the ledger is sound: nothing straddles a rung** (C55). The headline (1690-1699), the
+  port-bit apportionment (1700-1711), bits 9 and 10's withdrawal (1667-1668) and rule 3's noise floor are **all on
+  the 2.9 rung**; the cloud baseline (1723-1732) is **all 7.1**; everything measured on 2026-11-01 is **all 9.0**.
+  Since 2.9 performs like 7.1 and 9.0 is the slow one, the two baselines remain comparable in rung terms - the
+  toolchain is the only difference between them - and tonight's absolutes sit below both because of the rung.
   **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732,
   7.1 MB rung):
   static Ordon **10.61**, heavy area **7.35**, Wind Waker **6.25**, Mario Party 4 **8.83**; cutscene 41.10%, later
