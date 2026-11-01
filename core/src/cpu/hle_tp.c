@@ -566,6 +566,64 @@ static const u32 kJ3dStatPc[J3DSTAT_N] = {
 };
 u64 g_j3dStatN[J3DSTAT_N];
 const u32* hle_j3dstat_pcs(void) { return kJ3dStatPc; }
+
+// The scan C56's port would do, run read-only so the coverage is known before any drawing code exists - which is
+// the order C53 went in (walk_scan before walk_pane) and the reason its value was knowable in advance. A subtree is
+// all-or-nothing: the port can take a drawHead call only if **every** packet in the buffer is a J3DMatPacket and
+// every shape-matrix in every shape is one of the two classes the census found. This counts how often that holds and
+// how much work each accepted call would cover. Nothing is written and the guest code always runs.
+// g_j3dScan: [0] calls, [1] accepted, [2] refused on a packet class, [3] refused on a matrix class, [4] refused as
+// unreadable, [5] mat packets, [6] shape packets, [7] matrix groups (the last three over accepted calls only).
+u64 g_j3dScan[8];
+enum {
+    VT_MATPACKET = 0x803CD954,          // the only packet class the census sees (jobs 1822-1823)
+    VT_SHAPEMTX_CONCATVIEW = 0x803CDC1C,      // port bit 2's family
+    VT_SHAPEMTX_MULTICONCATVIEW = 0x803CDBD4, // port bit 9
+};
+static u32 j3d_rd(u32 ea, bool* ok) {   // a guarded guest word read; *ok is cleared and never set
+    u32 a = ea - 0x80000000u;
+    if (a >= g_memSize - 4 || (a & 3)) { *ok = false; return 0; }
+    return ramp_rd32a(g_mem + a);
+}
+static void j3d_scan(const Gekko* g) {
+    bool ok = true;
+    u32 db = g->gpr[3];
+    u32 buf = j3d_rd(db + 0, &ok), n = j3d_rd(db + 4, &ok);
+    g_j3dScan[0]++;
+    if (!ok || n > 64) { g_j3dScan[4]++; return; }   // (the entry table is small; a wild size means a bad read)
+    u64 mats = 0, shapes = 0, groups = 0;
+    for (u32 i = 0; i < n; i++) {
+        for (u32 pk = j3d_rd(buf + 4 * i, &ok), guard = 0; ok && pk && guard < 4096; pk = j3d_rd(pk + 4, &ok), guard++) {
+            if (j3d_rd(pk + 0, &ok) != VT_MATPACKET) { if (ok) g_j3dScan[2]++; return; }
+            mats++;
+            // the shape-packet chain hanging off this material
+            for (u32 sp = j3d_rd(pk + 0x2C, &ok), sg = 0; ok && sp && sg < 4096; sp = j3d_rd(sp + 4, &ok), sg++) {
+                shapes++;
+                u32 shape = j3d_rd(sp + 0x28, &ok);
+                if (!ok) break;
+                if (!shape) continue;                       // drawFast skips a packet with no shape
+                u32 mg = j3d_rd(shape + 8, &ok) & 0xFFFF;   // mMtxGroupNum at +0x0A, the low half of the word at +8
+                u32 mtx = j3d_rd(shape + 0x38, &ok);
+                if (!ok || mg > 1024) { g_j3dScan[4]++; return; }
+                for (u32 k = 0; k < mg; k++) {
+                    u32 sm = j3d_rd(mtx + 4 * k, &ok);
+                    if (!ok) { g_j3dScan[4]++; return; }
+                    if (!sm) continue;                      // drawFast skips a null entry
+                    u32 vt = j3d_rd(sm + 0, &ok);
+                    if (!ok) { g_j3dScan[4]++; return; }
+                    if (vt != VT_SHAPEMTX_CONCATVIEW && vt != VT_SHAPEMTX_MULTICONCATVIEW) { g_j3dScan[3]++; return; }
+                    groups++;
+                }
+            }
+            if (!ok) { g_j3dScan[4]++; return; }
+        }
+        if (!ok) { g_j3dScan[4]++; return; }
+    }
+    g_j3dScan[1]++;
+    g_j3dScan[5] += mats;
+    g_j3dScan[6] += shapes;
+    g_j3dScan[7] += groups;
+}
 static int j3dstat_slot(u32 pc) {
     for (int i = 0; i < J3DSTAT_N; i++) if (kJ3dStatPc[i] == pc) return i;
     return -1;
@@ -2372,7 +2430,14 @@ static u32 hle_run_body(Gekko* g, u32 budget) {
     }
     if (g_memoAddr && g->pc == g_memoAddr) return memo_probe(g);
     if (g_paneStat && g->pc == 0x802F67E0u) { pane_note(g); return 0; }  // (counted; the guest code runs)
-    if (g_j3dStat) { int k = j3dstat_slot(g->pc); if (k >= 0) { g_j3dStatN[k]++; return 0; } }  // (likewise)
+    if (g_j3dStat) {
+        int k = j3dstat_slot(g->pc);
+        if (k >= 0) {
+            g_j3dStatN[k]++;
+            if (g->pc == 0x80325500u) j3d_scan(g);  // drawHead: would the port take this call, and for how much work
+            return 0;                               // (counted and scanned; the guest code runs)
+        }
+    }
     if (port_is_hook(g->pc)) {  // (not taken: the guest code runs)
         u32 n = port_run_hook(g);
         if (n) { g_clkCyc[CLK_PORT] += n; g_clkN[CLK_PORT]++; return n; }
