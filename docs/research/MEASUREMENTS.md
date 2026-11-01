@@ -3026,6 +3026,39 @@ to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself
 `scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
 evidence available about what the step actually is, and the place for anyone investigating it to start.
 
+### The subtree targets re-ranked with C53 in place (job 1821, 2026-11-01)
+
+One profiled run of TP's heavy area at the new defaults, decoded with `stack_funcs.py` against zeldaret's symbol
+map, against the pre-C53 profile (job 1750). This is rule 3's "re-rank after every default lands" applied to the
+plan rather than to someone else's entry.
+
+| subtree | job 1750 (pre-C53) | job 1821 (now) | |
+|---|---|---|---|
+| `J3DDrawBuffer::draw` | 10.0% | **9.88%** | untouched - **now the largest unexplored** |
+| `drawHead__13J3DDrawBuffer` | - | 9.77% | inside it |
+| `drawOpaDrawList__12dDlst_list_c` | - | 7.89% | inside it |
+| `dMeter2Draw_c::draw` | 9.53% | **7.05%** | **-2.5 pts: C53 ate the pane walk inside it** |
+| `J3DShapePacket::drawFast` | 6.92% | **6.87%** | untouched |
+| `J3DModel::calc` | - | 6.00% | |
+| `J2DScreen::draw` | 8.49% | **5.93%** | **-2.6 pts, same cause** |
+| `J2DPane::draw` | <=9.5% | **5.75%** | roughly halved; the residue is the refused roots |
+| `calcAnmMtx__8J3DModel` | 5.26% | 5.24% | |
+| `J3DJointTree::calc` (C54) | 5.17% | **5.15%** | untouched |
+| `renderingDecoration` (minimap, port bit 8, off) | ~6.9% | 4.43% | |
+
+**What it says.** C53's +2.31% in this scene shows up as ~2.5 points off each of the two J2D containers and about
+half of `J2DPane::draw`'s own inclusive share - a taken walk produces no guest samples, so this is the direct
+measurement of what the port absorbed. **The J2D side has now given what it has**, and the two J2D entries that
+looked like independent 9.5% and 8.5% targets in job 1750 were mostly the pane walk seen through their containers:
+they were never separate prizes. (`recursiveCalc__8J3DJoint` reads 11.46% here and is recursive, so inflated by its
+nesting depth; its non-recursive parent is the 5.15%. Same trap C54 was opened on.)
+
+**So the next target is `J3DDrawBuffer::draw`, 9.88%** - the "J3D packet draw" direction AGENTS already names, with
+`drawHead` 9.77%, `drawOpaDrawList` 7.89% and `drawFast` 6.87% nested inside it - and C54's joint tree, 5.15%, is
+second. C53 converted a <=9.5% inclusive subsystem into +3.4%, so the honest expectation for a 9.9% one is of that
+order, with C53's two discounts attached: **a subtree is all-or-nothing** (every class in it has to be accepted) and
+**coverage is not value**.
+
 ### PSMTXConcat exactly in soft float: TP's heavy area +0.20% (jobs 1797-1804, 2026-11-01)
 
 `--port-softfloat`: when an input to `psmtx_concat` is a denormal, a NaN or an infinity, compute the whole concat
