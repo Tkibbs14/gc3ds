@@ -97,7 +97,15 @@ static void gp_burst(System* s, const u8* data) {
 // J3DSys::reinitGX 1,705 at 208) in about **250 calls a second**, which is **46% of every pipe byte in 0.5% of the
 // calls**. Those runs were being chopped into **30,095 bursts a second** and then reassembled into 512-byte ring
 // records by `ringbatch`. The two ports' commits time at ~44 bytes a microsecond each - independently, which is
-// what says the commit *is* this path - i.e. ~18 cycles a byte, where two 32-byte copies should be two or three.
+// what says the commit *is* this path - i.e. ~18 cycles a byte.
+//
+// **What the run buys is streaming, not cheaper arithmetic.** C40's PMU split (jobs 1371-1374, a week earlier and
+// a different instrument) reads the same rate a third way - the pane walk 43,800 cycles a commit for 2,221 bytes,
+// reinitGX 34,200 for 1,705, so 19.7 and 20.1 cycles a byte - and attributes it to **data stalls**: the FIFO
+// mirror is a large always-cold ring, so every line is a write-allocate miss that also evicts core 0's data. One
+// contiguous memcpy into it streams far better than 476 separate 32-byte ones interleaved with ring pushes and
+// register reads. Measured +0.47% in TP's heavy area and +0.43% in static Ordon (jobs 1889-1897, rank-separated,
+// spreads 0.01-0.11%), `--port check` differed 0.
 //
 // Exactness: the run is taken only when it neither leaves MEM1 nor reaches the FIFO's end, so no burst inside it
 // wraps; `fifoWrite`, `bytesReceived`, `g_gpLinked`/`g_gpUnlinked` and the stamped pages all end up where the
