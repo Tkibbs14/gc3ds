@@ -40,6 +40,10 @@ bool port_whyline_selftest(void);   // GC3DS_PORTWHY_SELFTEST=1 (port_j2d.c): th
 // --port-picture on: the pane walk accepts J2DPicture panes and draws them natively (C53). **Off by default until
 // the disc-image checks have run** - porthash entries and PORT_CHECK / --port check against the interpreter.
 extern bool g_portPicture;
+// --port-picture-draw on: draw a *visible* J2DPicture pane natively instead of refusing the subtree at it. Its own
+// switch because `--port-picture`'s value is scan acceptance (covered by every check) while this code has never run
+// in one: `drew picture` is 0 in every checked state on both machines, every J2DPicture reached being hidden.
+extern bool g_portPictureDraw;
 // --port-walktext on: the pane walk accepts J2DTextBoxEx panes and draws them with port bit 10's own text_draw_self
 // (C53's other half, and the one that unblocks it: every *visible* J2DPicture in TP's HUD shares a subtree with a
 // J2DTextBoxEx, and a subtree is all-or-nothing). A separate switch from `--port-hooks` bit 10 on purpose: that bit

@@ -34,6 +34,7 @@ void port_set_memory(u8* mem1, u32 size) {
     // reported a vacuous "0 differed" (a peer's run on the owner's PC, 2026-10-31).
     if (getenv("GC3DS_PORT_PICTURE")) g_portPicture = strcmp(getenv("GC3DS_PORT_PICTURE"), "on") == 0;
     if (getenv("GC3DS_PORT_WALKTEXT")) g_portWalkText = strcmp(getenv("GC3DS_PORT_WALKTEXT"), "on") == 0;
+    if (getenv("GC3DS_PORT_PICTURE_DRAW")) g_portPictureDraw = strcmp(getenv("GC3DS_PORT_PICTURE_DRAW"), "on") == 0;
 #endif
     g_pm = mem1;
     g_psz = size;
@@ -996,6 +997,11 @@ static void gx_set_tev_color(Pc* c, u32 id, u32 col);   // defined with the rest
 // interpreter - both require the disc image, which a cloud session does not have. Until they have run on a machine
 // that does, accepting these panes would change what the walk draws on the strength of code nobody has compared.
 bool g_portPicture;
+// --port-picture-draw (off): actually draw a *visible* J2DPicture pane with the code below, instead of refusing the
+// subtree at it. Separate from `--port-picture` because the two have completely different evidence behind them:
+// accepting the class in walk_scan is what unlocks the subtrees and is covered by every check run, while this code
+// has never executed in one - see the comment at its call site in walk_pane.
+bool g_portPictureDraw;
 
 // --port-walktext (off, same reasoning): the pane walk accepts J2DTextBoxEx panes and draws them with bit 10's own
 // text_draw_self, which is already built and measured exact as a standalone entry hook. This is deliberately a
@@ -1322,6 +1328,15 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d, u32 x, u3
                 if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
                 picex_draw_self(c, p, g + 128);  // (the stack copy's matrix is the graph's at +128)
             } else if (g_portPicture && dself == A_PICTURE_DRAWSELF) {
+                // Reached a *visible* J2DPicture. `picture_draw_self` has never run in any check: `drew picture` is
+                // 0 in every PC state a peer checked (900, 4290, 5000, 6590) and in all three 2DS runs
+                // (1757-1759, static Ordon, HUD and minimap live), because with the class test no longer refusing
+                // the walk reaches these panes and finds every one hidden. So the half's whole contribution is
+                // *scan acceptance* - a hidden pane still has to pass walk_scan for its subtree to be taken - and
+                // the drawing code has no evidence behind it. Refuse here rather than run it: exact (the walk undoes
+                // its stores) and free in these scenes, where it never fires. `--port-picture-draw on` runs it, for
+                // whoever finds a state with a visible picture and checks it.
+                if (!g_portPictureDraw) { give_up(c, 5); return; }
                 if ((u32)(c->pp - c->pbase) + 2048 > c->pcap) { give_up(c, 1); return; }
                 picture_draw_self(c, p, g + 128);
                 if (!c->fail) g_portWalkDrew[0]++;
