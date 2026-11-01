@@ -1808,12 +1808,35 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 > **So OPT_IND2's +0.9% is explained, which this entry called out as adopted "with no idea why": the second slot
 > serves 14.0% of probes, about 112,000 a second that would otherwise have missed.** A 94.9% hit rate on a
 > pc-derived index is the answer to "is the table working".
-> **And the sweep this entry queued next is now well-posed rather than open-ended.** At 94.9% hit rate a *bigger*
-> table can win at most the remaining 5.2%, while `FAST_BITS` 16 makes the table **512 KB over 128 pages** probed
-> 798,300 times a second - so the interesting direction is **smaller**, trading a few points of hit rate for far
-> less cache and TLB footprint. `FAST_BITS` is a compile-time `#define` in `jit.c`, so the sweep is a handful of
-> builds rather than a switch, and each build moves a baseline ~0.8% - which means the arms must be the sweep
-> itself (several FAST_BITS values on one session), never a sweep against a remembered default.
+> **The sweep is done too, and it says keep 16 - but the way it says so is the valuable part.**
+> `FAST_BITS` is a compile-time `#define`, so the sweep is builds of one commit (`GC3DS_FAST_BITS=N` in
+> `build.sh`, which tags the rev `+fbN` and uses its own object directory). Correcting one number first: the
+> allocation is **`FAST_TABLES * FAST_SIZE * sizeof(FastEntry)` = 4 x 512 KB = 2 MB, the whole shared L2**, not
+> the 512 KB this entry and AGENTS both said - 512 KB is one table of four.
+>
+> | `FAST_BITS` | probes/1k | first slot | second slot | missed | heavy area |
+> |---|---|---|---|---|---|
+> | 16 (512 KB/table) | 6.160 | 80.9% | 14.0% | **5.2%** | **7.352 / 7.341** |
+> | 13 (64 KB/table) | 6.163 | 80.5% | 16.6% | **2.9%** | **7.295 / 7.294** |
+>
+> **A table eight times smaller misses 44% less** - at identical probe rates, so it is the same workload - **and
+> is 0.71% slower.** Complete rank separation, spreads 0.15% and 0.01% (jobs 1922-1925, commit `8c39063a4703`,
+> both arms on the 7.1 MB rung). So the table's size is **not** a cache-footprint problem, the miss rate is not
+> what costs, and 16 stays. The likely reason a smaller table misses less is the **247 table resets a second**
+> (job 1878): 65,536 entries cannot warm up between resets where 8,192 can - which makes the miss rate a measure
+> of warm-up, not of capacity, and explains why improving it bought nothing.
+>
+> > **The methodological result, which matters more than the sweep.** The naive comparison - fb13 against the
+> > unpadded default, same commit, two runs an arm with 0.04% spreads and complete rank separation - read
+> > **+0.96%**. The real figure is **-0.71%**. The whole 1.7-point error was the **launch rung**: FAST_BITS 13
+> > allocates 1.75 MB less, so it is a different heap, and it landed on rung 8.8 while 16 landed on 8.9, each
+> > *reproducibly across two runs*. `runs.py` refused the comparison and was right to.
+> > **So a change that alters allocation sizes moves the rung, and the rung is then not separable by re-running** -
+> > it is a property of the build. The fix used here is to **pad the allocation**: the indirect tables are now
+> > malloc'd at the FAST_BITS 16 size whatever FAST_BITS is, so a sweep changes only the footprint the dispatcher
+> > *touches*. With that, both arms land on 7.1 and the comparison is clean. **Any future A/B of an allocation size
+> > needs the same treatment**, and without it a rung can turn a 0.7% regression into a 1% gain - which is exactly
+> > how this one would have shipped.
 > **One number this did *not* explain, and it is worth flagging rather than quietly dropping.** The sampler's
 > `dispatch` bucket reads **8.6-8.7% of core 0** in the settled windows (jobs 1878 and 1908, gpruns off and on),
 > against 43,352 block runs a second - about **1,600 cycles per dispatcher entry**, which is not credible for a

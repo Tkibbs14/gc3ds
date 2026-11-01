@@ -3085,6 +3085,52 @@ Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
+### C48 answered, and its `FAST_BITS` sweep says keep 16 - with a 1.7-point rung trap on the way (jobs 1916-1925)
+
+**The probe counter, on hardware at last** (`--indstat`, built 2026-10-31 and "waiting on a device build"; job
+1916, TP's heavy area): **798,300 probes a second, 6.16 per 1,000 guest instructions, first slot 80.9%, second
+slot 14.0%, missed 5.2%** - a **94.9% hit rate** - with `blr` 5.02 per 1k against `bctr` 0.95, so **84% of probes
+are returns**, and budget-exhausted hits at 0.006 per 1k, i.e. nothing.
+**Cross-checked as C48 designed it**: the dispatcher's own independent miss counter reads **41,134 a second**
+against 5.2% of 798,300 = **41,512** - 0.9% apart. **So OPT_IND2's +0.9%, adopted "with no idea why", is
+explained: the second slot serves 14.0% of probes, ~112,000 a second that would otherwise miss.**
+
+**The sweep.** One number first, which this file and AGENTS both had wrong: the allocation is
+`FAST_TABLES * FAST_SIZE * sizeof(FastEntry)` = **4 x 512 KB = 2 MB, the whole shared L2**; 512 KB is one table of
+four. That made "shrink it" look obvious.
+
+| `FAST_BITS` | probes/1k | first | second | missed | heavy area |
+|---|---|---|---|---|---|
+| 16 (512 KB/table) | 6.160 | 80.9% | 14.0% | **5.2%** | **7.352 / 7.341** |
+| 13 (64 KB/table) | 6.163 | 80.5% | 16.6% | **2.9%** | **7.295 / 7.294** |
+
+**A table eight times smaller misses 44% less and is 0.71% slower** (jobs 1922-1925, commit `8c39063a4703`, both
+arms on the 7.1 MB rung, rank-separated, spreads 0.15% and 0.01%). Identical probe rates, so it is the same
+workload. **So the table's size is not a cache-footprint problem, the miss rate is not what costs, and 16 stays.**
+The likely reason the small table misses less is the **247 table resets a second** (job 1878): 65,536 entries
+cannot warm up between resets where 8,192 can - which makes that miss rate a measure of warm-up, not capacity, and
+explains why halving it bought nothing.
+
+> **The rung trap, which is the part to remember.** The naive comparison - fb13 against the unpadded default, same
+> commit, two runs an arm, **0.04% spreads and complete rank separation** - read **+0.96%**. The true figure is
+> **-0.71%**. The entire 1.7-point error was the **launch rung**: FAST_BITS 13 allocates 1.75 MB less, so it is a
+> different heap, and it landed on rung **8.8** where 16 landed on **8.9**, each *reproducibly across two runs*.
+> Everything that usually signals a sound measurement was present and the answer still had the wrong sign.
+> `runs.py` refused to score the four logs together and was right to.
+> **A change that alters allocation sizes moves the rung, and the rung is then not separable by re-running** - it
+> is a property of the build, not of the launch. The fix used here: **pad the allocation** so only the quantity
+> under test varies (`jit.c` now malloc's the indirect tables at the FAST_BITS 16 size whatever FAST_BITS is, a
+> no-op in the default build). Both arms then land on 7.1 and the comparison is clean. **Any A/B of an allocation
+> size needs that treatment**; without it, this one would have shipped a 0.7% regression as a 1% gain.
+
+**One number C48 did not explain, flagged rather than dropped.** The sampler's `dispatch` bucket reads
+**8.6-8.7% of core 0** in the settled windows (jobs 1878 and 1908) against 43,352 block runs a second - about
+**1,600 cycles per dispatcher entry**, which is not credible for a hash lookup and a block-table probe. So the
+bucket holds more than the dispatcher loop; the obvious candidate is the JIT's C helpers, which run with
+`g_where` left at `WH_DISPATCH` from the previous dispatch. **That is a hypothesis** - `--gpruns` removed
+pipe-helper work and moved the bucket only 8.7% -> 8.6%, which settles nothing at this resolution. It is the
+largest unattributed number in core 0's budget and wants `g_where` set in the helpers.
+
 ### `--gpruns`: a run of pipe bursts moved at once - TP heavy area +0.47%, exact (jobs 1889-1893, 2026-11-01)
 
 Built from the section below, which found that **46% of every pipe byte arrives in 0.5% of the calls** and was

@@ -43,6 +43,15 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    point, re-run the *new* build late as well as the old one.** Running only the old one late is how a device step
    became a "-5.6% regression" in this very file for an hour, after the arms were batched - the exact thing this
    rule forbids, done while investigating a measurement artifact.
+   **A change that alters allocation sizes moves the rung, and the rung is then not separable by re-running**
+   (2026-11-01, C48's `FAST_BITS` sweep). `FAST_BITS` 13 allocates 1.75 MB less than 16, so it is a different heap:
+   it landed on rung 8.8 where 16 landed on 8.9, each *reproducibly across two runs*. The naive comparison - one
+   commit, two runs an arm, 0.04% spreads, complete rank separation - read **+0.96%**. The true figure, with both
+   arms on one rung, is **-0.71%**. **The rung was worth 1.7 points and flipped the sign**, which is how a
+   regression would have shipped as a gain. The fix is to **pad the allocation** so only the quantity under test
+   changes (`jit.c` now malloc's the indirect tables at the `FAST_BITS` 16 size whatever `FAST_BITS` is); both arms
+   then land on 7.1 and the comparison is clean. **Any A/B of an allocation size needs that treatment**, and
+   `runs.py`'s refusal to compare across rungs is what catches it when you forget.
    **The step is the launch memory state, and `runs.py` now prints and polices it** (C55): every log's
    `# heap: largest malloc block` labels the state (2.9, 7.1, 7.2, 8.6 or 9.0 MB across the logs on disk), **one of
    those labels is ~5% slow** - 9.0, whose Ordon defaults read 10.03 against 7.1's 10.59 on the same commit, while
@@ -404,9 +413,14 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   **798,300 probes a second**, 6.16 per 1,000 guest instructions, **80.9% first slot, 14.0% second, 5.2% missed**
   - a 94.9% hit rate - with 84% of probes coming from `blr`. The dispatcher's own miss counter (41,134/s) and the
   probe counter (41,512/s) agree to 0.9%, which is the cross-check C48 was designed around. **OPT_IND2's +0.9% is
-  thereby explained**: the second slot serves 112,000 probes a second that would otherwise miss. The `FAST_BITS`
-  sweep is now well-posed and points *smaller*, not bigger - at 94.9% a larger table can win at most 5.2% while
-  512 KB over 128 pages is probed 798,300 times a second. **What C48 did not explain is the sampler's `dispatch`
+  thereby explained**: the second slot serves 112,000 probes a second that would otherwise miss. **The `FAST_BITS` sweep is
+  done and says keep 16** (jobs 1917-1925): a table eight times smaller (fb13, 64 KB each) **misses 44% less -
+  2.9% against 5.2%, at identical probe rates - and is 0.71% slower**, so the size is not a cache-footprint
+  problem and the miss rate is not what costs. The likely reason it misses less is the **247 table resets a
+  second**: 65,536 entries cannot warm up between resets where 8,192 can, which makes that miss rate a measure of
+  warm-up rather than capacity. (Also correcting a number this file had wrong: the allocation is
+  `FAST_TABLES * FAST_SIZE * sizeof(FastEntry)` = **4 x 512 KB = 2 MB, the whole shared L2** - 512 KB is one table
+  of four.) **What C48 did not explain is the sampler's `dispatch`
   bucket at 8.6-8.7% of core 0**: that is ~1,600 cycles per dispatcher entry over 43,352 block runs a second,
   which is not credible for a hash lookup, so the bucket holds more than the loop (the JIT's C helpers run with
   `g_where` left at `WH_DISPATCH`). **That is the largest unattributed number in core 0's budget** and wants

@@ -131,6 +131,9 @@ is the difference between a reproducible measurement and a number. Two places ca
 | `--port-charge PCT` | the ports' charge on the emulated clock, in percent of the calibrated estimate (100; `port_j2d.c` kInsScale). Measurement only, for C41: with `--ab portcharge` the run alternates 100 and PCT every 20 s, recompiling nothing, so the charge's effect on speed is readable apart from the work a port removes |
 | `--gpbulk on\|off` | pipe bursts copied whole (on) |
 | `--gpruns on\|off` | a contiguous run of whole bursts moved at once rather than 32 bytes at a time (**on**). The ports hand over 46% of every pipe byte in 0.5% of the calls (job 1878), as ~30,000 bursts a second. `# gp pipe` reports `runs N moving M bursts of T` so the share is visible: a run path that never qualifies reads 0 and must not be mistaken for one that did nothing useful |
+
+
+**A build-time sweep, not a job option: `GC3DS_FAST_BITS=N bash core/host3ds/build.sh`.** The indirect-branch table's size is a compile-time `#define` (the dispatch stub bakes the index shift in), so a sweep is several builds of one commit; the rev becomes `<commit>+fbN` so `runs.py` can tell the logs apart, and the objects go to `build-fbN`. **Its arms must be padded to the same allocation** - `jit.c` does this - or the change moves the launch rung and the comparison is void: FAST_BITS 13 against 16 read +0.96% unpadded and **-0.71%** padded (C48, jobs 1917-1925).
 | `--ringbatch on\|off` | the pipe's bursts batched into GX-thread ring records of up to 512 bytes (on) |
 | `--dblframe on\|off` | overlapped GPU frames: citro3d's frame stays open and a frame waits only for the GPU to finish the one before last (on) |
 | `--shdwmemo on\|off` | the ShdwDraw walk memo: repeated shadow walks replayed from a record (on; `# shdw memo 10s`, `# shdw memo misses 10s`) |
