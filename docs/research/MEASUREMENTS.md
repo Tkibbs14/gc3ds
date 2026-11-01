@@ -2932,6 +2932,52 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > Before anyone builds this, split the counter once more - NaN against infinity - because infinities need no
 > payload matching and may be all of it.
 
+### A -5.6% regression that was nearly filed as device drift (jobs 1768-1770, 2026-11-01)
+
+**The experiment:** commit `088fb0df6610` checked out into a worktree, built in *this* container with the same
+devkitARM 16.1.0, pushed to the relay, and run **today**, interleaved with the current build at its own defaults.
+
+| scene | `088fb0df6610`, today | the same commit, 2026-10-31 (jobs 1723-1732) | `8aa6dc7`, today, defaults |
+|---|---|---|---|
+| static Ordon | **10.619 / 10.614** | 10.605 / 10.619 | 10.030 / 10.020 |
+| heavy area | **7.363** | 7.359 / 7.346 | 7.031 / 7.032 |
+
+**Two results, and the second one only exists because of the first.**
+
+**1. A commit reproduces far more tightly than the lore says.** The same source, rebuilt in a different container
+and run a session later, lands within **0.05%** in static Ordon and 0.05% in the heavy area. Rule 3 carries "the
+device drifts ~2% between days" and "a rebuild moves a baseline ~0.8%", and against this pair both are much too
+pessimistic. That is not a licence to compare across sessions - one commit, two scenes, two sessions is not a
+survey, and the stolen-second filter (added 2026-10-30) was not in the scoring that produced the older drift
+figures, which is the likeliest reason they looked large. But it does mean **a 5% gap is never drift**, and a number
+that size must be chased rather than attributed.
+
+**2. There is a -5.6% / -4.5% regression in `088fb0df6610..8aa6dc7`**, and it is larger than C53's gain, so C53's
++3.46% has been recovering part of a self-inflicted loss rather than adding to a sound baseline. What is known about
+it so far, from the PMU columns of jobs 1768 and 1761 (same scene, same defaults, same day):
+
+| column | fast (1768) | slow (1761) | ratio |
+|---|---|---|---|
+| `pmu_mcyc` | 817.6 | 812.1 | 0.993 (**the clock is the same** - not throttling) |
+| `inst_m` | 325.6 | 306.7 | 0.942 |
+| `icmiss_k` | 8032 | 8226 | 1.024 |
+| `stall_inst_m` | 227.9 | 223.3 | 0.980 |
+| `dcrmiss_k` | 1603 | 1764 | **1.101** |
+| `dmtlb_k` | 3082 | 3523 | **1.143** |
+| `scu_c0miss_k` | 1910 | 2055 | 1.076 |
+| `draws_s` / `verts_s` / `gxbytes_k` / `gpu_calls_s` | - | - | 0.945 each |
+
+So: **identical work per frame** (every GX-side rate scales at exactly the speed ratio), the same clock, instruction
+fetch flat - and the data side 10-14% worse. **It is not code layout**, which is where a 289-line file growth would
+have pointed. It is not the ports' own C code either: the walk's sampled cost a call is 180.8 -> 184.7 us building
+and 45.8 -> 49.5 committing, which over 9.65% of core 0 cannot buy 5%. `gxwait_pct` *falls* (1.75 -> 0.68), so the
+GX side is not the limit; the JIT buffer is at the same address in both. The heap difference (free 4.18 -> 6.08 MB,
+largest block 7.1 -> 9.0 MB) is most likely an effect rather than a cause, since the texture-decode rates scale with
+speed too.
+
+**Status: being bisected on the device** (job 1776 at `4ba02a6`; eight code-touching commits in range, so three runs).
+**Nothing from this session becomes a default until it is found.**
+
 ### C53: J2DTextBoxEx folded into the pane walk - +3.46% and +2.31% (jobs 1760-1767, 2026-11-01)
 
 Build `8aa6dc730f9b` (cloud toolchain, devkitARM 16.1.0), 240 s a run, two runs an arm, one session, two rounds with
