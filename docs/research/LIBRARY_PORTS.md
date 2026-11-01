@@ -193,3 +193,67 @@ an A/B of a port recompiles all JIT code at each switch and reads the on arm ~2%
 
 Sources: zeldaret/tp `libs/JSystem/src/J2DGraph` (18 files, ~11,600 lines), `libs/JSystem/src/JUtility`,
 `libs/dolphin/src/gx` (sparse clone at `/root/tpdecomp` in WSL Debian).
+
+## C56: the J3D packet draw, designed from zeldaret's sources (2026-11-01)
+
+**Why this subtree.** `J3DDrawBuffer::draw` is **9.88%** of core 0 in TP's heavy area at the current defaults (job
+1821), the largest unexplored subtree once C53 is taken out of the J2D containers. The census (`--j3dstat`, jobs
+1822-1823) says the class dispatch is *narrower* than the pane walk's: **one packet class of four** and **two matrix
+loads of six**, with the other seven entry points reading exactly 0 in both scenes - and both surviving matrix loads
+are already written as port bits 9 and 2, the two that measure **-0.46%** and **-0.03%** as standalone entry hooks.
+Absorbing them is the whole point: one `drawHead` call covers ~6.3 material loads, ~6.9 shape draws and ~12.2 matrix
+loads in the heavy area.
+
+**Hook: `J3DDrawBuffer::drawHead` 0x80325500** (not `draw` 0x803254AC, which dispatches through
+`drawFuncTable[mDrawMode]`; the census shows the two called equally often, so `mDrawMode` is always Head in these
+scenes, and hooking `drawHead` means a `drawTail` run simply never enters the port).
+
+**The walk.** `for (i < mEntryTableSize) for (packet = mpBuffer[i]; packet; packet = packet->mpNextPacket)
+packet->draw()`, taking the subtree only when **every** packet's vtable is `J3DMatPacket`'s - all-or-nothing, as C53
+established.
+
+**Per J3DMatPacket (`draw` 0x80312A9C, 132 bytes):**
+`mpMaterial->load()`; `callDL()`; `getShapePacket()->getShape()->loadPreDrawSetting()`; then
+`while (sp) { if (sp->mpDisplayListObj) sp->mpDisplayListObj->callDL(); sp->drawFast(); sp = sp->mpNextPacket; }`;
+then `J3DShape::resetVcdVatCache()`.
+`J3DMaterial::load` (0x8031668C, 80 bytes) is only `j3dSys.setMaterialMode(mMaterialMode)` and, unless `j3dSys`
+flag 2 is set, `loadNBTScale(*mTexGenBlock->getNBTScale())`.
+
+**Per J3DShapePacket (`drawFast` 0x80312FBC, 136 bytes):** skip when `J3DShpFlag_Hidden` or `!mpShape`; else
+`prepareDraw()` (0x80312E08, 284 bytes), then set `J3DDifferedTexMtx::sTexGenBlock` / `sTexMtxObj` from
+`mpTexMtxObj` (or clear the first), then `mpShape->drawFast()`.
+
+**`J3DShape::drawFast` (0x8031544C, 404 bytes)** - the core:
+`if (sOldVcdVatCmd != mVcdVatCmd) { GXCallDisplayList(mVcdVatCmd, kVcdVatDLSize); sOldVcdVatCmd = mVcdVatCmd; }`;
+`if (sEnvelopeFlag && !mHasPNMTXIdx) mCurrentMtx.load()`; `setArrayAndBindPipeline()`; then, unless
+`J3DShpFlag_NoMtx`, `for (i < mMtxGroupNum) { mShapeMtx[i]->load(); mShapeDraw[i]->draw(); }` (with
+`J3DShapeMtx::resetMtxLoadCache()` first when the LOD flag is set), else two `J3DFifoLoad*MtxImm` of the base matrix
+followed by the same `mShapeDraw[i]->draw()` loop.
+`setArrayAndBindPipeline` (0x80315398, 180 bytes) is seven stores plus `loadVtxArray`, which is three
+`J3DLoadArrayBasePtr` calls - FIFO writes gc3ds already stands in for.
+
+**Offsets, from the decompilation's headers:**
+- `J3DDrawBuffer`: +0x00 `mpBuffer`, +0x04 `mEntryTableSize`, +0x08 `mDrawMode`
+- `J3DPacket`: +0x00 vtable, +0x04 `mpNextPacket`, +0x08 `mpFirstChild`, +0x0C `mpUserArea`
+- `J3DDrawPacket`: +0x10 `mFlags`, +0x20 `mpDisplayListObj`, +0x24 `mpTexMtxObj`
+- `J3DMatPacket`: +0x28 `mpInitShapePacket`, +0x2C `mpShapePacket`, +0x30 `mpMaterial`, +0x34 `mDiffFlag`
+- `J3DShapePacket`: +0x28 `mpShape`, +0x2C `mpMtxBuffer`, +0x30 `mpBaseMtxPtr`, +0x34 `mDiffFlag`, +0x38 `mpModel`
+- `J3DShape`: +0x04 `mMaterial`, +0x0A `mMtxGroupNum`, +0x0C `mFlags`, +0x2C `mVcdVatCmd`, +0x34 `mHasNBT`,
+  +0x38 `mShapeMtx`, +0x3C `mShapeDraw`, +0x40 `mCurrentMtx`, +0x48 `mHasPNMTXIdx`, +0x54 `mScaleFlagArray`,
+  +0x58 `mDrawMtx`, +0x5C `mNrmMtx`, +0x60 `mCurrentViewNo`
+- `J3DMaterial`: +0x10 `mMaterialMode`, +0x20 `mDiffFlag`, +0x24 `mColorBlock`, +0x28 `mTexGenBlock`,
+  +0x2C `mTevBlock`, +0x34 `mPEBlock`
+
+**Statics, from the symbol map:** `j3dSys` 0x80434AC8 (already `A_J3DSYS` in `port_j2d.c`),
+`J3DShapeMtx::sCurrentPipeline` 0x804515A8, `sCurrentScaleFlag` 0x804515AC, `sNBTFlag` 0x804515B0,
+`sTexMtxLoadType` 0x804515B4, `J3DShape::sOldVcdVatCmd` 0x804515D0, `sEnvelopeFlag` 0x804515D4.
+
+**The one gap:** `J3DDifferedTexMtx::sTexGenBlock` and `sTexMtxObj` are not in zeldaret's map under that mangling
+(local statics, or named otherwise), so their addresses have to come from the machine code - which needs the disc
+image and therefore a machine that has one. Everything else above is settled.
+
+**What is left to write** is the spine only, ~1.2 KB of guest behaviour: the two loops, `J3DMatPacket::draw`,
+`J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
+`setArrayAndBindPipeline`, `J3DShapeDraw::draw`, and a `J3DShapeMtxConcatView::load` wrapper around port bit 2's
+existing `loadMtxConcatView_PNGP`. **Write it with `--port check` and a `drew N` counter from the first commit:**
+two ports in this session reported "0 differed" over zero executed calls, and one of them took a peer's run to catch.
