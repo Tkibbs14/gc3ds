@@ -373,10 +373,10 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   direction. The walk went from 13,377 real guest instructions a call to **104,292** and its pane-class test now
   refuses nothing. Two lessons generalise: **a subtree is all-or-nothing**, so the classes a walk refuses are not
   independent quantities to attack one at a time, and **coverage is not value** - the J2DPicture half of the same
-  work accepts 412 panes a window and draws none, every one being hidden. It is not a default yet because its figure
-  was taken on one side of a device step that moved static Ordon 5.6% the same night, so the gain's *ratio* holds
-  (interleaved arms, each repeated) while its absolute numbers do not - it needs one re-measurement in the current
-  state (MEASUREMENTS, the withdrawn-regression section). The
+  work accepts 412 panes a window and draws none, every one being hidden. **On by default since 2026-11-01**, after a
+  second measurement on a different build with adjacent arms (+3.17%, jobs 1785-1788) and `--port check` on the
+  default build itself. Its absolute figures belong to the 9.0 MB launch rung (C55): the device chainloaded into
+  that rung both times, so what C53 gives on the 7.1 rung is unmeasured. The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
   **rank candidates by work per call, not by call count**. **The "denormal give-up" that CONTRIBUTOR_TASKS 9 called a
