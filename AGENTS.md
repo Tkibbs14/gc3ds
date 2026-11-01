@@ -468,18 +468,24 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   list: **its inner loop calls port bits 2 and 9**, the matrix loads that measure **-0.94% and +0.08%** as standalone
   entry hooks at the post-C53 default (jobs 1840-1848; they read -0.03% and -0.46% at the older one), so a subtree
   context would absorb them the way the pane walk absorbed bit 10 (-4.3% alone, part of +3.4% folded in).
-  **The drawing is now written** (1 November 2026, `--port-hooks` bit 11 / 2048, off), with both matrix loads
-  delegated to those two ports rather than rewritten, and the design's one open gap closed - the two
-  `J3DDifferedTexMtx` statics are at 0x804515C0 / 0x804515C4, and port bit 2 has been reading the first of them off
-  r13 since long before the symbol map was fetched, which is how the address checked itself. **It is neither
-  checked nor measured**, and three gates stand in front of that, in order: four new hash rows are **recorded as 0
-  on purpose** (no disc image in a cloud session, and a guessed hash is worse than none), which keeps *every* port
-  off until one console run publishes them as a paste-ready `# port hashes` line; then `--port check` must read 0
-  differed **and** a non-zero `drew`; then `kInsScale[11]` must be calibrated from check mode, since it is still the
-  placeholder 100. So **the build that harvests the hashes has no ports at all and must not be used for speed**.
-  Two refusals the port adds are counted rather than assumed - a shape packet carrying a texture-matrix object, and
-  `J3DMaterial::load`'s NBT-scale half, which the headers say is unreachable (`J3DTexGenBlockPatched` does not
-  override `getNBTScale`, so the guest would dereference the base class's NULL) but only a counter can show.
+  **Built, exact - and measured as a LOSS: -0.79% in TP's heavy area** (1 November 2026, port bit 11 / 2048, off;
+  jobs 1875-1880. Check: 180 calls, differed 0, `drew 180 calls, 920 mat packets, 1,640 shape draws`; plant 28,028.
+  Speed: on 7.142 / 7.139 against off 7.206 / 7.189, rank-separated the wrong way).
+  **The reason is one number and it restates this whole direction.** The port's own timers read 72.9 us a call =
+  58,612 ARM cycles to replace 3,010.6 guest instructions = **19.5 cycles per guest instruction replaced, against
+  the JIT's 21.2**. The port is 8% faster than compiled code at the same work, and 8% cannot pay for a hook entry,
+  a commit, a compiled-code flush and 1.2 KB more fetch footprint. **C53 did not win by being a subtree; it won by
+  doing less** - skipping hidden panes, absorbing a text path, 13,377 -> 104,292 guest instructions absorbed per
+  call. C56 copies `drawHead` step by step. Bit 2 at -0.94% per call and C56 at -0.79% per subtree are the same
+  finding at two scales: **absorption removes a hook's overhead, not the work.** So rank a subtree candidate by
+  *what it can skip or compute differently*, never by its inclusive share.
+  **And before anything else is ranked off this profile, two instruments disagree by up to 20x about how much work
+  is there**: the scan says 6.6 mat packets and 10.4 matrix groups per taken call over 1,239 calls, while
+  `--j3dstat`'s entry census counts `J3DMatPacket::draw` entered **413** times in the same window (1,180 against
+  8,177 for `drawFast`, 3,481 against 12,886 for the matrix classes; job 1850, both in one run). `--tier` inlining
+  a `packet->draw()` past an entry hook would explain it, but that is a hypothesis of the kind this week has
+  falsified five times. **Until it is settled, neither the 9.88% nor the scan's coverage sizes anything - C54
+  included.** The zero-hash mechanism it needed is now general and documented in the checks table.
 - **Guest frame skip: built, exact, off, and shelved as a *speed strategy* - a user option instead (C9d, the
   owner's decision of 2026-10-31 after watching six runs: "let's just get things at native speed and keep working
   at improving performance").** The first human look at it settled three things the arithmetic could not.

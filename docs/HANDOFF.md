@@ -1,5 +1,59 @@
 # gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-11-01)
 
+> **▶ 2026-11-01 (latest): C56 is exact and a LOSS (-0.79%), `--g2 on` turns out to be a GAIN (+0.53%), and the
+> headline direction needs restating.** Builds `1a971528b25c` (C56) and `e91e46f4a0d6` (g2).
+>
+> **C56, the J3D packet-draw subtree, went through all three gates and failed the fourth.** Exact: 180 checked
+> calls, **differed 0**, with `drew 180 calls, 920 mat packets, 1,640 shape draws` and no `CHECK INCOMPLETE`;
+> `--port plant` 28,028 (jobs 1875-1876). Then **-0.79%** in TP's heavy area: on 7.142 / 7.139 against off
+> 7.206 / 7.189, complete rank separation the wrong way, on-arm spread 0.04% (jobs 1877-1880, two runs an arm
+> adjacent and reversed). Off by default, port bit 11.
+> **The reason is one number, and it is the clearest the ports' central rule has ever been.** The port's own timers
+> read 59.03 us building and 13.87 us committing = **72.9 us a call = 58,612 ARM cycles**, to replace **3,010.6**
+> guest instructions. **19.5 cycles per guest instruction replaced, against compiled code's 21.2** (job 1569's 7.07
+> host instructions a guest instruction at IPC 0.334). The port is **8% faster than the JIT at the same work**, and
+> 8% cannot pay for a hook entry, a commit, a compiled-code flush and 1.2 KB more of core 0's fetch footprint.
+> **So "the subtree direction" has to be restated, and this is the lesson of the day.** C53 did not win *because*
+> it was a subtree. It won because it **did less**: it skips hidden panes, it absorbed a text path, and its real
+> guest instructions a call went 13,377 -> 104,292 because it swallowed work rather than reproducing it. C56
+> reproduces `drawHead` step by step and absorbs bits 2 and 9 without changing what they compute. Bit 2 at -0.94%
+> per call and C56 at -0.79% per subtree are **the same finding at two scales: absorption removes a hook's
+> overhead, not the work.** Rank the next subtree candidate by *what it can skip or compute differently*, never by
+> its inclusive profile share.
+> **And two instruments now disagree by up to 20x about how much work is even in there**, which blocks ranking
+> anything off that profile - C54 included. The scan says a taken `drawHead` covers 6.6 mat packets and 10.4 matrix
+> groups over 1,239 calls (8,177 mat packets a window); `--j3dstat`'s entry census, **in the same run**, counts
+> `J3DMatPacket::draw` entered **413** times, `drawFast` 1,180 against 8,177, and the two matrix classes 3,481
+> against 12,886 (job 1850). Three ratios between 3.7x and 20x, all the same direction. `--tier` inlining a
+> `packet->draw()` past an entry hook would explain it with the scan right - and that is a hypothesis of exactly
+> the kind that has been falsified five times this week, so it is the next thing to *measure*. If the gap is real
+> coverage behind another entry point, C56's drawing code is written and proven exact and only the hook moves.
+>
+> **`--g2 on` is +0.53% in TP's heavy area and its "no speed change" is withdrawn** (jobs 1867-1870: on
+> 7.247 / 7.246 against off 7.206 / 7.210, complete rank separation, on-arm spread 0.01%; `# g2 10s` shows 45,806
+> of 66,822 list calls replayed, so the on-arm is not vacuous). Two reasons October's reading was wrong and only
+> one is about g2: it was taken with the **pre-filter method** and `--profile on`, and **the baseline moved in g2's
+> favour** - core 0 waited on the GX thread 0.4-1.2% then, so 1.3-2.5 points off GX busy had nowhere to go, where
+> now it does. **C36's "re-evaluate when" said exactly that** ("whenever the GX thread becomes the limit again
+> (core 0 gains)"), so this is the first payout from a trigger on that list and the best argument for rule 4 so
+> far. **Not a default yet**: it is GX-side work and a cloud session must not size GX-side work, and `--g2 check`
+> wants re-running on the current build.
+>
+> **The re-test seam closed at seven: six moved-or-confirmed figures and one gain.** `--nskeep` reads +0.03% in
+> TP's heavy area against a 0.25% off-arm spread - not a result, and **not a test of its claim either**, which is
+> Mario Party 4, where this session's toolchain is -4.7% with `gxvtx_pct` doubled. It stays parked for a stated
+> measurement limit. The narrower rule worth keeping: **re-test the entries recorded as "no change", not the ones
+> recorded as losses** - a loss that moves is usually still a loss, while a null taken by a superseded method at a
+> baseline that has since moved is a different thing, and g2 was both.
+>
+> **Two instruments gained a failure mode they did not have.** The port checker's store recorder dropped silently
+> once `CHK_MAX` (16,384 words) filled; an entry hook writes a handful of words so it never mattered, but a subtree
+> port would have turned "0 differed" into a partial check with nothing saying so. It now counts and prints
+> **CHECK INCOMPLETE** beside the verdict. And a hash row may be recorded as `0ull` when no disc image is at hand:
+> `port_valid()` treats it exactly as a mismatch - every port off - and the console publishes the hash it computed
+> as a paste-ready `# port hashes` line, so no hash was guessed in this session and two short runs filled seven
+> rows.
+
 > **▶ 2026-11-01 (later): C56's drawing code is written - the J3D packet-draw subtree, port bit 11, off and not yet
 > checked.** The design had one open gap, "`J3DDifferedTexMtx::sTexGenBlock` and `sTexMtxObj` are not in zeldaret's
 > map", and it was never a gap: they are at **0x804515C0** and **0x804515C4**, and the earlier search missed them by

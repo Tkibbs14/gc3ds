@@ -630,9 +630,30 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   fires once in ten thousand calls - but that was measured with bit 2 as an entry hook, where `sTexGenBlock` is
   whatever the guest's `drawFast` left; inside the subtree the port sets it, so the two are not the same question
   and the new counter is the one that answers it.
-- **Re-evaluate when:** the three gates above are through. **Status: built, off, unmeasured** - still the
-  best-evidenced entry on this list, and the evidence strengthened while it was being written, because bit 2's
-  standalone cost went from -0.03% to -0.94% and this is the context that removes it.
+- **Measured, and it is a loss: -0.79% in TP's heavy area** (jobs 1877-1880, on 7.142 / 7.139 against off
+  7.206 / 7.189, complete rank separation the wrong way, on-arm spread 0.04%). Exact first: 180 checked calls,
+  differed 0, with `drew 180 calls, 920 mat packets, 1,640 shape draws` and no `CHECK INCOMPLETE`; plant 28,028
+  (jobs 1875-1876). MEASUREMENTS has the full entry.
+- **Why, in one number.** The port's own timers read 59.03 us building and 13.87 us committing = **72.9 us a call =
+  58,612 ARM cycles**, to replace **3,010.6** guest instructions. **19.5 cycles per guest instruction replaced,
+  against the JIT's 21.2** - the port is 8% faster than compiled code at the same work, and 8% cannot pay for a
+  hook entry, a commit, a compiled-code flush and 1.2 KB more instruction-fetch footprint.
+- **So this entry's own central argument was wrong, and it is worth saying which part.** "It is the pane walk's
+  shape exactly" was true structurally and irrelevant economically. C53 did not win by being a subtree; it won by
+  **doing less** - skipping hidden panes, absorbing a text path - and its real guest instructions a call went
+  13,377 -> 104,292. C56 reproduces `drawHead` step by step and absorbs the two matrix loads without changing what
+  they compute. Bit 2 at -0.94% per call and C56 at -0.79% per subtree are **the same finding at two scales**:
+  absorption removes a hook's overhead, not the work.
+- **Two instruments now disagree by up to 20x about how much work is even there**, which is the thing to settle
+  before anything else is ranked off this profile: the scan says 6.6 mat packets and 10.4 matrix groups per taken
+  call over 1,239 calls (8,177 mat packets a window), while `--j3dstat`'s entry census counts `J3DMatPacket::draw`
+  entered **413** times in the same window, `drawFast` 1,180 against 8,177, and the two matrix classes 3,481
+  against 12,886 (job 1850, both instruments in one run). `--tier` inlining a `packet->draw()` past an entry hook
+  would explain it with the scan right, but that is a hypothesis of exactly the kind this week has falsified five
+  times. **Until it is settled, neither the 9.88% nor the scan's coverage sizes anything** - C54 included.
+- **Re-evaluate when:** that 20x gap is resolved. If it is real coverage behind another entry point, the drawing
+  code is written and proven exact and only the hook has to move, which is the cheapest possible follow-up.
+  **Status: built, exact, off (port bit 11 / 2048), measured as a loss.**
 
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 

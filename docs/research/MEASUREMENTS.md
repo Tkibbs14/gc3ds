@@ -3084,6 +3084,55 @@ Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
+### C56 built, exact, and a LOSS: the J3D packet-draw subtree is -0.79% (jobs 1875-1880, 2026-11-01)
+
+**Exact first** (jobs 1875-1876, build `1a971528b25c`, `--port-hooks 2291 --port check`): **180 checked calls,
+differed 0**, and non-vacuously - `drew 180 calls, 920 mat packets, 1,640 shape draws`, 622 pipe bytes a call, no
+`CHECK INCOMPLETE`. `--port plant` reports **28,028**. The content per call is the same in check mode and in a
+normal run (5.1 mat packets and 9.1 shape draws either way), so the calibration is representative. Both refusals
+the port adds read **0**: the NBT-scale implementation removed its own class entirely (70 a window to 0) and the
+texture-matrix-object case has never fired, so the only refusal left is the scan's packet class, 160 of 1,680 =
+9.5% - the same 90.5% the scan measured a day earlier through a different read path.
+
+**And it is slower** (jobs 1877-1880, same build, 8.9 MB rung, two runs an arm adjacent and reversed): on
+**7.142 / 7.139** against off **7.206 / 7.189** = **-0.79%**, complete rank separation the wrong way, on-arm spread
+0.04%, off-arm 0.24%.
+
+**The port's own timers say why, and the number is the clearest statement of the ports' central rule yet.**
+`us per call: building 59.03, committing 13.87` = **72.9 us a call = 58,612 ARM cycles**, to replace **3,010.6**
+guest instructions. That is **19.5 cycles per guest instruction replaced**, against the JIT's **21.2** (job 1569's
+7.07 host instructions a guest instruction at IPC 0.334). **The port is 8% faster than compiled code at the same
+work** - and 8% cannot pay for a hook entry, a commit, a compiled-code flush and ~1.2 KB more of core 0's
+instruction-fetch footprint. At 144 calls a second the port spends **1.05% of core 0** on work worth about
+**1.14%** of core 0's instructions, so the ceiling was ~0.09% before overheads even at perfect efficiency.
+
+**So the subtree direction is not automatically a win, and the reason C53 won has to be restated.** C53 did not win
+because it was a subtree; it won because the walk **did less** - it skips hidden panes, and the pane walk's real
+guest instructions a call went from 13,377 to 104,292 because it *absorbed* work rather than reproducing it. C56
+reproduces `drawHead` step by step: every display-list call, every matrix load, every store. AGENTS has said
+"a port pays only when it does less than the guest code, not when it copies the SDK step by step" since the PNGP
+matrix load, and **C56 is that rule at subtree scale** - bit 2 at -0.94% and C56 at -0.79% are the same finding
+twice, once per call and once per subtree.
+
+**What the profile's 9.88% did not predict, and the open question this leaves.** `J3DDrawBuffer::draw` reads 9.88%
+inclusive of core 0 (job 1821) but the subtree is 3,010 instructions at 144 calls a second, which is ~1.1% of core
+0's instructions. Those two can only be reconciled if the subtree's instructions cost ~9x an average one, and the
+port's own timers say they do not - it replaces them at 19.5 cycles each, barely under the JIT's 21.2.
+**And a second instrument disagrees by 20x with the scan** (job 1850, census and scan in one run): the scan says a
+taken `drawHead` covers **6.6 mat packets** and 10.4 matrix groups a call over 1,239 calls - 8,177 mat packets a
+window - while `--j3dstat`'s entry census counts `J3DMatPacket::draw` entered **413** times in the same window,
+`ShapePacket::drawFast` 1,180 against 8,177, and the two matrix classes 3,481 against 12,886. Three independent
+ratios between 3.7x and 20x, all in the same direction.
+**That gap is now the thing to resolve, and not by reading the code** (rule 8). Note that `--tier` inlines calls
+inside a region, which would let a `packet->draw()` bypass an entry hook entirely and under-count the census while
+leaving the scan right - a plausible cause, *and* exactly the kind of plausible cause this project has been wrong
+about five times this week. Until it is settled, **neither the 9.88% nor the scan's coverage should size anything**,
+which includes C54 and any further subtree candidate ranked off the same profile.
+
+**Status: built, exact, off (port bit 11 / 2048), measured as a loss.** It stays in the tree because it is exact and
+because the next thing to learn about it is cheap: if the 20x gap turns out to be real coverage sitting behind
+another entry point, the drawing code is already written and already proven exact, and only the hook has to move.
+
 ### Port bit 2 re-measured at the new default: -0.03% becomes -0.94% (jobs 1840-1843, 2026-11-01)
 
 `--port-hooks 247` against the default 243 - the J3DShapeMtxConcatView PNGP matrix load as a standalone entry hook -
