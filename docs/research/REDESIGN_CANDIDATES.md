@@ -556,6 +556,16 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   both the app's heap size and something performance-relevant (Luma's extended-memory mode, or whatever else was
   resident when gc3ds launched), or a smaller heap allocation that nothing reports. The heap probe is a *marker* of
   the state; treating it as the mechanism is the mistake this entry has already made twice.
+- **The instrument is in and it narrows the question to one number** (`# heap shape`, jobs 1811-1820, all of which
+  landed in the 9.0 rung): `region 08100020-0d8c5000 (87.77 MB), sbrk at 0cfc3000 (78.76 MB handed out), arena
+  78.76 MB, in use 78.75 MB, free 0.01 MB in 11 blocks, linear heap 28 MB`. So **`largest malloc block` is simply the
+  un-handed tail of the heap region** (87.77 - 78.76 = 9.01), and the arena holds essentially nothing free. The
+  emulator's own allocations are 78.75 MB with 11 free blocks either way, which means **the rungs differ in the size
+  of the region the OS gave the app, not in what we allocate** - the prediction for a 7.1 run is a region of ~85.9 MB
+  with the same 78.75 MB in use. A *larger* app heap region correlating with *slower* points at the launcher's
+  memory split, not at anything in this code base. **Waiting for a 7.1 sample is not worth device time**: the rung is
+  sticky across chainloads (it switched twice in about twenty tonight), so the line will answer the moment one
+  happens.
 - **Done:** `runs.py` now prints `heap N MB` on every line and **warns loudly when the logs scored together do not
   share a state**, with a planted self-test (a differing pair must be called out, a matching pair must not). That is
   the check that would have saved the hour this entry cost.
