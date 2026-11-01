@@ -228,3 +228,21 @@
     { 0x802FEC64, 0xE0, 0xE900D1BEAAE2B681ull },  // getNewColor__10J2DPictureFPQ28JUtility6TColor
     { 0x802FE5D0, 0x490, 0x4FEF765E46218323ull },  // setTevMode__10J2DPictureFv
     { 0x802FF65C, 0x4, 0x2F639DC45181817Full },  // rewriteAlpha__10J2DPictureFv (a bare blr, as J2DPane's is)
+    // C56: the J3DDrawBuffer::drawHead subtree. **These are checked but nothing follows them yet** - the port is not
+    // written, and they are here first on purpose: port_valid() turns *every* port off if one row mismatches, so a
+    // bad row would silently disable C53 and the soft-float concat and cost ~10%, and that risk is cheaper to test
+    // on its own than tangled up with new code (rule 8). Generated with porthash.py on a machine with the disc
+    // image, in a run that reproduced setGX__11J2DMaterialFv and the J2DColorBlock and J2DTexGenBlock rows exactly.
+    { 0x803254AC, 0x54, 0xBC25D556CA93BF47ull },   // draw__13J3DDrawBufferCFv
+    { 0x80325500, 0x78, 0x466E1D59F23E8997ull },   // drawHead__13J3DDrawBufferCFv            (the hook)
+    { 0x80312A9C, 0x84, 0xEBAB233191BF8280ull },   // draw__12J3DMatPacketFv                  (the only packet class)
+    { 0x80312FBC, 0x88, 0x91D4BC7082F207CEull },   // drawFast__14J3DShapePacketFv
+    { 0x80312E08, 0x11C, 0x97B4AE5864877044ull },  // prepareDraw__14J3DShapePacketCFv
+    { 0x8031544C, 0x194, 0x519682679A952508ull },  // drawFast__8J3DShapeCFv
+    { 0x80315300, 0x98, 0x54F767E4F6A23838ull },   // loadPreDrawSetting__8J3DShapeCFv
+    { 0x8031668C, 0x50, 0xE5C849E96FDEF843ull },   // load__11J3DMaterialFv
+    { 0x80315398, 0xB4, 0x4FEA6820EA2D7897ull },   // setArrayAndBindPipeline__8J3DShapeCFv
+    { 0x80314AD4, 0x2C, 0xEDB9421A9CACD49Cull },   // draw__12J3DShapeDrawCFv
+    { 0x80313C54, 0xD4, 0xD05F8F0F4F1E5F7Aull },   // load__21J3DShapeMtxConcatViewCFv        (wraps port bit 2's PNGP)
+    { 0x8031106C, 0x24, 0xB28FAAEE3936DF34ull },   // setArray__15J3DVertexBufferCFv
+    { 0x803260F8, 0x3C, 0x6791FF57EA60F0F6ull },   // syncJ3DSysFlags__12J3DModelDataCFv
