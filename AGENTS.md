@@ -230,7 +230,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   -0.1%) is that drift with nothing else in it - a useful scale for how large a "gain" has to be. Within this session
   the arms agree to 0.00-0.22%. The
   scripted Ordon *walk* also cannot be compared across a change that shifts the guest's timeline (C41).
-  **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732):
+  **Both baselines below also need a launch rung attached** (C55, 2026-11-01): jobs 1723-1732 are all on the
+  **7.1 MB** rung, and tonight's default runs on the **9.0 MB** one read ~5% lower at unchanged defaults, so the two
+  are not differenceable. Every figure in this project needs its rung, and **they are all recoverable from the logs
+  already on disk** (`# heap: largest malloc block`, which `runs.py` now prints) with no device time - the single
+  cheapest piece of work available here.
+  **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732,
+  7.1 MB rung):
   static Ordon **10.61**, heavy area **7.35**, Wind Waker **6.25**, Mario Party 4 **8.83**; cutscene 41.10%, later
   22.99%, movie 14.80%. **The headline above stays on the project's own toolchain** - the cloud toolchain is
   +0.3 to +1.0% on TP and Wind Waker but **-4.7% on Mario Party 4** (gcc 16 compiles `vfast.c`'s vertex path about
