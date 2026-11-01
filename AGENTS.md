@@ -142,7 +142,7 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
 | `core/host3ds/` | The 3DS program: `main.c` (options, perf.csv, A/B switching, live commands), `gxthread.c` (core 2), `relay.c` (remote runs), `asyncfile.c` (log writer on core 1), `crashlog.c`, `jit_3ds.c` |
 | `core/src/host/` | PC build: `pc_main.c`, `jit_glue.c` (the ARM build's JIT under qemu) |
 | `core/tests/` | `jit/` differential fuzzer, `cpu/` interpreter tests, `tev/` TEV tests |
-| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image; its cases are `core/tests/jit/bench/*.S` - `callmany.S` is the one with a many-caller leaf, which is what makes indirect branches happen), `arm11_sched.py` (ARM11 cycle model), `gpr_traffic.py` (where compiled code's data accesses go, weighted by executions: guest GPRs / floats / other Gekko state / guest memory, and how much of it is write-back - C51's ceiling and C47's cheap first cut; same `JIT_SCHEDDUMP` as the model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `docs_stale.py` (rule 7's mechanical documentation checks), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
+| `core/tools/` | `perf_heavy.py` (A/B analysis), `clock_split.py` (where a run's emulated clock came from and each field's slack, C41), `port_cost.py` (what each port costs core 0), `jitbench.py` (the JIT's ARM output for a hand-written guest loop, no disc image; its cases are `core/tests/jit/bench/*.S` - `callmany.S` is the one with a many-caller leaf, which is what makes indirect branches happen), `arm11_sched.py` (ARM11 cycle model), `gpr_traffic.py` (where compiled code's data accesses go, weighted by executions: guest GPRs / floats / other Gekko state / guest memory, and how much of it is write-back - C51's ceiling and C47's cheap first cut; same `JIT_SCHEDDUMP` as the model), `host3ds_syntax.sh` + `stub3ds/` (syntax-check the 3DS host code with no devkitARM), `docs_stale.py` (rule 7's mechanical documentation checks), `rungs.py` (which launch memory rung each run on disk was in, and whether it chainloaded - C55: one rung is ~5% slow, so an entry whose arms straddle a rung change is wrong by up to 5%, and this checks it with no device time), `relay.sh` (remote runs), `vfast_check.sh`, `arm_*.sh`, `tp_*.sh`, `hammock.py` (block-shape model over a PC profile from gcemu's `PCHIST` + `EDGEHIST` + `MEMDUMP`) |
 | `tools/relay-server/` | Reference relay server for remote runs (Node, no dependencies) |
 | `bench/` | `gcbench`: 3DS hardware benchmarks (CPU shapes, memory, GPU rules) |
 | `docs/` | Designs, findings and the running log (see README) |
@@ -266,8 +266,9 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   **Both baselines below also need a launch rung attached** (C55, 2026-11-01): jobs 1723-1732 are all on the
   **7.1 MB** rung, and tonight's default runs on the **9.0 MB** one read ~5% lower at unchanged defaults, so the two
   are not differenceable. Every figure in this project needs its rung, and **they are all recoverable from the logs
-  already on disk** (`# heap: largest malloc block`, which `runs.py` now prints) with no device time - the single
-  cheapest piece of work available here.
+  already on disk** (`# heap: largest malloc block`, which `runs.py` now prints, and
+  `python3 core/tools/rungs.py --by-rung` for every run at once) with no device time - the single cheapest piece of
+  work available here.
   **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732,
   7.1 MB rung):
   static Ordon **10.61**, heavy area **7.35**, Wind Waker **6.25**, Mario Party 4 **8.83**; cutscene 41.10%, later
