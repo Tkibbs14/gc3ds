@@ -53,7 +53,11 @@ extern u64 g_portWalkDrew[2];
 // --port-size-refused on (check mode only, measurement): interpreter instructions summed over *refused* calls, per
 // hook and give-up reason, so a refusal's cost is the subtree it abandons rather than a count of calls.
 extern bool g_portSizeRefused;
-extern u64 g_portRefusedIns[PORT_N][8];  // panes the walk drew through the C53 halves: [0] J2DPicture, [1] J2DTextBoxEx
+extern u64 g_portRefusedIns[PORT_N][8];
+// --port-softfloat on: PSMTXConcat through the interpreter's exact soft float when an input is a denormal, a NaN or
+// an infinity, rather than giving up. That give-up is 37.5% of the pane walk's hook entries once C53 is on, each
+// abandoning a ~104,000-instruction subtree. Off until --port check reads 0 differed with it on.
+extern bool g_portSoftFloat;  // panes the walk drew through the C53 halves: [0] J2DPicture, [1] J2DTextBoxEx
 extern u64 g_portFloatSite[6];
 extern u32 g_portWalkDs[4];
 extern u64 g_portWalkDsN[4], g_portWalkDsOther;

@@ -22,6 +22,7 @@
 #include "memo.h"
 #define HLE_EXACTFLOAT  // (the multiply-adds rounded once, as the interpreter: check mode compares bits)
 #include "hle_psops.h"
+#include "gekko_softfp.h"
 
 int g_portMode;  // --port off|on|check (main.c; GC3DS_PORT=1 / PORT_CHECK=1 on the PC)
 static u8* g_pm;  // MEM1 (guest physical 0)
@@ -36,6 +37,7 @@ void port_set_memory(u8* mem1, u32 size) {
     if (getenv("GC3DS_PORT_WALKTEXT")) g_portWalkText = strcmp(getenv("GC3DS_PORT_WALKTEXT"), "on") == 0;
     if (getenv("GC3DS_PORT_PICTURE_DRAW")) g_portPictureDraw = strcmp(getenv("GC3DS_PORT_PICTURE_DRAW"), "on") == 0;
     if (getenv("GC3DS_PORT_SIZE_REFUSED")) g_portSizeRefused = strcmp(getenv("GC3DS_PORT_SIZE_REFUSED"), "on") == 0;
+    if (getenv("GC3DS_PORT_SOFTFLOAT")) g_portSoftFloat = strcmp(getenv("GC3DS_PORT_SOFTFLOAT"), "on") == 0;
 #endif
     g_pm = mem1;
     g_psz = size;
@@ -137,7 +139,9 @@ typedef struct {
     // FPR lanes the guest code leaves changed: PSMTXConcat saves f14, f15 and f31 with stfd and restores them with lfd,
     // which loads ps0 only, so their ps1 keep its last values (f31 by its caller too unless the caller saved it whole).
     bool leak;
-    float l14, l15, l31;
+    // The lanes PSMTXConcat leaves behind, as *double bit patterns* rather than floats: the exact path can produce a
+    // NaN there, and a float would mangle its payload (these were floats while plain() made a NaN unreachable).
+    u64 l14, l15, l31;
     bool leak31;           // GXSetFog computes C into f31 (both lanes) and restores it with lfd: its ps1 keeps C
     float c31;
     u32 gdA, gdN, gdRoom;  // bytes written at a GD display list's write pointer (J3D's writers), from gdA; its room
@@ -899,15 +903,87 @@ static inline bool plain(Pc* c, u32 v) {
     if (e == 0xFF) { if (!c->fail) g_portFloatSite[5]++; give_up(c, 2); return false; }                  // NaN / inf
     return true;
 }
+// Classify without counting a give-up (plain() does both, and the scan below has to look before it decides).
+static inline bool is_plain(u32 v) { u32 e = (v >> 23) & 0xFF; return !(e == 0 && (v & 0x7FFFFF)) && e != 0xFF; }
+
+// ---- The exact form of the concat, for inputs the VFP and the Gekko do not treat alike ----
+// Why this exists: `plain()` refuses a denormal, a NaN or an infinity, and that refusal is **37.5% of the pane
+// walk's hook entries** once C53 is on (static Ordon 660 of 1,760, heavy area 480 of 1,280; jobs 1760-1763), each
+// one abandoning a ~104,000-instruction subtree where before C53 it abandoned a ~13,000-instruction one. Giving up
+// was the right answer when it cost a pane fragment and when the counter could not tell a denormal from a NaN; the
+// split counter says the inputs are 100% NaN or infinity (jobs 1753-1754) and C53 says the subtree is large.
+// How it is exact: the interpreter's own soft float, with the guest's FPSCR, so this matches the reference rather
+// than approximating it - for denormal inputs too, which the VFP flushes and the interpreter (FPSCR[NI]) does not.
+// It is also exact for *plain* inputs, being the same arithmetic the interpreter does, so the fast path stays only
+// because it is faster and not because it is needed.
+static inline u64 dbits(double d) { u64 w; memcpy(&w, &d, 8); return w; }
+static inline double bitsd(u64 w) { double d; memcpy(&d, &w, 8); return d; }
+typedef struct { u64 p0, p1; } PD;  // a paired single with each lane a single-valued double, as an FPR holds it
+static inline SfEnv sf_env(Pc* c) {
+    SfEnv e = { c->g->fpscr & FPSCR_RN, (c->g->fpscr & FPSCR_NI) != 0, 0 };
+    return e;
+}
+// frC is rounded to 25 bits in a single-precision multiply, as gekko_fpu.c mulc does (a single operand is
+// unaffected by that cut, so this only matters if one ever is not).
+static inline u64 sf_mulc(Pc* c, u64 y) {
+    return (GKP(c->g)->compat & GK_COMPAT_EXACT_SINGLE_MUL) ? y : sf_round25(y);
+}
+static inline u64 sfmul(Pc* c, u64 x, u64 y) { SfEnv e = sf_env(c); return sf_mul(&e, x, sf_mulc(c, y), true); }
+static inline u64 sfmadd(Pc* c, u64 x, u64 y, u64 z) { SfEnv e = sf_env(c); return sf_madd(&e, x, sf_mulc(c, y), z, true); }
+#define QMULS0(x, cc) ((PD){ sfmul(c, (x).p0, (cc).p0), sfmul(c, (x).p1, (cc).p0) })
+#define QMADDS0(a, cc, b) ((PD){ sfmadd(c, (a).p0, (cc).p0, (b).p0), sfmadd(c, (a).p1, (cc).p0, (b).p1) })
+#define QMADDS1(a, cc, b) ((PD){ sfmadd(c, (a).p0, (cc).p1, (b).p0), sfmadd(c, (a).p1, (cc).p1, (b).p1) })
+static void psmtx_concat_exact(Pc* c, const u32* in, u32* out) {
+    PD m[12];
+    for (u32 i = 0; i < 6; i++) {
+        m[i] = (PD){ sf_single_to_double(in[4 * i]), sf_single_to_double(in[4 * i + 1]) };
+        m[6 + i] = (PD){ sf_single_to_double(in[4 * i + 2]), sf_single_to_double(in[4 * i + 3]) };
+    }
+    PD f0 = m[0], f1 = m[1], f2 = m[2], f3 = m[3], f4 = m[4], f5 = m[5];
+    PD f6 = m[6], f7 = m[7], f8_ = m[8], f9 = m[9], f10 = m[10], f11 = m[11];
+    PD f31 = { sf_single_to_double(f32(0x804509D0u)), sf_single_to_double(f32(0x804509D4u)) };  // {0, 1}
+    PD f12 = QMULS0(f6, f0), f13 = QMULS0(f7, f0), f14 = QMULS0(f6, f2), f15 = QMULS0(f7, f2);
+    f12 = QMADDS1(f8_, f0, f12); f14 = QMADDS1(f8_, f2, f14); f13 = QMADDS1(f9, f0, f13); f15 = QMADDS1(f9, f2, f15);
+    f12 = QMADDS0(f10, f1, f12); f13 = QMADDS0(f11, f1, f13); f14 = QMADDS0(f10, f3, f14); f15 = QMADDS0(f11, f3, f15);
+    PD g2 = QMULS0(f6, f4);
+    f13 = QMADDS1(f31, f1, f13);
+    PD g0 = QMULS0(f7, f4);
+    f15 = QMADDS1(f31, f3, f15);
+    g2 = QMADDS1(f8_, f4, g2); g0 = QMADDS1(f9, f4, g0); g2 = QMADDS0(f10, f5, g2); g0 = QMADDS0(f11, f5, g0);
+    g0 = QMADDS1(f31, f5, g0);
+    c->leak = true;
+    c->l14 = f14.p1;
+    c->l15 = f15.p1;
+    c->l31 = f31.p1;
+    PD r[6] = { f12, f13, f14, f15, g2, g0 };
+    // psq_st, type float, scale 0: the same conversion psq_copy makes (a single-denormal result stored as a signed
+    // zero), but without its give-up - a NaN or infinity result is stored as the Gekko stores it.
+    for (u32 i = 0; i < 6; i++) {
+        out[2 * i] = sf_double_to_single_ftz(r[i].p0);
+        out[2 * i + 1] = sf_double_to_single_ftz(r[i].p1);
+    }
+    c->n += 52;
+}
+
 // PSMTXConcat 0x803464E4: ab = a * b (3x4), as its paired-single code computes it (multiply-adds rounded once).
 static void psmtx_concat(Pc* c, u32 a, u32 b, u32* out) {
     if (!span(c, a, 48) || !span(c, b, 48) || !span(c, 0x804509D0u, 8)) return;
+    u32 in[24];
+    bool allplain = true;
+    for (u32 i = 0; i < 6; i++) {
+        in[4 * i] = f32(a + 8 * i); in[4 * i + 1] = f32(a + 8 * i + 4);
+        in[4 * i + 2] = f32(b + 8 * i); in[4 * i + 3] = f32(b + 8 * i + 4);
+        for (u32 k = 0; k < 4; k++) allplain &= is_plain(in[4 * i + k]);
+    }
+    if (!allplain) {
+        if (g_portSoftFloat) { psmtx_concat_exact(c, in, out); return; }
+        for (u32 k = 0; k < 24; k++) if (!plain(c, in[k])) return;  // counts the give-up as it always did
+        return;                                                     // (unreachable: !allplain means one of them fails)
+    }
     P m[12];
     for (u32 i = 0; i < 6; i++) {
-        u32 x0 = f32(a + 8 * i), x1 = f32(a + 8 * i + 4), y0 = f32(b + 8 * i), y1 = f32(b + 8 * i + 4);
-        if (!plain(c, x0) || !plain(c, x1) || !plain(c, y0) || !plain(c, y1)) return;
-        m[i] = (P){ fbits(x0), fbits(x1) };
-        m[6 + i] = (P){ fbits(y0), fbits(y1) };
+        m[i] = (P){ fbits(in[4 * i]), fbits(in[4 * i + 1]) };
+        m[6 + i] = (P){ fbits(in[4 * i + 2]), fbits(in[4 * i + 3]) };
     }
     P f0 = m[0], f1 = m[1], f2 = m[2], f3 = m[3], f4 = m[4], f5 = m[5];  // a's rows as register pairs
     P f6 = m[6], f7 = m[7], f8_ = m[8], f9 = m[9], f10 = m[10], f11 = m[11];
@@ -922,9 +998,9 @@ static void psmtx_concat(Pc* c, u32 a, u32 b, u32* out) {
     g2 = PMADDS1(f8_, f4, g2); g0 = PMADDS1(f9, f4, g0); g2 = PMADDS0(f10, f5, g2); g0 = PMADDS0(f11, f5, g0);
     g0 = PMADDS1(f31, f5, g0);
     c->leak = true;
-    c->l14 = f14.p1;
-    c->l15 = f15.p1;
-    c->l31 = f31.p1;
+    c->l14 = dbits((double)f14.p1);
+    c->l15 = dbits((double)f15.p1);
+    c->l31 = dbits((double)f31.p1);
     P r[6] = { f12, f13, f14, f15, g2, g0 };
     for (u32 i = 0; i < 6; i++) {  // psq_st to the caller's temporary
         out[2 * i] = psq_copy(c, bitsf(r[i].p0));
@@ -1017,6 +1093,9 @@ u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively throug
 // a reason that refuses many small calls and a reason that abandons a few large subtrees look identical in a count.
 bool g_portSizeRefused;
 u64 g_portRefusedIns[PORT_N][8];
+// --port-softfloat (off): compute PSMTXConcat through the interpreter's exact soft float when an input is a
+// denormal, a NaN or an infinity, instead of giving up and abandoning the subtree. See psmtx_concat_exact.
+bool g_portSoftFloat;
 
 // J2DPicture::getNewColor 0x802FEC64: the four corner colours, each alpha scaled by mColorAlpha unless it is 0xFF.
 static void picture_new_color(Pc* c, u32 p, u32* col) {
@@ -2624,9 +2703,9 @@ static void port_commit(Pc* c) {
 static void port_regs(Pc* c, Gekko* g, u32 hook) {
     if (c->leak31) g->fpr[31].ps1 = c->c31;
     if (!c->leak) return;
-    g->fpr[14].ps1 = c->l14;
-    g->fpr[15].ps1 = c->l15;
-    if (hook != PORT_PICTUREEX && hook != PORT_PANEWALK && hook != PORT_TEXT) g->fpr[31].ps1 = c->l31;  // (drawTexCoord and J2DPane::draw save f31 whole)
+    g->fpr[14].ps1 = bitsd(c->l14);
+    g->fpr[15].ps1 = bitsd(c->l15);
+    if (hook != PORT_PICTUREEX && hook != PORT_PANEWALK && hook != PORT_TEXT) g->fpr[31].ps1 = bitsd(c->l31);  // (drawTexCoord and J2DPane::draw save f31 whole)
 }
 
 const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::drawSelf",
