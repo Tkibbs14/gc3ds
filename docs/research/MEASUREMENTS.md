@@ -2932,6 +2932,58 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > Before anyone builds this, split the counter once more - NaN against infinity - because infinities need no
 > payload matching and may be all of it.
 
+### C53: J2DTextBoxEx folded into the pane walk - +3.46% and +2.31% (jobs 1760-1767, 2026-11-01)
+
+Build `8aa6dc730f9b` (cloud toolchain, devkitARM 16.1.0), 240 s a run, two runs an arm, one session, two rounds with
+the **second round's arms in the opposite order**, scored with `runs.py`'s stolen-second filter. On arm:
+`--port-picture on --port-walktext on`; off arm: the current defaults.
+
+| scene | C53 on | default | gain | on spread | off spread |
+|---|---|---|---|---|---|
+| static Ordon | 10.367 / **10.376** | 10.030 / **10.020** | **+3.46%** | 0.09% | 0.10% |
+| heavy area | 7.193 / **7.195** | 7.031 / **7.032** | **+2.31%** | 0.03% | 0.01% |
+
+(The bold figures are round 2, run in the reversed order.) **All four on-runs are above all four off-runs**, the
+spreads are 0.01-0.10% against gaps of 2.3-3.5%, and the heavy area's two arms repeat to 0.03% and 0.01% - tighter
+than its ~0.2% floor, which is a floor on *pairs*, not a promise about any one pair. This is the largest single gain
+since the library ports as a set (+10.6%).
+
+**Exactness, on the device, before the speed runs:** jobs 1757-1759 (static Ordon, HUD and minimap live)
+`--port check` **differed 0** with `drew picture 0 text 600-1000`; job 1758 `--port plant` **differed 29,442**. A
+peer's PC `PORT_CHECK=1` over four title states: 0 differed, with state 6590 drawing **3,150** text-box panes and the
+plant control firing in all four (at 6590 the walk is the *first* thing it catches, so the walk is inside the
+comparison rather than beside it). States 900 and 5000 check 0 walk calls and say nothing either way - worth stating
+whenever this table is copied, so four green rows are not read as four checks.
+
+**What the fold changed, and the trap in reading it.** The pane-class test now refuses **nothing**:
+`# port walk-scan 10s` prints an empty histogram and an empty unported-`drawSelf` list, where job 1755 (the picture
+half alone) had 1,410 refusals a window and `803075ac` x16,074. Real guest instructions a walk went from **13,377**
+(job 1080) to **104,292.4**, pipe bytes from 2,221 to 14,984, and hook entries a window from 2,610 to 160 - an
+accepted parent absorbs its children's hooked calls. **The two accepted-work sums must not be differenced:** the 870
+calls a window the walk used to accept were nested inside one another, so summing them double-counts, while the 50 it
+accepts now are disjoint top-level subtrees. The clock charge moved with the shape (`kInsScale` 129 -> 135,
+conditional on the switch so an A/B's off arm is unchanged); the stale scale under-charged the emulated clock by 5% of
+the walk's own work.
+
+**And C53 re-prices the float give-up, which had been downgraded hours earlier on the pre-C53 picture.** With C53 on,
+`plain()` refuses **37.5% of the walk's hook entries in both scenes** - static Ordon 660 of 1,760, heavy area 480 of
+1,280, the rest being roots the guest keeps - and each refusal now abandons a ~104,000-instruction subtree instead of
+a ~13,000-instruction one. Fixing it would take Ordon's coverage from 550 to 1,210 taken, 2.2x. Both readings of
+CONTRIBUTOR_TASKS 9 are right at their own time; what changed is what else is switched on. **This is C49's
+sub-additivity running the other way - an option *raising* another's value rather than subsuming it** - and it is why
+"rank the candidates" has to be redone after every default lands, not once.
+
+> **Not yet a default, deliberately (2026-11-01).** Rule 5 turns a measured, exact gain on without asking, and this
+> qualifies. It is being held for one reason: at these defaults static Ordon reads **10.03** where the cloud-toolchain
+> baseline below records **10.61** for commit `088fb0df6610`, a ~5% gap against the ~2% day drift the project
+> documents. Job 1753 (same defaults, the previous build, earlier the same day) reads 10.073, so the off arm is
+> self-consistent and the gap is not C53's. `jit.c` is **unchanged** since `088fb0df6610`, which rules out the shared
+> stubs and `--indstat`; everything that did change is in `port_j2d.c`/`main.c` and gated off bar the refusal
+> histograms, which fire a few hundred times a second. That leaves the device's day or plain code-layout movement from
+> a 289-line file growth, and a ~5% regression would dwarf a 3.5% gain, so **jobs 1768-1771 run `088fb0df6610` itself,
+> built in this session, before anything becomes a default.** The A/B above is unaffected either way: one build, one
+> session, interleaved.
+
 ### The baseline on devkitARM 16.1.0 (jobs 1723-1732, 2026-10-31)
 
 Two runs an arm, one session, one build (commit `088fb0df6610`, relay build `c23935942a982a7a`), 240 s each and

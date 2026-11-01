@@ -466,7 +466,20 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
     disjoint top-level subtrees. Only a speed run settles it.
   - Its clock charge was recalibrated with it (`kInsScale` 129 -> 135, conditional on the switch so the off arm of an
     A/B is unchanged): the stale scale under-charged the emulated clock by 5% of the walk's own work.
-- **Status: built, exact, off, awaiting its first speed runs.** (The earlier "re-evaluate when the J2DTextBoxEx half
+- **MEASURED: static Ordon +3.46%, heavy area +2.31%** (jobs 1760-1767, 240 s, two runs an arm, two rounds with the
+  second reversed, build `8aa6dc730f9b`): on 10.367 / 10.376 against 10.030 / 10.020, and 7.193 / 7.195 against
+  7.031 / 7.032. **All four on-runs above all four off-runs**, spreads 0.01-0.10% against gaps of 2.3-3.5%. The
+  largest single gain since the ports as a set. MEASUREMENTS has the full table and the reading notes.
+- **It re-prices the float give-up it was supposed to wait behind.** With C53 on, `plain()` refuses 37.5% of the
+  walk's hook entries in both scenes (Ordon 660 of 1,760, heavy area 480 of 1,280; the rest are roots), each
+  abandoning a ~104,000-instruction subtree rather than a ~13,000-instruction one - so CONTRIBUTOR_TASKS 9, downgraded
+  to an 11% tail hours earlier on the pre-C53 picture, is now the walk's biggest addressable refusal and would take
+  coverage 2.2x. Both readings are right at their own time. **C49 in reverse: an option raising another's value.**
+  The remedy is built (`--port-softfloat`, `psmtx_concat_exact`, off; jobs 1774-1775 check it).
+- **Status: measured and exact, held off by one open question**, not by anything about the port: at these defaults
+  static Ordon reads 10.03 where the cloud baseline records 10.61 for `088fb0df6610`, ~5% against a documented ~2%
+  day drift, and a 5% regression would dwarf a 3.5% gain. `jit.c` is unchanged since that commit, so the stubs are
+  out of it. Jobs 1768-1771 run that commit, built in this session, to separate the device's day from our code. (The earlier "re-evaluate when the J2DTextBoxEx half
   is folded into the walk" is now done. The J2DPicture half's own "0 differed" still covers zero drawn pictures and
   still must not be quoted as evidence on its own; what makes it safe to turn on is that the *walk* is checked with
   both halves accepted, which is what jobs 1757-1759 do.)
