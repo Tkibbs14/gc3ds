@@ -3026,6 +3026,38 @@ to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself
 `scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
 evidence available about what the step actually is, and the place for anyone investigating it to start.
 
+### PSMTXConcat exactly in soft float: TP's heavy area +0.20% (jobs 1797-1804, 2026-11-01)
+
+`--port-softfloat`: when an input to `psmtx_concat` is a denormal, a NaN or an infinity, compute the whole concat
+through the interpreter's own soft float (`sf_madd`, the guest's FPSCR, frC cut to 25 bits as `gekko_fpu.c mulc`
+does, `sf_double_to_single_ftz` for the psq_st store) instead of giving up and abandoning the subtree.
+
+Build `15598e0cffe4`, TP's heavy area, 180 s a run, **four runs an arm, arms adjacent and the order reversed between
+rounds, all eight in the 9.0 MB launch rung** (C55):
+
+| | runs | mean |
+|---|---|---|
+| on | 7.181 / 7.184 / 7.187 / 7.189 | **7.1853** |
+| off | 7.165 / 7.169 / 7.174 / 7.176 | **7.1710** |
+
+**+0.20%**, and **all four on-runs are above all four off-runs** (p = 1/70). That rank separation is what settles it:
+the difference is at the heavy area's ~0.2% floor, where means alone decide nothing - the same standard that settled
+port bit 8 at -0.26%. (An earlier pair on a `-dirty` build read +0.24% the same way and is not quoted; it cost four
+runs. `runs.py` flagged it, which is what that warning is for.)
+
+**Exact, and this time the check is not vacuous** (jobs 1791-1792): `--port check` **differed 0** *with the exact
+path actually taken* - every float give-up reads 0, both `plain nan/inf` and the `psq_copy` slot the first version
+merely relocated the refusal to - and `--port plant` differed 33,616. The walk's float refusals fall from **60 a
+window to 0**, leaving only its 50 root refusals.
+
+**The prize was over-estimated from refusal counts, which is the recurring lesson.** The 60 refused entries do not
+become taken calls: they vanish from the hook, because they were children inside trees the walk already accepted and
+each accepted walk now absorbs them. `checked` stays at 50 while instructions a call rise 104,292 -> **105,766**
+(+1.4%) and pipe bytes 14,984 -> 15,210. CONTRIBUTOR_TASKS 9 had this at "2.2x coverage" off a refusal count hours
+earlier; the measured +0.20% is what ~1.4% more covered work inside a +2.31% port is worth. **Refusal counts and
+coverage have now over-stated a port change's value four times in one session** (this, the J2DPicture half's 412
+panes, task 9's two re-pricings, and `--port-size-refused`'s own figures). Only a separate whole run has not misled.
+
 ### C53: J2DTextBoxEx folded into the pane walk - +3.46% and +2.31% (jobs 1760-1767, 2026-11-01)
 
 Build `8aa6dc730f9b` (cloud toolchain, devkitARM 16.1.0), 240 s a run, two runs an arm, one session, two rounds with
