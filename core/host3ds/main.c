@@ -1216,6 +1216,24 @@ static const char* run_body(const char* path) {
         u32 lo = 0, hi = 64u << 20;
         while (hi - lo > (64u << 10)) { u32 mid = lo + (hi - lo) / 2; void* p = malloc(mid); if (p) { free(p); lo = mid; } else hi = mid; }
         fprintf(g_perf, "# heap: largest malloc block %.1f MB\n", lo / 1048576.0);
+        // The heap's *shape*, not just its largest free block (C55). The 2DS launches into one of several memory
+        // states and one of them costs ~5% at unchanged defaults, with the largest-block figure as its only visible
+        // label; four plausible explanations each had to be killed separately because nothing here says what the
+        // heap actually looks like. The question this answers in one line: is the heap *region* a different size
+        // between rungs (the OS gave the app a different split), or is it the same size and differently used
+        // (fragmentation, or an allocation that did not happen)?
+        {
+            extern char *fake_heap_start, *fake_heap_end;
+            struct mallinfo mi = mallinfo();
+            fprintf(g_perf, "# heap shape: region %08lx-%08lx (%.2f MB), sbrk at %08lx (%.2f MB handed out), "
+                    "arena %.2f MB, in use %.2f MB, free %.2f MB in %d blocks, linear heap %.0f MB\n",
+                    (unsigned long)(u32)(uintptr_t)fake_heap_start, (unsigned long)(u32)(uintptr_t)fake_heap_end,
+                    (double)(fake_heap_end - fake_heap_start) / 1048576.0,
+                    (unsigned long)(u32)(uintptr_t)sbrk(0),
+                    (double)((char*)sbrk(0) - fake_heap_start) / 1048576.0,
+                    mi.arena / 1048576.0, mi.uordblks / 1048576.0, mi.fordblks / 1048576.0, mi.ordblks,
+                    __ctru_linear_heap_size / 1048576.0);
+        }
     }
     if (g_perf && g_opt.state[0]) fprintf(g_perf, "# loaded state %s at field %lu\n", g_opt.state, (unsigned long)g_sys.vi.field);
     if (g_opt.probeFaults) fault_probe(g_perf, g_sys.mem1);
