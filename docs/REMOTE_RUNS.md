@@ -18,6 +18,13 @@ A reference server with no dependencies is in `tools/relay-server/server.js` (No
 ```bash
 export RELAY_TOKEN=$(openssl rand -hex 32)           # keep it: the PC and the console use the same token
 node tools/relay-server/server.js --port 8787 --data ./relay-data
+
+**Commit before you push a build.** `build.sh` embeds the commit and marks it `-dirty` when the tree is not clean,
+`runs.py` prints that in red letters, and such a run **cannot be quoted as a measurement** - it is not reproducible,
+because nothing records what was in the tree. An A/B on one dirty build is still internally valid (both arms are the
+same binary), but the figure has to be taken again on a clean build before it goes in the ledger, and the binary
+cannot be checked after the fact once it is overwritten. Cost of the lapse on 2026-11-01: four device runs
+(1793-1796) thrown away and queued again as 1797-1800.
 ```
 
 Put it behind HTTPS (for example Caddy as a reverse proxy) if it is reachable from the internet: the token travels in a
