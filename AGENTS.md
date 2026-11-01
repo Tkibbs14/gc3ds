@@ -88,12 +88,36 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    | a measurement that contradicts a recorded one | the old entry is **corrected in place, never deleted** (a `> **Correction, DATE...**` block under it), its REDESIGN_CANDIDATES status, and any file quoting the old number - `grep` for it |
    | an idea tried, parked or rejected | a REDESIGN_CANDIDATES entry with evidence, cost, status and "re-evaluate when" (rule 4), and AGENTS' "Open directions" if the ordering moved |
    | a new tool or option | its own `--help` / docstring, the `core/tools/` row of the repository map, the checks table if it is a check, and `docs/REMOTE_RUNS.md` for a job option |
+   | a new **instrument** (a counter, a census, a scan, a scoring rule) | rule 8: the quantity it shares with an existing instrument, and the two figures differenced in its first run - recorded wherever its result is quoted |
    | an instrument's meaning or a column's name | every doc that quotes its output, and the tool's docstring - a label that teaches the wrong reading is a bug (`port_cost.py`'s "building the context", 2026-10-30) |
    | a contributor-visible fact | `docs/CONTRIBUTOR_TASKS.md` (a task that is already done is worse than no task), `docs/TELEMETRY.md`, `CONTRIBUTING.md` |
 
    **Withdrawing a credit is normal and must be explicit.** When a recorded gain turns out to be an artifact, say so
    where it was recorded and say whether the option stays on - a withdrawn credit is not a rejected option
    (`--hlegd`, 2026-10-30).
+8. **Difference a new instrument against something that already exists, before believing it.** Every measurement in
+   this project arrives through an instrument someone wrote, and **an instrument's first result is the least
+   trustworthy number in the file**. On 2026-11-01 five of them were wrong on their first run, in five different
+   ways, and **every one was caught by a second, independent view of the same quantity - never by reading the code**:
+   - `--port-size-refused` **destroyed what it measured**: sizing a refusal meant executing the call, and
+     `gekko_run_call` never consults the hook, so the refused call's children vanished. Caught by a peer's run
+     showing 72,000 hook entries collapse to 1,476.
+   - the C56 scan **silently discarded the interesting cases**: a `mEntryTableSize > 64` guard threw away a quarter
+     of all calls, and they were the big buffers. Caught by differencing against the entry-point census, which said
+     6.3 mat packets a call where the scan said 1.8.
+   - `--port-softfloat`'s check was **vacuous**: it reported "0 differed" while the refusal had merely moved
+     downstream into `psq_copy`, so no compared call ever ran the new code. Caught by a counter that says the new
+     code *ran* (`drew N`), added because the J2DPicture port had already failed the same way.
+   - the pane walk's give-up reason was **mislabelled** "tev block" over 21 sites, and sized a whole open direction
+     from a bucket of unrelated causes. Caught by `otherTev` reading 0.
+   - `runs.py`'s scoring **attributed a device step to the code**: a batched old-against-new comparison became a
+     "-5.6% regression" and an eight-commit bisect. Caught by re-running the *new* build late.
+
+   So: **when you add an instrument, find a quantity it shares with an existing one and compare them in the first
+   run.** If no such quantity exists, make one - the census before the scan, `drew N` beside `differed 0`, an
+   entry-point count beside a structure walk. Two views that agree are evidence; one view is a hypothesis. And
+   **report the new instrument's figure next to the old one in the same log line** where you can, so the next reader
+   differences them without having to think of it.
 
 ## Repository map
 
