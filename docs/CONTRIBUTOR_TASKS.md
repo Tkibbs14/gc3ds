@@ -18,6 +18,17 @@ artifacts that way, and two ports that were "gains" were in fact losses. **Many 
 **What to do:** pick an entry, work out from its job numbers and options whether it used the walk (`--press`) or an
 A/B that recompiles, and say in an issue whether it is still trustworthy. No hardware: this is reading and arithmetic.
 **Verify:** quote the job numbers and the reasoning. If it needs a re-run, write the exact relay command.
+**This task has grown, and it is now the most productive seam in the project** (2026-11-01). It is not only walk
+results: **a switch's figure moves when the configuration around it changes**, and four re-tests in one evening all
+moved a recorded number - port bit 2 `-0.03% -> -0.94%`, bit 9 `-0.46% -> +0.08%`, `--psxyz` `-0.9% -> neutral`,
+`--dlcache` "no clear gain" `-> -1.05%`. Every entry in AGENTS' "built, off, measured without a clear gain" list was
+measured at a baseline that no longer exists, each re-test is four runs on code that already exists and is already
+exact, and roughly half the figures so far have moved materially. `--dlcache`'s re-test also produced a rule worth
+more than a gain: **a 98.8% cache hit rate still lost a point**, because the worker it serves is idle 70-96% while
+streaming 95,000 vertices a second through a 6 MB ring evicts core 0's working set from the shared 2 MB L2.
+**One caution:** some of that list trades exactness rather than only speed (`--fastfloat` makes float results
+not bit-exact), and those are the owner's call under rule 2, not a free default - do not spend runs on them
+expecting to turn them on.
 **Two more ways a recorded number can be wrong, both found on 2026-10-30, both checkable by reading:**
 - **A pooled A/B mean with its uncertainty as large as the effect.** The J3D display-list writers were adopted on
   "+5.17% (+- 5.08)". Pooled A/B means are the method C41 showed produces phantoms; `ab_phases.py` exists because of
@@ -44,6 +55,10 @@ prints one line a run; it should pool repeats of the same arm and print the mean
 claim can be told apart from a 0.3% spread (today's `OPT_FDIRECT` needed three pairs to settle exactly that).
 **What to do:** extend `runs.py` (and `clock_split.py`) to group logs given as `--arm name file1 file2 ...`.
 **Verify:** run it over the logs named in MEASUREMENTS' tables and show it reproduces the published means.
+**Two inputs measured since this was written** (2026-11-01), which a standard error has to respect: runs must be
+grouped **by launch rung** (`runs.py` already refuses to mix them) and the floor depends on how far apart the runs
+are - 0.11-0.15% for four adjacent runs in the heavy area against 0.25% for four over two hours. So the honest
+statistic is not one number per scene; it is per scene *and* per rung *and* sensitive to the gaps between runs.
 
 ### 4. Model a candidate before anyone spends console time
 **Why:** `core/tools/arm11_sched.py` models the ARM11's interlocks over the JIT's real output; several parked
@@ -198,5 +213,13 @@ on a scene that takes no input, with the `us per call` line from `# port 10s` be
 
 `docs/TELEMETRY.md` says what to submit and how a number is checked - the short version: the baseline and the change
 from **one session and one build**, two runs an arm, frames a second from a state that takes no input, with the log
-attached. The checks exist because the device drifts ~2% between days and builds move a baseline ~0.8%, so numbers
-from different sessions cannot be compared.
+attached. The checks exist because numbers from different sessions cannot be compared - **and as of 2026-11-01 we
+know more precisely why.** The old explanation, "the device drifts ~2% between days and builds move a baseline
+~0.8%", is superseded: the day-to-day figure is most likely the **launch memory rung** (C55 - the 2DS starts in one
+of five states, one of them ~5% slow, and the state changes only when a job chainloads a new build), and a rebuild
+of the *same* commit was measured moving each arm **0.43-0.57%**. So:
+- `runs.py` prints each run's rung and **refuses to compare across rungs**; `core/tools/rungs.py` prints the rung for
+  every log on disk, so an older entry can be checked without a device.
+- **Arms must be interleaved, not batched**, and adjacency is worth about a factor of two on the floor: four runs of
+  one configuration queued back to back span 0.11-0.15% in the heavy area, where four spread over two hours span
+  0.25%. A 0.2% claim is decidable with adjacent arms and is not decidable without them.
