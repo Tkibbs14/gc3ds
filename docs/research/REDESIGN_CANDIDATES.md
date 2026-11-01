@@ -1685,7 +1685,33 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 ## C49. Why switch effects are sub-additive - it affects every default decision (2026-10-30)
 
-- **Status:** parked on a measurement; **not a speed idea, a validity one.**
+- **FIRST CLEAN DATA POINT, and the pair ADDS (2026-11-01, jobs 1832-1839).** All three configurations of C53 and
+  `--port-softfloat` measured on **one build** (`787ed3743e11`), **one launch rung** (9.0 MB, C55), arms adjacent
+  and the order reversed, in TP's heavy area:
+
+  | configuration | runs | mean |
+  |---|---|---|
+  | both off | 7.068 / 7.071 / 7.075 / 7.076 | **7.0725** |
+  | C53 on, soft float off | 7.211 / 7.213 | **7.2120** |
+  | both on | 7.221 / 7.229 | **7.2250** |
+
+  C53 alone **+1.97%**, soft float alone at the post-C53 baseline **+0.18%**, the pair **+2.16%**.
+  **Composition predicts 1.0197 x 1.0018 = +2.15% and the pair delivers +2.16% - they add to within 0.01 points.**
+- **And the apparent sub-additivity was a cross-build artifact, which is probably this entry's real subject.** The
+  first attempt at this test (jobs 1828-1831) took the middle configuration from an *older* build and read the pair
+  as +2.19% against +2.51% predicted - "short by 0.34 points". That shortfall is **exactly** C53's own figure moving
+  between builds: +2.31% on `8aa6dc7`, **+1.97%** on `787ed374`, same scene and same rung. Each arm moved 0.43-0.57%
+  across the rebuild, which is larger than the effect being hunted.
+  **So the question this entry asks has to be asked of parts measured in the configuration they are being summed
+  in.** The recorded "+1.04% predicted, +0.36% delivered" of 2026-10-30 was assembled from parts measured at
+  different times; until it is re-run with every configuration on one build and one rung, it is not evidence of
+  sub-additivity - it may be the same artifact. **That is now the cheapest thing this entry needs**, and it would
+  partly dissolve it.
+- **The caveat on the new point:** one pair, one scene, one rung. Notably these two options touch the *same*
+  subsystem (the pane walk - soft float removes a give-up inside it), so if any pair should interact it is this one,
+  and it does not measurably. That is evidence against a general sub-additivity rule, not proof of its absence.
+- **Status:** parked on a measurement; **not a speed idea, a validity one.** The first clean point says the effect
+  may be smaller than recorded, or absent for options that do not share a cache budget.
 - **The unknown:** the four defaults of 2026-10-30, measured one at a time and then together on one build with two
   runs an arm, do not add up. Static Ordon: the parts predict **+1.04%**, the set delivers **+0.36%** (short by
   0.68 points). TP heavy area: the parts predict **-1.26%**, the set delivers **-0.17%** (short by 1.09). The ports

@@ -3026,6 +3026,45 @@ to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself
 `scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
 evidence available about what the step actually is, and the place for anyone investigating it to start.
 
+### C49's first clean test: two defaults ADD, and the shortfall was a cross-build artifact (jobs 1828-1839, 2026-11-01)
+
+All three configurations of C53 (`--port-picture` + `--port-walktext`) and `--port-softfloat`, on **one build**
+(`787ed3743e11`), **one launch rung** (9.0 MB), TP's heavy area, 180 s a run, arms adjacent with the order reversed:
+
+| configuration | runs | mean |
+|---|---|---|
+| both off | 7.068 / 7.071 / 7.075 / 7.076 | **7.0725** |
+| C53 on, soft float off | 7.211 / 7.213 | **7.2120** |
+| both on | 7.221 / 7.229 | **7.2250** |
+
+| gain | measured |
+|---|---|
+| C53 alone | **+1.97%** |
+| soft float alone, at the post-C53 baseline | **+0.18%** |
+| the pair | **+2.16%** |
+
+**1.0197 x 1.0018 = +2.15% predicted; +2.16% delivered. They add, to within 0.01 points.** Soft float also
+reproduces independently (+0.18% here against +0.20% on build `15598e0cffe4`, jobs 1797-1804), which
+cross-validates the set.
+
+**The first attempt at this test was wrong in an instructive way.** Jobs 1828-1831 measured only both-off and
+both-on on this build and took the middle configuration from an older one, reading the pair as +2.19% against
++2.51% predicted - "sub-additive by 0.34 points". That shortfall is **exactly** C53's own figure moving between
+builds: **+2.31%** on `8aa6dc7`, **+1.97%** on `787ed374`, same scene, same rung. Each arm moved 0.43-0.57% across
+the rebuild, which is *larger than the effect being hunted*. So the apparent sub-additivity was the rebuild.
+
+**What that means for C49.** Its recorded figure - the four defaults of 2026-10-30 predicting +1.04% in Ordon and
+delivering +0.36% - was assembled from parts measured at different times. Until it is re-run with every
+configuration on one build and one rung, it is not evidence of sub-additivity; it may be this same artifact, and
+re-running it is now the cheapest thing C49 needs. **The caveat on the new point:** one pair, one scene, one rung -
+though notably these two options touch the *same* subsystem (soft float removes a give-up inside the pane walk), so
+if any pair should interact it is this one, and it does not measurably.
+
+**Also note what C53's own number did:** it is recorded in this file as +2.31% in the heavy area and re-measures at
++1.97% two builds later. Both are right at their own build. A ledger entry is a measurement of a configuration, not
+a property of a change - which is the same thing C49, the C55 rungs and the re-pricing of CONTRIBUTOR_TASKS 9 each
+said from a different direction.
+
 ### The subtree targets re-ranked with C53 in place (job 1821, 2026-11-01)
 
 One profiled run of TP's heavy area at the new defaults, decoded with `stack_funcs.py` against zeldaret's symbol
