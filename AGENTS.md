@@ -398,6 +398,14 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   stubs, GX setters as stand-ins, black-light skipping (exact, kept: less worker time), a bigger
   job ring, a 128-entry GX queue, other early-split sizes, the L2C-310 prefetch offset, function memoization of the HUD
   (its inputs change every frame, C28).
+- **The sampler could not tell compiled code from the C it calls, until 2026-11-01** (jobs 1926-1927):
+  `jitsample.c` branched on `jit_in_run`, which stays 1 while a block calls into a port or a stand-in, so
+  **every port sample was counted as a compiled-code sample** - and `WH_HLE`/`WH_INTERP` were declared and
+  never assigned, so the report printed two buckets that could only read 0. Fixed: the ports and stand-ins
+  now read **`hle` 12.0-12.1% of core 0**, cross-checked against `port_cost.py`'s 10.46% plus ~1.14% of
+  stand-ins on the same run (~0.5 points apart, two wholly independent instruments). **So `jitcode_pct`'s
+  55.1% was never block code** - it included the ports - and `dispatch` at 7.6-8.6% holds the dispatcher and
+  little else, which is what C46's sizing is measured against.
 - **Core 0's whole budget, measured (job 1569, TP heavy area, today's defaults; MEASUREMENTS' job-1569 section):**
   **80.9%** JIT block code and the helpers blocks call, **9.65%** port C code (7.05% in `port_run`, which for a
   subtree port *is* the work, 2.61% in `port_commit`), **1.14%** stand-in C code, 0.6% `gxsync`, 7.4% not running

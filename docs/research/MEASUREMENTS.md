@@ -3109,6 +3109,48 @@ consistent than before (~1.0-1.2% against 0.5-1.6%), which is what a cleaner met
 These are upper bounds on what an exact version could get, not promises. C40's exact design (core 2 writes the
 mirror, since it already has the bytes) is unbuilt and is now the best-evidenced unbuilt idea on the list.
 
+### The sampler could not tell compiled code from the C it calls, and the ports were inside the wrong number (jobs 1926-1927, 2026-11-01)
+
+**Found by a code audit, not by a measurement**, and it had been true since the sampler was written.
+`jitsample.c:99` branched on `jit_in_run`, which is 1 for compiled code **and** for the C a block calls into - a
+port hook or a stand-in runs with it still set, because it is called from inside the block. So **every sample in
+`port_run`, `port_commit` or a stand-in was recorded as a compiled-code sample.** Two further facts made it
+invisible: `WH_HLE` and `WH_INTERP` were declared in `common.h:51` and **never assigned anywhere in the tree**, so
+the report printed two buckets that could only read 0.
+
+**The split, and its cross-check:**
+
+| | before (job 1908) | after (job 1927) |
+|---|---|---|
+| `dispatch` | 8.6% | 7.6-7.8% |
+| `hle` (ports + stand-ins) | *did not exist; read 0.0% on its first run* | **12.0-12.1%** |
+
+**`port_cost.py` on the very same run reads 10.46% of core 0 inside the ports**, and job 1569's budget puts
+stand-in C code at 1.14%: **11.6% against the sampler's 12.0-12.1%, two wholly independent instruments
+(a core-1 PC sampler and the ports' own `prof_clock` timers) agreeing to ~0.5 points.** That is the second view
+rule 8 asks for, and it is what says the new bucket is sound rather than merely new.
+
+**Three consequences.**
+1. **`jitcode_pct`'s 55.1% was never block code.** It included the ports' ~12%, so anything derived from it as
+   "time in compiled code" was over-counted by that much. The job-1569 line "80.9% JIT block code **and the
+   helpers blocks call**" was right to say "and the helpers"; the sampler's column was the one inviting the wrong
+   reading.
+2. **The `dispatch` bucket was never contaminated by ports** - they never reached it. I wrote the opposite in C46
+   for about twenty minutes on the strength of the code audit, before this run showed the ports landing in the
+   compiled-code share instead. So **C46's sizing stands on its own footing**: 41,134 indirect-table misses a
+   second at the 480-820 cycles on record is 2.5-4.2% of core 0, against a `dispatch` bucket of 7.6-8.6% that is
+   now known to hold the dispatcher and little else.
+3. **The whole episode is three revisions of one claim in one hour**, each from a different instrument, and the
+   only one worth keeping is the measured one. The lesson is narrower than "be careful": a code audit tells you
+   what a program *can* attribute, never what it *does* - that needs the run.
+
+**And a free confirmation of `--gpruns` from a third instrument.** The pane walk's commit, by its own timers, fell
+from **345.98 us a call** (job 1878, before `--gpruns`) to **171.18 us** (job 1927, after) - **halved** - and the
+ports' total fell from 12.64% to 10.46% of core 0. `--gpruns` measured +0.47% in frames a second, so ~2.2 points
+of core 0 freed turned into ~0.5% of frames. **That ratio is worth remembering when sizing anything by core-0
+share:** freeing core-0 time does not convert to frames one for one, because the GX thread is only 13-16% behind
+(DIRECTION_REVIEW's "two walls").
+
 ### C48 answered, and its `FAST_BITS` sweep says keep 16 - with a 1.7-point rung trap on the way (jobs 1916-1925)
 
 **The probe counter, on hardware at last** (`--indstat`, built 2026-10-31 and "waiting on a device build"; job

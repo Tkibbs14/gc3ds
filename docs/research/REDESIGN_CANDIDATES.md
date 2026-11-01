@@ -1789,19 +1789,17 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 >
 > So indirect-table misses cost **2.5-4.2% of core 0** at the per-miss figure on record, which is this entry's
 > size and stands on the miss count alone.
-> **What they do *not* do is explain the sampler's 8.6-8.7% `dispatch` bucket, and I claimed they did for about
-> twenty minutes.** A code audit the same hour found the reason that comparison is invalid: **`WH_HLE` and
-> `WH_INTERP` appear only in the enum declaration in `common.h:51` and are never assigned anywhere in the tree**,
-> so every port and stand-in C call is charged to `dispatch` along with the dispatcher loop. The bucket is
-> `dispatcher + port_run + port_commit + stand-ins + the memory slow stubs`, and `jitsample.c` prints two buckets
-> named "hle" and "interp" that can only ever read 0. So the bucket cannot be used to price a dispatcher return,
-> and the ~1,600-cycles-per-entry figure derived from it is not a cost at all - it is an artifact of the
-> mis-attribution.
-> **The fix is one line at each entry point** (`g_where = WH_HLE` around `port_run_hook` and the `hle_*` entries,
-> restoring the previous value as `jit.c:6479` already does), it needs no new instrument, and `PortStats`' own
-> per-hook timers are the independent second view rule 8 asks for. Until it is run, **two explanations for that
-> bucket are live and only one can be mostly right**, which is exactly the state rule 8 says to resolve by
-> measurement rather than by argument.
+> **And the bucket it should be compared against is now clean, after a detour worth recording.** A code audit found
+> that `WH_HLE` and `WH_INTERP` were declared in `common.h:51` and never assigned anywhere, so I wrote here that
+> the `dispatch` bucket was contaminated by port and stand-in C code and that this entry's arithmetic could not be
+> set against it. **That was wrong, for a reason only a run could show**: `jitsample.c:99` branched on
+> `jit_in_run`, which stays 1 while a block calls into C, so port samples were counted as *compiled code* and
+> never reached the bucket at all. With the sampler fixed (jobs 1926-1927) the ports appear as **`hle` 12.0-12.1%**
+> - cross-checked against `port_cost.py`'s 10.46% plus ~1.14% of stand-ins on the same run, agreeing to ~0.5
+> points - and `dispatch` reads **7.6-7.8%**, holding the dispatcher and little else.
+> So this entry's sizing stands as first written: **2.5-4.2% of core 0 in indirect-table misses**, now against an
+> uncontaminated bucket of 7.6-8.6% rather than a contaminated one. The claim went through three versions in an
+> hour and only the measured one survived; **a code audit says what a program can attribute, never what it does.**
 >
 > **The trade to resolve, and it is arithmetic before it is a build.** ~8 instructions saved on each of ~670,000
 > returns a second is ~5.4 M host instructions a second against core 0's ~217 M - about 2.5% - *plus* whatever
