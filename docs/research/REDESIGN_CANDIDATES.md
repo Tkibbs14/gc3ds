@@ -593,6 +593,17 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   1840-1848): bit 2 **-0.03% -> -0.94%**, bit 9 **-0.46% -> +0.08%**. Same kind of code in the same subtree, moving
   a point apart in opposite directions, so "the baseline moved" does not explain it. Bit 2's cost as an entry hook
   going from nothing to about a point is a direct strengthening of this entry's argument.
+- **The scan's one over-estimate, checked and dismissed.** The scan tests vtables only, so it does not model the
+  refusals *inside* the matrix loads it would delegate to - and bit 2's port refuses outright when a differed
+  texture matrix is present (`give_up(c, 7)`), rather than reproduce `J3DDifferedTexMtx::loadExecute`, which is
+  1,532 bytes of matrix maths. C56 inherits that refusal, so 90.5% could have been an over-estimate.
+  **It is not: bit 2 reads 74,872 taken against 8 not taken in a 10 s window (job 1840), and the 8 are float
+  refusals, not texgen ones - zero differed-texmtx refusals in 74,880 calls.** So the inherited refusal fires about
+  once in ten thousand and the coverage figure stands. Checked from a log already on disk rather than assumed in
+  either direction.
+  That count also reconciles two instruments: 74,872 PNGP calls against the census's 10,160
+  `J3DShapeMtxConcatView::load` is right, because PNGP is the inner per-matrix function - ~10,160 from the single
+  path plus ~64,700 from the multi path's loop over about six matrices a call.
 - **The instrument fault worth keeping** (2026-11-01): the scan's first version read "66.7% taken, 1.8 mat packets a
   call" because a `mEntryTableSize > 64` guard rejected a quarter of all calls as unreadable - and they were the big
   buffers. The entry table averages **56** buckets, *below* that guard, so **the mean hid the tail**: a guard has to
