@@ -1490,6 +1490,47 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** a game shows many `made again after a stamp` with `# nskeep 10s` "unchanged" high (the
   switch's case), or the GX thread limits a scene that converts after stamps.
 
+## C58. ARM predication for guest hammocks - absent from the documents, already in the code, and not a lever (2026-11-01)
+
+- **Where it came from.** An audit of the twelve strategy documents found "predicat" and "conditional execution"
+  returning **zero hits across all of them**, and flagged it as the highest-value genuinely-absent technique: ARMv6
+  predicates nearly every instruction, the host has no Thumb-2 and no `MOVW`, a taken branch costs ~4 cycles, and
+  the project's flagship JIT proposal (H1, the hammock) is specifically about short forward conditional branches.
+  Predicating a 1-6 instruction body instead of branching over it would remove the branch *and* shrink hot code,
+  which is the one thing `DIRECTION_REVIEW` says decides everything.
+- **Status: rejected, and the premise was wrong in two ways. Cost: three `jitbench.py` runs, no device time, no
+  disc image.** `core/tests/jit/bench/intloop.S` already contains the shape (`cmpwi 0,0; beq skip;` over a
+  four-instruction body) and is the costliest integer case at **4.000 hot ARM words a guest instruction**.
+  Disassembling what the JIT emits for it settles both halves:
+  1. **The JIT already spans the forward branch.** In the steady-state block the `beq` at +0xb4 is an *internal*
+     ARM branch to the join at +0xf4, with no block boundary and no register-cache flush. So H1's central
+     proposal - "a guest `bc` becomes an internal ARM branch" - is already done for this shape, which also means
+     the boundary cost predication would have removed is not being paid.
+  2. **The JIT already predicates, in two places.** The CR field materialisation is `bic` plus three predicated
+     `orr` (`orrlt` / `orrgt` / `orreq`), and the skipped path's cycle charge is a predicated `addeq`. So
+     "predication is absent" is true of the **documents** and false of the **code** - a doc gap, not a lever.
+- **And predicating the body itself loses, for a reason that is arithmetic.** The four guest instructions compile
+  to **14 ARM words** (+0xb8 to +0xf0). Predication makes every one of them issue unconditionally, so it trades a
+  1-word branch and its ~4-cycle bubble for 14 always-executed words. ARM predication pays at roughly one to four
+  instructions of body; at fourteen it is a clear loss, and nothing in the emitted code suggests TP's hammocks are
+  shorter than this one.
+- **The general lesson, which is the part worth keeping:** *a technique missing from the documents is not
+  necessarily missing from the code.* This one cost three offline runs to find out because `jitbench.py` can
+  disassemble the real output without a disc image - and that is the cheapest check in the project for any codegen
+  claim. **Do the disassembly before writing the entry, not after.**
+- **One real observation from the same disassembly, with its size, so it is not lost:** `SETEND` is used only on
+  the **float** paths (`jit.c:5948-5982`, around `vldr_s` / `vldr_d` / `vstr_d`, because VFP has no `rev`), while
+  every integer access pays `ldr` + `rev`. In `intloop`'s hot block that is **7 of 44 words, ~16%**, and
+  `TIMING_MODEL_PLAN` prices `ldr + rev` as a dependent chain at **6.0 cycles against 4.0 for `ldr` alone**.
+  Batching adjacent integer accesses under one `setend be` / `setend le` pair would save words and cycles - but a
+  *single* access under SETEND is 3 words against 2, so it only pays where two or more accesses are adjacent, and
+  the JIT's scheduler currently separates loads from their `rev`s. **Not proposed as a next step**: C13 and C44
+  established that no peephole reaches the -15 to -20% of hot words that +10% of core 0 would need, and everything
+  measured there came in at 0.3-2%. 16% of one synthetic block is not 16% of real hot words.
+- **Re-evaluate when:** someone measures the body-length distribution of TP's real forward branches (`hammock.py`
+  already walks them and would only need to report it; it needs a PC profile, so a disc image) and finds a large
+  share at one to four instructions. Without that number this stays closed.
+
 ## C57. The pipe path per byte: a run of bursts at once, then the ring copy (2026-11-01)
 
 - **Status: part built and ON by default (`--gpruns`), part open.**
