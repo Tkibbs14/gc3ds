@@ -3026,6 +3026,35 @@ to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself
 `scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
 evidence available about what the step actually is, and the place for anyone investigating it to start.
 
+### Re-testing the off-by-default switches at the new default (jobs 1851-1858, 2026-11-01)
+
+Tonight showed a switch's figure moving by a point when the configuration around it changes (port bit 2
+-0.03% -> -0.94%, bit 9 -0.46% -> +0.08%), and the whole "built, off, measured without a clear gain" list was
+measured at baselines that no longer exist. So it is worth re-running: four runs a switch, arms adjacent and
+reversed, TP's heavy area, build `e91e46f4a0d6`, 9.0 MB rung.
+
+| switch | recorded | re-measured | verdict |
+|---|---|---|---|
+| `--psxyz` (the cXyz operator stand-ins) | heavy area **-0.9%** | on 7.195 / 7.196, default 7.199 / 7.185 = **+0.05%** | **neutral** - the off arm's own spread is 0.19%, wider than the difference, so by rule 3 this is not a result. The -0.9% no longer holds; it stays off because neutral is no reason to add native code |
+| `--dlcache` (the display-list vertex cache) | "no clear gain" | on 7.139 / 7.128, default 7.208 / 7.210 = **-1.05%** | **a clear loss**, both on-runs below both off-runs. It stays off, now with a figure |
+
+**`--dlcache` is the interesting one, because the cache works and costs anyway.** Its own counters in the same run:
+the **worker's** cache gets **17,464 hits/s against 216 misses, a 98.8% hit rate, serving 94,736 vertices/s**, while
+the **GX thread's cache sees no lookups at all** (0 hits, 0 misses, 0 inserts). So the cache does exactly what it was
+designed to do and the emulator is a point slower for it.
+**Why, and it is a lesson rather than a curiosity:** the vertex worker is idle 70-96% of the time (the joint-state
+line), so work taken off it buys nothing - while streaming ~95,000 vertices a second through a 6 MB ring on another
+core does what FINDINGS already prices at **-6% to core 0**: it evicts core 0's working set from the shared 2 MB L2.
+**A cache that serves another core's idle work can still cost core 0 through the shared L2**, and a hit rate is
+therefore not evidence that a cache is worth having. That applies directly to C1 (GPU-resident vertex data for
+repeated display lists) and is worth holding in mind for C56.
+
+**On the seam itself:** three of three re-tests so far have moved a recorded figure (bit 2 worse, bit 9 and `psxyz`
+better, `dlcache` from vague to a clear loss). None is a gain yet, but each removes a stale number, each costs four
+runs on code that already exists and is already exact, and the remaining list is long - `vwmem`, `pipeps`, `icbi`,
+`qbig`, `feeddirect`, `cmdpld`, `crstub`, `befloat`, `calls`, `fastfloat`, `traces`, `steal`, `sched off`,
+`--g2 on`, `--nskeep`, `--tier-nursery`.
+
 ### Port bit 2 re-measured at the new default: -0.03% becomes -0.94% (jobs 1840-1843, 2026-11-01)
 
 `--port-hooks 247` against the default 243 - the J3DShapeMtxConcatView PNGP matrix load as a standalone entry hook -
