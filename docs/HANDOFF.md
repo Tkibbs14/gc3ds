@@ -45,10 +45,21 @@
 > favour** - core 0 waited on the GX thread 0.4-1.2% then, so 1.3-2.5 points off GX busy had nowhere to go, where
 > now it does. **C36's "re-evaluate when" said exactly that** ("whenever the GX thread becomes the limit again
 > (core 0 gains)"), so this is the first payout from a trigger on that list and the best argument for rule 4 so
-> far. **Not a default yet**: it is GX-side work and a cloud session must not size GX-side work, and `--g2 check`
-> wants re-running on the current build.
+> far.
+> **And then the breadth runs reversed it, which is the part to read.** Exactness re-confirmed on the current
+> build (`--g2 check` **0 differed** over ~5,400 replays a window across 13 windows, job 1883; `--g2 plant`
+> 845-936, job 1884). But **static Ordon reads -0.28%** (jobs 1885-1888: on 10.373 / 10.361 against off
+> 10.399 / 10.394, rank-separated the wrong way, on-arm spread 0.12%). **Ordon replays 90.5% of list calls against
+> the heavy area's 68.5% and loses by it** - more replay is not better, because where the GX thread already has
+> slack (idle 12-13% in gameplay) the decode saving has nowhere to go while the replay's own work and cache
+> footprint land on the core that *is* the limit. That is `--dlcache`'s lesson from the other side: a hit rate is
+> not evidence a cache is worth having, and here the scene with the better hit rate is the one that loses.
+> **Status: scene-dependent, net ~+0.1% across TP's two scenes, stays off.** And the process lesson is mine: I
+> wrote "the seam's first real gain" from one scene, which is exactly what rule 3 says not to do. The heavy-area
+> number stands; the word "gain" did not.
 >
-> **The re-test seam closed at seven: six moved-or-confirmed figures and one gain.** `--nskeep` reads +0.03% in
+> **The re-test seam closed at seven: seven moved-or-confirmed figures and no clean gain** (g2 looked like one for
+> two hours; see above).** `--nskeep` reads +0.03% in
 > TP's heavy area against a 0.25% off-arm spread - not a result, and **not a test of its claim either**, which is
 > Mario Party 4, where this session's toolchain is -4.7% with `gxvtx_pct` doubled. It stays parked for a stated
 > measurement limit. The narrower rule worth keeping: **re-test the entries recorded as "no change", not the ones

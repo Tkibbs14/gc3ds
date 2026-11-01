@@ -62,12 +62,20 @@ def score(path, skip, keep_stolen=False):
     # two runs with different values here are not comparable, whatever else matches, and the arms of an A/B that
     # straddle the step are measuring the state and not the change.
     heap = ''
+    # A log holding more than one run. `relay.sh log` appends to an existing file, so fetching the same job twice
+    # leaves two runs' rows in one log - job 1887 on 2026-11-01 read 24 windows where every other run read 12, and
+    # scored identically only because the two copies were the same run. Two *different* runs concatenated would
+    # score as one and silently average them, so the second header is an error, not a note.
+    revs, nbuild = [], 0
     for line in open(path, encoding='utf-8', errors='replace'):
         if line.startswith('# heap: largest malloc block '):
             heap = line.split('block', 1)[1].strip()
             continue
         if line.startswith('# build: gc3ds '):
             rev = line.split('gc3ds', 1)[1].strip()
+            nbuild += 1          # a single run writes this header exactly once
+            if rev not in revs:
+                revs.append(rev)
             continue
         if line.startswith('# card:') and 'LOW' in line:
             low_card = True      # a full card truncates runs and fails build downloads (2026-10-30)
@@ -140,7 +148,14 @@ def score(path, skip, keep_stolen=False):
         # is not reproducible and must not be quoted as a measurement.
         + ('' if not rev else ('  [%s]' % rev if 'dirty' not in rev else
                                '  *** build %s: uncommitted changes, this run cannot be tied to source ***' % rev))
-        + ('' if not heap else '  heap %s' % heap))
+        + ('' if not heap else '  heap %s' % heap)
+        # One log, two runs (see the `revs`/`heaps` comment above). Loud, because the scores it prints are an
+        # average of runs the reader thinks is one run.
+        # Counted, not de-duplicated: two runs of the *same* build concatenated is the dangerous case and the
+        # one that actually happened, and distinct values would not have seen it.
+        + ('' if nbuild < 2 else
+           '  *** THIS LOG HOLDS %d RUNS (builds %s): delete it and fetch the job again ***'
+           % (nbuild, '/'.join(revs) or '?')))
 
 
 def selftest():
@@ -149,9 +164,11 @@ def selftest():
     import os
     import tempfile
 
-    def write(path, rows, shots, med=803.0, heap=None):
+    def write(path, rows, shots, med=803.0, heap=None, rev=None):
         with open(path, 'w') as f:
             f.write('# run synthetic\n')
+            if rev:
+                f.write('# build: gc3ds %s\n' % rev)
             if heap:
                 f.write('# heap: largest malloc block %s MB\n' % heap)
             f.write('real_s,emu_s,speed_pct,fields_s,pmu_mcyc\n')
@@ -229,8 +246,23 @@ def selftest():
         print('selftest: two logs from the SAME memory state were wrongly called out'); bad += 1
     if 'heap 7.1 MB' not in score(pa, 80):
         print('selftest: the heap state is missing from a log that reports one'); bad += 1
+
+    # Two runs concatenated into one log, same build - what `relay.sh log` does when a log already exists, and
+    # what job 1887 did on 2026-11-01. The planted fault is the dangerous one: identical builds, so de-duplicating
+    # the header values would not see it.
+    pd_ = os.path.join(d, 'relay_two_runs.csv')
+    p1 = os.path.join(d, 'relay_one_run.csv')
+    write(p1, rows, shots=set(), heap='7.1', rev='abc123abc123')
+    with open(pd_, 'w') as f:
+        f.write(open(p1).read())
+        f.write(open(p1).read())
+    if 'HOLDS 2 RUNS' not in score(pd_, 80):
+        print('selftest: a log holding two runs of the same build was not called out'); bad += 1
+    if 'HOLDS' in score(p1, 80):
+        print('selftest: a single-run log was wrongly called a concatenation'); bad += 1
+
     print('runs.py selftest: %s' % ('FAILED' if bad else 'ok (steal removed, busy scene kept, shot window dropped, '
-                                                        'mixed memory states called out)'))
+                                                        'mixed memory states called out, concatenated log caught)'))
     return 1 if bad else 0
 
 

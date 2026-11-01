@@ -194,7 +194,7 @@ on the console.
 | Translated lists (`g2.c`, fifo.c `g2_replay`) | PC, TP title spans: `G2=1` gives the state hash and last frame of G2 off; `G2=check` 0 differed; `G2=plant` must differ. 2DS: `--g2 check` 0 differed, `--g2 plant` differs |
 | Native library ports (`port_j2d.c`) | PC: `PORT_CHECK=1` over TP's title states (0 differed) and `PORT_CHECK=plant` (every checked call must differ); 2DS: `--port check` in the scenes the port runs in (the minimap and HUD text are not in the PC states) with 0 differed; hash every guest function the port follows (`core/tools/porthash.py` into `port_j2d_hashes.inc`, code only: run-time tables make the ports switch off); calibrate `kInsScale` from check mode's instructions per call. **A session with no disc image cannot run `porthash.py`: record the row with hash `0ull`, never a guess.** A zero row is treated exactly as a mismatch - every port off, so it can never be the weaker check - and the console publishes the hash it computed as a paste-ready `# port hashes` line (one short run fills them in; that build has no ports and must not be used for speed) |
 | The ports' give-up histogram (`port_j2d.c` `why_line`) | `GC3DS_PORTWHY_SELFTEST=1 core/build/gcemu`, also run by `run_tests.sh`: it cannot be exercised without a disc image (the ports only hook TP's code), so the histogram has its own check - a repeated line increments its own slot rather than taking a new one, the slots fill in order, and give-ups past them are counted in `other` rather than lost. Planted bugs that must fail it: a repeated line taking a new slot, and the overflow dropped. The thing it protects is that **`# port give-ups 10s` says which line refused**: the reason codes are coarse (reason 5 has 21 sites and its old "tev block" label was sizing the top open direction from a bucket of unrelated causes) |
-| Measurement tools (`runs.py`) | `python3 core/tools/runs.py --selftest`: a synthetic log with a planted steal must be recovered exactly, a merely busy scene must **not** be filtered (an absolute threshold dropped half a tp850 run and kept only its easiest seconds - that mistake has its own planted test), and a frame window containing a screenshot must be dropped. |
+| Measurement tools (`runs.py`) | `python3 core/tools/runs.py --selftest`: a synthetic log with a planted steal must be recovered exactly, a merely busy scene must **not** be filtered (an absolute threshold dropped half a tp850 run and kept only its easiest seconds - that mistake has its own planted test), a frame window containing a screenshot must be dropped, two logs from different launch memory states must be called out, and **a log holding two runs must be called out** - `relay.sh log` appends, so fetching a job twice concatenates them and the scores silently become an average of two runs (job 1887, 2026-11-01; its planted test uses the same build in both halves, because de-duplicating the header values would not have seen it). |
 | **Any change at all** | `python3 core/tools/docs_stale.py` (rule 7: headline speeds agree across AGENTS and README, one build id with a not-comparable note, frames against `speed_pct`, every option the docs name is really parsed, every `CNN` referenced exists and every shelved one keeps its trigger). Mechanical only - rule 7's table is the part done by hand. `--selftest` plants a fault per check. |
 | 3DS host code | `bash core/host3ds/build.sh` with no new warnings. Without devkitARM (a cloud session), `bash core/tools/host3ds_syntax.sh` first: it compiles 8 of the 15 files `-fsyntax-only` against the stubs in `core/tools/stub3ds/` and catches plain C mistakes (on 2026-10-30 a `double tot` declared inside an `if` block broke a build and cost a device session). It is not a build, and never replaces one before a relay push. |
 
@@ -343,12 +343,15 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   C48):** regions of executed code with calls inlined (`--tier`, on: Wind Waker
   +7.2%, TP heavy -0.9%), textures re-checked by page stamps (`--texfast 2`, on: Mario Party 4 +4.2%, TP +0.6-0.9%),
   EFB copies hashed only when reused (`--copystamp`, on: TP +0.7-0.9%), the J2D pane walk (on: Ordon +2.2%). Built, off:
-  pre-decoded display lists (`--g2 on`, exact - **and its "no speed change" is withdrawn: TP's heavy area reads
-  +0.53% at the current default**, jobs 1867-1870, rank-separated with a 0.01% on-arm spread. The old reading came
-  from the pre-filter method with `--profile on`, *and* the baseline moved in g2's favour: core 0 waited on the GX
-  thread 0.4-1.2% in October, so 1.3-2.5 points off GX busy had nowhere to go, where now it does. C49's interaction
-  with the sign positive for once. Not a default yet - this is GX-side work and the cloud toolchain must not size
-  GX-side work), `--nskeep`
+  pre-decoded display lists (`--g2 on`, exact - re-checked on the current build, 0 differed over ~5,400 replays a
+  window, plant 845-936 - and **scene-dependent rather than neutral: TP's heavy area +0.53%, static Ordon
+  -0.28%**, both rank-separated with on-arm spreads of 0.01% and 0.12%, jobs 1867-1870 and 1885-1888. October's
+  "no speed change" came from the pre-filter method with `--profile on`, and in the heavy area the baseline has
+  also moved in g2's favour (core 0 waited on the GX thread 0.4-1.2% then, so 1.3-2.5 points off GX busy had
+  nowhere to go). **Ordon loses while replaying more** - 90.5% of list calls against the heavy area's 68.5% - which
+  is `--dlcache`'s lesson from the other side: where the GX thread already has slack, the saving has nowhere to go
+  and the replay's own work lands on the core that is the limit. Net ~+0.1% across TP's two scenes, **stays
+  off**), `--nskeep`
   (Mario Party 4 +1.9%, owner's call), fault mode (`--faultmem`, +2-5% but crashes the kernel in svc 0x94), and the
   region tier's nursery (`--tier-nursery`: even in the heavy area, Ordon -1.9%, rejected with its relocation kept as a
   tool).

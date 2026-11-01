@@ -1395,6 +1395,19 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 > current default - a default candidate pending `--g2 check` on the current build and a figure from the owner's
 > toolchain** (it is GX-side work, which a cloud session must not size). **Re-evaluate when:** that confirmation
 > comes in, or core 0 gains again - the trigger has proven itself and stays.
+>
+> > **Amended the same day, by the breadth runs that should have come first: it reverses in static Ordon.**
+> > Exactness re-confirmed on the current build (`--g2 check` 0 differed over ~5,400 replays a window across 13
+> > windows, job 1883; `--g2 plant` 845-936, job 1884). Static Ordon, two runs an arm adjacent and reversed (jobs
+> > 1885-1888): on **10.373 / 10.361** against off **10.399 / 10.394** = **-0.28%**, rank-separated the wrong way.
+> > **Ordon replays 90.5% of list calls against the heavy area's 68.5% and loses by it** - more replay is not
+> > better, because where the GX thread already has slack the decode saving has nowhere to go while the replay's
+> > own work and cache footprint land on the core that is the limit. `--dlcache`'s lesson from the other side.
+> > **Status: built, exact, off, scene-dependent (+0.53% heavy / -0.28% Ordon, net ~+0.1% across TP), not a
+> > default.** The trigger still paid out - it correctly predicted that GX-side slack would become worth
+> > something - it just did not predict that the scene with more slack would be the one that loses.
+> > **Re-evaluate when:** the GX thread is the limit in a scene that matters (Mario Party 4's minigame, the title
+> > cutscene), which is a narrower and more testable version of the old trigger.
 
 ## C37. Textures re-checked by page stamps instead of a once-a-frame re-hash (2026-10-24)
 

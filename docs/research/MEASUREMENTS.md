@@ -3074,12 +3074,13 @@ losses are hygiene work; a contributor should know which is which (CONTRIBUTOR_T
 > `--g2 on` is in the same block (jobs 1867-1870) and recorded below.
 > **And `--g2 on` broke the streak: it is +0.53% in TP's heavy area** (on 7.247 / 7.246 against off 7.206 / 7.210,
 > complete rank separation, on-arm spread 0.01%), recorded in full as a correction under the G2a section below.
-> So the final count is **seven re-tests, six moved-or-confirmed figures and one gain** - and the verdict above
-> needs amending rather than hardening. The seam is not a reliable source of speed, but it is not barren either,
-> and the one entry that produced a gain is the one that was *not* recorded as a loss. **That is the rule worth
-> keeping: re-test the entries recorded as "no change", not the ones recorded as losses.** A loss that moves is
-> usually still a loss; a null result taken by a method that has since been replaced is a different thing
-> entirely, and g2's was taken with the pre-filter method *and* at a baseline that has since moved in its favour.
+> So the count is **seven re-tests, seven moved-or-confirmed figures and - after the breadth runs - no clean
+> gain**: g2's +0.53% in the heavy area is real but **-0.28% in static Ordon**, so it is scene-dependent rather
+> than a default (the second correction under G2a has it). The verdict above therefore stands, with one amendment
+> that is worth more than the gain would have been: **re-test the entries recorded as "no change", not the ones
+> recorded as losses, and when one moves, get a second scene before calling it a gain.** A loss that moves is
+> usually still a loss; a null taken by a superseded method at a baseline that has since shifted is a different
+> thing, and g2 was both - and still did not survive breadth.
 Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`, `crstub`, `calls`, `traces`,
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
@@ -4204,6 +4205,23 @@ they vary ~12%, which is the sampled profile clock's own spread and the reason t
 > says must not be used to measure GX-side or vertex work. The figure is almost certainly real in direction (g2
 > removes the decoder's parse, which gcc 16 does not change the existence of) but its size needs the owner's
 > toolchain, and `--g2 check` needs re-running on the current build before anything is turned on.
+>
+> > **Second correction, two hours later, to my own correction: it reverses in static Ordon and so it is not a
+> > default.** Exactness first, on the current build `5f2ac3808fe7`: `--g2 check` **0 differed** over ~5,400
+> > checked replays a window across 13 windows (job 1883), `--g2 plant` 845-936 differed a window (job 1884). Then
+> > static Ordon, two runs an arm adjacent and reversed (jobs 1885-1888, 8.9 MB rung): on **10.373 / 10.361**
+> > against off **10.399 / 10.394** = **-0.28%**, complete rank separation the wrong way, on-arm spread 0.12%,
+> > off-arm 0.05%.
+> > **So `--g2 on` is +0.53% in TP's heavy area and -0.28% in static Ordon**, and the mechanism fits: Ordon replays
+> > **90.5%** of list calls against the heavy area's 68.5%, so it does *more* replaying and loses by it. More
+> > replay is not better - where the GX thread already has slack (idle 12-13% in gameplay), the decode saving has
+> > nowhere to go and the replay's own work and cache footprint land on a core that is the limit. That is the
+> > `--dlcache` lesson again from the other side: **a hit rate is not evidence a cache is worth having**, and here
+> > the scene with the better hit rate is the scene that loses.
+> > **The honest status: scene-dependent, net roughly +0.1% across TP's two scenes, stays off.** And the process
+> > lesson is mine: I wrote "the seam's first real gain" from one scene, which is what rule 3 tells you not to do
+> > - measure against the current defaults *in more than one scene* before calling something a gain. The
+> > heavy-area number stands; the word "gain" did not.
 - **Where a converted run's time goes (jobs 1162, 1164, `# shapes phases 10s`, 1 `ns_draw` in 16 timed, GX thread
   ms/s):**
 
