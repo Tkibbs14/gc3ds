@@ -488,7 +488,7 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** the speed runs land. If the fold does not pay despite replacing 7.6x the guest work a call,
   that is a result about subtree ports in general and belongs here with its numbers, not a reason to retry blind.
 
-## C55. The 2DS has two launch memory states ~5% apart, and every log has said so all along (2026-11-01)
+## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 
 - **The measurement.** Static Ordon at unchanged defaults read **10.020** frames a second at ~00:33 (job 1766) and
   **10.592** at ~01:3x on the identical commit (job 1781). Seven commits were built and run across that boundary and
@@ -527,6 +527,21 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   `pmu_mcyc` 804 and the same `clock MHz` header on both sides. **And the two states print an identical set of
   report-line types**, so nothing the program knows about is missing. The 1.9 MB is real and unexplained; it may be
   a symptom of the same system state rather than the cause of the slowdown.
+- **It is a ladder, not two states, and it is set at launch** (2026-11-01, the logs of jobs 1740-1784). Three values
+  appear - **7.1, 8.6 and 9.0 MB** - and in the heavy area, over profiled runs of one configuration, speed falls
+  monotonically as free heap rises: 7.1 -> 23.96 / 23.34, 8.6 -> 23.84 / 23.81 / 23.44, 9.0 -> 23.13 / 22.69. A
+  monotone relation over three levels is an argument for a mechanism rather than a coincidence of two samples.
+- **The state is fixed when the process starts and inherited by every job that reuses it** (a peer's reading of the
+  launch path, confirmed from the `# relay:` headers). A job either downloads a build and restarts into it through
+  Luma's `hb:ldr` - a self-chainload - or reuses the resident process. The heap value changes **only** at a
+  chainload: job 1759 chainloaded into 9.0 and the eight jobs after it (1760-1767, which include all of C53's arms)
+  inherited 9.0; job 1768 chainloaded into 7.1 and 1769-1770 inherited 7.1. **A chainload does not pick a state
+  deterministically** - 1753, 1757, 1759 and 1774 landed in 9.0 while 1776-1784 all landed in 7.1 - which looks
+  like fragmentation accumulating across successive self-chainloads rather than anything a run does.
+- **So the practical rule, usable today:** a measurement series wants **one process**, or at least one heap value,
+  and a fresh launch by hand before a series is the cheapest way to get a known starting point. `runs.py` enforces
+  the weaker version by refusing to compare across values. **This is also the most likely identity of the project's
+  "~2% day drift" lore** - a series that chainloads part-way through moves between rungs.
 - **Where to look next, given all that.** Both hottest regions are identically placed and the clock matches, so the
   difference is not in *where* the big data sits. What remains: a system-level memory configuration that changes
   both the app's heap size and something performance-relevant (Luma's extended-memory mode, or whatever else was
