@@ -3,11 +3,13 @@
 #include "../common.h"
 
 typedef struct Gekko Gekko;
-enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_J3DMULTI, PORT_TEXT, PORT_N };  // the hooked guest functions:
+enum { PORT_MATERIAL, PORT_PICTUREEX, PORT_J3DPNGP, PORT_FLUSHPRIM, PORT_LIGHTS, PORT_PANEWALK, PORT_MATDIFF, PORT_REINITGX, PORT_DECO, PORT_J3DMULTI, PORT_TEXT, PORT_J3DDRAW, PORT_N };  // the hooked guest functions:
 // J2DMaterial::setGX, J2DPictureEx::drawSelf, J3DShapeMtxConcatView::loadMtxConcatView_PNGP, __GXSendFlushPrim,
 // J3DColorBlockLightOn::diffLightObj, J2DPane::draw (the pane walk over a subtree), J3DMaterial::diff (the material's
 // display-list diff, every block), J3DSys::reinitGX, the minimap's renderingDecoration,
-// J3DShapeMtxMultiConcatView::load (a skinned shape's matrices)
+// J3DShapeMtxMultiConcatView::load (a skinned shape's matrices), J3DDrawBuffer::drawHead (the J3D packet-draw
+// subtree, C56 - **the scan only so far: it tests whether the subtree is the port's and then declines**, so the
+// coverage is measured through the port's own read path before any drawing code is written)
 typedef struct {
     u64 calls, refused, pipe, checked;
     u64 refusedBy[8];     // by reason (port_j2d.c give_up)
@@ -51,6 +53,7 @@ extern bool g_portPictureDraw;
 // `--port-hooks` bit 10: that bit is the standalone entry hook, which measured Ordon -4.3%.
 extern bool g_portWalkText;
 extern u64 g_portWalkDrew[2];
+extern u64 g_j3dDrawScan[4];   // C56's scan: calls, would-be-taken, refused on a packet class, refused on a matrix class
 // --port-size-refused MASK (check mode only, measurement): interpreter instructions summed over refused calls whose
 // reason is in MASK, per hook and reason, so a refusal's cost is the subtree it abandons rather than a count of
 // calls. A mask and not a flag because sizing a refusal means executing it, which hides its children from the hook:

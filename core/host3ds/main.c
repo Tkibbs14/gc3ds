@@ -2249,6 +2249,16 @@ static const char* run_body(const char* path) {
                                       d[1] ? (double)d[7] / (double)d[1] : 0.0,
                                       d[0] ? (double)d[8] / (double)d[0] : 0.0);
                           } }
+                        { extern u64 g_j3dDrawScan[4];   // C56: the port-framework scan, to difference against
+                          static u64 lastJd[4];            // --j3dstat's (rule 8 - two read paths, same quantity)
+                          if (g_j3dDrawScan[0] != lastJd[0]) {
+                              u64 d[4];
+                              for (int k = 0; k < 4; k++) { d[k] = g_j3dDrawScan[k] - lastJd[k]; lastJd[k] = g_j3dDrawScan[k]; }
+                              fprintf(g_perf, "# j3d port scan 10s: %llu calls, %llu would be taken (%.1f%%); refused: "
+                                      "packet class %llu, matrix class %llu\n", (unsigned long long)d[0],
+                                      (unsigned long long)d[1], d[0] ? 100.0 * (double)d[1] / (double)d[0] : 0.0,
+                                      (unsigned long long)d[2], (unsigned long long)d[3]);
+                          } }
                         { extern bool g_paneStat; extern u32 g_paneVt[32], g_paneN[32], g_paneOther;
                           if (g_paneStat) {
                               fprintf(g_perf, "# pane types 10s (vtable calls):");

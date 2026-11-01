@@ -81,6 +81,11 @@ enum {
     // hook (text_draw_self below); its rewriteAlpha is source-identical to J2DPictureEx's but compiles to different
     // bytes, because mMaterial sits at +0x138 in J2DTextBoxEx and +0x150 in J2DPictureEx - hence its own hash row.
     A_TEXT_DRAWSELF = 0x803075AC, A_TEXTEX_REWRITEALPHA = 0x80308810,
+    // C56: the J3D packet-draw subtree. drawHead is the hook rather than draw (0x803254AC), which dispatches
+    // through drawFuncTable[mDrawMode]; the census found the two called equally often, so mDrawMode is always Head
+    // in TP's scenes and hooking drawHead means a drawTail run simply never enters the port.
+    A_J3D_DRAWHEAD = 0x80325500, A_VT_MATPACKET = 0x803CD954,
+    A_VT_SHAPEMTX_CONCATVIEW = 0x803CDC1C, A_VT_SHAPEMTX_MULTICONCATVIEW = 0x803CDBD4,
 };
 typedef struct { u32 addr, size; u64 hash; } PortFn;
 static const PortFn kFns[] = {
@@ -1477,6 +1482,64 @@ static void walk_pane(Pc* c, u32 p, u32 g, bool clip, bool vis, u32 d, u32 x, u3
     u32 z0 = 0;  // `iter->draw(0, 0, ...)`: +0.0f, which is not this pane's x and y
     for (u32 l = f32(p + 220); l && !c->fail; l = f32(l + 12)) walk_pane(c, f32(l), g, clip, vis, d + 1, z0, z0);
 }
+// ---- C56: the J3D packet-draw subtree (J3DDrawBuffer::drawHead 0x80325500) ----
+// **The scan only.** It makes exactly the all-or-nothing test a port of this subtree would make and then declines,
+// so the coverage is measured through the port's own guarded read path before a line of drawing code exists - the
+// order C53 went in (walk_scan before walk_pane), and the reason its value was knowable in advance.
+// Rule 8's cross-check: hle_tp.c's `--j3dstat` scan walks the same structure through a different read path and
+// reports the same quantities (`# j3d scan 10s`). The two must agree; when the first version of that one disagreed
+// with the entry-point census - 1.8 mat packets a call against 6.3 - the fault was in the scan, not the game.
+// Offsets, from zeldaret's headers (docs/research/LIBRARY_PORTS.md has the full design):
+//   J3DDrawBuffer +0x00 mpBuffer, +0x04 mEntryTableSize
+//   J3DPacket     +0x00 vtable, +0x04 mpNextPacket
+//   J3DMatPacket  +0x2C mpShapePacket
+//   J3DShapePacket +0x28 mpShape
+//   J3DShape      +0x0A mMtxGroupNum (low half of the word at +8), +0x38 mShapeMtx
+u64 g_j3dDrawScan[4];   // calls, would-be-taken, refused on a packet class, refused on a matrix class
+static bool j3d_draw_scan(Pc* c, u32 db) {
+    if (!span(c, db, 8)) return false;
+    u32 buf = f32(db), n = f32(db + 4);
+    if (n > (1u << 16)) { give_up(c, 1); return false; }   // a Z-sort bucket array: ~56 buckets, only a wild size is bad
+    if (n && !span(c, buf, 4 * n)) return false;
+    for (u32 i = 0; i < n; i++) {
+        for (u32 pk = f32(buf + 4 * i), guard = 0; pk && guard < 4096; guard++) {
+            if (!span(c, pk, 48)) return false;
+            if (f32(pk) != A_VT_MATPACKET) { g_j3dDrawScan[2]++; give_up(c, 5); return false; }
+            for (u32 sp = f32(pk + 0x2C), sg = 0; sp && sg < 4096; sg++) {
+                if (!span(c, sp, 60)) return false;
+                u32 shape = f32(sp + 0x28);
+                if (shape) {
+                    if (!span(c, shape, 104)) return false;
+                    u32 mg = f32(shape + 8) & 0xFFFF, mtx = f32(shape + 0x38);
+                    if (mg > 1024) { give_up(c, 1); return false; }
+                    if (mg && !span(c, mtx, 4 * mg)) return false;
+                    for (u32 k = 0; k < mg; k++) {
+                        u32 sm = f32(mtx + 4 * k);
+                        if (!sm) continue;             // drawFast skips a null entry
+                        if (!span(c, sm, 4)) return false;
+                        u32 vt = f32(sm);
+                        if (vt != A_VT_SHAPEMTX_CONCATVIEW && vt != A_VT_SHAPEMTX_MULTICONCATVIEW) {
+                            g_j3dDrawScan[3]++; give_up(c, 5); return false;   // the census says this never fires
+                        }
+                    }
+                }
+                sp = f32(sp + 4);
+            }
+            pk = f32(pk + 4);
+        }
+    }
+    return true;
+}
+static void j3d_draw_head(Pc* c, Gekko* g) {
+    g_j3dDrawScan[0]++;
+    if (!j3d_draw_scan(c, g->gpr[3])) return;       // (the scan has already recorded why, and given up)
+    g_j3dDrawScan[1]++;
+    // The drawing is not written yet. Declining here keeps the hook honest: the scan's coverage is real and
+    // measured, and nothing is drawn by code nobody has compared. C56's design (LIBRARY_PORTS) is the transcription
+    // job that goes here, and every one of its guest functions is already hashed.
+    give_up(c, 0);
+}
+
 u64 g_walkPanes;
 static void pane_walk(Pc* c, Gekko* g) {
     u32 p = g->gpr[3], gr = g->gpr[4], panes = 0;
@@ -2714,6 +2777,7 @@ static bool port_run(Pc* c, Gekko* g, u32 hook) {
         else text_draw_self(c, g->gpr[3], bitsf(px), bitsf(py), g->gpr[4]);
     }
     else if (hook == PORT_PANEWALK) pane_walk(c, g);
+    else if (hook == PORT_J3DDRAW) j3d_draw_head(c, g);
     else if (hook == PORT_FLUSHPRIM) gx_send_flush_prim(c);
     else if (hook == PORT_LIGHTS) j3d_diff_light_obj(c, g->gpr[3], g->gpr[4]);
     else if (hook == PORT_J3DPNGP) j3d_load_mtx_concat_view_pngp(c, g->gpr[3], g->gpr[4], g->gpr[5]);
@@ -2751,13 +2815,14 @@ const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::d
                                           "J3DColorBlockLightOn::diffLightObj", "J2DPane::draw (walk)",
                                           "J3DMaterial::diff", "J3DSys::reinitGX",
                                           "dRenderingFDAmap_c::renderingDecoration",
-                                          "J3DShapeMtxMultiConcatView::load", "J2DTextBoxEx::drawSelf" };
+                                          "J3DShapeMtxMultiConcatView::load", "J2DTextBoxEx::drawSelf",
+                                          "J3DDrawBuffer::drawHead (scan only)" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
            pc == A_J3D_MATDIFF ? PORT_MATDIFF : pc == A_J3D_REINITGX ? PORT_REINITGX :
            pc == 0x8003D3C0 ? PORT_DECO : pc == 0x80313FA4 ? PORT_J3DMULTI :
-           pc == 0x803075AC ? PORT_TEXT : -1;
+           pc == 0x803075AC ? PORT_TEXT : pc == A_J3D_DRAWHEAD ? PORT_J3DDRAW : -1;
 }
 // --port-hooks MASK (bit per PORT_*). drawSelf: Ordon +4.5%, heavy area -0.5 +- 0.35% (GX-thread bound; jobs 492-493).
 // J3D: Ordon +5.8%, heavy area -0.7 +- 0.4%, the title's cutscene and later stretch neutral (jobs 496-498).
@@ -3008,7 +3073,7 @@ static void port_report(void) {
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
 u32 g_portCharge = 100;
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165 };  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165, 100 };  // (C56: scan only, never taken, so its scale is unused until the port draws)  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
