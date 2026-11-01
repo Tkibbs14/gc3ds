@@ -3085,6 +3085,49 @@ Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
+### Where the ports' time goes, and the pipe path behind it (job 1878, 2026-11-01, no device time)
+
+`port_cost.py` over a default heavy-area run, which had never been read since C53 and the soft-float concat landed:
+
+| port | calls/s | run us | commit us | share of core 0 | commit alone |
+|---|---|---|---|---|---|
+| `J2DPane::draw` (the C53 walk) | 40 | 1,471.77 | 345.98 | **7.27%** | **1.38%** |
+| `J3DMaterial::diff` | 1,160 | 19.21 | 6.95 | 3.03% | 0.81% |
+| `J3DSys::reinitGX` | 208 | 73.01 | 39.16 | 2.33% | 0.81% |
+| total inside ports | | | | **12.64%** | **~3.0%** |
+
+That ~3.0% in `port_commit` is the figure AGENTS has carried since job 1569 (2.61%) as "the technique is proven and
+unapplied elsewhere - the next place to apply it has to be found rather than assumed". **It is found, and it is not
+a second copy to remove - it is the pipe path.**
+
+**The walk commits 15,210 bytes in 345.98 us and reinitGX 1,705 in 39.16 us: 44.0 and 43.5 bytes a microsecond.**
+Two unrelated ports, different call rates, different byte counts, agreeing on the per-byte rate to 1% - which is
+what says the commit *is* `gp_fifo_write` and not bookkeeping (rule 8: the cross-check came free, from two
+instruments that already existed). 44 bytes a microsecond is **~18 cycles a byte**, where the path's two 32-byte
+copies - the FIFO mirror into MEM1 and `ringbatch`'s copy into the ring record - should be two or three.
+
+**And the shape of the traffic, from the log's own counters:** 352,182,478 pipe bytes in 7,896,116 writes over the
+run, 44.6 bytes a write. But the ports' 963 KB a second arrives in about **250 calls a second**, so **46% of every
+pipe byte comes through 0.5% of the calls** - and `gp_fifo_write` was chopping those runs into **30,095 bursts a
+second**, each doing two 32-byte copies plus wrap arithmetic, a CP-control read and two counters, which
+`ringbatch` then reassembled into 512-byte records.
+
+**`--gpruns` (built, off) moves a qualifying run at once**: one mirror copy, one ring feed, the per-burst work done
+once. Exact by construction - the run is taken only when it neither leaves MEM1 nor reaches the FIFO's end, so no
+burst inside it wraps, and `fifoWrite`, `bytesReceived`, `g_gpLinked`/`g_gpUnlinked` and the stamped pages all end
+where the per-burst loop would leave them. `feed()` already had a one-record path for a length over `RING_BATCH`,
+so the GX thread parses one record instead of thirty as well. **The PC state-hash check over 400 fields that
+`g_gpBulk` itself was validated with is owed**: this session has no disc image, no devkitPPC and no built test DOLs.
+
+**A label fixed on the way past, and it is the reason this was found at all.** The walk's refusals read
+`# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls, which looks exactly like the walk
+running out of pipe or undo room - and that is what I read it as. It is not: 100% of it is **a pane with no
+children**, declined on purpose because there is no subtree to absorb and a single pane's own `drawSelf` loses as
+an entry hook (bits 1 and 10 both measured that). The line conflated three conditions, one of which *is* a memory
+refusal, so they now carry different reasons, and **reason 0 is documented as "declined on purpose" rather than
+"the set-up"**: a reason 0 is not a gap to close, reasons 1-7 may be. Same fault as the "tev block" label, one
+scale down.
+
 ### C56 built, exact, and a LOSS: the J3D packet-draw subtree is -0.79% (jobs 1875-1880, 2026-11-01)
 
 **Exact first** (jobs 1875-1876, build `1a971528b25c`, `--port-hooks 2291 --port check`): **180 checked calls,

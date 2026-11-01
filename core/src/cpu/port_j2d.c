@@ -192,7 +192,9 @@ typedef struct {
 } Pc;
 
 // Reasons (PortStats.refusedBy): 1 memory or buffers, 2 floats, 3 texture region, 4 TLUT region, 5 **a shape or
-// address not recognised**, 6 texgens, 7 indirect stages; 0 the set-up.
+// address not recognised**, 6 texgens, 7 indirect stages; **0 the set-up - which includes a call the port
+// declines on purpose rather than one it cannot do**, such as the pane walk meeting a pane with no children
+// (half its calls in TP's heavy area). A reason 0 is not a gap to close; reasons 1-7 may be.
 //
 // Reason 5 used to be labelled "TEV block type" in perf.csv, and that label was a bug (2026-10-31): it has **21
 // call sites** in this file - an unported TEV block is one of them, the rest are a graf type, a vtable that is not
@@ -1511,8 +1513,16 @@ u64 g_walkPanes;
 static void pane_walk(Pc* c, Gekko* g) {
     u32 p = g->gpr[3], gr = g->gpr[4], panes = 0;
     bool clip = g->gpr[5] & 0xFF, vis = g->gpr[6] & 0xFF;
-    u32 node = in_mem1(p, 240) ? f32(p + 236) : 0;
-    if (!node || !in_mem1(node, 16) || !f32(node + 12)) { give_up(c, 1); return; }  // a root: the guest code
+    // Split into its two real cases on 2026-11-01, because together they read as a buffer problem and are not.
+    // `# port give-ups 10s, memory: port_j2d.c:1515 x255` against 255 taken calls looked exactly like the walk
+    // running out of pipe or undo room - it is what I read it as for a minute - when 100% of it is **a pane with
+    // no children**, which the walk declines on purpose: there is no subtree to absorb, and a single pane's own
+    // drawSelf loses as an entry hook (bits 1 and 10 both measured that). One of the three conditions here *is* a
+    // memory refusal, so they get different reasons rather than a shared one (the "tev block" label, smaller).
+    if (!in_mem1(p, 240)) { give_up(c, 1); return; }
+    u32 node = f32(p + 236);
+    if (node && !in_mem1(node, 16)) { give_up(c, 1); return; }      // the child list is not readable: memory
+    if (!node || !f32(node + 12)) { give_up(c, 0); return; }        // a leaf pane: the guest code draws it
     if (!walk_scan(c, p, 0, &panes)) { give_up(c, 5); return; }
     if (!span(c, gr, 204) || !span(c, f32(gr), 36)) return;
     u32 gt = f32(f32(gr) + 32);
