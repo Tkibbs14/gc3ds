@@ -63,25 +63,32 @@ queue() {
 }
 
 follow() {
-    local job="$1" out="$here/out/relay_$1.csv" after=-1 status=queued hdr
+    local job="$1" out="$here/out/relay_$1.csv" after=-1 status=queued hdr part
     mkdir -p "$here/out"
     echo "job $job -> $out" >&2
     hdr="$(mktemp)"
-    : > "$out"  # the whole log is fetched again from the start (after=-1)
+    # Built in a private file and moved into place only when the job has finished. Two reasons, both met on
+    # 2026-11-01: a `log` of a *running* job blocks until it ends, so a caller that times out leaves a fetcher
+    # alive, and a second `log` of the same job then interleaved with it - job 1887's file held the run twice and
+    # scored as one (runs.py now calls that out, but the file should not exist in the first place). And a fetcher
+    # that is killed part-way used to leave a truncated log behind that looked like a short run (job 1891 scored
+    # 0 windows). $$ keeps concurrent fetchers apart; the move is atomic.
+    part="$out.part.$$"
+    : > "$part"  # the whole log is fetched again from the start (after=-1)
     local prev page
     page="$(mktemp)"
     while :; do
         prev="$after"
         # Appended only on success: a refused request's error body had landed in the log (a 429, job 182).
         if api -D "$hdr" "$url/jobs/$job/log?after=$after" > "$page" 2>/dev/null; then
-            cat "$page" >> "$out"
+            cat "$page" >> "$part"
             after="$(sed -n 's/^[Xx]-[Rr]elay-[Ll]ast: *//p' "$hdr" | tr -d '\r')"
             status="$(sed -n 's/^[Xx]-[Rr]elay-[Ss]tatus: *//p' "$hdr" | tr -d '\r')"
-            printf '\r%s, %s lines   ' "$status" "$(wc -l < "$out")" >&2
+            printf '\r%s, %s lines   ' "$status" "$(wc -l < "$part")" >&2
             # The relay returns at most 200 chunks (~400 s of a run) per request: a finished job is read page by page
             # until a page brings nothing new (jobs 168-171 had been cut at ~410 s by stopping after the first page).
             [ "$after" != "$prev" ] && continue
-            case "$status" in done|failed|stopped|cancelled) echo >&2; grep -E '^# (error|machine stopped|relay)' "$out" >&2 || true; break;; esac
+            case "$status" in done|failed|stopped|cancelled) echo >&2; grep -E '^# (error|machine stopped|relay)' "$part" >&2 || true; mv -f "$part" "$out"; break;; esac
         fi
         sleep 10
     done
