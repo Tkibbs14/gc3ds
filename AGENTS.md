@@ -400,9 +400,17 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   us right now we need to put measurements on").** Each is an instrument or a model run, not a build, and the cheap
   one comes first: **C47** attribute core 0's data stalls - 22.1% of the core with only totals in the record, split
   into guest RAM / Gekko state / JIT metadata / the GX ring, because only some of it is ours to fix (PC cache
-  simulator, no device time); **C48** the indirect table's cache and TLB cost - `FAST_BITS` is 16, so it is 512 KB
-  over 128 pages probed at a pc-derived index per `blr`, never measured, and a probe counter also unblocks C46 and
-  prices OPT_IND2; **C49** why switch effects are sub-additive (the four defaults' parts predict +1.04% in Ordon and
+  simulator, no device time); **C48 is answered** (job 1916, TP's heavy area): the table takes
+  **798,300 probes a second**, 6.16 per 1,000 guest instructions, **80.9% first slot, 14.0% second, 5.2% missed**
+  - a 94.9% hit rate - with 84% of probes coming from `blr`. The dispatcher's own miss counter (41,134/s) and the
+  probe counter (41,512/s) agree to 0.9%, which is the cross-check C48 was designed around. **OPT_IND2's +0.9% is
+  thereby explained**: the second slot serves 112,000 probes a second that would otherwise miss. The `FAST_BITS`
+  sweep is now well-posed and points *smaller*, not bigger - at 94.9% a larger table can win at most 5.2% while
+  512 KB over 128 pages is probed 798,300 times a second. **What C48 did not explain is the sampler's `dispatch`
+  bucket at 8.6-8.7% of core 0**: that is ~1,600 cycles per dispatcher entry over 43,352 block runs a second,
+  which is not credible for a hash lookup, so the bucket holds more than the loop (the JIT's C helpers run with
+  `g_where` left at `WH_DISPATCH`). **That is the largest unattributed number in core 0's budget** and wants
+  `g_where` set in the helpers; **C49** why switch effects are sub-additive (the four defaults' parts predict +1.04% in Ordon and
   deliver +0.36%), which decides whether a stack of individually-measured gains can be added at all; **C50** the data
   micro-TLB at 3.09 M misses a second, 5.9% of data reads, fourteen times the instruction side; **C51** spilling GPRs
   to VFP registers instead of memory (5 host registers for 32 guest GPRs is worse than any comparable JIT), modelled

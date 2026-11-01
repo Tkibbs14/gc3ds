@@ -1795,9 +1795,35 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 ## C48. The indirect-branch table's cache and TLB cost (2026-10-30)
 
-- **Status:** **the counter is built** (`--indstat`, OPT_INDSTAT, 2026-10-31) and waiting on a device build; the
-  `FAST_BITS` sweep is next after it. It also unblocks C46 and prices OPT_IND2, which was adopted on +0.9% with no
-  idea why.
+- **Status: ANSWERED on hardware, 2026-11-01 (job 1916, TP's heavy area, build `6db3d1d7c129`).** The counter had
+  been built since 2026-10-31 and "waiting on a device build"; it ran, and both things this entry was opened to
+  settle are settled.
+
+> **`# jit indirect 10s`: 798,300 probes a second, 6.16 per 1,000 guest instructions - first slot 80.9%, second
+> slot 14.0%, missed 5.2%.** Entered from `blr` 5.02 per 1k and `bctr` 0.95 per 1k, so **84% of probes are
+> returns**. Hits that ran out of budget: 0.006 per 1k, i.e. nothing.
+> **Cross-checked exactly as this entry designed it**, and on hardware rather than qemu: the dispatcher's own
+> independent miss counter reads **41,134 a second** and 5.2% of 798,300 is **41,512** - **0.9% apart**. Two
+> instruments, one quantity, agreeing (rule 8).
+> **So OPT_IND2's +0.9% is explained, which this entry called out as adopted "with no idea why": the second slot
+> serves 14.0% of probes, about 112,000 a second that would otherwise have missed.** A 94.9% hit rate on a
+> pc-derived index is the answer to "is the table working".
+> **And the sweep this entry queued next is now well-posed rather than open-ended.** At 94.9% hit rate a *bigger*
+> table can win at most the remaining 5.2%, while `FAST_BITS` 16 makes the table **512 KB over 128 pages** probed
+> 798,300 times a second - so the interesting direction is **smaller**, trading a few points of hit rate for far
+> less cache and TLB footprint. `FAST_BITS` is a compile-time `#define` in `jit.c`, so the sweep is a handful of
+> builds rather than a switch, and each build moves a baseline ~0.8% - which means the arms must be the sweep
+> itself (several FAST_BITS values on one session), never a sweep against a remembered default.
+> **One number this did *not* explain, and it is worth flagging rather than quietly dropping.** The sampler's
+> `dispatch` bucket reads **8.6-8.7% of core 0** in the settled windows (jobs 1878 and 1908, gpruns off and on),
+> against 43,352 block runs a second - about **1,600 cycles per dispatcher entry**, which is not credible for a
+> hash lookup and a block-table probe. So that bucket contains more than the dispatcher loop; the obvious
+> candidate is the JIT's C helpers, which run with `g_where` left at `WH_DISPATCH` from the previous dispatch.
+> **That is a hypothesis, not a finding** - `--gpruns` removed pipe-helper work and moved the bucket only
+> 8.7% -> 8.6%, which neither confirms nor refutes it at this resolution. Whoever picks it up should set `g_where`
+> in the helpers and see where the 8.6% goes, because an 8.6% bucket with unestablished contents is the largest
+> unattributed number in core 0's budget.
+
 - **The instrument** (`jit.c`, `ind_emit_count`): five counting sites in the **shared stub only**, so hot code does
   not grow - `blr` entries, `bctr` entries, a hit in the first slot, a hit in the second, a miss, and a hit that ran
   out of budget. Four instructions a probe, using r0 and r12, which `ST_INDIRECT` clobbers unconditionally on entry
