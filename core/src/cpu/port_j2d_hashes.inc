@@ -246,10 +246,10 @@
     { 0x80313C54, 0xD4, 0xD05F8F0F4F1E5F7Aull },   // load__21J3DShapeMtxConcatViewCFv        (wraps port bit 2's PNGP)
     { 0x8031106C, 0x24, 0xB28FAAEE3936DF34ull },   // setArray__15J3DVertexBufferCFv
     { 0x803260F8, 0x3C, 0x6791FF57EA60F0F6ull },   // syncJ3DSysFlags__12J3DModelDataCFv
-    // C56's drawing code, added when the port itself was written. **Recorded as 0 deliberately**: a cloud session
-    // has no disc image, so porthash.py cannot be run here, and a guessed hash is worse than none. A zero row keeps
-    // every port off and publishes the hash the console computes (`# port hashes`), so one run fills these in.
-    { 0x80314EEC, 0x70, 0ull },   // loadVtxArray__8J3DShapeCFv
-    { 0x80314E98, 0x18, 0ull },   // J3DLoadCPCmd__FUcUl                      (loadVtxArray's three calls)
-    { 0x803130A8, 0x3C, 0ull },   // resetMtxLoadCache__11J3DShapeMtxFv
-    { 0x8035FEF0, 0x70, 0ull },   // GXCallDisplayList
+    // C56's drawing code. Recorded as 0 at first, because a cloud session has no disc image and porthash.py cannot
+    // be run here, then filled in from the console's own `# port hashes` line (job 1871, build 554473f892a4). A
+    // zero row keeps every port off while it is one, which is why that build must never be used for speed.
+    { 0x80314EEC, 0x70, 0xB93ED6550741675Full },   // loadVtxArray__8J3DShapeCFv
+    { 0x80314E98, 0x18, 0x5B8067B823703B02ull },   // J3DLoadCPCmd__FUcUl                      (loadVtxArray's three calls)
+    { 0x803130A8, 0x3C, 0x57640B321F45BF88ull },   // resetMtxLoadCache__11J3DShapeMtxFv
+    { 0x8035FEF0, 0x70, 0x6E5F2C8CB7E824EEull },   // GXCallDisplayList
