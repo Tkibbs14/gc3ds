@@ -1,4 +1,75 @@
-# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-10-31)
+# gc3ds handoff (started 2026-10-10, newest state first; last checked 2026-11-01)
+
+> **▶ 2026-11-01: C53 is a default (+3.4%), and the 2DS turns out to launch into one of several memory states ~5%
+> apart.** Build `8a873bf3c7c0da39`. **Read C55 before trusting any absolute figure in this file.**
+>
+> **C53 shipped: the pane walk now takes whole HUD subtrees.** `J2DTextBoxEx` folded into `J2DPane::draw`'s walk,
+> with `J2DPicture` acceptance beside it, because **a subtree is all-or-nothing** and TP's HUD mixes the two - which
+> is why neither half paid alone and why the walk had been refusing 100% of its calls on one class test. Measured
+> twice: static Ordon **+3.46%** (jobs 1760-1767) and **+3.17%** on a different build with adjacent arms (jobs
+> 1785-1788), TP's heavy area **+2.31%**; every on-run above every off-run both times, spreads 0.02-0.10%. Exact
+> before it was fast: device `--port check` 0 differed **with text panes actually drawn**, `--port plant` 29,442, and
+> a peer's PC run 0 differed over four title states with 3,150 panes drawn at state 6590. The walk's real guest
+> instructions a call went from **13,377 to 104,292** and its pane-class test now refuses nothing. First completed
+> instance of the subtree-port direction.
+> **Two lessons from it that generalise.** A subtree is all-or-nothing, so the classes a walk refuses are **not
+> independent quantities** to attack one at a time. And **coverage is not value**: the J2DPicture half accepts 412
+> panes a window and draws *none* of them - every one is hidden - so its entire contribution is scan acceptance, and
+> its drawing code (`--port-picture-draw`, off) has never executed in any check on either machine. The walk refuses
+> at a visible picture rather than run it.
+>
+> **C55, which matters more than the 3.4%: the device launches into one of at least three memory states, and speed
+> falls monotonically across them.** Every log has always printed which one - `# heap: largest malloc block` reads
+> **7.1, 8.6 or 9.0 MB** - and in the heavy area, over profiled runs of one configuration, 7.1 gives 23.96 / 23.34,
+> 8.6 gives 23.84 / 23.81 / 23.44 and 9.0 gives 23.13 / 22.69. At defaults static Ordon reads ~34.6-34.9% on the 7.1
+> rung and ~32.95-33.0% on the 9.0 one: **a ~5% spread with no code change at all.** The value is fixed when the
+> process starts and inherited by every job that reuses it; it changes **only** when a job downloads a build and
+> chainloads through Luma's `hb:ldr`, and a chainload does not pick a rung deterministically. **So a measurement
+> series wants one process, or at least one rung** - `runs.py` now prints the value and refuses to compare across
+> it, with a planted self-test - and a launch by hand before a series that matters is the cheapest way to start from
+> a known rung. **This is the likeliest identity of the "~2% day drift" rule 3 has quoted for weeks**, which has
+> shaped what counted as a result. What it is *not*, each killed from logs already on disk: a failed emulator
+> allocation (MEM1 sits at `081f6000` and the JIT buffer at `0aed7000` in **both** rungs, with linear memory and
+> VRAM identical), the display-list vertex caches (present in both), a relay restart (one falls inside a run that
+> stayed slow), and the clock (`pmu_mcyc` 804 both sides). The 1.9 MB is real and unexplained.
+>
+> **How C55 was found, which is the part worth not repeating.** It first went into this file as a **-5.6% regression
+> in our own code**, was bisected across eight commits, and had to be withdrawn. The evidence was a *batched*
+> comparison: every old-build run came after every new-build run, so a device step read as a code change. The old
+> commit's two runs agreed to 0.05% and I took that for "the device is stable" when it only showed those two runs
+> sat on one side of a step. **I committed a correction to rule 3 about exactly this an hour before making the
+> mistake.** Measured properly - old / new / old / new interleaved inside one rung - the session's 21 commits are
+> **-0.22%**, inside Ordon's floor. The cheap check that would have caught it: re-run the **new** build late, not
+> only the old one.
+>
+> **The ports' "denormal give-up" does not exist** (jobs 1753-1754). The counter merged denormals with NaNs and the
+> hedge was dropped each time the figure was requoted, so CONTRIBUTOR_TASKS 9 had read "2,108 of 2,134 give-ups are
+> `plain()` refusing a denormal" since 2026-10-22 and had become a **stated prerequisite for the whole subtree-port
+> direction**. Split: **denormal 0, NaN/infinity 13,216** in Ordon and **0 / 9,544** in the heavy area, all in
+> `psmtx_concat`. Nothing waited on it - and then C53 **re-priced it upward the same day**: with C53 on, that
+> give-up refuses **37.5% of the walk's hook entries in both scenes**, each abandoning a ~104,000-instruction subtree
+> instead of a ~13,000-instruction one. Both readings are right at their own time, which is the standing lesson:
+> **re-rank the candidates after every default lands, not once.** (C49 with the sign reversed.)
+>
+> **Three instruments built, and each one was wrong in a way its own first result exposed.**
+> `--port-size-refused` (size what a give-up abandons) **destroyed what it measured**: executing a refused call
+> hides its children from the hook, and a peer's PC run showed 72,000 entries collapsing to 1,476. It is a
+> per-reason mask now, and even so its figure is an upper bound.
+> `--port-softfloat` (PSMTXConcat exactly in soft float, the remedy for the give-up above) **moved the give-up
+> downstream 1:1** instead of removing it - `psq_copy` in `gx_load_pos_mtx_imm` refuses the NaN matrix the exact
+> path produces - so refusals are unchanged and its "0 differed" is **vacuous**, since a refused call never compares
+> anything. Off, with the remaining work written down.
+> `pica_vcache_alloc` closes a real hole found while chasing C55: `vcache_create` can lose **7.5 MB** of cache on a
+> failed malloc and log nothing.
+>
+> **Next.** (1) C55's first open item is **not** "which allocation" but **log the heap's shape and every allocation
+> over ~256 KB** - four plausible hypotheses each needed separate killing because the program reports almost nothing
+> about its own memory. (2) Finish `--port-softfloat` (let a NaN through `psq_copy` only when it came from the exact
+> path; the fast path's refusal there is real protection, since plain inputs can overflow to infinity where
+> HLE_FASTFLOAT's two roundings disagree with Gekko) - it is now the walk's biggest addressable refusal. (3) C53's
+> figure on the 7.1 rung is unmeasured. (4) **The headline in AGENTS and README is stale by C53's gain and cannot be
+> refreshed from a cloud session** - it belongs to the project's own toolchain, which this container does not have.
+> (5) Still owed: the whole-game qemu JIT check for `--indstat`, on a machine with a disc image.
 
 > **▶ 2026-10-31 (later): the first decoded guest stack profile, C53 answered, and the next port written but
 > unchecked.** Builds `088fb0df6610` -> `04824e949fd12861`, all on the cloud toolchain (devkitARM 16.1.0: compare
