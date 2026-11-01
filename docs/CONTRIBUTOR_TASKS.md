@@ -97,7 +97,7 @@ and why the reported read pointer must advance only after the write) and the one
 **Verify:** a check mode comparing the deferred mirror against the eager one over a run, with a planted difference
 that must be caught; then the usual A/B.
 
-### 9. The float give-up: an 11% tail, and not a denormal one
+### 9. The float give-up: 37.5% of the pane walk's entries, and not a denormal one
 **Why:** a port gives up and abandons its whole subtree when a float input is one the host VFP and the Gekko treat
 differently. **Measured 2026-10-31 (jobs 1753-1754): 100% of these are NaN or infinity and *none* is a denormal** -
 static Ordon `denormal 0, plain nan/inf 13,216` (864 per 10 s, all at `port_j2d.c:892` in `psmtx_concat`), heavy area
@@ -114,12 +114,38 @@ needs none - and nobody knows yet which of the two these are.
 > (`docs/research/LIBRARY_PORTS.md`, job 812), and whose "(or NaN)" hedge was dropped everywhere it was requoted.
 > It is not a prerequisite for task 10: **C53's pane-class test is 82% of give-ups and its missing half is already
 > built** (port bit 10, `J2DTextBoxEx`). Do task 10 first; this is the tail afterwards.
+>
+> **Second correction, 2026-11-01 - and it moves the other way.** C53 landed (jobs 1760-1767, +3.46% Ordon, +2.31%
+> heavy) and with it on, `plain()` refuses **37.5% of the pane walk's hook entries in both scenes** - static Ordon
+> 660 of 1,760, heavy area 480 of 1,280, the remainder being roots the guest keeps - and each refusal now abandons a
+> **~104,000-instruction subtree** where before C53 it abandoned a ~13,000-instruction one. Fixing it would take
+> Ordon's coverage from 550 to 1,210 taken, **2.2x**, on a port that measures +3.46%. So this is no longer an 11%
+> tail: at the post-C53 default it is the walk's biggest addressable refusal.
+> **Both corrections are right at their own time, and that is the lesson worth keeping:** a candidate's value depends
+> on which other options are on, so the ranking has to be redone after every default lands rather than once. C49
+> recorded options *subsuming* each other's credit; this is the same effect with the sign reversed.
+> **The remedy is now written** (`--port-softfloat`, `psmtx_concat_exact` in `port_j2d.c`, off until checked): the
+> whole concat through `gekko_softfp.c` with the guest's FPSCR, `sf_madd` single-rounded, frC cut to 25 bits as
+> `gekko_fpu.c mulc` does, and `sf_double_to_single_ftz` for the psq_st store so a NaN payload survives. It needed
+> `Pc.l14/l15/l31` widened from `float` to double bit patterns - those are the ps1 halves PSMTXConcat leaves in
+> f14/f15/f31, and a float would mangle a NaN there; they could be floats only while `plain()` made a NaN
+> unreachable. **What is left to do is the check, not the code:** `--port check` with it on, 0 differed, plus the
+> `--port plant` control.
 
 ### 10. A port of a whole subtree
 **Why:** the ports as a set are worth +10.6% while their parts sum to ~3.7% - the difference is the guest code the set
 keeps out of the compiled code. A port must therefore **remove much more guest code than the native code it adds**; a
 40-instruction leaf can never pay (one such port was a 0.5% loss). The named candidates are J3D's packet draw and the
 remaining TEV block types.
+**One has now been done, and it is the evidence for this whole task** (C53, 2026-11-01): folding `J2DTextBoxEx` into
+the J2DPane walk took the walk from 13,377 real guest instructions a call to **104,292**, and measured **+3.46% in
+static Ordon and +2.31% in the heavy area** (jobs 1760-1767, all four on-runs above all four off-runs). Read its
+entry in REDESIGN_CANDIDATES before starting another: the two useful lessons are that **a subtree is
+all-or-nothing** - the walk cannot accept a subtree unless *every* pane class in it is accepted, so the classes it
+refuses are not independent quantities to attack one at a time - and that **coverage is not value**: the J2DPicture
+half of the same work accepts 412 panes a window and draws none of them, because every one is hidden.
+Note also that "the remaining TEV block types" was never a real candidate: it was sized from a reason code that had
+21 sites and was mislabelled "tev block", and `otherTev`, the only field recording a real unported TEV block, reads 0.
 **What to do:** read `docs/research/LIBRARY_PORTS.md` ("Entry", and how a context covers a subtree), start from the
 profile of the scene you care about. (This used to say "do task 9 first"; it does not - see task 9's correction of
 2026-10-31. The blocker is C53's pane-class test, 82% of give-ups, and `J2DTextBoxEx` is already written.)
