@@ -98,7 +98,14 @@ static inline u32 gx_state(u8 w) {
 static void sampler(void* arg) {
     (void)arg;
     while (!g_quit) {
-        if (jit_in_run) {
+        // `jit_in_run` is 1 for compiled code **and** for the C a block calls into - a port hook or a stand-in runs
+        // with it still set, because it is called from inside the block. So until 2026-11-01 every sample in
+        // port_run / port_commit / the stand-ins was recorded as a *compiled-code* sample, and the `hle` bucket
+        // read 0.0% even though port_cost.py puts the ports at 12.64% of core 0. The two instruments disagreed by
+        // the whole of the ports.
+        // `g_where == WH_HLE` is set by port_j2d.c's hook and by hle_run for exactly their own extent, so it
+        // separates the two without new state. The buckets' independent second view is PortStats' per-hook timers.
+        if (jit_in_run && g_where != WH_HLE) {
             u32 n = g_n;
             if (n < MAX_SAMPLES) { g_samples[n] = g_g->hostPc; g_n = n + 1; }
             if (g_mem1) stk_walk();
