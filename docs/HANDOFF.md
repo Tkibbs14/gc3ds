@@ -364,7 +364,14 @@
 > counter again (NaN against infinity) first, because infinities need no payload matching.
 >
 > **C48 and C46 are closed** (`--indstat`, qemu): `FAST_BITS` stays 16. ~800 k probes a second, 0.2% misses,
-> collisions rather than footprint dominate, and a dispatcher return costs ~480-820 cycles. **C51 is redirected:**
+> collisions rather than footprint dominate, and a dispatcher return costs ~480-820 cycles.
+> **Correction, 2026-11-01 (the device, job 1916): two of those three numbers are wrong, and "closed" was
+> premature.** The probe rate holds - **798,300 a second** - but the miss rate is **5.2%, not 0.2%** (first
+> slot 80.9%, second 14.0%), and the sampler puts the dispatcher at **~1,600 cycles an entry**, not 480-820,
+> which is itself not credible for a hash lookup and is why that bucket is now an open question rather than a
+> cost. `FAST_BITS` stays 16, but on new grounds: the sweep was run (jobs 1917-1925) and a table eight times
+> smaller **misses 44% less and is 0.71% slower**. The qemu run under-read the miss rate by 26x, which is the
+> clearest case yet that qemu does not stand in for the device on cache-sensitive quantities. **C51 is redirected:**
 > `gpr_traffic.py` says 65-80% of GPR traffic is write-back, so spilling GPRs to VFP registers attacks the wrong
 > half; C47 comes first. **C52's predicted cause is falsified:** the fixed build reports `impossible samples 0,
 > probed 0` and still overshoots 6-10%, so the live hypothesis is a state-dependent skip cost needing a two-state

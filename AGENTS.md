@@ -279,7 +279,12 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   `python3 core/tools/rungs.py --by-rung` for every run at once) with no device time.
   **That audit is done and the ledger is sound: nothing straddles a rung** (C55). The headline (1690-1699), the
   port-bit apportionment (1700-1711), bits 9 and 10's withdrawal (1667-1668) and rule 3's noise floor are **all on
-  the 2.9 rung**; the cloud baseline (1723-1732) is **all 7.1**; everything measured on 2026-11-01 is **all 9.0**.
+  the 2.9 rung**; the cloud baseline (1723-1732) is **all 7.1**; the 2026-11-01 work up to job ~1900 is **all 9.0 or 8.9**.
+  **That audit line is only true to job ~1900** (corrected 2026-11-01 after an audit): the last stretch of
+  that day spans three rungs - `--gpruns` and C40 on **8.9**, `FAST_BITS` 13 unpadded on **8.8**, and the
+  padded `FAST_BITS` pair on **7.1** - and rung **8.9 is 1.7% below 7.1**, measured with effectively one
+  binary (jobs 1920-1925). So read every absolute from that day with its own `heap` value beside it, which
+  `runs.py` prints; the differences within each pair stand because each pair shares a rung.
   Since 2.9 performs like 7.1 and 9.0 is the slow one, the two baselines remain comparable in rung terms - the
   toolchain is the only difference between them - and tonight's absolutes sit below both because of the rung.
   **There is now a second baseline, for cloud sessions** (commit `088fb0df6610`, devkitARM 16.1.0, jobs 1723-1732,

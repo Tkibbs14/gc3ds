@@ -93,7 +93,7 @@ Yes for choosing a direction, no for predicting what a given redesign will gain.
 - Fault-mode (fastmem) memory access is the largest remaining JIT lever: +9.3% core 0 in the cutscene and +4.1% later (job 168), against check hoisting's +5.7% / +2.8% (job 117). It is gated on kernel stability.
 - Texture decode should target ETC1 or RGB565 with mipmaps. Minified 1024x1024 without mips: ETC1 117, RGB565 27, RGBA8 17 Mpx/s (job 180). At 1 texel per pixel RGBA8 loses 45%. VRAM placement is suggested because FCRAM sampling doubles core 0's L2 latency, but it is unmeasured on TP and only ~1.2 MB of VRAM is free.
 - Offload audio to the 3DS DSP. GC DSP-ADPCM through ndsp has correlation 1.00000 (A1). 24 channels cost core 0 nothing (A2). Software mixing is 0.42% of a core per voice. WSOLA time-stretch is 0.66% of a core.
-- Ruled out by device data (do not re-propose without a new argument; several of these verdicts came from A/Bs that recompile all JIT code, which read the on arm ~2% low, and IND2 and float lanes were reversed by separate runs on 10-19, see "Float lanes and the 2-way indirect table, re-measured"): dispatcher or indirect-table redesign (dispatcher under 1%; IND2 neutral then, now on: +0.85%; FAST_BITS=13 neutral); faster compile (0.2-0.7%); traces, OPT_CALLS, relayout, AOT / static recompilation (footprint losses above); registers across blocks or loop regions (modelled 0.5-2.5% of hot words); CR dead-store elimination (~0.3%); peephole word shaving (CRSTUB, ROTMASK neutral); interlock scheduling alone (SCHED within noise against a modelled -18%); branch-prediction work (mispredicts under 1%); VFP short vectors (no throughput gain); CPU display-list vertex cache; second vertex worker; GX-thread stealing; deferred gather; deeper job rings (1 MB 18.9% vs 256 KB 20.9%); OPT_ICBI (matters only while loading); a single-function stand-in outside the shadow scan (no device block above 0.3%). Re-measured with separate runs on 10-20 ("The rest of the ruled-out switches, re-measured"): traces, the second worker, stealing, sched off, the display-list cache and a bigger job ring still lose; icbi, qbig, feeddirect and cmdpld are even; the flush-prim stand-in (`--psflush`) gained +1.7% (Ordon +0.8%) and is on by default.
+- Ruled out by device data (do not re-propose without a new argument; several of these verdicts came from A/Bs that recompile all JIT code, which read the on arm ~2% low, and IND2 and float lanes were reversed by separate runs on 10-19, see "Float lanes and the 2-way indirect table, re-measured"): dispatcher or indirect-table redesign (dispatcher under 1%; IND2 neutral then, now on: +0.85%; FAST_BITS=13 neutral - **corrected 2026-11-01: -0.71% at a matched allocation and rung, jobs 1922-1925; the "neutral" was job 193, pre-filter**); faster compile (0.2-0.7%); traces, OPT_CALLS, relayout, AOT / static recompilation (footprint losses above); registers across blocks or loop regions (modelled 0.5-2.5% of hot words); CR dead-store elimination (~0.3%); peephole word shaving (CRSTUB, ROTMASK neutral); interlock scheduling alone (SCHED within noise against a modelled -18%); branch-prediction work (mispredicts under 1%); VFP short vectors (no throughput gain); CPU display-list vertex cache; second vertex worker; GX-thread stealing; deferred gather; deeper job rings (1 MB 18.9% vs 256 KB 20.9%); OPT_ICBI (matters only while loading); a single-function stand-in outside the shadow scan (no device block above 0.3%). Re-measured with separate runs on 10-20 ("The rest of the ruled-out switches, re-measured"): traces, the second worker, stealing, sched off, the display-list cache and a bigger job ring still lose; icbi, qbig, feeddirect and cmdpld are even; the flush-prim stand-in (`--psflush`) gained +1.7% (Ordon +0.8%) and is on by default.
 
 ## Conflicts and stale numbers
 
@@ -3085,6 +3085,30 @@ Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
+### C40 re-priced at the current defaults: Ordon +1.24%, heavy area +0.96% (jobs 1908-1915, 2026-11-01)
+
+**This section existed only in HANDOFF and AGENTS until an audit caught it** - a rule 7 gap in the very stretch
+that re-priced it, which is the kind this file is supposed to make impossible.
+
+`--fifomirror off` (MEASUREMENT ONLY, not exact) re-run with `--gpruns` on, build `6db3d1d7c129`, 8.9 MB rung, two
+runs an arm adjacent and reversed:
+
+| scene | mirror off | default | | the old figure |
+|---|---|---|---|---|
+| TP heavy area (1908-1911) | 7.292 / 7.291 | 7.220 / 7.224 | **+0.96%** | +0.5% |
+| static Ordon (1912-1915) | 10.551 / 10.552 | 10.423 / 10.422 | **+1.24%** | +1.6% |
+
+Complete rank separation in both, every spread 0.01% bar one at 0.06% - the tightest pair of arms in this file.
+**I predicted both would shrink, because `--gpruns` had just made 37% of mirror writes contiguous. One did and one
+nearly doubled, so the prediction had no predictive value.** For the heavy area the old 0.5% was taken on
+2026-10-24, before the stolen-second filter and several points of core-0 work, and **a fixed memory cost becomes a
+larger *share* as core 0 gets faster** - which outweighed the contiguity there and not in Ordon. The rule: "this is
+worth less now that core 0 is faster" is not a safe inference in either direction. The two scenes are also more
+consistent than before (~1.0-1.2% against 0.5-1.6%), which is what a cleaner method should do.
+
+These are upper bounds on what an exact version could get, not promises. C40's exact design (core 2 writes the
+mirror, since it already has the bytes) is unbuilt and is now the best-evidenced unbuilt idea on the list.
+
 ### C48 answered, and its `FAST_BITS` sweep says keep 16 - with a 1.7-point rung trap on the way (jobs 1916-1925)
 
 **The probe counter, on hardware at last** (`--indstat`, built 2026-10-31 and "waiting on a device build"; job
@@ -3774,6 +3798,9 @@ the two guesses on record differed eightfold (~1.35 M/s from "21% of exits are i
   +7.2%) and part of that gain may be fewer indirect branches rather than the inlining itself. It also means the
   device's probe rate varies with how much of a scene's hot code gets regionized.
 - **The second slot was used zero times in all three runs.** OPT_IND2 was adopted on ~+0.9% with no idea why, and
+  > **Superseded on the device, 2026-11-01 (job 1916): the second slot serves 14.0% of probes, ~112,000 a
+  > second.** So this qemu reading is a property of `callmany.S`, not of the game, and it is OPT_IND2's
+  > explanation that it appeared to withhold. Read the qemu probe figures as shape, never as rates.
   this is the first direct evidence about the mechanism: in these shapes it is not second-slot hits. A shape with
   real index collisions would differ, so this moves the burden of proof rather than settling it.
 - **The rate is not guessable** - five orders of magnitude between two call shapes that both look like SDK code -
@@ -3903,7 +3930,9 @@ they vary ~12%, which is the sampled profile clock's own spread and the reason t
 
   The paired-single library is the single most valuable thing in the project after draw merging - Mario Party 4 runs
   8.987 frames a second with it and **7.773 without**. `__GXSendFlushPrim` is a loss in **every** game measured:
-  **off by default since 2026-10-30**. It stands in for one guest store of a word, which is far too small to pay -
+  **off by default since 2026-10-30** - *and back ON the same day, which this paragraph never said*: once the
+  stolen seconds were filtered out the sign flipped to +0.40% Ordon / +0.85% heavy (jobs 1652-1659), and
+  `--psflush` has been a default since. It stands in for one guest store of a word, which is far too small to pay -
   the same rule that made the PNGP port a loss, since a stand-in is charged instruction fetch rather than work.
 - **`--nskeep` on by default (Mario Party 4 +1.2%):** 9.011 -> **9.122** frames a second (job 1560 against 1559),
   TP and Wind Waker even; 60% of that game's stamps on shapes are false alarms. Exact: 106,264 kept shapes compared
