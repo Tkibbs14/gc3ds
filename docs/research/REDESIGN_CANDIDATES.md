@@ -527,10 +527,19 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   `pmu_mcyc` 804 and the same `clock MHz` header on both sides. **And the two states print an identical set of
   report-line types**, so nothing the program knows about is missing. The 1.9 MB is real and unexplained; it may be
   a symptom of the same system state rather than the cause of the slowdown.
-- **It is a ladder, not two states, and it is set at launch** (2026-11-01, the logs of jobs 1740-1784). Three values
-  appear - **7.1, 8.6 and 9.0 MB** - and in the heavy area, over profiled runs of one configuration, speed falls
-  monotonically as free heap rises: 7.1 -> 23.96 / 23.34, 8.6 -> 23.84 / 23.81 / 23.44, 9.0 -> 23.13 / 22.69. A
-  monotone relation over three levels is an argument for a mechanism rather than a coincidence of two samples.
+- **Five values, and one of them is the bad one - it is not a ladder** (corrected twice the same night; the second
+  reading, "speed falls monotonically as free heap rises", came from three profiled heavy-area runs and does not
+  survive the 301 logs on disk). The values are **2.9, 7.1, 7.2, 8.6 and 9.0 MB**, with 2.9 the historical majority
+  (228 of 301 logs, the headline runs among them). What the wider data says:
+  - **9.0 is reproducibly bad.** Its Ordon defaults cluster at **32.89-32.98** across five runs, against 7.1's
+    34.45-34.87, and the one *controlled* comparison - the same commit, same defaults - reads **10.030 / 10.020**
+    on 9.0 and **10.587 / 10.592** on 7.1, about -4.8%.
+  - **2.9 and 7.1 are equivalent**, which kills the monotone reading outright: 2.9 has the *least* free heap and its
+    Ordon defaults sit at the same level (the headline runs 1690/1691 read 34.62 / 34.70).
+  - **8.6 is unresolved**: three runs, all profiled heavy-area, sitting between 9.0's and 7.1's - too few to claim
+    anything, and profiled runs are the wrong instrument for it.
+  So the statement that survives is "**the 9.0 state is bad**", not "free heap predicts speed". The heap value is a
+  *label* for the state; which labels are bad has to be measured per label rather than inferred from the number.
 - **The state is fixed when the process starts and inherited by every job that reuses it** (a peer's reading of the
   launch path, confirmed from the `# relay:` headers). A job either downloads a build and restarts into it through
   Luma's `hb:ldr` - a self-chainload - or reuses the resident process. The heap value changes **only** at a

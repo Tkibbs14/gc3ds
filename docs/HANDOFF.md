@@ -18,11 +18,13 @@
 > its drawing code (`--port-picture-draw`, off) has never executed in any check on either machine. The walk refuses
 > at a visible picture rather than run it.
 >
-> **C55, which matters more than the 3.4%: the device launches into one of at least three memory states, and speed
-> falls monotonically across them.** Every log has always printed which one - `# heap: largest malloc block` reads
-> **7.1, 8.6 or 9.0 MB** - and in the heavy area, over profiled runs of one configuration, 7.1 gives 23.96 / 23.34,
-> 8.6 gives 23.84 / 23.81 / 23.44 and 9.0 gives 23.13 / 22.69. At defaults static Ordon reads ~34.6-34.9% on the 7.1
-> rung and ~32.95-33.0% on the 9.0 one: **a ~5% spread with no code change at all.** The value is fixed when the
+> **C55, which matters more than the 3.4%: the device launches into one of several memory states and one of them is
+> ~5% slow.** Every log has always printed which one - `# heap: largest malloc block` - and five values appear across
+> the 301 logs on disk: **2.9, 7.1, 7.2, 8.6 and 9.0 MB**, with 2.9 the historical majority (228 logs, the headline
+> runs among them). The same commit at the same defaults reads **10.030 / 10.020** on the 9.0 label and
+> **10.587 / 10.592** on 7.1: **a ~4.8% spread with no code change at all.** The number does not predict the speed -
+> 2.9 has the least free heap and performs like 7.1 - so it is a *label*, and which labels are slow must be measured
+> per label. (I claimed a monotone ladder from three profiled runs earlier the same night; 301 logs killed it.) The value is fixed when the
 > process starts and inherited by every job that reuses it; it changes **only** when a job downloads a build and
 > chainloads through Luma's `hb:ldr`, and a chainload does not pick a rung deterministically. **So a measurement
 > series wants one process, or at least one rung** - `runs.py` now prints the value and refuses to compare across

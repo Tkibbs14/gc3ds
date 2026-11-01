@@ -19,11 +19,12 @@ build agree to ~0.1%) and the scripted Ordon walk (tp_ordon.state with the --pre
 title (tp850.state) use title_sections.py: its sections differ too much to pool.
 
 Each line ends with the build's commit and the **launch memory state** (`heap N MB`, from the log's
-'# heap: largest malloc block'). **The 2DS has more than one launch memory state, and they differ by ~5%** (C55,
-2026-11-01): at identical defaults on the same commit, static Ordon reads ~32.96% with `heap 9.0 MB` and ~34.6-34.9%
-with `heap 7.1 MB`, and the correlation is exact over every plain Ordon run on disk. In the 9.0 state the app holds
-1.9 MB *more* free heap; the mechanism is unknown (C55 lists the hypotheses already killed), so read this as a
-reliable marker of the state and not as its explanation. **Runs in different states are not
+'# heap: largest malloc block'). **The 2DS launches into one of several memory states and one of them is
+~5% slow** (C55, 2026-11-01). Five values appear across the logs - 2.9, 7.1, 7.2, 8.6 and 9.0 MB - and at identical
+defaults on the same commit static Ordon reads **10.030 / 10.020** with `heap 9.0 MB` against **10.587 / 10.592**
+with `heap 7.1 MB`. The number itself predicts nothing (2.9 MB, the historical majority, performs like 7.1 despite
+having the least free heap): it is a *label* for the state, and which labels are slow has to be measured per label.
+The mechanism is unknown; C55 lists the hypotheses already killed. **Runs in different states are not
 comparable whatever else matches**, so scoring several logs together prints a loud warning when they do not share
 one; group by the heap column and compare only within a group. This is the check that would have saved an hour on
 2026-11-01, when a device step became a "-5.6% regression" and was bisected across eight commits.

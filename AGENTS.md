@@ -44,8 +44,10 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    became a "-5.6% regression" in this very file for an hour, after the arms were batched - the exact thing this
    rule forbids, done while investigating a measurement artifact.
    **The step is the launch memory state, and `runs.py` now prints and polices it** (C55): every log's
-   `# heap: largest malloc block` reads 7.1, 8.6 or 9.0 MB, speed falls monotonically as that rises, and the value
-   is fixed when the process starts and inherited by every job reusing it - it changes **only** when a job downloads
+   `# heap: largest malloc block` labels the state (2.9, 7.1, 7.2, 8.6 or 9.0 MB across the logs on disk), **one of
+   those labels is ~5% slow** - 9.0, whose Ordon defaults read 10.03 against 7.1's 10.59 on the same commit, while
+   2.9 (the historical majority) performs like 7.1 - and the value is fixed when the process starts and inherited by
+   every job reusing it - it changes **only** when a job downloads
    a build and chainloads through `hb:ldr`. So **a measurement series wants one process, or at least one heap
    value**, and `runs.py` refuses to compare across values. **This is the likeliest identity of the "~2% day drift"
    this rule has quoted for weeks**: a series that chainloads part-way through moves between rungs. Before a series

@@ -2951,8 +2951,12 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > The cheap check that would have caught it is the one the bisect finally forced: re-run the *new* build late, not
 > only the old one.
 > **CAUSE FOUND the same night, and the instrument was already in every log (C55).** `# heap: largest malloc block`
-> reads **7.1 MB** in the fast state and **9.0 MB** in the slow one, and the correlation with speed is exact over
-> every plain Ordon run on disk: 7.1 MB gives 34.45-34.87% at defaults, 9.0 MB gives 32.94-32.98%. In the 9.0 state
+> labels the state, and five values appear across the 301 logs on disk (**2.9, 7.1, 7.2, 8.6, 9.0 MB**; 2.9 is the
+> historical majority at 228 logs). **One label is slow:** 9.0's Ordon defaults cluster at 32.89-32.98% against
+> 7.1's 34.45-34.87%, and the controlled pair - same commit, same defaults - is 10.030 / 10.020 against
+> 10.587 / 10.592. **The number does not predict the speed**: 2.9 has the least free heap and performs like 7.1
+> (the headline runs 1690/1691 read 34.62 / 34.70), which is why an earlier "monotone in free heap" reading here was
+> wrong and is corrected. In the 9.0 state
 > the app holds **1.9 MB more free heap**. **The mechanism is still unknown**, and four hypotheses are already dead
 > from the logs on disk: a failed emulator allocation (the probe runs after MEM1 and the JIT, and both sit at the
 > same address in both states), the display-list vertex caches (present in both), a relay restart (one falls inside
