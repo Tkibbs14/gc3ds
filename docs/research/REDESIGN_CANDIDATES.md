@@ -488,6 +488,41 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 - **Re-evaluate when:** the speed runs land. If the fold does not pay despite replacing 7.6x the guest work a call,
   that is a result about subtree ports in general and belongs here with its numbers, not a reason to retry blind.
 
+## C55. The device steps ~5.6% between runs of one session, and nothing in the log says so (2026-11-01)
+
+- **The measurement.** Static Ordon at unchanged defaults read **10.020** frames a second at ~00:33 (job 1766) and
+  **10.592** at ~01:3x on the identical commit (job 1781). Seven commits were built and run across that boundary and
+  the profile is flat on each side: everything before reads ~10.03, everything after reads **10.54-10.62**. It is a
+  step, not a drift - the runs either side of it are tight (0.05-0.10% within a state).
+- **What it is not.** The clock is the same (`pmu_mcyc` 804 both sides, so no throttle). The work is the same: every
+  per-frame rate - `draws_s`, `verts_s`, `gxbytes_k`, `gpu_calls_s` - scales at exactly the speed ratio 0.945. The
+  host side is idle in both (`log_pct`, `disc_pct`, `present_pct`, `wait_pct` all 0, `polls_s` scales with speed).
+  The code is the same (the step happens on one commit re-run) and the JIT is the same (24,800 against 24,665 blocks,
+  hot words 2.251 against 2.245).
+- **What it looks like, from the PMU.** Identical work, a worse memory system: `dcrmiss_k` **+10.1%**, `dmtlb_k`
+  **+14.3%**, `scu_c0miss_k` **+7.6%**, `icmiss_k` only +2.4% and `stall_inst_m` -2.0%. So core 0's *data* side is
+  the whole of it, and the instruction side is untouched. Its IPC falls from 0.398 to 0.378.
+- **Why it matters more than any single optimisation on this list.** Rule 3's method is "separate whole runs, one
+  session, one build". **This says that is not sufficient.** Every ledger entry under ~5% taken from arms that were
+  not interleaved inside one state is suspect, and the project has 100+ of them. It also cost this session an hour:
+  the step was first written up as a -5.6% regression in our own code, bisected across eight commits, and withdrawn
+  (MEASUREMENTS' withdrawn-regression section).
+- **The leading hypothesis, unproven.** The relay server restarted at **00:34:51**, inside the boundary, and
+  FINDINGS already records that **a second core reading through emulated RAM evicts core 0's working set from the
+  shared 2 MB L2 and costs core 0 ~6%** - the right magnitude, and the right signature (data-side only). If the
+  relay client on core 1 busy-retries against an unhealthy or unreachable server, that is exactly the shape. Against
+  it: nothing in the log shows core 1 busier, though the log has no counter that would.
+- **First steps, cheapest first.** (1) A core-1 occupancy counter and a relay-client retry/error counter in
+  perf.csv, so the next step announces itself instead of having to be bisected - that is the whole lesson of this
+  entry, and it is one afternoon's work. (2) Two runs of one build with the relay client stopped after the job
+  starts, against two with it running. (3) If it is not the relay, the same A/B with the log writer disabled
+  (`--shots 0` is already default; the asyncfile writer is the other core-1 tenant).
+- **Until it is instrumented:** interleave every A/B's arms within a few minutes, re-run **both** builds late rather
+  than only the old one, and treat any absolute figure as belonging to its state.
+- **Re-evaluate when:** a core-1 counter exists. **Status: next, ahead of any optimisation** - an instrument that
+  makes the step visible is worth more than a percent of speed, because it decides whether the percent is real.
+
+
 ## C54. The J3D joint and animation calc tree: ~11% of core 0, never looked at (2026-10-31)
 
 - **Status:** **next**, alongside C53, and the first new large target in some time.
