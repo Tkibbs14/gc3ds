@@ -50,9 +50,11 @@ extern bool g_portPictureDraw;
 // is the standalone entry hook, which measured Ordon -4.3%.
 extern bool g_portWalkText;
 extern u64 g_portWalkDrew[2];
-// --port-size-refused on (check mode only, measurement): interpreter instructions summed over *refused* calls, per
-// hook and give-up reason, so a refusal's cost is the subtree it abandons rather than a count of calls.
-extern bool g_portSizeRefused;
+// --port-size-refused MASK (check mode only, measurement): interpreter instructions summed over refused calls whose
+// reason is in MASK, per hook and reason, so a refusal's cost is the subtree it abandons rather than a count of
+// calls. A mask and not a flag because sizing a refusal means executing it, which hides its children from the hook:
+// see the comment in port_j2d.c. The figure is an upper bound on the prize, never the prize.
+extern u32 g_portSizeRefused;
 extern u64 g_portRefusedIns[PORT_N][8];
 // --port-softfloat on: PSMTXConcat through the interpreter's exact soft float when an input is a denormal, a NaN or
 // an infinity, rather than giving up. That give-up is 37.5% of the pane walk's hook entries once C53 is on, each

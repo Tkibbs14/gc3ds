@@ -36,7 +36,7 @@ void port_set_memory(u8* mem1, u32 size) {
     if (getenv("GC3DS_PORT_PICTURE")) g_portPicture = strcmp(getenv("GC3DS_PORT_PICTURE"), "on") == 0;
     if (getenv("GC3DS_PORT_WALKTEXT")) g_portWalkText = strcmp(getenv("GC3DS_PORT_WALKTEXT"), "on") == 0;
     if (getenv("GC3DS_PORT_PICTURE_DRAW")) g_portPictureDraw = strcmp(getenv("GC3DS_PORT_PICTURE_DRAW"), "on") == 0;
-    if (getenv("GC3DS_PORT_SIZE_REFUSED")) g_portSizeRefused = strcmp(getenv("GC3DS_PORT_SIZE_REFUSED"), "on") == 0;
+    if (getenv("GC3DS_PORT_SIZE_REFUSED")) g_portSizeRefused = (u32)strtoul(getenv("GC3DS_PORT_SIZE_REFUSED"), NULL, 0);
     if (getenv("GC3DS_PORT_SOFTFLOAT")) g_portSoftFloat = strcmp(getenv("GC3DS_PORT_SOFTFLOAT"), "on") == 0;
 #endif
     g_pm = mem1;
@@ -1088,10 +1088,19 @@ bool g_portPictureDraw;
 bool g_portWalkText;
 static void text_draw_self(Pc* c, u32 tb, u32 px, u32 py, u32 mtx);  // defined with the J2D text section, below
 u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively through the C53 halves: picture, text box
-// --port-size-refused (off, check mode only): also run every *refused* call through the interpreter and add up its
-// guest instructions, per hook and per give-up reason. What it answers is the question the give-up histogram cannot:
-// a reason that refuses many small calls and a reason that abandons a few large subtrees look identical in a count.
-bool g_portSizeRefused;
+// --port-size-refused MASK (0, check mode only): for refusals whose *reason* is in MASK, also run the call through
+// the interpreter and add up its guest instructions, per hook and per reason. What it answers is the question the
+// give-up histogram cannot: a reason that refuses many small calls and one that abandons a few large subtrees look
+// identical in a count.
+// **It is a mask and not a flag because the measurement perturbs itself.** Sizing a refusal means executing the
+// call, and gekko_run_call is a bare interpreter loop that never consults this hook - so the refused call's children
+// never reach the walk, and everything they would have contributed disappears. With every reason sized at once that
+// is fatal: a peer's PC run (2026-11-01) saw 72,000 hook entries at state 4290 fall to 1,476 and the walk look
+// switched off, because the *root* refusals (reason 1) were swallowing whole pane trees. Size one reason at a time
+// and the others keep their normal dynamics.
+// **Even then the figure is an upper bound on the prize**, not the prize: part of what a refusal abandons is already
+// covered by walks accepted further down the same tree, which is exactly what the root refusals were hiding.
+u32 g_portSizeRefused;
 u64 g_portRefusedIns[PORT_N][8];
 // --port-softfloat (off): compute PSMTXConcat through the interpreter's exact soft float when an input is a
 // denormal, a NaN or an infinity, instead of giving up and abandoning the subtree. See psmtx_concat_exact.
@@ -2780,7 +2789,7 @@ static u32 port_check(Gekko* g, u32 hook) {
     if (!took) {
         hs->refused++;
         hs->refusedBy[c->fail & 7]++;
-        if (!g_portSizeRefused) return 0;  // (the guest code runs as usual)
+        if (!(g_portSizeRefused >> (c->fail & 7) & 1)) return 0;  // (the guest code runs as usual)
         // Measurement only (--port-size-refused, check mode): run the refused call through the interpreter so its
         // *size* is on the record. A refusal costs whatever subtree it abandons, and nothing has ever measured that,
         // which is how coverage and value came to be used interchangeably - the J2DPicture half accepted 412 panes

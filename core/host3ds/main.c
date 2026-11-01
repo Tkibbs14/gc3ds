@@ -728,7 +728,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--port-picture")) g_portPicture = !strcmp(v, "on");  // C53, unchecked: see port.h
         else if (!strcmp(a, "--port-walktext")) g_portWalkText = !strcmp(v, "on");  // C53's other half: see port.h
         else if (!strcmp(a, "--port-picture-draw")) g_portPictureDraw = !strcmp(v, "on");  // never checked: see port.h
-        else if (!strcmp(a, "--port-size-refused")) g_portSizeRefused = !strcmp(v, "on");  // check mode only: see port.h
+        else if (!strcmp(a, "--port-size-refused")) g_portSizeRefused = (u32)strtoul(v, NULL, 0);  // a reason mask: see port.h
         else if (!strcmp(a, "--port-softfloat")) g_portSoftFloat = !strcmp(v, "on");  // exact NaN/denormal concat: see port.h
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--port-charge")) o->portCharge = (u32)strtoul(v, NULL, 0);
