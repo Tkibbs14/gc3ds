@@ -342,7 +342,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   poll fill, so a charge is absorbed by a smaller fill; flipping it 100 against 330 inside one run moves frames a
   second by 0.8%, while separate walk runs swing up to 20% because the presses land in another field and Link walks
   elsewhere). Judge a port on a scene that takes no input, never on the walk. The
-  FIFO mirror in guest RAM costs Ordon up to 1.6% (C40, parked: no exact way yet).
+  FIFO mirror in guest RAM costs **Ordon +1.24% and TP's heavy area +0.96%** at the current defaults (C40,
+  re-priced 2026-11-01, jobs 1908-1915, every spread 0.01-0.06% with complete rank separation; the old
+  figures were 1.6% and 0.5%, so the heavy area nearly doubled while Ordon came down - a fixed memory cost
+  grows as a *share* when core 0 gets faster, so "this is worth less now" is not a safe inference either
+  way). `--fifomirror off` is measurement only, so those are upper bounds - but C40 has a written exact
+  design (core 2 writes the mirror, since it already has the bytes) and is now the best-evidenced unbuilt
+  idea on the list.
 - **Added 22-24 October (details in HANDOFF; `--tier` turns out to remove 87.5% of indirect-table probes in a
   many-caller leaf, qemu 2026-10-31, so part of its gain may be fewer indirect branches rather than the inlining -
   C48):** regions of executed code with calls inlined (`--tier`, on: Wind Waker

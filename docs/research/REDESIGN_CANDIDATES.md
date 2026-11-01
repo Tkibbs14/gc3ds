@@ -1532,15 +1532,36 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
     else reads those pages.
   - **Worth:** the mirror is Ordon 1.6% and the heavy area 0.5% of core 0 measured directly (`--fifomirror off`,
     jobs 1375-1380), every game, plus whatever the write-allocate misses cost the shared L2.
+> **Re-priced 2026-11-01 at the current defaults (`--gpruns` on), build `6db3d1d7c129`, 8.9 MB rung, two runs an
+> arm adjacent and reversed in each scene:**
+>
+> | scene | mirror off | default | | the old figure |
+> |---|---|---|---|---|
+> | TP heavy area (jobs 1908-1911) | 7.292 / 7.291 | 7.220 / 7.224 | **+0.96%** | +0.5% |
+> | static Ordon (jobs 1912-1915) | 10.551 / 10.552 | 10.423 / 10.422 | **+1.24%** | +1.6% |
+>
+> Complete rank separation in both, every spread 0.01% except one at 0.06% - the tightest pair of arms in this
+> file.
+> **I predicted both would shrink, because `--gpruns` had just made 37% of mirror writes contiguous. One did and
+> one nearly doubled, so the prediction had no predictive value.** The explanation for the heavy area is that the
+> old 0.5% was taken on 2026-10-24, before the stolen-second filter existed and several points of core-0 work ago,
+> and **a fixed memory cost becomes a larger *share* as core 0 gets faster** - which outweighed the contiguity
+> there and not in Ordon. The useful rule: "this will be worth less now that core 0 is faster" is not a safe
+> inference in either direction, and only a run settles it. The two scenes are also *more* consistent than before
+> (~1.0-1.2% against 0.5-1.6%), which is what a cleaner method should do.
+> That leaves C40 the **largest single measured target in this area**, ~1% of core 0 in both TP scenes, for a
+> mechanism that already has a written exact design (core 2 writes the mirror, below). `--fifomirror off` remains
+> MEASUREMENT ONLY and not exact, so these are upper bounds on what an exact version could get, not promises.
 - **2026-11-01: this entry's own PMU split turned out to be the key to C57, and C57 has now changed this entry's
   price.** The split (jobs 1371-1374: the pane walk 43,800 cycles a commit for 2,221 bytes, reinitGX 34,200 for
   1,705) is **19.7 and 20.1 cycles a byte**, which two later instruments reproduce as 18.3 - and the "mostly data
   stalls" attribution here is what identified the mirror rather than bookkeeping as the cost. `--gpruns` (C57, on
   by default) now makes **37% of mirror writes contiguous** instead of separate 32-byte stores, and is worth
   +0.47% / +0.43% on its own. **So the 1.6% / 0.5% upper bound above was measured in a world that no longer
-  exists and is now an over-estimate.** **Re-evaluate when:** `--fifomirror off` is re-run with `--gpruns` on -
-  four runs, no new code - which should happen before anyone builds the "let core 2 write the mirror" design, since
-  that design is the most involved idea in this entry and its payoff is exactly what that re-run prices.
+  exists.** **That re-run is done and is the block above: TP's heavy area reads +0.96%, up from +0.5%, not down.**
+  I had written here that the 1.6% / 0.5% bound was "now an over-estimate"; it was an under-estimate in the heavy
+  area. **Re-evaluate when:** someone starts on the core-2 design - which is now the best-evidenced
+  unbuilt idea on this list, at ~1% in both TP scenes with the mechanism named and the exactness argument written.
   - **Cost:** hw/gx.c, the GX thread's ring consumer, the save-state path and the JIT's page classification; a check
     mode that compares the mirror against the eager version over a run, with a plant.
 - **Re-evaluate when:** the ports' commits or JIT pipe stores grow to a larger share of core 0, or an L2 / write-buffer
