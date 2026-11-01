@@ -1536,6 +1536,43 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
 
 ## C40. The pipe's FIFO mirror in guest RAM without polluting core 0's caches (2026-10-24)
 
+> **The kernel-DMA route for this entry is DEAD, measured 2026-11-01 (job 1928), and it cost one run.**
+> It was the most attractive idea an audit of the strategy documents turned up: TIMING_MODEL_PLAN's job 196
+> measured one 4 MB kernel DMA at 192 MB/s with **core 0's 1 MB chase unchanged while it copied** and concluded
+> "a candidate for bulk copies off core 0 (does not pollute L2)" - and then no design document ever picked it up,
+> while this entry's own mirror is exactly such a copy, worth ~1% of core 0. Not polluting the L2 is precisely
+> what this entry wants, and a DMA engine is the one mover in the machine that is structurally immune to the
+> shared-L2 coupling that killed C2, C15 and `--dlcache`.
+> **But a mirror write is a run, not 4 MB.** The sweep times the whole sequence a real use pays - start, poll to
+> DONE, close, flush the source (core 0 just wrote it, so it is dirty in L1), invalidate the destination (the guest
+> may read it) - against `memcpy` over the same range:
+>
+> | size | DMA all-in | memcpy | DMA is |
+> |---|---|---|---|
+> | 512 B | 63.49 us | 0.70 us | **91x slower** |
+> | 4 KB | 117.95 us | 5.19 us | 23x slower |
+> | **16 KB** (a pane-walk run) | **211.38 us** | **35.56 us** | **5.9x slower** |
+> | 64 KB | 506.47 us | 142.52 us | 3.6x slower |
+> | 256 KB | 1,689.81 us | 573.62 us | 2.9x slower |
+>
+> **The fixed cost is ~63 us - about 51,000 cycles - for three syscalls and two cache operations**, and DMA never
+> catches `memcpy` even at 256 KB, four times larger than anything the pipe produces. For scale: the pane walk's
+> *entire* commit is 171 us a call today (job 1927), and DMA-ing its 15 KB run would cost ~200 us on its own.
+> **Cross-checked (rule 8):** 256 KB at 148 MB/s scales to 148 MB/s at 4 MB against job 196's 192 - the same
+> measurement, so the sweep is not a new instrument misreading an old one; the small sizes are simply dominated by
+> a fixed cost job 196 could not see.
+> **So "kernel DMA does not pollute the L2" is true and useless here**, which is worth stating plainly because the
+> phrase has sat in the ledger for two weeks looking like an opportunity. It would need a copy of ~1 MB or more,
+> issued rarely; the pipe produces 15 KB runs ~250 times a second.
+> **What survives:** the **core-2 design below**, on the specific bet that it moves the *stall* off core 0's
+> critical path rather than removing the L2 traffic - the lines written are the same lines either way, but core 2
+> stalling on them costs core 0 nothing while the GX thread has slack (idle 12-13% in gameplay). That bet is this
+> entry's real content and the DMA detour does not touch it.
+> **One caution for anyone reading the memcpy column**: that loop copies one warm buffer to another, so 436-753
+> MB/s is an optimistic bound. The mirror's destination is a large always-cold ring - which is the whole reason
+> this entry exists - so the real mirror write is slower than those figures, and the DMA comparison is if anything
+> kinder to DMA than reality.
+
 - **Status:** parked (measured upper bound). `--fifomirror off` (hw/gx.c `g_gpMirror`) is MEASUREMENT ONLY: not exact.
 - **What:** every 32-byte pipe burst is copied into the CPU FIFO in guest RAM (`gp_burst`) as well as fed to the GX
   thread. The FIFO is a large ring, always cache-cold: each line is a write-allocate miss that evicts core 0's data.

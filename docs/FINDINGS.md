@@ -221,3 +221,26 @@ analysed yet.
 | PICA200 triangles, fill rate, combiners, texture upload, render to texture | run 3, GPU section |
 | How many instructions per second a real game executes | Dolphin JIT profiler on the user's own dumps |
 | Which GameCube/Wii hardware features games actually use | Dolphin logs on the user's own dumps; ARCHITECTURE.md |
+
+## Kernel DMA costs ~51,000 cycles fixed, so it is only for copies of a megabyte or more (job 1928, 2026-11-01)
+
+`svcStartInterProcessDma` was recorded at **192 MB/s for 4 MB** with core 0's 1 MB chase unchanged while it copied
+(job 196), which read as an opportunity to move bulk copies off core 0. The size sweep shows the fixed cost that
+one measurement could not see. Timing the whole sequence a real use pays - start, poll to DONE, close, flush the
+source, invalidate the destination - against `memcpy` over the same range:
+
+| size | DMA all-in | memcpy | DMA is |
+|---|---|---|---|
+| 512 B | 63.49 us | 0.70 us | 91x slower |
+| 4 KB | 117.95 us | 5.19 us | 23x slower |
+| 16 KB | 211.38 us | 35.56 us | 5.9x slower |
+| 64 KB | 506.47 us | 142.52 us | 3.6x slower |
+| 256 KB | 1,689.81 us | 573.62 us | 2.9x slower |
+
+**~63 us of fixed cost (about 51,000 cycles) for three syscalls and two cache operations**, and DMA still has not
+caught `memcpy` at 256 KB. The 4 MB figure reconciles (256 KB at 148 MB/s scales to 148 against the recorded 192),
+so the two measurements agree and the small sizes are simply fixed-cost-dominated.
+**So the rule is: kernel DMA for a megabyte or more, issued rarely, and never for a stream of small runs.** It
+killed C40's DMA route, where the copies are ~15 KB about 250 times a second.
+Note the `memcpy` column is an optimistic bound - that loop copies one warm buffer to another, where most real
+copies here have a cold destination.
