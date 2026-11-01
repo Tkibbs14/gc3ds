@@ -24,7 +24,11 @@ node tools/relay-server/server.js --port 8787 --data ./relay-data
 because nothing records what was in the tree. An A/B on one dirty build is still internally valid (both arms are the
 same binary), but the figure has to be taken again on a clean build before it goes in the ledger, and the binary
 cannot be checked after the fact once it is overwritten. Cost of the lapse on 2026-11-01: four device runs
-(1793-1796) thrown away and queued again as 1797-1800.
+(1793-1796) thrown away and queued again as 1797-1800 - and then **four more** (1828-1831, the C49 test), because a
+note is not a check. **`relay.sh push` now refuses a binary that was built from a dirty tree** (`RELAY_ALLOW_DIRTY=1`
+overrides), reading `host3ds/version.inc`, which `build.sh` wrote at build time and which therefore describes the
+*binary* rather than the tree. That distinction is the trap: `push` takes its note from the tree as it is now, so a
+build made before a commit and pushed after it is recorded as clean while the binary says `-dirty`.
 ```
 
 Put it behind HTTPS (for example Caddy as a reverse proxy) if it is reachable from the internet: the token travels in a

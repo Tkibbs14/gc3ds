@@ -30,6 +30,16 @@ api() { curl -sS --fail-with-body -H "x-relay-token: $token" "$@"; }
 push() {
     local file="${1:-$build}"
     [ -f "$file" ] || { echo "no $file (bash core/host3ds/build.sh)" >&2; exit 1; }
+    # Refuse a binary that was BUILT from a dirty tree. The note below is taken from the tree as it is now, so a
+    # build made before a commit and pushed after it records a clean commit while the binary itself carries
+    # "-dirty" - and runs.py then prints, correctly, that the run cannot be tied to source. That happened twice on
+    # 2026-11-01 and cost eight device runs; a note in REMOTE_RUNS did not stop the second one, so it is mechanical
+    # now. version.inc is what build.sh wrote at build time, so it describes the binary and not the tree.
+    if [ "$file" = "$build" ] && [ -z "${RELAY_ALLOW_DIRTY:-}" ] && grep -q -- '-dirty' "$here/host3ds/version.inc" 2>/dev/null; then
+        echo "refusing: $(sed -n 's/.*"\(.*\)".*/\1/p' "$here/host3ds/version.inc") - this binary was built from a dirty tree," >&2
+        echo "so its runs cannot be tied to source. Commit, rebuild, then push. (RELAY_ALLOW_DIRTY=1 overrides.)" >&2
+        exit 1
+    fi
     local note
     note="$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)$(git -C "$here" diff --quiet 2>/dev/null || echo -dirty)"
     local id
