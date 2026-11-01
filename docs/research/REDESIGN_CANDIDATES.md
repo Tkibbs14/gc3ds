@@ -445,8 +445,33 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   is **no longer a prerequisite** for this entry or for a subtree port. Matching Gekko's NaN payloads means routing
   `ps_madd` through `gekko_softfp.c`, so it is worth doing only after C53 and only after the counter is split again
   (NaN against infinity).
-- **Re-evaluate when:** the J2DTextBoxEx half is folded into the walk. Until then `--port-picture` stays off and its
-  "0 differed" must not be quoted as evidence of anything - it covers only walks that skip hidden pictures.
+- **BUILT and exact on the device (2026-11-01, `5e44cdb` + `b40dcc4` + `8aa6dc7`, `--port-walktext`).** The text half
+  is folded into the walk: `walk_scan` accepts J2DTextBoxEx's two vtable slots, `walk_pane` reproduces its
+  `rewriteAlpha` (source-identical to J2DPictureEx's, `mMaterial` at +0x138 against +0x150, so its own hash row -
+  generated on a machine with the disc image, in a run that reproduced the J2DPictureEx row byte for byte as a
+  calibration), and the walk now carries `J2DPane::draw`'s x and y, which no previously accepted pane class read
+  (children get +0.0f, as `iter->draw(0, 0, ...)` does). A separate switch from `--port-hooks` bit 10 on purpose:
+  that bit is the standalone entry hook, which lost 4.3% in Ordon, and the fold has to be measurable without it.
+  - **Jobs 1757-1758, static Ordon:** `--port check` **differed 0** with `drew picture 0 text 1000` - and that
+    second number is the point: the J2DPicture draft's "0 differed" was over **zero calls**, so the counter was
+    added before the run rather than after it. `--port plant` **differed 29,442**, so the checker does report a
+    planted fault on the new path.
+  - **The pane-class test now refuses nothing.** `# port walk-scan 10s` prints an empty histogram and an empty
+    unported-`drawSelf` list, where job 1755 (picture half alone) had 1,410 refusals a window and `803075ac`
+    x16,074. The refusals that remain are the walk's own: roots (reason "memory") and `plain()`'s NaN/inf tail.
+  - **It is a different port now, not a bigger one:** **104,292.4** real guest instructions a call against
+    **13,377** before (job 1080), and 14,984 pipe bytes against 2,221. Hook entries a window fall from 2,610 to 160
+    because an accepted parent absorbs its children's hooked calls. **Do not compare the two sums** - the old 870
+    accepted calls a window were nested inside one another, so summing them double-counts, while the new 50 are
+    disjoint top-level subtrees. Only a speed run settles it.
+  - Its clock charge was recalibrated with it (`kInsScale` 129 -> 135, conditional on the switch so the off arm of an
+    A/B is unchanged): the stale scale under-charged the emulated clock by 5% of the walk's own work.
+- **Status: built, exact, off, awaiting its first speed runs.** (The earlier "re-evaluate when the J2DTextBoxEx half
+  is folded into the walk" is now done. The J2DPicture half's own "0 differed" still covers zero drawn pictures and
+  still must not be quoted as evidence on its own; what makes it safe to turn on is that the *walk* is checked with
+  both halves accepted, which is what jobs 1757-1759 do.)
+- **Re-evaluate when:** the speed runs land. If the fold does not pay despite replacing 7.6x the guest work a call,
+  that is a result about subtree ports in general and belongs here with its numbers, not a reason to retry blind.
 
 ## C54. The J3D joint and animation calc tree: ~11% of core 0, never looked at (2026-10-31)
 
