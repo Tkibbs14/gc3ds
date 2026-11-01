@@ -546,6 +546,34 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   Note Ordon runs **more** skinned loads than the heavy area (14,410 against 10,320) - Link and the NPCs - so the two
   scenes exercise the two classes in opposite proportions, which is useful: a port that got either wrong would fail
   a check in one of them.
+- **Step 3 done - the scan says the port would take 90.5% of calls** (`--j3dstat`, jobs 1826-1827, 10 s windows; the
+  read-only form of the exact all-or-nothing test the port would make):
+
+  | | heavy area | static Ordon |
+  |---|---|---|
+  | `drawHead` calls | 1,680 | 2,310 |
+  | **would be taken** | **1,520 (90.5%)** | **2,090 (90.5%)** |
+  | refused on a packet class | 160 | 220 |
+  | refused on a **matrix** class | **0** | **0** |
+  | unreadable | 0 | 0 |
+  | a taken call covers | 6.6 mat packets, 6.6 shape packets, **10.4 matrix groups** | 2.2 / 2.2 / 5.4 |
+  | entry table | 56 buckets a call | 56 |
+
+  **Rule 8's cross-check passes**, which is what makes the figure usable: 6.6 mat packets x 1,520 taken calls =
+  10,032 against the census's **10,560** total, i.e. **95% agreement** with the gap sitting in the 160 refused
+  calls; the matrix groups reconcile to 77%. Two independent views of the same quantity agree.
+  **The matrix-class test never refuses in either scene**, so the two classes the census found really are all of
+  them and nothing beyond port bits 2 and 9 has to be written. The residue is the packet-class test alone, a bounded
+  9.5% of calls.
+  **Each taken call absorbs ~24 entry-and-commit pairs** in the heavy area (6.6 + 6.6 + 10.4). C53's pane walk
+  absorbed ~100 panes a walk and converted a <=9.5% inclusive subsystem into +3.4%; this subtree is 9.88% inclusive
+  with ~90% of calls and ~80-95% of the work addressable. **That is an analogy and not a prediction** - C53 itself
+  showed coverage over-stating value - but it is the best-evidenced entry this list has had before a port was built.
+- **The instrument fault worth keeping** (2026-11-01): the scan's first version read "66.7% taken, 1.8 mat packets a
+  call" because a `mEntryTableSize > 64` guard rejected a quarter of all calls as unreadable - and they were the big
+  buffers. The entry table averages **56** buckets, *below* that guard, so **the mean hid the tail**: a guard has to
+  be set against the distribution, not the average. Caught by differencing against the census (6.3 a call against
+  the scan's 1.8), which is rule 8 and is why the census was written first.
 - **What is left to write:** the spine only - `drawHead`'s two loops, `J3DMatPacket::draw`,
   `J3DShapePacket::drawFast`, `prepareDraw`, `J3DShape::drawFast`, `loadPreDrawSetting`, `J3DMaterial::load`,
   `setArrayAndBindPipeline`, `J3DShapeDraw::draw` and the `J3DShapeMtxConcatView::load` wrapper around bit 2's
