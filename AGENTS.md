@@ -31,7 +31,15 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    setting can depend on another's: with `--psflush` off, `--port-hooks 503` beats 243 by +0.37%; with `--psflush`
    on, 503 *loses* to 243 by 0.42% (C49, measured 2026-10-30). A figure taken at an older baseline is not evidence
    about today's, and **the ledger's entries must not be added up** - where they share the cache budget some of them
-   cancel, which is why the headline numbers have moved far less than the entries suggest. Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
+   cancel, which is why the headline numbers have moved far less than the entries suggest.
+   **But "drift" is not a place to put an unexplained gap, and a 5% one is never drift** (2026-11-01, jobs
+   1768-1770): commit `088fb0df6610` checked out, rebuilt in a *different container* and run a *session later*
+   reproduced its own figures to **0.05%** - static Ordon 10.619 / 10.614 against the recorded 10.605 / 10.619,
+   heavy area 7.363 against 7.359 / 7.346. The "~2% between days" and "~0.8% a rebuild" below are kept, because
+   they are what earlier sessions measured and the stolen-second filter was not in that scoring, but against this
+   pair they are far too pessimistic. **When a baseline moves by more than a point, build the old commit and run it
+   in today's session before attributing anything** - that is how a **-5.6%** regression of our own got found after
+   I had twice filed it as the device's day (MEASUREMENTS, the jobs-1768 section). Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
    does by default - but **the scene sets the floor, not the method**, and **two runs understate it**: four runs of
    one configuration on one build in one session span **0.23% in `tp_area2`** (7.264-7.281, jobs 1692/1693 and
    1700/1701, two hours apart), where the two adjacent *pairs* inside that span read 0.01% and 0.17%. Static Ordon
