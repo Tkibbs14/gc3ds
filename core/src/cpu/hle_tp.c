@@ -2440,7 +2440,11 @@ static u32 hle_run_body(Gekko* g, u32 budget) {
         if (k >= 0) {
             g_j3dStatN[k]++;
             if (g->pc == 0x80325500u) j3d_scan(g);  // drawHead: would the port take this call, and for how much work
-            return 0;                               // (counted and scanned; the guest code runs)
+            // **Deliberately no `return` here.** This branch used to return 0, which silently shadowed
+            // PORT_J3DDRAW: `drawHead` is in kJ3dStatPc, so with `--j3dstat on` the port hook was never consulted
+            // and read 0 taken / 0 refused. The two instruments exist to be differenced against each other
+            // (rule 8), so the census must count and fall through, not count and swallow. Counting is free and the
+            // port decides; for the other twelve addresses there is no port hook and the fall-through is a no-op.
         }
     }
     if (port_is_hook(g->pc)) {  // (not taken: the guest code runs)
