@@ -32,14 +32,17 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    on, 503 *loses* to 243 by 0.42% (C49, measured 2026-10-30). A figure taken at an older baseline is not evidence
    about today's, and **the ledger's entries must not be added up** - where they share the cache budget some of them
    cancel, which is why the headline numbers have moved far less than the entries suggest.
-   **But "drift" is not a place to put an unexplained gap, and a 5% one is never drift** (2026-11-01, jobs
-   1768-1770): commit `088fb0df6610` checked out, rebuilt in a *different container* and run a *session later*
-   reproduced its own figures to **0.05%** - static Ordon 10.619 / 10.614 against the recorded 10.605 / 10.619,
-   heavy area 7.363 against 7.359 / 7.346. The "~2% between days" and "~0.8% a rebuild" below are kept, because
-   they are what earlier sessions measured and the stolen-second filter was not in that scoring, but against this
-   pair they are far too pessimistic. **When a baseline moves by more than a point, build the old commit and run it
-   in today's session before attributing anything** - that is how a **-5.6%** regression of our own got found after
-   I had twice filed it as the device's day (MEASUREMENTS, the jobs-1768 section). Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
+   **The device can step ~5.6% between two consecutive runs of one session, so "one session, one build" is not
+   sufficient - the arms must be interleaved** (2026-11-01, jobs 1760-1784; MEASUREMENTS' withdrawn-regression
+   section has the whole story). Static Ordon at unchanged defaults read **10.020** at ~00:33 and the same build
+   read **10.592** a half hour later; every run before that boundary reads ~10.03 and every run after it reads
+   10.54-10.62, on seven different commits, with the clock identical across it (`pmu_mcyc` 804) and every host-side
+   column at 0. **A commit does reproduce tightly *within* a state** - `088fb0df6610` rebuilt in another container
+   gave 10.619 / 10.614 against a previous session's 10.605 / 10.619 - **but do not read that as the device being
+   stable**: it shows only that those runs sat on one side of a step. **So when a baseline moves by more than a
+   point, re-run the *new* build late as well as the old one.** Running only the old one late is how a device step
+   became a "-5.6% regression" in this very file for an hour, after the arms were batched - the exact thing this
+   rule forbids, done while investigating a measurement artifact. Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
    does by default - but **the scene sets the floor, not the method**, and **two runs understate it**: four runs of
    one configuration on one build in one session span **0.23% in `tp_area2`** (7.264-7.281, jobs 1692/1693 and
    1700/1701, two hours apart), where the two adjacent *pairs* inside that span read 0.01% and 0.17%. Static Ordon
@@ -361,8 +364,10 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   direction. The walk went from 13,377 real guest instructions a call to **104,292** and its pane-class test now
   refuses nothing. Two lessons generalise: **a subtree is all-or-nothing**, so the classes a walk refuses are not
   independent quantities to attack one at a time, and **coverage is not value** - the J2DPicture half of the same
-  work accepts 412 panes a window and draws none, every one being hidden. It is not a default yet only because a ~5%
-  gap between today's defaults and the recorded cloud baseline is still unexplained (MEASUREMENTS, C53's note). The
+  work accepts 412 panes a window and draws none, every one being hidden. It is not a default yet because its figure
+  was taken on one side of a device step that moved static Ordon 5.6% the same night, so the gain's *ratio* holds
+  (interleaved arms, each repeated) while its absolute numbers do not - it needs one re-measurement in the current
+  state (MEASUREMENTS, the withdrawn-regression section). The
   direction itself still holds: the ports as a *set* are +10.6% while their parts sum to ~3.7%, and small functions
   lose as entry-hook stand-ins - the PNGP matrix load is the proof, 1.53 M calls and ~5.8% of core 0 for -0.03%, so
   **rank candidates by work per call, not by call count**. **The "denormal give-up" that CONTRIBUTOR_TASKS 9 called a

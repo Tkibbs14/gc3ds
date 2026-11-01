@@ -2932,7 +2932,32 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > Before anyone builds this, split the counter once more - NaN against infinity - because infinities need no
 > payload matching and may be all of it.
 
-### A -5.6% regression that was nearly filed as device drift (jobs 1768-1770, 2026-11-01)
+### WITHDRAWN: the "-5.6% regression" was a step in the device, not in the code (jobs 1776-1784, 2026-11-01)
+
+> **Withdrawal, the same night, stated before the evidence below because the evidence below is wrong.** There is no
+> regression. Every commit in `088fb0df6610..8aa6dc7` was built and run, and the profile is flat: **10.619 / 10.614,
+> 10.584, 10.539, 10.613, 10.594, 10.593, and 8aa6dc7 itself at 10.592** (jobs 1768-1781, static Ordon). The commit
+> that read **10.030 / 10.020** earlier the same night reads **10.592** a half hour later, unchanged.
+> **What actually happened is worse than the regression would have been: the device's absolute speed moved 5.6%
+> between two consecutive runs of one session.** Job 1766 (defaults) read 10.020 at ~00:33 and job 1768 read 10.619
+> at ~00:41; every run before that boundary reads ~10.03 and every run after it reads 10.54-10.62, whatever the
+> commit. The clock is identical across it (`pmu_mcyc` 804 both sides) and no host-side column differs (`log_pct`,
+> `disc_pct`, `present_pct`, `wait_pct` all 0). **So "one session, one build" is not sufficient**: the hazard rule 3
+> documents is ~2% between days, and this is 5.6% between adjacent runs.
+> **My error, for the next reader:** the old commit's two runs agreed to 0.05%, and I read that as "the device is
+> stable" when it only showed the device was stable *across those few minutes* - on one side of a step I could not
+> see. Every old-build run came after every new-build run. **I batched the arms while investigating a measurement
+> artifact, which is the exact thing rule 3 forbids, and I had committed a correction to rule 3 an hour earlier.**
+> The cheap check that would have caught it is the one the bisect finally forced: re-run the *new* build late, not
+> only the old one.
+> **A lead, not a conclusion:** the relay server restarted at 00:34:51, inside the boundary, and AGENTS already
+> records that a second core reading through emulated RAM costs core 0 about -6% - the right magnitude if the relay
+> client on core 1 was busy-retrying against an unhealthy server. Unproven: nothing in the logs shows core 1 busier.
+> **What survives:** C53's A/B, because its arms were interleaved and each repeated an hour apart (off 10.030 /
+> 10.020, on 10.367 / 10.376 - a reproducible split, not a trend). Its *ratio* stands; its absolute figures belong to
+> the pre-boundary state and must not be differenced against anything after it.
+
+### The original (wrong) entry, kept per rule 3: a -5.6% regression nearly filed as device drift (jobs 1768-1770)
 
 **The experiment:** commit `088fb0df6610` checked out into a worktree, built in *this* container with the same
 devkitARM 16.1.0, pushed to the relay, and run **today**, interleaved with the current build at its own defaults.
@@ -2949,8 +2974,11 @@ and run a session later, lands within **0.05%** in static Ordon and 0.05% in the
 device drifts ~2% between days" and "a rebuild moves a baseline ~0.8%", and against this pair both are much too
 pessimistic. That is not a licence to compare across sessions - one commit, two scenes, two sessions is not a
 survey, and the stolen-second filter (added 2026-10-30) was not in the scoring that produced the older drift
-figures, which is the likeliest reason they looked large. But it does mean **a 5% gap is never drift**, and a number
-that size must be chased rather than attributed.
+figures, which is the likeliest reason they looked large.
+> **Corrected the same night: this paragraph's conclusion was wrong.** "A 5% gap is never drift" is exactly what the
+> rest of the night disproved - the device stepped 5.6% between two consecutive runs. What reproduces to 0.05% is a
+> commit *within one device state*; it says nothing about stability across a session. See the withdrawal at the head
+> of this section.
 
 **2. There is a -5.6% / -4.5% regression in `088fb0df6610..8aa6dc7`**, and it is larger than C53's gain, so C53's
 +3.46% has been recovering part of a self-inflicted loss rather than adding to a sound baseline. What is known about
@@ -2975,8 +3003,11 @@ GX side is not the limit; the JIT buffer is at the same address in both. The hea
 largest block 7.1 -> 9.0 MB) is most likely an effect rather than a cause, since the texture-decode rates scale with
 speed too.
 
-**Status: being bisected on the device** (job 1776 at `4ba02a6`; eight code-touching commits in range, so three runs).
-**Nothing from this session becomes a default until it is found.**
+**Status: WITHDRAWN - see the block at the head of this section.** The bisect found nothing because there was nothing
+to find: all seven commits in range read 10.54-10.62, including `8aa6dc7` itself when re-run after the boundary. The
+"identical work, worse data side" signature in the table above (`dcrmiss_k` +10.1%, `dmtlb_k` +14.3%,
+`scu_c0miss_k` +7.6%) is real but describes **the device's two states**, not two builds - which makes it the best
+evidence available about what the step actually is, and the place for anyone investigating it to start.
 
 ### C53: J2DTextBoxEx folded into the pane walk - +3.46% and +2.31% (jobs 1760-1767, 2026-11-01)
 
@@ -3019,10 +3050,11 @@ CONTRIBUTOR_TASKS 9 are right at their own time; what changed is what else is sw
 sub-additivity running the other way - an option *raising* another's value rather than subsuming it** - and it is why
 "rank the candidates" has to be redone after every default lands, not once.
 
-> **Not yet a default, deliberately (2026-11-01).** Rule 5 turns a measured, exact gain on without asking, and this
-> qualifies. It is being held for one reason: at these defaults static Ordon reads **10.03** where the cloud-toolchain
-> baseline below records **10.61** for commit `088fb0df6610`, a ~5% gap against the ~2% day drift the project
-> documents. Job 1753 (same defaults, the previous build, earlier the same day) reads 10.073, so the off arm is
+> **Not yet a default (2026-11-01).** Rule 5 turns a measured, exact gain on without asking, and this qualifies on
+> its ratio. What it needs first is one re-measurement in the device's current state: the figures above were taken
+> on the far side of a 5.6% step (the withdrawn-regression section at the head of this file), so **+3.46% / +2.31%
+> as a ratio holds - interleaved arms, each repeated an hour apart - while 10.367 and 7.193 are not comparable with
+> anything measured after the boundary.** The reasoning that originally held it back is kept below and was wrong: Job 1753 (same defaults, the previous build, earlier the same day) reads 10.073, so the off arm is
 > self-consistent and the gap is not C53's. `jit.c` is **unchanged** since `088fb0df6610`, which rules out the shared
 > stubs and `--indstat`; everything that did change is in `port_j2d.c`/`main.c` and gated off bar the refusal
 > histograms, which fire a few hundred times a second. That leaves the device's day or plain code-layout movement from

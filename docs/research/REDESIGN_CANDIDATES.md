@@ -476,10 +476,12 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   to an 11% tail hours earlier on the pre-C53 picture, is now the walk's biggest addressable refusal and would take
   coverage 2.2x. Both readings are right at their own time. **C49 in reverse: an option raising another's value.**
   The remedy is built (`--port-softfloat`, `psmtx_concat_exact`, off; jobs 1774-1775 check it).
-- **Status: measured and exact, held off by one open question**, not by anything about the port: at these defaults
-  static Ordon reads 10.03 where the cloud baseline records 10.61 for `088fb0df6610`, ~5% against a documented ~2%
-  day drift, and a 5% regression would dwarf a 3.5% gain. `jit.c` is unchanged since that commit, so the stubs are
-  out of it. Jobs 1768-1771 run that commit, built in this session, to separate the device's day from our code. (The earlier "re-evaluate when the J2DTextBoxEx half
+- **Status: measured and exact; needs one re-measurement before it becomes a default.** The figures were taken on
+  one side of a device step that moved static Ordon 5.6% the same night (jobs 1760-1784; MEASUREMENTS' withdrawn
+  regression section). The *ratio* holds - the arms were interleaved and each repeated an hour apart, off 10.030 /
+  10.020 against on 10.367 / 10.376, which is a split and not a trend - but the absolute figures belong to the
+  pre-boundary state. The "~5% regression" this entry previously said it was held back by **does not exist**: all
+  seven commits in range read 10.54-10.62, including the one that had read 10.03. (The earlier "re-evaluate when the J2DTextBoxEx half
   is folded into the walk" is now done. The J2DPicture half's own "0 differed" still covers zero drawn pictures and
   still must not be quoted as evidence on its own; what makes it safe to turn on is that the *walk* is checked with
   both halves accepted, which is what jobs 1757-1759 do.)
