@@ -3040,13 +3040,25 @@ on build `787ed3743e11`, 9.0 MB rung, TP's heavy area, arms adjacent and reverse
 baseline (jobs 1700-1711), so the same hook is now about thirty times worse. It stays off, as it was, but for a far
 stronger reason than "neutral".
 
-**Two things this is evidence for.** It is another instance of the rule this week keeps producing - **a candidate's
-value depends on which other options are on** (C49 with the sign reversed, the two re-pricings of
-CONTRIBUTOR_TASKS 9, C53's own +2.31% becoming +1.97% a build later). And it **strengthens C56**: that port's
-argument is that a subtree context absorbs the matrix loads which lose as entry hooks, and bit 2's cost as an entry
-hook has just gone from nothing to about a point, so there is now more to win by removing the per-call entry than
-when the figure was zero. Bit 9, the other matrix load in the same subtree, read -0.46% at the old baseline and is
-the next to re-measure.
+**And bit 9, the other matrix load in the same subtree, moved the opposite way** (jobs 1845-1848, same build, same
+rung, arms adjacent and reversed): on **7.235 / 7.237** against the default's **7.230 / 7.230**, i.e. **+0.08%**.
+Both on-runs are above both off-runs, but +0.08% is below the ~0.11% floor for adjacent runs, so this is **neutral,
+not a gain** - it stays off, because there is no reason to add native code for nothing. Its recorded **-0.46%**
+(jobs 1667-1668) no longer holds and is superseded by this.
+
+| port bit | old figure | re-measured at the new default |
+|---|---|---|
+| 2, the PNGP matrix load | -0.03% | **-0.94%** |
+| 9, the skinned-shape matrix load | -0.46% | **+0.08%** (neutral) |
+
+**Three things this is evidence for.** It is another instance of the rule this week keeps producing - **a
+candidate's value depends on which other options are on** (C49 with the sign reversed, the two re-pricings of
+CONTRIBUTOR_TASKS 9, C53's own +2.31% becoming +1.97% a build later). **But it is not a uniform drift**: these two
+hooks are the same kind of code in the same subtree, re-measured together, and they moved in *opposite* directions
+by about a point between them - so "the baseline moved" does not explain it and whatever does is specific to each
+hook. And it **strengthens C56**: that port's argument is that a subtree context absorbs the matrix loads which
+lose as entry hooks, and bit 2's cost as an entry hook has gone from nothing to about a point, so there is more to
+win by removing the per-call entry than when the figure was zero.
 
 ### C49's first clean test: two defaults ADD, and the shortfall was a cross-build artifact (jobs 1828-1839, 2026-11-01)
 
