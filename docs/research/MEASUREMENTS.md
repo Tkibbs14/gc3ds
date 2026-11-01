@@ -3118,16 +3118,29 @@ twice, once per call and once per subtree.
 inclusive of core 0 (job 1821) but the subtree is 3,010 instructions at 144 calls a second, which is ~1.1% of core
 0's instructions. Those two can only be reconciled if the subtree's instructions cost ~9x an average one, and the
 port's own timers say they do not - it replaces them at 19.5 cycles each, barely under the JIT's 21.2.
-**And a second instrument disagrees by 20x with the scan** (job 1850, census and scan in one run): the scan says a
-taken `drawHead` covers **6.6 mat packets** and 10.4 matrix groups a call over 1,239 calls - 8,177 mat packets a
-window - while `--j3dstat`'s entry census counts `J3DMatPacket::draw` entered **413** times in the same window,
-`ShapePacket::drawFast` 1,180 against 8,177, and the two matrix classes 3,481 against 12,886. Three independent
-ratios between 3.7x and 20x, all in the same direction.
-**That gap is now the thing to resolve, and not by reading the code** (rule 8). Note that `--tier` inlines calls
-inside a region, which would let a `packet->draw()` bypass an entry hook entirely and under-count the census while
-leaving the scan right - a plausible cause, *and* exactly the kind of plausible cause this project has been wrong
-about five times this week. Until it is settled, **neither the 9.88% nor the scan's coverage should size anything**,
-which includes C54 and any further subtree candidate ranked off the same profile.
+**A second instrument looked 20x out, and it was the instrument.** Job 1850's census read `J3DMatPacket::draw`
+entered **413** times in a window where the scan said 8,177 mat packets - three ratios between 3.7x and 20x, all
+one direction, and alarming enough to be published as the blocker on ranking anything else off this profile.
+**It does not reproduce. Two runs on the current build settle it** (jobs 1881-1882, `--j3dstat on --port-hooks
+2291`, `--tier` on and off): the census reads `J3DMatPacket::draw` **5,994** and **6,480**, `drawFast` 6,956 and
+7,520, the two matrix classes 5,772 / 9,398 and 6,240 / 10,160. Those are the same order as the scan, not a 20x
+gap. **And `--tier` is not the mechanism**: every counter in the two runs differs by exactly the same factor,
+1.081, including `drawHead` itself, so the per-frame structure is identical with region inlining on and off and the
+"inlined `packet->draw()` bypasses the entry hook" hypothesis is dead. (It was a good hypothesis and killing it
+cost one 70 s pair - the point of writing it down as a hypothesis rather than a cause.)
+**What the corrected numbers do say is a real finding: the port covers about half the packet-draw work.** With C56
+taking **1,332 of 1,554** drawHead calls and drawing 6,808 mat packets, the guest *still* entered
+`J3DMatPacket::draw` 5,994 times in the same window - and the ~222 refused drawHead calls account for only ~1,130
+of those. So roughly **4,900 mat-packet draws a window, about 45% of the total, reach that function by a route
+other than `drawHead`**. `J3DShapePacket::draw` reads 0, so the obvious candidate is `J3DDrawBuffer::drawTail`,
+now added to the census as slot 2 for whoever picks this up.
+**But coverage is not C56's problem and doubling it would not rescue it.** The port is 8% faster than compiled code
+at the work it does; doubling coverage doubles the saving *and* the cost, and 8% of twice as much is still 8%.
+Whoever takes this further has to make the port **compute differently** - batch the matrix loads, drop redundant GX
+state, merge the display-list calls - not cover more of the same work.
+**The 9.88%-against-1.1% discrepancy therefore stands open** (at ~53% coverage the instruction share is ~2.2%,
+still far from 9.9%), and until it is explained an inclusive profile share should not size a subtree candidate -
+C54 included. What has been *removed* from that question is the census: it agrees with the scan.
 
 **Status: built, exact, off (port bit 11 / 2048), measured as a loss.** It stays in the tree because it is exact and
 because the next thing to learn about it is cheap: if the 20x gap turns out to be real coverage sitting behind

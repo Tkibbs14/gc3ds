@@ -479,13 +479,18 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   call. C56 copies `drawHead` step by step. Bit 2 at -0.94% per call and C56 at -0.79% per subtree are the same
   finding at two scales: **absorption removes a hook's overhead, not the work.** So rank a subtree candidate by
   *what it can skip or compute differently*, never by its inclusive share.
-  **And before anything else is ranked off this profile, two instruments disagree by up to 20x about how much work
-  is there**: the scan says 6.6 mat packets and 10.4 matrix groups per taken call over 1,239 calls, while
-  `--j3dstat`'s entry census counts `J3DMatPacket::draw` entered **413** times in the same window (1,180 against
-  8,177 for `drawFast`, 3,481 against 12,886 for the matrix classes; job 1850, both in one run). `--tier` inlining
-  a `packet->draw()` past an entry hook would explain it, but that is a hypothesis of the kind this week has
-  falsified five times. **Until it is settled, neither the 9.88% nor the scan's coverage sizes anything - C54
-  included.** The zero-hash mechanism it needed is now general and documented in the checks table.
+  **A "20x instrument gap" was published here the same day and withdrawn the same day**: job 1850's census read
+  `J3DMatPacket::draw` entered 413 times where the scan said 8,177, and two runs on the current build read 5,994
+  and 6,480 (jobs 1881-1882) - the same order as the scan. `--tier` inlining past the hook was the hypothesis and
+  **it is dead**: every counter in those two runs differs by exactly 1.081, `drawHead` included, so the per-frame
+  structure is identical with region inlining on and off. One 70 s pair killed it.
+  **What that pair did establish: the port covers about half the work.** With C56 taking 1,332 of 1,554 drawHead
+  calls and drawing 6,808 mat packets, the guest still entered `J3DMatPacket::draw` 5,994 times, and the 222
+  refused calls account for ~1,130 - so ~45% reaches it by another route (`drawTail` is the candidate, now census
+  slot 2). **Coverage is still not the problem**: 8% faster than compiled code over twice as much work is still
+  8%, so the next attempt has to make the subtree *cost less*, not cover more. **9.88% inclusive against ~2.2% of
+  core 0's instructions remains unexplained, so an inclusive share still sizes nothing - C54 included.** The
+  zero-hash mechanism C56 needed is now general and documented in the checks table.
 - **Guest frame skip: built, exact, off, and shelved as a *speed strategy* - a user option instead (C9d, the
   owner's decision of 2026-10-31 after watching six runs: "let's just get things at native speed and keep working
   at improving performance").** The first human look at it settled three things the arithmetic could not.

@@ -644,16 +644,28 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   13,377 -> 104,292. C56 reproduces `drawHead` step by step and absorbs the two matrix loads without changing what
   they compute. Bit 2 at -0.94% per call and C56 at -0.79% per subtree are **the same finding at two scales**:
   absorption removes a hook's overhead, not the work.
-- **Two instruments now disagree by up to 20x about how much work is even there**, which is the thing to settle
-  before anything else is ranked off this profile: the scan says 6.6 mat packets and 10.4 matrix groups per taken
-  call over 1,239 calls (8,177 mat packets a window), while `--j3dstat`'s entry census counts `J3DMatPacket::draw`
-  entered **413** times in the same window, `drawFast` 1,180 against 8,177, and the two matrix classes 3,481
-  against 12,886 (job 1850, both instruments in one run). `--tier` inlining a `packet->draw()` past an entry hook
-  would explain it with the scan right, but that is a hypothesis of exactly the kind this week has falsified five
-  times. **Until it is settled, neither the 9.88% nor the scan's coverage sizes anything** - C54 included.
-- **Re-evaluate when:** that 20x gap is resolved. If it is real coverage behind another entry point, the drawing
-  code is written and proven exact and only the hook has to move, which is the cheapest possible follow-up.
-  **Status: built, exact, off (port bit 11 / 2048), measured as a loss.**
+> **Correction, same day: the "20x instrument gap" I published here does not reproduce, and the hypothesis
+> attached to it is dead.** Job 1850's census read `J3DMatPacket::draw` entered 413 times where the scan said
+> 8,177 mat packets; two runs on the current build read **5,994** and **6,480** (jobs 1881-1882), the same order as
+> the scan. And `--tier` is not the mechanism: every counter in those two runs differs by exactly 1.081,
+> `drawHead` included, so the per-frame structure is identical with region inlining on and off. One 70 s pair
+> killed it, which is what writing it down as a hypothesis rather than a cause was for.
+- **The real coverage finding, from the same pair: the port covers about half the packet-draw work.** With C56
+  taking **1,332 of 1,554** drawHead calls and drawing 6,808 mat packets, the guest still entered
+  `J3DMatPacket::draw` **5,994** times in that window, and the ~222 refused calls account for only ~1,130 of them.
+  So ~45% of mat-packet draws reach that function by another route; `J3DShapePacket::draw` reads 0, so
+  `J3DDrawBuffer::drawTail` is the candidate and is now census slot 2.
+- **Coverage is nonetheless not the problem, and doubling it would not rescue this.** The port is 8% faster than
+  compiled code at the work it does; twice the coverage is twice the saving *and* twice the cost. Anyone taking
+  this further has to make the port **compute differently** - batch the matrix loads, drop redundant GX state,
+  merge display-list calls - not cover more of the same work. That is the honest next step and it is a different
+  piece of work from the one this entry proposed.
+- **Still open: 9.88% inclusive against ~2.2% of core 0's instructions at the measured coverage.** Until that is
+  explained, an inclusive profile share should not size a subtree candidate, C54 included. The census is no longer
+  part of that question - it agrees with the scan.
+- **Re-evaluate when:** someone has a way to make the subtree cost *less* rather than the same, or the
+  9.88%-against-2.2% gap is explained. The drawing code is written and proven exact, so a changed hook or a changed
+  strategy is cheap to try. **Status: built, exact, off (port bit 11 / 2048), measured as a loss.**
 
 ## C55. The 2DS launches into one of several memory states up to ~5% apart, set at each chainload (2026-11-01)
 

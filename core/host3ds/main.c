@@ -2215,14 +2215,15 @@ static const char* run_body(const char* path) {
                               for (int k = 0; k < 11; k++) fprintf(g_perf, " %s %.0f", nm[k], (double)g_triBenchT[k] * 3.0 / 4000.0);
                               fprintf(g_perf, "\n");
                           } }
-                        { extern bool g_j3dStat; extern u64 g_j3dStatN[13]; extern const u32* hle_j3dstat_pcs(void);
+                        { extern bool g_j3dStat; extern u64 g_j3dStatN[14]; extern const u32* hle_j3dstat_pcs(void);
                           if (g_j3dStat) {
                               // C56: calls a 10 s window at each entry point of the drawHead subtree, in the order
                               // hle_tp.c lists them. The two class sets a port must reproduce are the packet classes
-                              // (slots 2-6) and the J3DShapeMtx loads (slots 7-12); a slot that stays 0 is code that
+                              // (slots 3-7) and the J3DShapeMtx loads (slots 8-13); a slot that stays 0 is code that
                               // need not be written at all.
-                              static u64 last[13];
-                              static const char* nm[13] = { "DrawBuffer::draw", "drawHead", "MatPacket::draw",
+                              static u64 last[14];
+                              static const char* nm[14] = { "DrawBuffer::draw", "drawHead", "drawTail",
+                                                            "MatPacket::draw",
                                                             "ShapePacket::draw", "ShapePacket::drawFast",
                                                             "DrawPacket::draw", "Packet::draw", "ShapeMtx",
                                                             "ShapeMtxConcatView", "ShapeMtxMulti",
@@ -2230,7 +2231,7 @@ static const char* run_body(const char* path) {
                                                             "ShapeMtxYBBoardConcatView" };
                               const u32* pcs = hle_j3dstat_pcs();
                               fprintf(g_perf, "# j3d subtree 10s (calls; C56):");
-                              for (int k = 0; k < 13; k++) {
+                              for (int k = 0; k < 14; k++) {
                                   fprintf(g_perf, " %s(%08lx) %llu", nm[k], (unsigned long)pcs[k],
                                           (unsigned long long)(g_j3dStatN[k] - last[k]));
                                   last[k] = g_j3dStatN[k];

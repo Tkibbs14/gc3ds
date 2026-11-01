@@ -548,10 +548,14 @@ static void pane_note(const Gekko* g) {
 // all. Counting entry points needs no struct layout and cannot perturb anything, unlike walking the buffer.
 // The order here is the order the report prints; keep them in step.
 bool g_j3dStat;
-#define J3DSTAT_N 13
+#define J3DSTAT_N 14
 static const u32 kJ3dStatPc[J3DSTAT_N] = {
     0x803254AC,  // J3DDrawBuffer::draw          (the subtree's root)
     0x80325500,  // J3DDrawBuffer::drawHead
+    // The other draw mode. Added 2026-11-01 because with C56 taking 86% of drawHead calls the guest still
+    // entered J3DMatPacket::draw ~6,000 times a window (jobs 1881-1882), so about half the packet-draw work
+    // reaches that function by another route and this is the obvious candidate.
+    0x80325578,  // J3DDrawBuffer::drawTail
     0x80312A9C,  // J3DMatPacket::draw           packet class 1 of 4: the one that does the work
     0x80312F24,  // J3DShapePacket::draw         2
     0x80312FBC,  // J3DShapePacket::drawFast     (the 6.87% inside drawHead)

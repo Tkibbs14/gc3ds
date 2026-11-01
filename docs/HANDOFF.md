@@ -20,14 +20,23 @@
 > per call and C56 at -0.79% per subtree are **the same finding at two scales: absorption removes a hook's
 > overhead, not the work.** Rank the next subtree candidate by *what it can skip or compute differently*, never by
 > its inclusive profile share.
-> **And two instruments now disagree by up to 20x about how much work is even in there**, which blocks ranking
-> anything off that profile - C54 included. The scan says a taken `drawHead` covers 6.6 mat packets and 10.4 matrix
-> groups over 1,239 calls (8,177 mat packets a window); `--j3dstat`'s entry census, **in the same run**, counts
-> `J3DMatPacket::draw` entered **413** times, `drawFast` 1,180 against 8,177, and the two matrix classes 3,481
-> against 12,886 (job 1850). Three ratios between 3.7x and 20x, all the same direction. `--tier` inlining a
-> `packet->draw()` past an entry hook would explain it with the scan right - and that is a hypothesis of exactly
-> the kind that has been falsified five times this week, so it is the next thing to *measure*. If the gap is real
-> coverage behind another entry point, C56's drawing code is written and proven exact and only the hook moves.
+> **A "20x instrument gap" was published in this block and withdrawn an hour later, by the measurement it asked
+> for.** Job 1850's census read `J3DMatPacket::draw` entered **413** times where the scan said 8,177 mat packets a
+> window - three ratios between 3.7x and 20x. Two runs on the current build read **5,994** and **6,480** (jobs
+> 1881-1882), the same order as the scan, so the gap was job 1850's census and not the game. **And `--tier` was the
+> named hypothesis and it is dead:** every counter in those two runs differs by exactly 1.081, `drawHead`
+> included, so the per-frame structure is identical with region inlining on and off. One 70 s pair, and the reason
+> it cost only that is that it was written down as a hypothesis with a test rather than as a cause.
+> **What the pair did establish is a real finding: the port covers about half the packet-draw work.** With C56
+> taking **1,332 of 1,554** drawHead calls and drawing 6,808 mat packets, the guest still entered
+> `J3DMatPacket::draw` **5,994** times in that window, and the ~222 refused calls account for only ~1,130. So ~45%
+> of mat-packet draws arrive by another route; `J3DShapePacket::draw` reads 0, so `J3DDrawBuffer::drawTail` is the
+> candidate, now added as census slot 2.
+> **But coverage is not the problem and doubling it would not rescue C56:** 8% faster than compiled code over twice
+> as much work is still 8%. The next attempt has to make the subtree **cost less** - batch the matrix loads, drop
+> redundant GX state, merge the display-list calls - which is a different piece of work from the one C56's entry
+> proposed. **Still unexplained: 9.88% inclusive against ~2.2% of core 0's instructions at the measured coverage**,
+> so an inclusive profile share sizes nothing yet, C54 included. The census is no longer part of that question.
 >
 > **`--g2 on` is +0.53% in TP's heavy area and its "no speed change" is withdrawn** (jobs 1867-1870: on
 > 7.247 / 7.246 against off 7.206 / 7.210, complete rank separation, on-arm spread 0.01%; `# g2 10s` shows 45,806
