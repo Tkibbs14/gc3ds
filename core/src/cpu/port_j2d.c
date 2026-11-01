@@ -35,6 +35,7 @@ void port_set_memory(u8* mem1, u32 size) {
     if (getenv("GC3DS_PORT_PICTURE")) g_portPicture = strcmp(getenv("GC3DS_PORT_PICTURE"), "on") == 0;
     if (getenv("GC3DS_PORT_WALKTEXT")) g_portWalkText = strcmp(getenv("GC3DS_PORT_WALKTEXT"), "on") == 0;
     if (getenv("GC3DS_PORT_PICTURE_DRAW")) g_portPictureDraw = strcmp(getenv("GC3DS_PORT_PICTURE_DRAW"), "on") == 0;
+    if (getenv("GC3DS_PORT_SIZE_REFUSED")) g_portSizeRefused = strcmp(getenv("GC3DS_PORT_SIZE_REFUSED"), "on") == 0;
 #endif
     g_pm = mem1;
     g_psz = size;
@@ -1011,6 +1012,11 @@ bool g_portPictureDraw;
 bool g_portWalkText;
 static void text_draw_self(Pc* c, u32 tb, u32 px, u32 py, u32 mtx);  // defined with the J2D text section, below
 u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively through the C53 halves: picture, text box
+// --port-size-refused (off, check mode only): also run every *refused* call through the interpreter and add up its
+// guest instructions, per hook and per give-up reason. What it answers is the question the give-up histogram cannot:
+// a reason that refuses many small calls and a reason that abandons a few large subtrees look identical in a count.
+bool g_portSizeRefused;
+u64 g_portRefusedIns[PORT_N][8];
 
 // J2DPicture::getNewColor 0x802FEC64: the four corner colours, each alpha scaled by mColorAlpha unless it is 0xFF.
 static void picture_new_color(Pc* c, u32 p, u32* col) {
@@ -2692,7 +2698,29 @@ static u32 port_check(Gekko* g, u32 hook) {
     Gekko g0 = *g;
     bool took = port_run(c, g, hook);
     *g = g0;
-    if (!took) { hs->refused++; hs->refusedBy[c->fail & 7]++; return 0; }  // (the guest code runs as usual)
+    if (!took) {
+        hs->refused++;
+        hs->refusedBy[c->fail & 7]++;
+        if (!g_portSizeRefused) return 0;  // (the guest code runs as usual)
+        // Measurement only (--port-size-refused, check mode): run the refused call through the interpreter so its
+        // *size* is on the record. A refusal costs whatever subtree it abandons, and nothing has ever measured that,
+        // which is how coverage and value came to be used interchangeably - the J2DPicture half accepted 412 panes
+        // and was worth nothing, while the walk's float refusals are 37.5% of its entries and may be worth a lot.
+        // port_run has already put memory back (its c->fail path), so the interpreter starts from a clean state;
+        // the call is consumed here rather than left to the guest, because the interpreter *is* the reference.
+        u32 sp = g->gpr[1], ret = g->lr;
+        g_chkN = 0;
+        g_icapN = 0;
+        gp_capture = icap_put;
+        g_memoRec = (void*)2;
+        int why = 0;
+        u32 n = gekko_run_call(g, ret, sp, 10000000u, &why, true);
+        g_memoRec = NULL;
+        gp_capture = NULL;
+        if (g_icapN && g_ppipe) g_ppipe(g_pctx, g_icap, g_icapN);  // the interpreter's GX writes still have to go out
+        g_portRefusedIns[hook][c->fail & 7] += n;
+        return n ? n : 1;
+    }
     walk_undo(c);  // (the walk's stores: undone for the interpreter, compared below)
     if (g_portMode == 3 && c->pn) c->pbase[c->pn - 1] ^= 1;  // (--port plant: a known difference, the checker must report it)
     else if (g_portMode == 3 && c->gdN) c->gd[0] ^= 1;  // (no pipe bytes: the first GD byte)
@@ -2823,7 +2851,18 @@ static void port_report(void) {
         fprintf(stderr, "  not taken by reason (setup, memory, floats, texregion, palette, unrecognised, texgens, indirect):");
         for (int q = 0; q < 8; q++) fprintf(stderr, " %llu", (unsigned long long)s->refusedBy[q]);
         fputc('\n', stderr);
+        if (g_portSizeRefused) {  // what each reason abandons, not how often it fires (GC3DS_PORT_SIZE_REFUSED=on)
+            fprintf(stderr, "  guest instructions a refused call, same order:");
+            for (int q = 0; q < 8; q++)
+                fprintf(stderr, " %.0f", s->refusedBy[q] ? (double)g_portRefusedIns[k][q] / (double)s->refusedBy[q] : 0.0);
+            fputc('\n', stderr);
+        }
     }
+    // The walk's two C53 halves: how many panes each actually drew. A "0 differed" over 0 drawn panes is vacuous,
+    // which is how the first J2DPicture draft passed a check it never entered (a peer's PORT_CHECK, 2026-10-31).
+    if (g_portWalkDrew[0] || g_portWalkDrew[1] || g_portPicture || g_portWalkText)
+        fprintf(stderr, "PORT: the walk drew picture %llu, text box %llu\n",
+                (unsigned long long)g_portWalkDrew[0], (unsigned long long)g_portWalkDrew[1]);
     // Which line gave up, per reason: the reason codes are coarse (reason 5 has 21 sites), so this is what says
     // what to port next. Same histogram the device's '# port give-ups 10s' prints.
     {

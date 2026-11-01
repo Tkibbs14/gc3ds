@@ -728,6 +728,7 @@ static bool opts_parse(RunOpts* o, int argc, char** argv, char* err, size_t n) {
         else if (!strcmp(a, "--port-picture")) g_portPicture = !strcmp(v, "on");  // C53, unchecked: see port.h
         else if (!strcmp(a, "--port-walktext")) g_portWalkText = !strcmp(v, "on");  // C53's other half: see port.h
         else if (!strcmp(a, "--port-picture-draw")) g_portPictureDraw = !strcmp(v, "on");  // never checked: see port.h
+        else if (!strcmp(a, "--port-size-refused")) g_portSizeRefused = !strcmp(v, "on");  // check mode only: see port.h
         else if (!strcmp(a, "--port-hooks")) g_portHooks = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--port-charge")) o->portCharge = (u32)strtoul(v, NULL, 0);
         else if (!strcmp(a, "--fifomirror")) g_gpMirror = strcmp(v, "off") != 0;  // (measurement only: not exact)
@@ -1835,6 +1836,7 @@ static const char* run_body(const char* path) {
                     }
                     if (g_opt.port || g_opt.abPort) {  // the native library ports (port_j2d.c): a line per hooked function
                         static PortStats lastP;
+                        static u64 lastRef[PORT_N][8];  // --port-size-refused: the previous window's sums
                         PortStats p = g_portStats;
                         for (int k = 0; k < PORT_N; k++) {
                             const PortHook *h = &p.h[k], *l = &lastP.h[k];
@@ -1864,6 +1866,17 @@ static const char* run_body(const char* path) {
                             fprintf(g_perf, "; not taken by reason (setup, memory, floats, texregion, palette, unrecognised [21 sites; last real TEV block %08lx], texgens, indirect):",
                                     (unsigned long)p.otherTev);
                             for (int q = 0; q < 8; q++) fprintf(g_perf, " %llu", (unsigned long long)(h->refusedBy[q] - l->refusedBy[q]));
+                            // --port-size-refused (check mode): what each reason *abandons*, not how often it fires.
+                            // Printed as mean guest instructions a refused call, because a reason that refuses many
+                            // small calls and one that abandons a few large subtrees are indistinguishable in a count.
+                            if (g_portSizeRefused) {
+                                fprintf(g_perf, "; guest instructions a refused call, same order:");
+                                for (int q = 0; q < 8; q++) {
+                                    u64 dn = h->refusedBy[q] - l->refusedBy[q], di = g_portRefusedIns[k][q] - lastRef[k][q];
+                                    fprintf(g_perf, " %.0f", dn ? (double)di / (double)dn : 0.0);
+                                }
+                            }
+                            for (int q = 0; q < 8; q++) lastRef[k][q] = g_portRefusedIns[k][q];
                             if (p.bad && (int)p.badHook == k)
                                 fprintf(g_perf, "; first: r3 %08lx, kind %lu (1 no return, 2 pipe, 3 memory, 4 __GXData, 5 logged, 6 regs) at %08lx, "
                                         "interpreter %08lx port %08lx, pipe bytes port %lu interpreter %lu",

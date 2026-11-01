@@ -49,7 +49,11 @@ extern bool g_portPictureDraw;
 // J2DTextBoxEx, and a subtree is all-or-nothing). A separate switch from `--port-hooks` bit 10 on purpose: that bit
 // is the standalone entry hook, which measured Ordon -4.3%.
 extern bool g_portWalkText;
-extern u64 g_portWalkDrew[2];  // panes the walk drew through the C53 halves: [0] J2DPicture, [1] J2DTextBoxEx
+extern u64 g_portWalkDrew[2];
+// --port-size-refused on (check mode only, measurement): interpreter instructions summed over *refused* calls, per
+// hook and give-up reason, so a refusal's cost is the subtree it abandons rather than a count of calls.
+extern bool g_portSizeRefused;
+extern u64 g_portRefusedIns[PORT_N][8];  // panes the walk drew through the C53 halves: [0] J2DPicture, [1] J2DTextBoxEx
 extern u64 g_portFloatSite[6];
 extern u32 g_portWalkDs[4];
 extern u64 g_portWalkDsN[4], g_portWalkDsOther;
