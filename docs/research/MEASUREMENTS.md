@@ -2953,8 +2953,11 @@ Floats are ~11% of all give-ups in both scenes; the pane-class test (C53) is 82%
 > **CAUSE FOUND the same night, and the instrument was already in every log (C55).** `# heap: largest malloc block`
 > reads **7.1 MB** in the fast state and **9.0 MB** in the slow one, and the correlation with speed is exact over
 > every plain Ordon run on disk: 7.1 MB gives 34.45-34.87% at defaults, 9.0 MB gives 32.94-32.98%. In the 9.0 state
-> the app holds **1.9 MB more free heap** - an allocation of about that size silently did not happen - with VRAM and
-> linear memory identical on both sides. All eight of C53's arms are in the 9.0 state, which is why its A/B is
+> the app holds **1.9 MB more free heap**. **The mechanism is still unknown**, and four hypotheses are already dead
+> from the logs on disk: a failed emulator allocation (the probe runs after MEM1 and the JIT, and both sit at the
+> same address in both states), the display-list vertex caches (present in both), a relay restart (one falls inside
+> a run that stayed slow), and the clock (`pmu_mcyc` 804 both sides). The heap figure is a reliable *marker* of the
+> state, not the explanation of it. All eight of C53's arms are in the 9.0 state, which is why its A/B is
 > valid. `runs.py` now prints the state on every line and warns when the logs scored together do not share one,
 > with a planted self-test. The relay-restart lead is **falsified**: a peer's deploy log puts a restart at 00:24:14,
 > inside job 1764, which stayed slow, and no log contains a failed-request line.

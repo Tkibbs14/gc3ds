@@ -2598,6 +2598,12 @@ static const char* run_body(const char* path) {
                         }
                         for (int w = 0; w < 2; w++) {  // the display-list vertex caches (vfast.c): GX thread, vertex worker
                             static VCacheStats lastC[2];
+                            // Did this cache get its memory? vcache_create fails silently (1.5 MB for the GX
+                            // cache, 6 MB for the worker's), so without this a run could lose 7.5 MB of cache and
+                            // report nothing. Not C55's cause - both are present in both of its states.
+                            if (!pica_vcache_alloc(w))
+                                fprintf(g_perf, "# vcache %s: NOT ALLOCATED (its ring malloc failed; C55)\n",
+                                        w ? "worker" : "gx");
                             const VCacheStats* c = pica_vcache_stats(w);
                             if (!c) continue;
                             double look = (double)(c->hits - lastC[w].hits + c->misses - lastC[w].misses + c->stale - lastC[w].stale +

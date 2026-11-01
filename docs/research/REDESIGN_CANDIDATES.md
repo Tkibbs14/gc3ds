@@ -516,22 +516,32 @@ more than a frame from the 66.67 ms target"* (the snap must round to nearest, no
   | **7.1 MB** | 34.45-34.87 | 1718-1724, 1751, 1768, 1769, 1776-1781 |
   | **9.0 MB** | 32.94-32.98 | 1753, 1761, 1766 |
 
-  In the 9.0 state the app holds **1.9 MB more free heap** (6.08 against 4.19 MB) - an allocation of about that size
-  silently did not happen - and runs ~5% slower. VRAM (388 KB free) and linear memory (10.5 MB) are identical on
-  both sides, so it is the malloc heap alone.
-- **The relay-restart trigger is falsified**, by a peer's deploy log against the job times: the relay restarted at
-  23:31:38, 23:32:48, 23:39:31, 00:24:14 and 00:34:06, and **00:24:14 falls inside job 1764, which stayed slow**.
-  Nor does any log contain a `Failed sending HTTP request` line. A restart alone does not move it. (The ballast and
-  ring `relay.c` frees on a failed request are 384 KB + 512 KB = 896 KB, not 1.9 MB, so they are not the allocation
-  either - though `fifo.c`'s `calloc(1, 1u << 20)` for TMEM plus those two would come to about 1.9 MB.)
+  In the 9.0 state the app holds **1.9 MB more free heap** (6.08 against 4.19 MB) and runs ~5% slower.
+- **What the difference is *not* - four hypotheses killed from the logs already on disk, no device time.**
+  (1) *An emulator allocation that failed.* The `# heap` probe runs **after** MEM1 and the JIT buffer, and both are
+  at the **same address in both states** (`MEM1 at 081f6000`, the JIT buffer at `0aed7000`), with linear memory
+  (10.5 MB free) and VRAM (388 KB free) identical too. (2) *The display-list vertex caches*, a peer's reading of
+  `vcache_create`, which does fail silently and is about the right size: **both caches are present in both states**
+  (every log has its `# dlcache 10s (gx thread)` and `(worker)` lines). (3) *A relay restart*: a peer's deploy log
+  puts one at 00:24:14, inside job 1764, which stayed slow, and no log holds a failed-request line. (4) *The clock*:
+  `pmu_mcyc` 804 and the same `clock MHz` header on both sides. **And the two states print an identical set of
+  report-line types**, so nothing the program knows about is missing. The 1.9 MB is real and unexplained; it may be
+  a symptom of the same system state rather than the cause of the slowdown.
+- **Where to look next, given all that.** Both hottest regions are identically placed and the clock matches, so the
+  difference is not in *where* the big data sits. What remains: a system-level memory configuration that changes
+  both the app's heap size and something performance-relevant (Luma's extended-memory mode, or whatever else was
+  resident when gc3ds launched), or a smaller heap allocation that nothing reports. The heap probe is a *marker* of
+  the state; treating it as the mechanism is the mistake this entry has already made twice.
 - **Done:** `runs.py` now prints `heap N MB` on every line and **warns loudly when the logs scored together do not
   share a state**, with a planted self-test (a differing pair must be called out, a matching pair must not). That is
   the check that would have saved the hour this entry cost.
-- **Still open, in order.** (1) **Which allocation it is** - instrument the big ones (`fifo.c` TMEM 1 MB, the 2 MB
-  command buffer, `relay.c`'s ring and ballast) with a line each saying what was asked for and what was returned;
-  the log says 1.9 MB went missing and not which 1.9 MB. (2) **What puts the device in the 9.0 state** - it spans
-  20:41 to 00:41 across many jobs and both states survive restarts into a resident build, so it is set by something
-  outside a single run. (3) Whether the slow state can simply be refused at startup once it is identifiable.
+- **Still open, in order.** (1) **Log the app's total heap and every allocation over ~256 KB** (asked, returned,
+  address) at startup - the log currently says the largest free block and nothing about the shape of the heap, which
+  is why four plausible hypotheses each had to be killed one at a time. `pica_vcache_alloc` is the first instance:
+  `vcache_create` could lose 7.5 MB silently and now says so. (2) **What puts the device in the 9.0 state** - it
+  spans 20:41 to 00:41 across many jobs and both states survive restarts into a resident build, so it is set
+  outside a single run; the obvious suspects are system-level (extended memory, what was running before). (3)
+  Whether the slow state can be refused at startup once it is identifiable from inside the program.
 - **Until (1) and (2):** group every comparison by the heap column, which `runs.py` now does for you.
 - **Re-evaluate when:** the allocation is named. **Status: next for the instrument side** - and note that the
   5%-wide state was invisible for at least one previous session (jobs 1753-1767 are all in it), so **old ledger

@@ -133,6 +133,7 @@ bool pica_vw_trim(void);
 // text is ready once pica_take_description returns it; pica_description_taken releases it.
 // The display-list vertex cache's counters: the GX thread's (0) or the vertex worker's (1); NULL before it exists.
 const VCacheStats* pica_vcache_stats(int worker);
+bool pica_vcache_alloc(int worker);   // whether that display-list vertex cache got its memory (C55: ~1.8 MB, fails silently)
 void pica_set_fskip(bool on);  // frame skip (pica.c): every other rendered frame draws nothing
 bool pica_fskip(void);
 extern u64 g_fskipDraws, g_fskipFrames;

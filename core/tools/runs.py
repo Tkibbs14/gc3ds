@@ -22,7 +22,8 @@ Each line ends with the build's commit and the **launch memory state** (`heap N 
 '# heap: largest malloc block'). **The 2DS has more than one launch memory state, and they differ by ~5%** (C55,
 2026-11-01): at identical defaults on the same commit, static Ordon reads ~32.96% with `heap 9.0 MB` and ~34.6-34.9%
 with `heap 7.1 MB`, and the correlation is exact over every plain Ordon run on disk. In the 9.0 state the app holds
-1.9 MB *more* free heap - an allocation that size silently did not happen. **Runs in different states are not
+1.9 MB *more* free heap; the mechanism is unknown (C55 lists the hypotheses already killed), so read this as a
+reliable marker of the state and not as its explanation. **Runs in different states are not
 comparable whatever else matches**, so scoring several logs together prints a loud warning when they do not share
 one; group by the heap column and compare only within a group. This is the check that would have saved an hour on
 2026-11-01, when a device step became a "-5.6% regression" and was bisected across eight commits.

@@ -2651,6 +2651,11 @@ static void describe_draw(const GXCore* gx, u32 prim, u32 count) {
 // always triangles, always indexed).
 // The display-list vertex cache (vfast.c): one for gathers on this (GX) thread, one for the vertex worker's.
 const VCacheStats* pica_vcache_stats(int worker) { return vcache_stats(worker ? g_vcWorker : g_vcGx); }
+// Whether that cache got its memory at all. vcache_create returns NULL when its ring malloc fails (1.5 MB for the
+// GX cache, 6 MB for the worker's) and **logs nothing**, so a run could lose 7.5 MB of cache and say so nowhere.
+// Checked against C55's two launch memory states and it is *not* the difference between them - both caches are
+// present in both - but a silent failure of that size is worth a line of its own regardless.
+bool pica_vcache_alloc(int worker) { return (worker ? g_vcWorker : g_vcGx) != NULL; }
 
 // segPa: where the stream (or each merged draw's) lies in guest RAM, VC_NO_PA when it was not read from there.
 // idx / ni: an explicit triangle list over the draw's `count` vertices (pica_draw_indexed), host-order u16 indices.
