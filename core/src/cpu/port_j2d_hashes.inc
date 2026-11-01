@@ -253,3 +253,8 @@
     { 0x80314E98, 0x18, 0x5B8067B823703B02ull },   // J3DLoadCPCmd__FUcUl                      (loadVtxArray's three calls)
     { 0x803130A8, 0x3C, 0x57640B321F45BF88ull },   // resetMtxLoadCache__11J3DShapeMtxFv
     { 0x8035FEF0, 0x70, 0x6E5F2C8CB7E824EEull },   // GXCallDisplayList
+    // The NBT-scale half of J3DMaterial::load, added after job 1872 showed it blocking 100% of the port's real
+    // coverage. Recorded as 0 until the console publishes them, as above.
+    { 0x80324160, 0x34, 0ull },   // loadNBTScale__FR11J3DNBTScale
+    { 0x80322CC0, 0x8, 0ull },    // getNBTScale__19J3DTexGenBlockBasicFv   (must still be `return &mNBTScale`)
+    { 0x80322DFC, 0x8, 0ull },    // getNBTScale__15J3DTexGenBlock4Fv

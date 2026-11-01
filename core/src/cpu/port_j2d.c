@@ -2657,22 +2657,39 @@ static void j3d_shape_packet_draw_fast(Pc* c, u32 sp) {
     c->n += 10;
 }
 // J3DMaterial::load 0x8031668C: the material mode into j3dSys and, unless j3dSys flag 2 is set, the texgen
-// block's NBT scale. The second half is refused for now and counted: J3DTexGenBlockPatched - the class the
-// material census found on every material in both scenes - does not override getNBTScale, so the guest would be
-// dereferencing the base class's NULL there, which says flag 2 must be set whenever this runs. That is a
-// prediction, not a reading, so the port declines rather than assuming it and the counter settles it in one run
-// (rule 8: a second view of the quantity before believing the first).
+// block's NBT scale (`loadNBTScale` 0x80324160, which sets j3dSys's NBT scale to the block's Vec or to NULL).
+//
+// **This half was refused on a prediction and the prediction was wrong** (job 1872). The reasoning was:
+// `J3DTexGenBlockPatched` - the class the material census named on every material in both scenes - does not
+// override `getNBTScale`, so it inherits the base class's `return NULL` and the guest would be dereferencing it,
+// therefore flag 2 must be set whenever this runs. The counter said otherwise: 70 refusals against 190
+// scan-takeable calls, and those 70 were **every call with any content in it** - the 120 that "drew" were empty
+// draw buffers, so the drawing code never executed once and its "0 differed" was entirely vacuous. The `drew N`
+// counter caught that on its first run, which is the whole reason it exists.
+// The resolution is that Basic and TexGenBlock4 both *derive from* Patched and both do override `getNBTScale`, so
+// the class is identified by its vtable pointer - the way this file identifies every other class - rather than by
+// a vtable slot index, and an unrecognised one gives up and is counted.
+enum { A_VT_TEXGENBLOCK_BASIC = 0x803CE534, A_VT_TEXGENBLOCK_4 = 0x803CE5A0 };
 u64 g_j3dNbtRefused;
 static void j3d_material_load(Pc* c, u32 mat) {
     const u32 sys = A_J3DSYS;
     if (!span(c, mat, 48)) return;
     wr32(c, sys + 0x54, f32(mat + 0x10));
-    if (!(rd32(c, sys + 0x34) & 2)) {
+    c->n += 12;
+    if (rd32(c, sys + 0x34) & 2) return;
+    u32 tg = f32(mat + 0x28);
+    if (!tg || !span(c, tg, 0x6C)) { give_up(c, 1); return; }
+    u32 vt = f32(tg);
+    if (vt != A_VT_TEXGENBLOCK_BASIC && vt != A_VT_TEXGENBLOCK_4) {
         if (!c->fail) g_j3dNbtRefused++;   // (only the first reason per call, as the float sites do)
         give_up(c, 5);
         return;
     }
-    c->n += 12;
+    // J3DNBTScale at +0x5C in both classes: u8 mbHasScale, then Vec mScale at +0x04. `mbHasScale == true` is a
+    // comparison against 1, not a test for non-zero.
+    u32 nbt = tg + 0x5C;
+    wr32(c, sys + 0x118, f8(nbt) == 1 ? nbt + 4 : 0);
+    c->n += 14;
 }
 // J3DMatPacket::draw 0x80312A9C: the material, the packet's own display list, the first shape's pre-draw setting,
 // then every shape packet in the chain, then the vcd/vat cache reset.
@@ -3159,7 +3176,7 @@ const char* const g_portNames[PORT_N] = { "J2DMaterial::setGX", "J2DPictureEx::d
                                           "J3DMaterial::diff", "J3DSys::reinitGX",
                                           "dRenderingFDAmap_c::renderingDecoration",
                                           "J3DShapeMtxMultiConcatView::load", "J2DTextBoxEx::drawSelf",
-                                          "J3DDrawBuffer::drawHead (scan only)" };
+                                          "J3DDrawBuffer::drawHead" };
 static inline int hook_of(u32 pc) {
     return pc == A_MATERIAL_SETGX ? PORT_MATERIAL : pc == A_PICEX_DRAWSELF ? PORT_PICTUREEX : pc == A_J3D_PNGP ? PORT_J3DPNGP :
            pc == A_GX_SENDFLUSHPRIM ? PORT_FLUSHPRIM : pc == A_J3D_DIFFLIGHTOBJ ? PORT_LIGHTS : pc == A_PANE_DRAW ? PORT_PANEWALK :
@@ -3428,7 +3445,9 @@ static void port_report(void) {
 // 24.0 on the PC, 741 calls; diffLightObj: 3,562.7 against 1,107.8, 18,699 calls on the PC), so that the emulated clock
 // advances as the guest code would have.
 u32 g_portCharge = 100;
-static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165, 100 };  // (C56: scan only, never taken, so its scale is unused until the port draws)  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
+static const u32 kInsScale[PORT_N] = { 127, 124, 93, 121, 322, 129, 220, 116, 115, 96, 165, 100 };  // (C56: the only calls checked so far were empty draw buffers - 613.3 interpreter instructions against the
+// port's 451.5, job 1872 - so 100 is still a placeholder, to be calibrated once check mode runs calls with
+// content in them)  // (the walk: 13,377 against 10,400, job 1080; the material diff 6,151.5 against 2,795.3, 4,427 calls on the PC; reinitGX 8,415.6 against 7,250.8, 1,300; the minimap decoration 16,414.8 against 14,304.9, 2DS job 1384; the multi-matrix load 1,636.5 against 1,707.8, PC; the text box 10,783 against 6,562.8, 2DS job 1421)
 u32 port_run_hook(Gekko* g) {
     int hook = hook_of(g->pc);
     if (hook < 0 || !port_valid() || !g_ppipe) return 0;
