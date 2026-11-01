@@ -419,7 +419,13 @@ python3 core/tools/perf_heavy.py core/out/relay_<job>.csv --by opt --cols gxwait
   one shared `rc_flush` (handover modelled ~1.3% net), the paired-single accesses already went through OPT_FCACHE
   and OPT_PIPEPS, and everything else measured 0.3-2% of hot words (C13, C44). **Core 0's codegen is not where a
   large gain is**; `core/tools/jitbench.py` still ranks candidates cheaply with no disc image (OPT_FDIRECT came
-  from it, C42).
+  from it, C42) - **and its `--disasm` settles a codegen claim in one run, which is the cheapest check in the
+  project**. It killed C58 (ARM predication for guest hammocks) in three offline runs: an audit found "predicat"
+  returning zero hits across all twelve strategy documents, but `intloop.S` already has the shape, and the
+  disassembly shows the JIT **already spans the forward branch internally** (so the boundary cost predication
+  would remove is not being paid) and **already predicates** the CR materialisation and the cycle charge - while
+  the body it branches over is 14 ARM words, far too long for predication to pay. **A technique missing from the
+  documents is not necessarily missing from the code: disassemble before writing the entry.**
 - **The unknowns now have measurements attached (owner's direction, 2026-10-30: "the more things that are unknown to
   us right now we need to put measurements on").** Each is an instrument or a model run, not a build, and the cheap
   one comes first: **C47** attribute core 0's data stalls - 22.1% of the core with only totals in the record, split
