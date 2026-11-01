@@ -799,6 +799,48 @@ static void dma_probe(void) {
         memset(dst, 0, kBytes);
         svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)dst, kBytes);
     }
+    // The small-size end of the curve, which is what decides C40's DMA route (2026-11-01). The 4 MB figure above
+    // (192 MB/s against memcpy's ~300, L2 untouched) made kernel DMA "a candidate for bulk copies off core 0", and
+    // the FIFO mirror is such a copy worth ~1% of core 0 - but a mirror write is a *run*, not 4 MB: with
+    // `--gpruns` the pane walk hands over 15,210 bytes at a time and J3DSys::reinitGX 1,705. At those sizes the
+    // fixed cost decides, and a real use pays all of it: start, poll to DONE, close, **plus** flushing the source
+    // (core 0 just wrote it, so it is dirty in L1) and invalidating the destination (the guest may read it). So
+    // this sweep times the whole sequence, not the transfer, and prints memcpy over the same range beside it -
+    // one number per size, so the crossover is read off rather than argued about.
+    {
+        static const u32 kSizes[] = { 512, 1u << 10, 2u << 10, 4u << 10, 16u << 10, 64u << 10, 256u << 10 };
+        out("# timing dma sizes: bytes, us all-in (start+poll+close+flush src+inval dst), us memcpy, MB/s each\n");
+        for (u32 i = 0; i < sizeof kSizes / sizeof kSizes[0]; i++) {
+            u32 n = kSizes[i];
+            u32 reps = n <= (4u << 10) ? 200 : 40;
+            // DMA, all-in
+            u64 t0 = svcGetSystemTick();
+            bool ok = true;
+            for (u32 k = 0; k < reps && ok; k++) {
+                DmaConfig cfg;
+                dmaConfigInitDefault(&cfg);
+                Handle h = 0;
+                svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)src, n);
+                Result r = svcStartInterProcessDma(&h, CUR_PROCESS_HANDLE, (u32)dst, CUR_PROCESS_HANDLE, (u32)src, n, &cfg);
+                if (R_FAILED(r)) { ok = false; break; }
+                DmaState st = DMASTATE_STARTING;
+                u64 limit = svcGetSystemTick() + SYSCLOCK_ARM11 / 2;
+                do { svcGetDmaState(&st, h); } while (st != DMASTATE_DONE && svcGetSystemTick() < limit);
+                svcCloseHandle(h);
+                svcInvalidateProcessDataCache(CUR_PROCESS_HANDLE, (u32)dst, n);
+                if (st != DMASTATE_DONE) ok = false;
+            }
+            double dus = (double)(svcGetSystemTick() - t0) * 1e6 / SYSCLOCK_ARM11 / (double)reps;
+            // memcpy over the same range, for the comparison that matters
+            t0 = svcGetSystemTick();
+            for (u32 k = 0; k < reps; k++) memcpy(dst, src, n);
+            double mus = (double)(svcGetSystemTick() - t0) * 1e6 / SYSCLOCK_ARM11 / (double)reps;
+            if (!ok) out("# timing dma sizes: %lu bytes: DMA failed or did not finish\n", (unsigned long)n);
+            else out("# timing dma sizes: %lu, %.2f us dma, %.2f us memcpy, %.0f vs %.0f MB/s\n",
+                     (unsigned long)n, dus, mus,
+                     (double)n / 1048576.0 / (dus / 1e6), (double)n / 1048576.0 / (mus / 1e6));
+        }
+    }
     linearFree(src);
     linearFree(dst);
 }
