@@ -3085,6 +3085,68 @@ Remaining on the list: `vwmem`, `pipeps`, `icbi`, `qbig`, `feeddirect`, `cmdpld`
 `relayout`, `steal`, `sched off`, `vw2`, `--tier-nursery`. **`--fastfloat` is not on it**: it makes float results
 not bit-exact, so it is an owner's trade-off under rule 2 and not a free default.
 
+### `--gpruns`: a run of pipe bursts moved at once - TP heavy area +0.47%, exact (jobs 1889-1893, 2026-11-01)
+
+Built from the section below, which found that **46% of every pipe byte arrives in 0.5% of the calls** and was
+being chopped into 30,095 bursts a second. `gp_run()` moves a qualifying run at once - one mirror copy, one ring
+feed, the per-burst wrap arithmetic, CP-control read and counters done once for the run.
+
+> **The per-byte rate has now been measured three ways, and the third one corrects the mechanism I assumed.**
+> C40 already carried a PMU split from jobs 1371-1374 (a week earlier, a different instrument): the pane walk
+> **43,800 cycles a commit for 2,221 bytes** and reinitGX **34,200 for 1,705** - **19.7 and 20.1 cycles a byte**,
+> against the 18.3 today's profile timers give. Three routes to the same number is as solid as this project gets.
+> **But C40 attributes it to "mostly data stalls", not bookkeeping** - the FIFO mirror is a large always-cold ring,
+> so each line is a write-allocate miss that also evicts core 0's data. So the honest reading of `--gpruns`'s gain
+> is **not** that per-burst arithmetic was expensive: it is that **one contiguous 15 KB memcpy into the mirror
+> streams far better than 476 separate 32-byte ones interleaved with ring pushes and register reads**. Same bytes,
+> same destination, a cache-friendlier shape. I had written the bookkeeping explanation before looking at C40, and
+> it was a guess that the data does not support.
+
+**Speed, build `6e1a7c33c5e6`, 8.9 MB rung, two runs an arm adjacent and reversed in each scene:**
+
+| scene | on | off | | spreads |
+|---|---|---|---|---|
+| TP heavy area (jobs 1889-1892) | 7.228 / 7.226 | 7.197 / 7.189 | **+0.47%** | 0.03% / 0.11% |
+| static Ordon (jobs 1894-1897) | 10.404 / 10.407 | 10.361 / 10.360 | **+0.43%** | 0.03% / 0.01% |
+
+Complete rank separation in both, every spread at or under 0.11% against a heavy-area floor of 0.11-0.15% for
+adjacent arms. **Two scenes agreeing to 0.04 points is the part that matters**: `--g2` read +0.53% in the heavy
+area on the same day and **-0.28%** in Ordon, which is why one scene is no longer enough to call something a gain.
+
+**Exact:** `--port check` with the run path active reads **differed 0** (job 1893).
+
+**And the path says it ran, with its share reconciled** (the line exists because three instruments this week
+reported a result over code that never executed): `# gp pipe` reads **598,234 runs moving 4,755,537 bursts of
+12,965,821 - 36.7%, 8 bursts a run**, and 36.7% again in the 120 s check run, so the share is stable and is a
+share, never more than the total. The mean of 8 bursts a run is the many small stand-in runs; the ports' few large
+ones carry the bytes - 4,755,537 bursts over ~170 s is **27,974 a second**, against the **30,095 a second** the
+ports were predicted to contribute from `port_cost.py`. **Two independent routes to the same quantity agreeing to
+7%** is the cross-check (rule 8), and it is what says the run path is catching the traffic it was built for
+rather than some other traffic.
+
+**Where the gain comes from, and why the cloud toolchain can size it:** `gp_fifo_write` runs on **core 0**, so the
+per-burst work removed is core-0 work - unlike `--g2`, whose saving was GX-thread decode and which reversed in
+Ordon for exactly that reason. The secondary benefit *is* GX-side (the GX thread parses one record instead of
+thirty, `feed()` already having a one-record path above `RING_BATCH`), so the figure may be slightly
+toolchain-dependent, but the mechanism is not.
+
+**The 63% of bursts the run path does not take are `gp_wgp_put`'s single-store path** - the JIT assembling 32 bytes
+one store at a time - which cannot be batched without changing the JIT's store path. So 36.7% is close to this
+idea's ceiling, and the remaining per-byte cost is the two copies that are left: the FIFO mirror (C40, priced at up
+to 1.6% of Ordon, parked because the guest may read its FIFO in RAM) and `ringbatch`'s copy into the ring record.
+**Removing the second one is a real follow-up**: for a run the bytes are already in the mirrored FIFO in MEM1, so a
+record that *references* them would need no copy at all - which is what the hardware does. Its cost is lifetime
+safety (the GX thread must stay inside the FIFO's unread region), so it is a design, not a tweak.
+**And C40 should be re-priced now**, because it is the mirror that the PMU split blames: its measured upper bound
+(`--fifomirror off`, Ordon **+1.6%**, heavy area **+0.5%**, jobs 1375-1380) was taken when every mirror write was a
+separate 32-byte store, and `--gpruns` has just made 37% of them contiguous. C40's remaining prize is therefore
+probably smaller than 1.6% - and that is worth knowing before anyone builds its "let core 2 write the mirror"
+design, which is the most involved idea in that entry.
+
+**Owed:** the PC state-hash check over 400 fields that `g_gpBulk` itself was validated with. This session has no
+disc image, no devkitPPC and no built test DOLs, so the exactness evidence here is `--port check` plus the
+construction argument, not that check.
+
 ### Where the ports' time goes, and the pipe path behind it (job 1878, 2026-11-01, no device time)
 
 `port_cost.py` over a default heavy-area run, which had never been read since C53 and the soft-float concat landed:
