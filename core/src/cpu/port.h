@@ -57,9 +57,9 @@ extern u64 g_portWalkDrew[2];
 // see the comment in port_j2d.c. The figure is an upper bound on the prize, never the prize.
 extern u32 g_portSizeRefused;
 extern u64 g_portRefusedIns[PORT_N][8];
-// --port-softfloat on: PSMTXConcat through the interpreter's exact soft float when an input is a denormal, a NaN or
-// an infinity, rather than giving up. That give-up is 37.5% of the pane walk's hook entries once C53 is on, each
-// abandoning a ~104,000-instruction subtree. Off until --port check reads 0 differed with it on.
+// --port-softfloat (ON by default since 2026-11-01): PSMTXConcat through the interpreter's exact soft float when an
+// input is a denormal, a NaN or an infinity, rather than giving up. Heavy area +0.20% (four runs an arm, complete
+// rank separation), static Ordon +0.31%; exact, and the walk's float refusals go from 60 a window to 0.
 extern bool g_portSoftFloat;  // panes the walk drew through the C53 halves: [0] J2DPicture, [1] J2DTextBoxEx
 extern u64 g_portFloatSite[6];
 extern u32 g_portWalkDs[4];

@@ -97,7 +97,7 @@ and why the reported read pointer must advance only after the write) and the one
 **Verify:** a check mode comparing the deferred mirror against the eager one over a run, with a planted difference
 that must be caught; then the usual A/B.
 
-### 9. The float give-up: 37.5% of the pane walk's entries, and not a denormal one
+### 9. DONE (2026-11-01). The float give-up: exact soft float instead of abandoning the subtree
 **Why:** a port gives up and abandons its whole subtree when a float input is one the host VFP and the Gekko treat
 differently. **Measured 2026-10-31 (jobs 1753-1754): 100% of these are NaN or infinity and *none* is a denormal** -
 static Ordon `denormal 0, plain nan/inf 13,216` (864 per 10 s, all at `port_j2d.c:892` in `psmtx_concat`), heavy area
@@ -108,6 +108,19 @@ default-NaN on, so a NaN needs Gekko's payload propagation through the whole `ps
 needs none - and nobody knows yet which of the two these are.
 **Verify:** `--port check` on a console (every call also run by the interpreter and compared, 0 differed) and
 `--port plant` to prove the checker still reports a difference.
+
+> **DONE, and on by default** (`--port-softfloat`, 2026-11-01). `psmtx_concat_exact` computes the whole concat
+> through `gekko_softfp.c` with the guest's FPSCR when any input is non-plain, and `psq_copy` passes an exact NaN
+> through (per call, `Pc.sfNonPlain`) so the refusal is **removed** rather than relocated - the first version moved
+> it one function downstream and changed nothing, which is why the counter that says the new code *ran* matters as
+> much as the one that says nothing differed. Checked: `--port check` 0 differed with every float give-up at 0,
+> `--port plant` 33,616 (jobs 1791-1792). Measured: TP's heavy area **+0.20%** (jobs 1797-1804, four runs an arm,
+> all four on-runs above all four off-runs) and static Ordon **+0.31%** (jobs 1805-1808). The walk's float refusals
+> go from 60 a window to 0.
+> **What it was worth against what it looked worth:** this entry said "2.2x coverage" off a refusal count. The
+> refused calls do not become taken calls - they vanish from the hook, absorbed by walks that already succeeded -
+> so coverage rose 1.4% and the gain is 0.2-0.3%. Keep the whole history below: the task's premise was wrong
+> (denormals), then its size was wrong twice, in both directions, and only separate whole runs settled it.
 
 > **Correction, 2026-10-31.** This task used to read "the give-up that blocks big ports", on **2,108 of 2,134
 > give-ups are `plain()` refusing a denormal** - a figure from a counter that merged denormals with NaNs

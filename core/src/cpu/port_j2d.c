@@ -1123,9 +1123,16 @@ u64 g_portWalkDrew[2];  // how many panes the walk actually drew natively throug
 // covered by walks accepted further down the same tree, which is exactly what the root refusals were hiding.
 u32 g_portSizeRefused;
 u64 g_portRefusedIns[PORT_N][8];
-// --port-softfloat (off): compute PSMTXConcat through the interpreter's exact soft float when an input is a
-// denormal, a NaN or an infinity, instead of giving up and abandoning the subtree. See psmtx_concat_exact.
-bool g_portSoftFloat;
+// --port-softfloat (ON by default since 2026-11-01): compute PSMTXConcat through the interpreter's exact soft float
+// when an input is a denormal, a NaN or an infinity, instead of giving up and abandoning the subtree. See
+// psmtx_concat_exact. **TP's heavy area +0.20%** (jobs 1797-1804, four runs an arm, arms adjacent and the order
+// reversed between rounds: all four on-runs above all four off-runs, p = 1/70 - the rank separation is what settles
+// it at the ~0.2% floor) and **static Ordon +0.31%** (jobs 1805-1808, two an arm, both on-runs above both off,
+// on-arm spread 0.00%). Exact with the path actually taken: `--port check` differed 0 and every float give-up reads
+// 0 where the first version merely moved the refusal into psq_copy; `--port plant` differed 33,616 (jobs 1791-1792).
+// It also removes the whole give-up class - the walk's float refusals go from 60 a window to 0 - which is worth more
+// than the 0.2% in any scene with more NaN matrices than these two.
+bool g_portSoftFloat = true;
 
 // J2DPicture::getNewColor 0x802FEC64: the four corner colours, each alpha scaled by mColorAlpha unless it is 0xFF.
 static void picture_new_color(Pc* c, u32 p, u32* col) {
