@@ -42,7 +42,14 @@ gameplay on frames a second from a scene that takes no input, not on the scripte
    stable**: it shows only that those runs sat on one side of a step. **So when a baseline moves by more than a
    point, re-run the *new* build late as well as the old one.** Running only the old one late is how a device step
    became a "-5.6% regression" in this very file for an hour, after the arms were batched - the exact thing this
-   rule forbids, done while investigating a measurement artifact. Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
+   rule forbids, done while investigating a measurement artifact.
+   **The step is the launch memory state, and `runs.py` now prints and polices it** (C55): every log's
+   `# heap: largest malloc block` reads 7.1, 8.6 or 9.0 MB, speed falls monotonically as that rises, and the value
+   is fixed when the process starts and inherited by every job reusing it - it changes **only** when a job downloads
+   a build and chainloads through `hb:ldr`. So **a measurement series wants one process, or at least one heap
+   value**, and `runs.py` refuses to compare across values. **This is the likeliest identity of the "~2% day drift"
+   this rule has quoted for weeks**: a series that chainloads part-way through moves between rungs. Before a series
+   that matters, have the device launched by hand so it starts from a known rung. Runs agree closely once the seconds core 0 did not get are left out, which `runs.py`
    does by default - but **the scene sets the floor, not the method**, and **two runs understate it**: four runs of
    one configuration on one build in one session span **0.23% in `tp_area2`** (7.264-7.281, jobs 1692/1693 and
    1700/1701, two hours apart), where the two adjacent *pairs* inside that span read 0.01% and 0.17%. Static Ordon
